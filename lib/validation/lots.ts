@@ -1,10 +1,15 @@
 import { z } from "zod"
 
-import { LOT_STATUSES } from "@/lib/land/lot-lifecycle"
+import { LOT_STATUSES, MIN_DELIVERY_EXCEPTION_REASON_LENGTH } from "@/lib/land/lot-lifecycle"
 
 export const lotStatusValueSchema = z.enum(LOT_STATUSES)
 export const lotSwingSchema = z.enum(["left", "right", "either"])
 
+export const lotDeliveryExceptionSchema = z.object({
+  reason: z.string().trim().min(MIN_DELIVERY_EXCEPTION_REASON_LENGTH, "Say why a house may start on an undelivered lot.").max(1000),
+})
+
+/** Form shape. `lots.dimensions` is stored snake_case; `lib/land/lot-dimensions.ts` owns the translation. */
 const lotDimensionsSchema = z.object({
   widthFt: z.number().positive().optional(),
   depthFt: z.number().positive().optional(),

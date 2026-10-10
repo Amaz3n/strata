@@ -3,7 +3,7 @@ import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { RunwayBoard } from "@/components/design-studio/runway-board"
-import { getStudioRunway, listBookableHomes } from "@/lib/services/design-studio"
+import { getStudioRunway } from "@/lib/services/design-studio"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
@@ -23,9 +23,8 @@ async function DesignStudioPageContent({ searchParams }: PageProps) {
   const communityId = community || ambient.communityId
   const scope = { communityId, divisionId: ambient.divisionId }
 
-  const [runway, bookableHomes, canManage] = await Promise.all([
+  const [runway, canManage] = await Promise.all([
     getStudioRunway(scope),
-    listBookableHomes(scope),
     hasPermission("design_studio.manage", context),
   ])
 
@@ -34,7 +33,6 @@ async function DesignStudioPageContent({ searchParams }: PageProps) {
       <RunwayBoard
         runway={runway}
         communityId={communityId}
-        bookableHomes={bookableHomes}
         canManage={canManage}
       />
     </PageLayout>

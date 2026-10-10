@@ -47,3 +47,19 @@ test("a refused community lens draws an empty desk", async () => {
   assert.deepEqual(desk.packages, [])
   assert.equal(desk.counters.precon, 0)
 })
+
+test("a bulk release only acts on selected houses that are still on screen", () => {
+  const { selectionOnScreen } = freshRequire("lib/starts/release-selection.ts")
+  const visible = [{ id: "a" }, { id: "b" }]
+
+  const onScreen = selectionOnScreen(visible, new Set(["a", "c"]))
+
+  assert.deepEqual(onScreen.map((pkg) => pkg.id), ["a"])
+})
+
+test("confirming over-target starts resends only the houses the server held back", () => {
+  const { releaseTargetIds } = freshRequire("lib/starts/release-selection.ts")
+
+  assert.deepEqual(releaseTargetIds(["a", "b", "c"], ["b"], true), ["b"])
+  assert.deepEqual(releaseTargetIds(["a", "b", "c"], ["b"], false), ["a", "b", "c"])
+})

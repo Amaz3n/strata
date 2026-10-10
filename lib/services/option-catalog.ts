@@ -554,15 +554,6 @@ export async function upsertPackage(raw: SelectionPackageInput): Promise<Selecti
   if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED === "true") return publishCatalogPackage(context, input)
   const canReadMargin = await hasPermission("financials.margin.read", context)
   if (input.costCents !== undefined || input.expectedPackage?.cost_cents !== undefined) await requirePermission("financials.margin.read", context)
-  const { data: options, error: optionsError } = await context.supabase
-    .from("selection_options")
-    .select("id, category_id")
-    .eq("org_id", context.orgId)
-    .in("id", input.optionIds)
-  if (optionsError || (options ?? []).length !== input.optionIds.length) throw new Error("One or more package options were not found")
-  if (new Set((options ?? []).map((option) => option.category_id)).size !== input.optionIds.length) {
-    throw new Error("A package can include only one option per category")
-  }
   const payload = {
     community_id: input.communityId ?? null,
     name: input.name,
@@ -573,24 +564,18 @@ export async function upsertPackage(raw: SelectionPackageInput): Promise<Selecti
     is_available: input.isAvailable,
     sort_order: input.sortOrder,
   }
-  const query = input.id
-    ? context.supabase.from("selection_packages").update(payload).eq("org_id", context.orgId).eq("id", input.id)
-    : context.supabase.from("selection_packages").insert({ org_id: context.orgId, ...payload })
-  const selected = canReadMargin
-    ? query.select("id, community_id, name, description, image_url, price_cents, cost_cents, is_available, is_archived, sort_order")
-    : query.select("id, community_id, name, description, image_url, price_cents, is_available, is_archived, sort_order")
-  const { data, error } = await selected.single()
+  // The package row and its members commit together: a failed member write
+  // leaves the previous package exactly as it was.
+  const { data: packageId, error: saveError } = await createServiceSupabaseClient().rpc("save_selection_package", {
+    p_org_id: context.orgId, p_package_id: input.id ?? null, p_fields: payload, p_option_ids: input.optionIds,
+  })
+  if (saveError || typeof packageId !== "string") throw new Error(`Failed to save package: ${saveError?.message ?? "missing row"}`)
+  const saved = context.supabase.from("selection_packages")
+  const { data, error } = await (canReadMargin
+    ? saved.select("id, community_id, name, description, image_url, price_cents, cost_cents, is_available, is_archived, sort_order")
+    : saved.select("id, community_id, name, description, image_url, price_cents, is_available, is_archived, sort_order")
+  ).eq("org_id", context.orgId).eq("id", packageId).single()
   if (error || !data) throw new Error(`Failed to save package: ${error?.message ?? "missing row"}`)
-  const { error: deleteError } = await context.supabase
-    .from("selection_package_items")
-    .delete()
-    .eq("org_id", context.orgId)
-    .eq("package_id", data.id)
-  if (deleteError) throw new Error(`Failed to replace package members: ${deleteError.message}`)
-  const { error: itemError } = await context.supabase.from("selection_package_items").insert(
-    input.optionIds.map((optionId) => ({ org_id: context.orgId, package_id: data.id, option_id: optionId })),
-  )
-  if (itemError) throw new Error(`Failed to save package members: ${itemError.message}`)
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "selection_package", entityId: data.id, after: { ...payload, option_ids: input.optionIds } })
   const visible: SelectionPackageDto = { ...data, option_ids: input.optionIds }
   if (!canReadMargin) delete visible.cost_cents
@@ -1008,21 +993,46 @@ export async function cloneOrgGroupsToCommunity(communityId: string) {
   }
 }
 
-export async function listAppointments(opts: {
+interface AppointmentFilter {
   communityId?: string
   from?: string
   to?: string
   status?: AppointmentDto["status"]
-  limit?: number
-} = {}): Promise<AppointmentDto[]> {
+}
+
+/**
+ * The calendar shows the homes the reader can see: a division- or
+ * project-scoped coordinator does not read another division's buyers. The list
+ * and its count both resolve visibility here so they cannot disagree.
+ */
+async function visibleAppointmentProjects(context: Awaited<ReturnType<typeof requireOrgContext>>) {
+  return resolveVisibleProjectIds({ ...context, includePrecon: true })
+}
+
+/** How many appointments match, uncapped — `listAppointments` returns at most 100. */
+export async function countAppointments(opts: AppointmentFilter = {}): Promise<number> {
+  const context = await requireOrgContext()
+  await requirePermission("selections.read", context)
+  const visibleProjectIds = await visibleAppointmentProjects(context)
+  if (visibleProjectIds?.length === 0) return 0
+  let query = context.supabase.from("design_studio_appointments").select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
+  if (visibleProjectIds) query = query.in("project_id", visibleProjectIds)
+  if (opts.communityId) query = query.eq("community_id", opts.communityId)
+  if (opts.from) query = query.gte("scheduled_at", opts.from)
+  if (opts.to) query = query.lte("scheduled_at", opts.to)
+  if (opts.status) query = query.eq("status", opts.status)
+  const { count, error } = await query
+  if (error) throw new Error(`Failed to count design studio appointments: ${error.message}`)
+  return count ?? 0
+}
+
+export async function listAppointments(opts: AppointmentFilter & { limit?: number } = {}): Promise<AppointmentDto[]> {
   const context = await requireOrgContext()
   // Reading the calendar is part of every selections read surface — a
   // superintendent checking a cutoff must not be blocked by the coordinator's
   // manage permission. Booking and rescheduling keep the stricter gate.
   await requirePermission("selections.read", context)
-  // The calendar shows the homes the reader can see: a division- or
-  // project-scoped coordinator does not read another division's buyers.
-  const visibleProjectIds = await resolveVisibleProjectIds({ ...context, includePrecon: true })
+  const visibleProjectIds = await visibleAppointmentProjects(context)
   if (visibleProjectIds?.length === 0) return []
   let query = context.supabase
     .from("design_studio_appointments")

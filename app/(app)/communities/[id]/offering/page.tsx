@@ -189,7 +189,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           requiredPacePerMonth={lane?.requiredPacePerMonth ?? null}
           canManage={canManage}
         />
-        <CommunitySpecInventory rows={specRows} />
+        <CommunitySpecInventory rows={specRows} communityId={id} canManage={canManage} />
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 "use client"
 
+import { releaseTargetIds, selectionOnScreen } from "@/lib/starts/release-selection"
 import {
   DndContext, DragOverlay, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent,
@@ -116,9 +117,11 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     () => (focus === "all" || focus === "sold" ? desk.candidates.filter((candidate) => focus !== "sold" || candidate.sale.isSold) : []),
     [desk.candidates, focus],
   )
+  // A selection only ever means the houses on screen: narrowing the focus drops
+  // the rest from every action, instead of releasing homes nobody can see.
   const selectedPackages = useMemo(
-    () => desk.packages.filter((pkg) => selected.has(pkg.id)),
-    [desk.packages, selected],
+    () => selectionOnScreen(visible, selected),
+    [visible, selected],
   )
   function refresh() {
     setSelected(new Set())
@@ -174,7 +177,9 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
   }
 
   function submitRelease(confirmOverSlot: boolean) {
-    const ids = selectedPackages.map((pkg) => pkg.id)
+    // Confirming over-target homes resends only those homes; the rest of the
+    // selection was already released (or already failed) on the first pass.
+    const ids = releaseTargetIds(selectedPackages.map((pkg) => pkg.id), overSlotIds, confirmOverSlot)
     if (!ids.length || !releaseDate) return
     startTransition(async () => {
       try {
@@ -451,10 +456,10 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
       )}
 
       {/* ===== Batch release bar ===== */}
-      {selected.size > 0 ? (
+      {selectedPackages.length > 0 ? (
         <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t bg-foreground px-4 py-2.5 text-background">
           <span className="text-xs tabular-nums">
-            {selected.size} {selected.size === 1 ? "home" : "homes"} selected ·{" "}
+            {selectedPackages.length} {selectedPackages.length === 1 ? "home" : "homes"} selected ·{" "}
             {selectedPackages.map((pkg) => pkg.lotLabel).join(", ")}
           </span>
           <div className="flex items-center gap-2">
@@ -462,7 +467,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
               Clear
             </Button>
             <Button size="sm" variant="secondary" className="rounded-none" disabled={pending} onClick={beginRelease}>
-              Release {selected.size} {selected.size === 1 ? "home" : "homes"}
+              Release {selectedPackages.length} {selectedPackages.length === 1 ? "home" : "homes"}
             </Button>
           </div>
         </div>
@@ -567,7 +572,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
       <Dialog open={releaseOpen} onOpenChange={(open) => { if (!open) { setReleaseOpen(false); setOverSlotIds([]) } }}>
         <DialogContent className="rounded-none sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Release {selected.size} {selected.size === 1 ? "home" : "homes"}</DialogTitle>
+            <DialogTitle>Release {selectedPackages.length} {selectedPackages.length === 1 ? "home" : "homes"}</DialogTitle>
             <DialogDescription>
               Each release generates the budget, schedule, checklists, drawings and PO set from the pinned plan version, then notifies trades.
             </DialogDescription>

@@ -76,7 +76,7 @@ async function desk(t, { role = "org_starts_coordinator", status = "ready" } = {
   const { orgId, userId: actorId } = await full.seedMember(db, { role })
   const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
   const home = await full.insert(db, "projects", { org_id: orgId, name: "Lot 7" })
-  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7" })
+  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "developed" })
   const pkg = await full.insert(db, "start_packages", { org_id: orgId, lot_id: lot.id, community_id: community.id, project_id: home.id, status })
   const h = { db, orgId, actorId, community, home, lot, pkg }
   const scope = { p_org_id: orgId, p_package_id: pkg.id, p_actor_id: actorId }

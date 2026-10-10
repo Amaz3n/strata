@@ -1,7 +1,10 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
+import type { SearchPickerPage } from "@/components/ui/search-picker"
+import { listDirectoryPage } from "@/lib/services/directory"
 import {
   acknowledgeWarrantyRequest,
   cancelWarrantyVisit,
@@ -51,6 +54,30 @@ function revalidateWarranty(projectId?: string) {
   revalidatePath("/warranty")
   revalidatePath("/settings/warranty")
   if (projectId) revalidatePath(`/projects/${projectId}/warranty`)
+}
+
+const companySearchSchema = z.object({
+  search: z.string().max(80).default(""),
+  page: z.number().int().min(1).max(100_000).default(1),
+})
+
+/** Trade picker for dispatch and backcharges: one scoped page of companies per search, never the roster. */
+export async function searchWarrantyCompaniesAction(input: unknown): Promise<ActionResult<SearchPickerPage>> {
+  try {
+    const query = companySearchSchema.parse(input)
+    const pageSize = 25
+    const result = await listDirectoryPage({ kind: "company", page: query.page, pageSize, search: query.search || undefined, sort: "name", direction: "asc" })
+    return {
+      success: true,
+      data: {
+        items: result.entries.map((row) => ({ id: row.id, name: row.name, detail: row.trade ?? row.detail ?? "" })),
+        nextCursor: null,
+        nextPage: result.page * result.pageSize < result.total ? result.page + 1 : null,
+      },
+    }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 export async function listWarrantyRequestsAction(projectId: string) {

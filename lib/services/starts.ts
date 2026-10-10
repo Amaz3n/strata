@@ -20,6 +20,9 @@ import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { prepareProjectAccountingDimensions, prepareProjectBillingContract, prepareProjectCreation } from "@/lib/services/projects"
 import { prepareProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { readAllRows } from "@/lib/land/paging"
+import { verticalStartRefusal } from "@/lib/land/lot-lifecycle"
+import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
+import { isPlanOffered, offeringOverrideFor } from "@/lib/sales/plan-offering"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
   gateAttestSchema,
@@ -490,11 +493,21 @@ async function deriveAutoGate(
 ) {
   const projectId = text(pkg.project_id)
   if (source === "plan_pinned") {
-    const { data, error } = await supabase.from("lots").select("house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status)")
+    const { data, error } = await supabase.from("lots").select("community_id,metadata,house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status,house_plan_id),elevation:house_plan_elevations(is_active)")
       .eq("org_id", orgId).eq("id", String(pkg.lot_id)).maybeSingle()
     if (error) throw new Error(`Failed to check pinned plan: ${error.message}`)
     const version = relation(data?.version)
-    return Boolean(data?.house_plan_version_id && data.house_plan_elevation_id && version?.status === "released")
+    if (!data?.house_plan_version_id || !data.house_plan_elevation_id || version?.status !== "released" || relation(data.elevation)?.is_active === false) return false
+    // The pin must still be on the community's price sheet today; a plan the
+    // community has since withdrawn starts only under a recorded override.
+    const housePlanId = text(version.house_plan_id)
+    if (!housePlanId) return false
+    const { data: offering, error: offeringError } = await supabase.from("community_plan_availability")
+      .select("is_available,elevation_id,effective_start,effective_end")
+      .eq("org_id", orgId).eq("community_id", data.community_id).eq("house_plan_id", housePlanId)
+    if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
+    return isPlanOffered(offering ?? [], { elevationId: data.house_plan_elevation_id, onDate: new Date().toISOString().slice(0, 10) })
+      || Boolean(offeringOverrideFor(data.metadata, housePlanId))
   }
   if (!projectId) return false
   if (source === "plot_plan_file") {
@@ -617,13 +630,22 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   const parsed = startPackageInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  const { data: lot, error } = await context.supabase.from("lots").select("id,community_id,division_id,project_id,status,lot_number,address,community:communities(name,code)")
+  const { data: lot, error } = await context.supabase.from("lots").select("id,community_id,division_id,project_id,status,delivered_at,metadata,lot_number,address,community:communities(name,code)")
     .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
   const access = await assertStartCommunityAccess(context.supabase, context.orgId, lot.community_id)
   if (access.assignedOnly && (!lot.division_id || !access.divisionIds.includes(lot.division_id))) throw new Error("Lot is outside your division access")
   await seedDefaultGateDefinitions(context.orgId)
-  if (!["developed", "assigned"].includes(lot.status)) throw new Error("Only developed or assigned lots can enter the start pipeline.")
+  const refusal = verticalStartRefusal({ status: lot.status, deliveredAt: lot.delivered_at, metadata: lot.metadata })
+  if (refusal) throw new Error(refusal)
+  if (!lot.project_id) {
+    // A hold or reservation with no home yet is a buyer waiting on this lot;
+    // building a spec house on it would sell the lot twice.
+    const { data: held, error: heldError } = await context.supabase.from("lot_reservations").select("id")
+      .eq("org_id", context.orgId).eq("lot_id", lot.id).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(1)
+    if (heldError) throw new Error(`Failed to check the lot's reservations: ${heldError.message}`)
+    if (held?.length) throw new Error("This lot has a live hold or reservation. Convert it to the buyer's home or release it before starting a house.")
+  }
   // A preconstruction home is needed before release so plot-plan files,
   // selections, and price-book dry runs have a stable project scope. The home,
   // the lot link, the package and its gates commit together — a failure leaves
@@ -1172,7 +1194,7 @@ export async function listStartPackageCandidates(
   // sold-but-unpackaged counter the desk derives from them.
   const lots = await readAllRows((from, to) => {
     let query = context.supabase.from("lots").select(`
-      id,lot_number,block,status,community_id,project_id,community:communities!inner(name,settings),
+      id,lot_number,block,status,delivered_at,metadata,community_id,project_id,community:communities!inner(name,settings),
       plan:house_plans(code,name),elevation:house_plan_elevations(code),
       project:projects(client:contacts(full_name)),
       packages:start_packages!start_packages_lot_id_fkey(id,status)
@@ -1183,7 +1205,8 @@ export async function listStartPackageCandidates(
     return query.order("lot_number").order("id").range(from, to)
   }, { cap: CANDIDATE_LOT_CAP + 1, label: "Failed to load start-package lots" })
   if (lots.truncated) throw new Error(`More than ${CANDIDATE_LOT_CAP} lots are waiting in scope; narrow the desk by community.`)
-  const available = lots.rows.filter((lot) => !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled"))
+  const available = lots.rows.filter((lot) => !verticalStartRefusal({ status: lot.status, deliveredAt: lot.delivered_at, metadata: lot.metadata })
+    && !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled"))
   const salesByProject = await loadSalesByProject(context.supabase, context.orgId, available.map((lot) => lot.project_id))
   return available.map((lot) => {
     const community = relation(lot.community)

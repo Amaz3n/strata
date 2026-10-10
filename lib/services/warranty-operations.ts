@@ -1056,7 +1056,7 @@ export async function listWarrantyVisitsPendingVerification(params: { divisionId
   const paging = warrantyDeskPage(params.page, params.pageSize ?? params.limit)
   const scope = await warrantyDeskReadScope(resolvedOrgId, userId, params.divisionId)
   if (scope.divisionIds?.length === 0) return { rows: [], total: 0 }
-  let requestQuery = supabase.from("warranty_requests").select(`id,project_id,request_number,title,severity,metadata,${warrantyDeskProjectSelect("name", scope.projectMembershipRequired, params.communityId)}`, { count: "exact" }).eq("org_id", resolvedOrgId).eq("metadata->>pending_verification", "true").in("status", ["open", "in_progress"])
+  let requestQuery = supabase.from("warranty_requests").select(`id,project_id,request_number,title,severity,metadata,${warrantyDeskProjectSelect("name", scope.projectMembershipRequired, params.communityId)}`, { count: "exact" }).eq("org_id", resolvedOrgId).eq("metadata->>pending_verification", "true").not("metadata->>completed_visit_id", "is", null).in("status", ["open", "in_progress"])
   requestQuery = requestQuery.eq("project.org_id", resolvedOrgId)
   if (params.communityId) requestQuery = requestQuery.eq("project.lot.community_id", params.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
   if (scope.divisionIds) requestQuery = requestQuery.in("project.division_id", scope.divisionIds)

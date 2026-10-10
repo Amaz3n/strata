@@ -15,6 +15,7 @@ import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs"
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
 import { projectJournal } from "@/lib/services/books/projector"
+import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { specInventoryAge } from "@/lib/sales/spec-inventory"
 import { z } from "zod"
 import type { CommunityPlanAvailabilityDto } from "@/lib/services/house-plans"
@@ -58,6 +59,7 @@ import {
   createLotHoldSchema,
   createPurchaseAgreementSchema,
   convertReservationSchema,
+  specAskingPriceSchema,
   reservationConversionSourceSchema,
   incentiveSchema,
   releaseReservationSchema,
@@ -66,16 +68,6 @@ import {
   type IncentiveInput,
 } from "@/lib/validation/community-sales"
 
-const LIVE_RESERVATION_STATUSES = ["hold", "reserved", "converted"]
-
-/**
- * A hold past its expiry no longer blocks a lot, whether or not the sweep has
- * run yet. Reads decide liveness from the data; only the scheduled sweep writes
- * the `expired` status.
- */
-function liveReservationOrFilter() {
-  return `status.neq.hold,expires_at.is.null,expires_at.gt.${new Date().toISOString()}`
-}
 /** Lot states a buyer can be sold into — controlled land and closed lots are not. */
 const SELLABLE_LOT_STATUSES = ["owned", "developed", "assigned", "started"]
 
@@ -215,23 +207,30 @@ export async function sweepExpiredLotHolds() {
  * `includeToBeBuilt` for the Sales "Find a home" picker, which also needs
  * unstarted lots a buyer can still choose a plan on.
  */
-export async function listSpecInventory(opts: {
+export async function listSpecInventory(opts: SpecInventoryOptions = {}) {
+  return (await listSpecInventoryPage(opts)).lots
+}
+
+interface SpecInventoryOptions {
   communityId?: string
   divisionId?: string
   status?: string
   limit?: number
   includeToBeBuilt?: boolean
-} = {}) {
+}
+
+/** Same read, plus whether more lots matched than `limit` returned — so a picker can say so. */
+export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
   const context = await requireOrgContext()
   await requirePermission("sales.read", context)
   const divisionAccess = await getSalesDivisionAccess(context)
   if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
-    return []
+    return { lots: [], truncated: false }
   }
   if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
   let query = context.supabase
     .from("lots")
-    .select("id, community_id, division_id, lot_number, block, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, project:projects(id, name, start_date, end_date, status), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)")
+    .select("id, community_id, division_id, lot_number, block, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, project:projects(id, name, start_date, status), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)", { count: "exact" })
     .eq("org_id", context.orgId)
   query = opts.includeToBeBuilt
     ? query.in("status", SELLABLE_LOT_STATUSES)
@@ -239,11 +238,12 @@ export async function listSpecInventory(opts: {
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.divisionId) query = query.eq("division_id", opts.divisionId)
   else if (divisionAccess.assignedOnly) {
-    if (divisionAccess.divisionIds.length === 0) return []
+    if (divisionAccess.divisionIds.length === 0) return { lots: [], truncated: false }
     query = query.in("division_id", divisionAccess.divisionIds)
   }
   if (opts.status) query = query.eq("status", opts.status)
-  const { data: lots, error } = await query.order("created_at", { ascending: false }).limit(Math.min(opts.limit ?? 100, 250))
+  const limit = Math.min(opts.limit ?? 100, 250)
+  const { data: lots, error, count } = await query.order("created_at", { ascending: false }).order("id").limit(limit)
   if (error) throw new Error(`Failed to load spec inventory: ${error.message}`)
   const lotIds = (lots ?? []).map((lot: any) => lot.id)
   const projectIds = (lots ?? []).map((lot: any) => lot.project_id).filter(Boolean)
@@ -257,16 +257,18 @@ export async function listSpecInventory(opts: {
   const communityIds = Array.from(new Set(availableLots.map((lot: any) => lot.community_id))) as string[]
   const planIds = Array.from(new Set(availableLots.map((lot: any) => lot.house_plan_id).filter(Boolean))) as string[]
   const availableProjectIds = availableLots.map((lot: any) => lot.project_id).filter(Boolean) as string[]
-  const [{ data: availability }, { data: selections }] = await Promise.all([
+  const [{ data: availability }, { data: selections }, { data: completions }] = await Promise.all([
     communityIds.length && planIds.length ? context.supabase.from("community_plan_availability").select("community_id, house_plan_id, elevation_id, base_price_cents").eq("org_id", context.orgId).in("community_id", communityIds).in("house_plan_id", planIds).eq("is_available", true) : Promise.resolve({ data: [] }),
     availableProjectIds.length ? context.supabase.from("project_selections").select("project_id, price_cents_snapshot, option:selection_options!project_selections_selected_option_id_fkey(option_scope)").eq("org_id", context.orgId).in("project_id", availableProjectIds).in("status", ["confirmed", "ordered", "received"]) : Promise.resolve({ data: [] }),
+    availableProjectIds.length ? context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", availableProjectIds).not("books_inventory_completed_on", "is", null) : Promise.resolve({ data: [] }),
   ])
+  const completedOnByProject = new Map((completions ?? []).map((row: any) => [row.project_id as string, row.books_inventory_completed_on as string]))
   const structuralByProject = new Map<string, number>()
   for (const row of selections ?? []) {
     const option = Array.isArray((row as any).option) ? (row as any).option[0] : (row as any).option
     if (option?.option_scope === "structural") structuralByProject.set((row as any).project_id, (structuralByProject.get((row as any).project_id) ?? 0) + Number((row as any).price_cents_snapshot ?? 0))
   }
-  return availableLots.map((lot: any) => ({
+  const mapped = availableLots.map((lot: any) => ({
     lotId: lot.id,
     lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number,
     communityId: lot.community_id,
@@ -280,26 +282,77 @@ export async function listSpecInventory(opts: {
     isSpec: Boolean(lot.project_id),
     status: lot.status,
     startedAt: lot.project?.start_date ?? null,
-    ...specInventoryAge(lot.project),
+    ...specInventoryAge(lot.project, completedOnByProject.get(lot.project_id)),
     askingPriceCents: Number(lot.asking_price_override_cents ?? ((availability ?? []).find((row: any) => row.community_id === lot.community_id && row.house_plan_id === lot.house_plan_id && (row.elevation_id ?? null) === (lot.house_plan_elevation_id ?? null))?.base_price_cents ?? 0) + Number(lot.premium_cents ?? 0) + (structuralByProject.get(lot.project_id) ?? 0)),
     premiumCents: Number(lot.premium_cents ?? 0),
   }))
+  return { lots: mapped, truncated: (count ?? 0) > limit }
 }
 
-/** Sellable lots for the hold flow: owned/developed/assigned/started, no live reservation, not sold. */
-export async function listSellableLots(communityId: string, orgId?: string) {
+/**
+ * Reprice one standing spec. A sales manager moves a stale house's price against
+ * what it last asked, with a reason, and the move is the evidence: the audit
+ * row carries the old and new price, and the home's own metadata keeps the last
+ * move so the next one is made against it. Nothing here touches the agreement,
+ * budget or Books baselines — margin history is read from those, never from the
+ * asking price. A home with a live reservation or an active agreement is sold
+ * stock; its price is the agreement's.
+ */
+export async function setSpecAskingPrice(input: unknown, orgId?: string) {
+  const parsed = specAskingPriceSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const { data: lot, error } = await context.supabase.from("lots")
+    .select("id, community_id, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, metadata, updated_at")
+    .eq("org_id", context.orgId).eq("id", parsed.lotId).maybeSingle()
+  if (error || !lot) throw new Error("Lot not found")
+  await assertCommunityInSalesScope(context, lot.community_id)
+  if (!lot.project_id) throw new Error("Only a home that has been started can carry its own asking price.")
+  const [reservations, agreements, current] = await Promise.all([
+    context.supabase.from("lot_reservations").select("id").eq("org_id", context.orgId).eq("lot_id", lot.id).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(1),
+    context.supabase.from("contracts").select("id").eq("org_id", context.orgId).eq("project_id", lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"]).limit(1),
+    deriveLotAskingPrice(context.supabase, context.orgId, lot),
+  ])
+  if (reservations.error || agreements.error) throw new Error("The home's sale status could not be verified. No price was changed.")
+  if ((reservations.data ?? []).length || (agreements.data ?? []).length) throw new Error("This home is reserved or under agreement; its price is set by the agreement.")
+  if (current !== parsed.expectedAskingPriceCents) throw new Error("The asking price changed since you opened it. Review the current price and try again.")
+  const previousOverride = lot.asking_price_override_cents == null ? null : Number(lot.asking_price_override_cents)
+  const metadata = {
+    ...(lot.metadata ?? {}),
+    last_price_change: { at: new Date().toISOString(), by: context.userId, previous_asking_price_cents: current, reason: parsed.reason },
+  }
+  const { data: updated, error: updateError } = await context.supabase.from("lots")
+    .update({ asking_price_override_cents: parsed.askingPriceCents, metadata })
+    .eq("org_id", context.orgId).eq("id", lot.id).eq("updated_at", lot.updated_at)
+    .select("id, asking_price_override_cents").maybeSingle()
+  if (updateError) throw new Error(`Failed to change the asking price: ${updateError.message}`)
+  if (!updated) throw new Error("The home changed while you were repricing it. Review it and try again.")
+  const nextAskingPriceCents = parsed.askingPriceCents ?? await deriveLotAskingPrice(context.supabase, context.orgId, { ...lot, asking_price_override_cents: null })
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "spec_home.repriced", entityType: "lot", entityId: lot.id, payload: { community_id: lot.community_id, project_id: lot.project_id, previous_asking_price_cents: current, asking_price_cents: nextAskingPriceCents, reason: parsed.reason } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: lot.id, before: { asking_price_override_cents: previousOverride, asking_price_cents: current }, after: { asking_price_override_cents: parsed.askingPriceCents, asking_price_cents: nextAskingPriceCents, reason: parsed.reason } }),
+  ])
+  return { lotId: lot.id, askingPriceCents: nextAskingPriceCents }
+}
+
+const SELLABLE_LOT_PICKER_LIMIT = 500
+
+/** Sellable lots for the hold flow (`truncated` when the community has more than the picker shows): owned/developed/assigned/started, no live reservation, not sold. */
+export async function listSellableLots(communityId: string, search?: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
   await assertCommunityInSalesScope(context, communityId)
-  const { data: lots, error } = await context.supabase
+  let lotQuery = context.supabase
     .from("lots")
-    .select("id, lot_number, status, premium_cents, project_id, plan:house_plans(name)")
+    .select("id, lot_number, status, premium_cents, project_id, plan:house_plans(name)", { count: "exact" })
     .eq("org_id", context.orgId)
     .eq("community_id", communityId)
     .in("status", SELLABLE_LOT_STATUSES)
-    .order("lot_number")
-    .limit(500)
+  const term = search?.trim()
+  if (term) lotQuery = lotQuery.ilike("lot_number", `%${term.replace(/[\\%_,()]/g, "")}%`)
+  const { data: lots, error, count } = await lotQuery.order("lot_number").order("id").limit(SELLABLE_LOT_PICKER_LIMIT)
   if (error) throw new Error(`Failed to list lots: ${error.message}`)
+  const truncated = (count ?? 0) > SELLABLE_LOT_PICKER_LIMIT
   const lotIds = (lots ?? []).map((lot: any) => lot.id)
   const projectIds = (lots ?? []).map((lot: any) => lot.project_id).filter(Boolean)
   const [{ data: reservations }, { data: agreements }] = await Promise.all([
@@ -308,7 +361,7 @@ export async function listSellableLots(communityId: string, orgId?: string) {
   ])
   const reserved = new Set((reservations ?? []).map((row: any) => row.lot_id))
   const sold = new Set((agreements ?? []).map((row: any) => row.project_id))
-  return (lots ?? [])
+  const options = (lots ?? [])
     .filter((lot: any) => !reserved.has(lot.id) && !(lot.project_id && sold.has(lot.project_id)))
     .map((lot: any) => ({
       id: lot.id as string,
@@ -318,6 +371,7 @@ export async function listSellableLots(communityId: string, orgId?: string) {
       isSpec: Boolean(lot.project_id),
       planLabel: ((Array.isArray(lot.plan) ? lot.plan[0]?.name : lot.plan?.name) ?? null) as string | null,
     }))
+  return { lots: options, truncated }
 }
 
 /**
@@ -471,11 +525,17 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
   const { reservation, homeSource } = await readReservationConversionSource(parsed, context)
+  // Claim the hold before anything is built. The write is a no-op on the row's
+  // values but moves its version, so of two conversions racing on one hold only
+  // the first gets past here; the loser fails before it has created a home or an
+  // invoice, instead of leaving them behind.
+  const claim = await context.supabase.from("lot_reservations").update({ status: "hold" }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", reservation.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("updated_at").maybeSingle()
+  if (claim.error || !claim.data) throw new Error("This hold was already converted, released or changed. Nothing was created; review the buyer file.")
   let projectId = reservation.lot.project_id
   if (!projectId) {
     const project = await createProject({ input: { name: parsed.projectName ?? `Lot ${reservation.lot.lot_number}`, property_type: "production", status: "planning", client_id: reservation.buyer_contact_id, prospect_id: reservation.prospect_id ?? null }, orgId: context.orgId, context, authorizationPermission: "sales.manage" })
     projectId = project.id
-    const linked = await context.supabase.from("lots").update({ project_id: projectId, status: "assigned" }).eq("org_id", context.orgId).eq("id", reservation.lot_id).is("project_id", null).eq("updated_at", reservation.lot.updated_at).select("id").maybeSingle()
+    const linked = await context.supabase.from("lots").update({ project_id: projectId, status: reservation.lot.status === "developed" ? "assigned" : reservation.lot.status }).eq("org_id", context.orgId).eq("id", reservation.lot_id).is("project_id", null).eq("updated_at", reservation.lot.updated_at).select("id").maybeSingle()
     if (linked.error || !linked.data) throw new Error("The home was created, but its lot link could not be confirmed. Review the home and lot before retrying.")
   } else {
     if (!homeSource) throw new Error("The held home source is unavailable.")
@@ -494,7 +554,7 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
     }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
     invoiceId = invoice.id
   }
-  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", reservation.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").maybeSingle()
+  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", claim.data.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").maybeSingle()
   if (error || !data) throw new Error(`Reservation completion could not be confirmed. Inspect the home and deposit invoice before retrying: ${error?.message ?? "The hold changed"}`)
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reserved", entityType: "lot_reservation", entityId: data.id, payload: { project_id: projectId, deposit_invoice_id: invoiceId } })
   return reservationDto(data)

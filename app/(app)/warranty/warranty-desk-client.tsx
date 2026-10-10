@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import type {
@@ -32,7 +33,7 @@ import {
   findOriginatingCommitmentsAction, generateWarrantyCourtesyInspectionsAction, getWarrantyRequestCostBasisAction,
   issueWarrantyBackchargeAction, resolveWarrantyBackchargeAction, scheduleWarrantyVisitAction,
   verifyWarrantyVisitAction,
-  rejectWarrantyVisitCompletionAction,
+  rejectWarrantyVisitCompletionAction, searchWarrantyCompaniesAction,
 } from "./actions"
 
 type DeskRequest = WarrantyRequest & { project_name?: string | null; community_name?: string | null }
@@ -87,7 +88,7 @@ function draftTotalCents(rows: CostBasisDraft[]) {
 export function WarrantyDeskClient({
   initialTab = "queue", analyticsAvailable = true, dispatchWeekStart, initialSearch = "", initialSla = "all",
   requests: initialRequests, total, visits, pendingVerification: initialPendingVerification,
-  backcharges, defects, costs, technicians, companies, canReviewAccounting = false,
+  backcharges, defects, costs, technicians, canReviewAccounting = false,
 }: {
   dispatchWeekStart: string
   initialSearch?: string
@@ -103,7 +104,6 @@ export function WarrantyDeskClient({
   defects: WarrantyDefectAnalysisRow[]
   costs: WarrantyCostSummaryRow[]
   technicians: Array<{ id: string; name: string }>
-  companies: Array<{ id: string; name: string }>
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -122,13 +122,15 @@ export function WarrantyDeskClient({
 
   const [assigneeKind, setAssigneeKind] = useState<"tech" | "trade">("tech")
   const [assigneeId, setAssigneeId] = useState("")
+  const [assigneeCompany, setAssigneeCompany] = useState<SearchPickerItem | null>(null)
   const [windowStart, setWindowStart] = useState("")
   const [windowEnd, setWindowEnd] = useState("")
 
   const [commitments, setCommitments] = useState<RankedOriginatingCommitment[]>([])
   const [commitmentsLoaded, setCommitmentsLoaded] = useState(false)
   const [commitmentId, setCommitmentId] = useState("")
-  const [backchargeCompanyId, setBackchargeCompanyId] = useState("")
+  const [backchargeCompany, setBackchargeCompany] = useState<SearchPickerItem | null>(null)
+  const backchargeCompanyId = backchargeCompany?.id ?? ""
   const [backchargeReason, setBackchargeReason] = useState("")
   const [costBasis, setCostBasis] = useState<CostBasisDraft[]>([{ label: "", amount: "" }])
   const [confirmNoApHistory, setConfirmNoApHistory] = useState(false)
@@ -149,9 +151,9 @@ export function WarrantyDeskClient({
   const openSheet = useCallback((request: DeskRequest) => {
     setSelected(request)
     setAcknowledgeChannel("phone"); setAcknowledgeNote("")
-    setAssigneeKind("tech"); setAssigneeId(""); setWindowStart(""); setWindowEnd("")
+    setAssigneeKind("tech"); setAssigneeId(""); setAssigneeCompany(null); setWindowStart(""); setWindowEnd("")
     setCommitments([]); setCommitmentsLoaded(false); setCommitmentId("")
-    setBackchargeCompanyId(request.assigned_company_id ?? "")
+    setBackchargeCompany(request.assigned_company_id ? { id: request.assigned_company_id, name: request.assigned_company_name ?? "Assigned trade", detail: "" } : null)
     setBackchargeReason(""); setConfirmNoApHistory(false)
     setCostBasis([{ label: "", amount: "" }])
     startTransition(async () => {
@@ -602,17 +604,21 @@ export function WarrantyDeskClient({
                 <h3 className="mb-2 text-sm font-semibold">Schedule service visit</h3>
                 <div className="space-y-3 border border-border p-3">
                   <div className="grid grid-cols-2 gap-2">
-                    <Select value={assigneeKind} onValueChange={(value) => { setAssigneeKind(value === "trade" ? "trade" : "tech"); setAssigneeId("") }}>
+                    <Select value={assigneeKind} onValueChange={(value) => { setAssigneeKind(value === "trade" ? "trade" : "tech"); setAssigneeId(""); setAssigneeCompany(null) }}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="tech">In-house tech</SelectItem>
                         <SelectItem value="trade">Trade</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Select value={assigneeId} onValueChange={setAssigneeId}>
-                      <SelectTrigger><SelectValue placeholder="Choose assignee" /></SelectTrigger>
-                      <SelectContent>{(assigneeKind === "tech" ? technicians : companies).map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-                    </Select>
+                    {assigneeKind === "tech" ? (
+                      <Select value={assigneeId} onValueChange={setAssigneeId}>
+                        <SelectTrigger><SelectValue placeholder="Choose assignee" /></SelectTrigger>
+                        <SelectContent>{technicians.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    ) : (
+                      <SearchPicker label="Trade" value={assigneeCompany} onChange={(company) => { setAssigneeCompany(company); setAssigneeId(company?.id ?? "") }} search={searchWarrantyCompaniesAction} />
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-1.5">
@@ -669,7 +675,7 @@ export function WarrantyDeskClient({
                           <button
                             key={candidate.id}
                             type="button"
-                            onClick={() => { setCommitmentId(candidate.id); if (candidate.company_id) setBackchargeCompanyId(candidate.company_id) }}
+                            onClick={() => { setCommitmentId(candidate.id); if (candidate.company_id) setBackchargeCompany({ id: candidate.company_id, name: candidate.company_name ?? "Originating trade", detail: "" }) }}
                             className={cn(
                               "flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-muted/40",
                               commitmentId === candidate.id ? "bg-muted" : "",
@@ -687,11 +693,7 @@ export function WarrantyDeskClient({
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label>Responsible trade</Label>
-                    <Select value={backchargeCompanyId} onValueChange={setBackchargeCompanyId}>
-                      <SelectTrigger><SelectValue placeholder="Responsible trade" /></SelectTrigger>
-                      <SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent>
-                    </Select>
+                    <SearchPicker label="Responsible trade" noun="trade" value={backchargeCompany} onChange={setBackchargeCompany} search={searchWarrantyCompaniesAction} />
                   </div>
 
                   <div className="space-y-2">

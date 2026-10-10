@@ -55,6 +55,7 @@ async function release(t) {
     community_id: community.id,
     project_id: home.id,
     lot_number: "7",
+    status: "developed",
     house_plan_version_id: version.id,
   })
   const pkg = await insert(db, "start_packages", {

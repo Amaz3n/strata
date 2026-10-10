@@ -28,6 +28,7 @@ import {
   createLots,
   deleteLot,
   detachProjectFromLot,
+  recordLotDeliveryException,
   setLotPlatPositions,
   setLotStatus,
   updateLot,
@@ -46,6 +47,7 @@ import {
   bulkLotPatchSchema,
   createLotsInputSchema,
   lotRangeSchema,
+  lotDeliveryExceptionSchema,
   lotStatusSchema,
   lotStatusValueSchema,
   lotUpdateSchema,
@@ -154,6 +156,10 @@ export async function listMatchingLotIdsAction(communityId: string, input: unkno
 
 export async function bulkUpdateLotsAction(communityId: string, input: unknown) {
   return run(() => bulkUpdateLots(z.string().uuid().parse(communityId), bulkLotPatchSchema.parse(input)), [`/communities/${communityId}`])
+}
+
+export async function recordLotDeliveryExceptionAction(id: string, communityId: string, input: unknown) {
+  return run(() => recordLotDeliveryException(z.string().uuid().parse(id), lotDeliveryExceptionSchema.parse(input)), [`/communities/${communityId}`])
 }
 
 export async function setLotStatusAction(id: string, communityId: string, input: unknown) {

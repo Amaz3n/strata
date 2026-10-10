@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { instantiatePlanForProject, listPlanInstantiationOptionsForProject } from "@/lib/services/plan-instantiation"
+import { instantiatePlanForProject, listPlanInstantiationOptionsForProject, recordPlanOfferingOverride } from "@/lib/services/plan-instantiation"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -31,6 +31,14 @@ export async function instantiatePlanDevAction(input: unknown) {
     }).parse(input)
     const result = await instantiatePlanForProject(parsed)
     revalidatePath(`/projects/${parsed.projectId}`)
+    return result
+  })
+}
+
+export async function recordPlanOfferingOverrideAction(projectId: string, input: unknown) {
+  return run(async () => {
+    const result = await recordPlanOfferingOverride(input)
+    revalidatePath(`/projects/${z.string().uuid().parse(projectId)}`)
     return result
   })
 }

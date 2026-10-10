@@ -14,6 +14,12 @@ import { useToast } from "@/hooks/use-toast"
 import { unwrapAction } from "@/lib/action-result"
 import { formatMoneyCents } from "@/lib/utils"
 
+interface SellableLotsPage {
+  lots: SellableLotOption[]
+  /** More sellable lots matched than the picker returns. */
+  truncated: boolean
+}
+
 interface SellableLotOption {
   id: string
   lotNumber: string
@@ -66,6 +72,9 @@ export function LotHoldForm({ buyer, communities, lot = null, cancelLabel = "Can
   const [communityId, setCommunityId] = useState(lot?.communityId ?? buyer?.communityId ?? communities[0]?.id ?? "")
   const [lots, setLots] = useState<SellableLotOption[]>([])
   const [lotsLoading, setLotsLoading] = useState(false)
+  const [lotsTruncated, setLotsTruncated] = useState(false)
+  const [lotSearchInput, setLotSearchInput] = useState("")
+  const [lotSearch, setLotSearch] = useState("")
   const [lotId, setLotId] = useState(lot?.id ?? "")
   const [expiresDate, setExpiresDate] = useState(() =>
     new Date(Date.now() + DEFAULT_HOLD_DAYS * 86_400_000).toISOString().slice(0, 10),
@@ -73,16 +82,29 @@ export function LotHoldForm({ buyer, communities, lot = null, cancelLabel = "Can
   const [notes, setNotes] = useState("")
 
   useEffect(() => {
+    const timer = setTimeout(() => setLotSearch(lotSearchInput.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [lotSearchInput])
+
+  useEffect(() => {
+    setLotSearchInput("")
+    setLotSearch("")
+  }, [communityId])
+
+  useEffect(() => {
     if (!communityId || lot) {
       setLots([])
+      setLotsTruncated(false)
       return
     }
     let cancelled = false
     setLotsLoading(true)
-    listSellableLotsAction(communityId)
+    listSellableLotsAction(communityId, lotSearch || undefined)
       .then((result) => {
         if (cancelled) return
-        setLots(unwrapAction(result))
+        const page: SellableLotsPage = unwrapAction(result)
+        setLots(page.lots)
+        setLotsTruncated(page.truncated)
       })
       .catch((error: unknown) => {
         if (cancelled) return
@@ -95,7 +117,7 @@ export function LotHoldForm({ buyer, communities, lot = null, cancelLabel = "Can
     return () => {
       cancelled = true
     }
-  }, [communityId, lot, toast])
+  }, [communityId, lot, lotSearch, toast])
 
   const submit = () => {
     if (!buyer || !lotId || !expiresDate) return
@@ -164,6 +186,15 @@ export function LotHoldForm({ buyer, communities, lot = null, cancelLabel = "Can
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="hold-lot">Lot</Label>
+              {lotsTruncated || lotSearchInput ? (
+                <Input
+                  value={lotSearchInput}
+                  onChange={(event) => setLotSearchInput(event.target.value)}
+                  placeholder="Search by lot number"
+                  aria-label="Search lots"
+                  className="rounded-none"
+                />
+              ) : null}
               <Select value={lotId} onValueChange={setLotId} disabled={lotsLoading || lots.length === 0}>
                 <SelectTrigger id="hold-lot" className="w-full rounded-none">
                   <SelectValue
@@ -181,6 +212,11 @@ export function LotHoldForm({ buyer, communities, lot = null, cancelLabel = "Can
                   ))}
                 </SelectContent>
               </Select>
+              {lotsTruncated ? (
+                <p className="text-xs text-warning">
+                  Showing the first {lots.length} matching lots. Search by lot number to find others.
+                </p>
+              ) : null}
             </div>
           </>
         )}

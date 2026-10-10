@@ -63,6 +63,7 @@ test('actual upsert service gates atomic publication by current permission, work
   if(name==='zod')return require('zod')
   if(name==='@/lib/services/context')return {requireOrgContext:async()=>current}
   if(name==='@/lib/services/permissions')return {hasPermission:async()=>true,requirePermission:async permission=>{permissions.push(permission);if(denied)throw new Error('Denied')}}
+  if(name==='@/lib/supabase/server')return {createServiceSupabaseClient:()=>({rpc(){legacy++;throw new Error('Legacy path reached')}})}
   if(name==='@/lib/services/catalog-package-publication')return {publishCatalogPackage:async(ctx,input)=>{assert.equal(ctx,current);return h.publish(input)}}
   return {}
  }})

@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { toast } from "sonner"
 
-import { upsertAppointmentAction } from "@/app/(app)/design-studio/actions"
+import { searchBookableHomesAction, upsertAppointmentAction } from "@/app/(app)/design-studio/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,20 +16,48 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Homes under contract with an open selection group — not every project. */
-  homes: Array<{ projectId: string; label: string; communityId: string | null }>
   communityId?: string
   onBooked: () => void
 }
 
-export function BookAppointmentDialog({ open, onOpenChange, homes, communityId, onBooked }: Props) {
+type BookableHome = { projectId: string; label: string; communityId: string | null }
+
+/** Homes under contract with an open selection group, searched by lot number on the server. */
+export function BookAppointmentDialog({ open, onOpenChange, communityId, onBooked }: Props) {
   const [projectId, setProjectId] = useState("")
   const [pending, startTransition] = useTransition()
+  const [homes, setHomes] = useState<BookableHome[] | null>(null)
+  const [truncated, setTruncated] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      searchBookableHomesAction({ communityId, search: search.trim() || undefined })
+        .then((result) => {
+          if (cancelled) return
+          const page = unwrapAction(result)
+          setHomes(page.homes)
+          setTruncated(page.truncated)
+          setLoadError(null)
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) setLoadError(error instanceof Error ? error.message : "Could not load homes")
+        })
+    }, search ? 250 : 0)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [open, communityId, search])
 
   function book(formData: FormData) {
     if (!projectId) {
@@ -42,7 +70,7 @@ export function BookAppointmentDialog({ open, onOpenChange, homes, communityId, 
       toast.error("Choose a date and time")
       return
     }
-    const home = homes.find((candidate) => candidate.projectId === projectId)
+    const home = homes?.find((candidate) => candidate.projectId === projectId)
     startTransition(async () => {
       try {
         unwrapAction(
@@ -81,9 +109,20 @@ export function BookAppointmentDialog({ open, onOpenChange, homes, communityId, 
           <div className="space-y-3 py-4">
             <div className="space-y-1.5">
               <Label htmlFor="appointment-home">Home</Label>
-              {homes.length === 0 ? (
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search by lot number"
+                aria-label="Search homes by lot number"
+                className="rounded-none"
+              />
+              {loadError ? (
+                <p role="alert" className="text-sm text-destructive">{loadError}</p>
+              ) : homes === null ? (
+                <Skeleton className="h-9 w-full rounded-none" />
+              ) : homes.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No home is waiting on selections right now.
+                  {search.trim() ? "No home with that lot number is waiting on selections." : "No home is waiting on selections right now."}
                 </p>
               ) : (
                 <Select value={projectId} onValueChange={setProjectId}>
@@ -99,6 +138,9 @@ export function BookAppointmentDialog({ open, onOpenChange, homes, communityId, 
                   </SelectContent>
                 </Select>
               )}
+              {truncated && homes ? (
+                <p className="text-xs text-warning">Showing the first {homes.length} homes. Search by lot number to find others.</p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="appointment-time">Date and time</Label>
@@ -125,7 +167,7 @@ export function BookAppointmentDialog({ open, onOpenChange, homes, communityId, 
             </div>
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={pending || homes.length === 0} className="rounded-none">
+            <Button type="submit" disabled={pending || !projectId} className="rounded-none">
               Book appointment
             </Button>
           </DialogFooter>

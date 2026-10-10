@@ -327,15 +327,20 @@ export async function replaceBudgetLines({
 
 /**
  * Freezes the latest budget's current line amounts as its baseline ("Original").
- * Re-running overwrites the baseline (re-baseline). This does not lock editing —
- * the budget stays a living document; only the Original comparison point freezes.
+ * The baseline is write-once: a house's original margin is the number every
+ * later variance is measured against, so it can never be rewritten. A revised
+ * baseline is a new budget version, which starts without one. This does not
+ * lock editing — the budget stays a living document; only the Original
+ * comparison point freezes.
  */
+const BASELINE_ALREADY_LOCKED = "This budget's baseline is already locked. Create a new budget version to set a revised baseline."
+
 export async function lockBudgetBaseline(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data: budget, error: budgetError } = await supabase
     .from("budgets")
-    .select("id, project_id, lines:budget_lines(id, cost_code_id, description, amount_cents)")
+    .select("id, project_id, baseline_locked_at, lines:budget_lines(id, cost_code_id, description, amount_cents)")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .order("version", { ascending: false })
@@ -344,6 +349,7 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
 
   if (budgetError) throw new Error(`Failed to load budget: ${budgetError.message}`)
   if (!budget) throw new Error("Create a budget before locking a baseline")
+  if (budget.baseline_locked_at) throw new Error(BASELINE_ALREADY_LOCKED)
 
   await requireBudgetAuth({
     permission: "budget.write",
@@ -362,7 +368,7 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
     amount_cents: line.amount_cents ?? 0,
   }))
 
-  const { error: updateError } = await supabase
+  const { data: locked, error: updateError } = await supabase
     .from("budgets")
     .update({
       baseline_lines: baselineLines,
@@ -371,9 +377,21 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", budget.id)
+    .is("baseline_locked_at", null)
+    .select("id")
+    .maybeSingle()
 
   if (updateError) throw new Error(`Failed to lock baseline: ${updateError.message}`)
+  if (!locked) throw new Error(BASELINE_ALREADY_LOCKED)
 
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "budget",
+    entityId: budget.id as string,
+    after: { baseline_locked: true, line_count: baselineLines.length },
+  })
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "budget_baseline_locked",

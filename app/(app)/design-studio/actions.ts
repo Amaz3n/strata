@@ -32,6 +32,8 @@ import { recomputeCommunityCutoffs, overrideGroupCutoff, revertCutoffToSchedule 
 import { createPostCutoffSelectionChangeOrder } from "@/lib/services/selection-change-orders"
 import { confirmSelectionGroup, selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
 import { requireOrgContext } from "@/lib/services/context"
+import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import { listBookableHomes } from "@/lib/services/design-studio"
 import { requirePermission } from "@/lib/services/permissions"
 import { discoverCatalogPackageMembers } from "@/lib/services/catalog-package-members"
 import { listArchivedCatalogPackages, listPendingCatalogPublications, listCatalogPublicationHistory, recoverCatalogPublicationRequest } from "@/lib/services/catalog-publication-history"
@@ -98,6 +100,22 @@ export async function upsertSelectionGroupAction(input: unknown) {
 
 export async function upsertAppointmentAction(input: unknown) {
   return run(() => upsertAppointment(input as Parameters<typeof upsertAppointment>[0]))
+}
+
+const bookableHomesSchema = z.object({
+  communityId: z.string().uuid().optional(),
+  search: z.string().max(60).optional(),
+})
+
+/** Read-only, server-searched picker for the booking dialog; nothing is revalidated. */
+export async function searchBookableHomesAction(input: unknown): Promise<ActionResult<Awaited<ReturnType<typeof listBookableHomes>>>> {
+  try {
+    const parsed = bookableHomesSchema.parse(input)
+    const ambient = await getAmbientDeskContext()
+    return { success: true, data: await listBookableHomes({ ...parsed, divisionId: ambient.divisionId }) }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024

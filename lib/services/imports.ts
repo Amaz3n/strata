@@ -1,6 +1,7 @@
 import "server-only"
 
 import { z } from "zod"
+import { storeLotDimensions } from "@/lib/land/lot-dimensions"
 import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { importRowStatusSchema } from "@/lib/validation/import-navigation"
 
@@ -687,17 +688,29 @@ async function commitCommunitiesLots(rows: ImportRowRecord[], context: ResolvedI
       }
       takedownId = takedown.id
     }
-    let lotQuery = context.supabase.from("lots").select("id").eq("org_id", context.orgId).eq("community_id", community.id).eq("lot_number", row.parsed.lot_number)
+    let lotQuery = context.supabase.from("lots").select("id, dimensions").eq("org_id", context.orgId).eq("community_id", community.id).eq("lot_number", row.parsed.lot_number)
     lotQuery = row.parsed.block ? lotQuery.eq("block", row.parsed.block) : lotQuery.is("block", null)
     const { data: existingLot } = await lotQuery.maybeSingle()
     if (existingLot && !updateExisting) { results.set(row.id, { id: existingLot.id, action: "skipped_existing" }); continue }
-    const payload = { org_id: context.orgId, community_id: community.id, community_phase_id: phaseId, division_id: community.division_id, lot_number: row.parsed.lot_number, block: row.parsed.block, status: row.parsed.status, address: row.parsed.address, dimensions: { width_ft: row.parsed.width_ft, depth_ft: row.parsed.depth_ft, acreage: row.parsed.acreage, city: row.parsed.city, state: row.parsed.state, postal_code: row.parsed.postal_code }, swing: row.parsed.swing ?? "either", premium_cents: row.parsed.premium_cents ?? 0, cost_basis_cents: row.parsed.cost_basis_cents, takedown_id: takedownId, house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id, metadata: { imported: true } }
+    const payload = { org_id: context.orgId, community_id: community.id, community_phase_id: phaseId, division_id: community.division_id, lot_number: row.parsed.lot_number, block: row.parsed.block, status: row.parsed.status, address: row.parsed.address, dimensions: importedLotDimensions(existingLot?.dimensions ?? null, row.parsed), swing: row.parsed.swing ?? "either", premium_cents: row.parsed.premium_cents ?? 0, cost_basis_cents: row.parsed.cost_basis_cents, takedown_id: takedownId, house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id, metadata: { imported: true } }
     const query = existingLot ? context.supabase.from("lots").update(payload).eq("org_id", context.orgId).eq("id", existingLot.id) : context.supabase.from("lots").insert(payload)
     const { data, error } = await query.select("id").single()
     if (error || !data) throw new Error(`Failed to commit lot ${row.parsed.lot_number}: ${error?.message}`)
     results.set(row.id, { id: data.id, action: existingLot ? "updated" : "created" })
   }
   return results
+}
+
+/** A row fills the fields it supplies; a blank cell never erases what the lot already has. */
+function importedLotDimensions(existing: Record<string, unknown> | null, parsed: ImportParsedRow) {
+  const measure = (value: ImportParsedRow[string] | undefined) => (typeof value === "number" ? value : undefined)
+  const stored = storeLotDimensions(
+    existing,
+    { widthFt: measure(parsed.width_ft), depthFt: measure(parsed.depth_ft), acreage: measure(parsed.acreage) },
+    "fill",
+  )
+  for (const key of ["city", "state", "postal_code"]) if (parsed[key] != null && parsed[key] !== "") stored[key] = parsed[key]
+  return stored
 }
 
 async function commitTeam(rows: ImportRowRecord[], context: ResolvedImportContext) {

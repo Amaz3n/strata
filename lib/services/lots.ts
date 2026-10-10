@@ -6,9 +6,13 @@ import {
   assertLotStatusTransition,
   ATTACHED_LOT_STATUS,
   DETACHED_LOT_STATUS,
+  lotDeliveryRefusal,
+  MIN_DELIVERY_EXCEPTION_REASON_LENGTH,
   type LotStatus,
 } from "@/lib/land/lot-lifecycle"
+import { readLotDimensions, storeLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
 import { readAllRows } from "@/lib/land/paging"
+import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { resolveDivisionScope } from "@/lib/land/scope"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
@@ -19,6 +23,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import {
   bulkLotPatchSchema,
   createLotsInputSchema,
+  lotDeliveryExceptionSchema,
   lotStatusSchema,
   lotUpdateSchema,
   type LotCreateInput,
@@ -27,12 +32,7 @@ import {
 
 export type { LotStatus } from "@/lib/land/lot-lifecycle"
 
-export interface LotDimensions {
-  widthFt?: number
-  depthFt?: number
-  acreage?: number
-  irregular?: boolean
-}
+export type { LotDimensions } from "@/lib/land/lot-dimensions"
 
 export interface LotDTO {
   id: string
@@ -94,19 +94,6 @@ function relationName(relation: RelationName | undefined) {
   return relation?.name ?? null
 }
 
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
-export function mapDimensions(value: Record<string, unknown> | null): LotDimensions {
-  return {
-    widthFt: optionalNumber(value?.width_ft ?? value?.widthFt),
-    depthFt: optionalNumber(value?.depth_ft ?? value?.depthFt),
-    acreage: optionalNumber(value?.acreage),
-    irregular: typeof value?.irregular === "boolean" ? value.irregular : undefined,
-  }
-}
-
 function mapLot(row: LotRow): LotDTO {
   return {
     id: row.id,
@@ -118,7 +105,7 @@ function mapLot(row: LotRow): LotDTO {
     block: row.block,
     status: row.status,
     address: row.address,
-    dimensions: mapDimensions(row.dimensions),
+    dimensions: readLotDimensions(row.dimensions),
     swing: row.swing,
     premiumCents: Number(row.premium_cents),
     costBasisCents: row.cost_basis_cents == null ? null : Number(row.cost_basis_cents),
@@ -142,13 +129,7 @@ function dimensionsPayload(
   existing?: Record<string, unknown> | null,
 ) {
   if (dimensions === undefined) return undefined
-  return {
-    ...(existing ?? {}),
-    width_ft: dimensions.widthFt,
-    depth_ft: dimensions.depthFt,
-    acreage: dimensions.acreage,
-    irregular: dimensions.irregular,
-  }
+  return storeLotDimensions(existing, dimensions, "replace")
 }
 
 function lotPayload(input: Partial<LotUpdateInput>, existingDimensions?: Record<string, unknown> | null) {
@@ -490,8 +471,19 @@ export async function attachProjectToLot(
   await requireCommunityScope(before.community_id, context)
   if (before.project_id && before.project_id !== projectId) throw new Error("This lot already has a project attached.")
   assertLotAttachTransition({ from: before.status, force })
-  const { data: project, error: projectError } = await context.supabase.from("projects").select("id, org_id, name, property_type, division_id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
+  const { data: project, error: projectError } = await context.supabase.from("projects").select("id, org_id, name, property_type, division_id, client_id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
   if (projectError || !project) throw new Error("Project not found")
+  const [delivery, reservations] = await Promise.all([
+    context.supabase.from("lots").select("delivered_at, metadata").eq("org_id", context.orgId).eq("id", lotId).maybeSingle(),
+    context.supabase.from("lot_reservations").select("buyer_contact_id, co_buyer_contact_id").eq("org_id", context.orgId).eq("lot_id", lotId).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(10),
+  ])
+  if (delivery.error || !delivery.data || reservations.error) throw new Error("The lot's delivery and reservation status could not be verified. No home was attached.")
+  const undelivered = lotDeliveryRefusal({ deliveredAt: delivery.data.delivered_at, metadata: delivery.data.metadata })
+  if (undelivered) throw new Error(undelivered)
+  // A live hold or reservation belongs to its buyer. Only that buyer's own
+  // home may be attached; anyone else's would sell the lot twice.
+  const heldForOthers = (reservations.data ?? []).some((reservation) => !project.client_id || ![reservation.buyer_contact_id, reservation.co_buyer_contact_id].includes(project.client_id))
+  if (heldForOthers) throw new Error("This lot has a live hold or reservation for another buyer. Release it before attaching a different home.")
   if (project.property_type && project.property_type !== "production") throw new Error("Only production-posture projects can be attached to lots.")
   const { data: existingLink, error: linkError } = await context.supabase.from("lots").select("id").eq("org_id", context.orgId).eq("project_id", projectId).neq("id", lotId).maybeSingle()
   if (linkError) throw new Error(`Failed to validate project link: ${linkError.message}`)
@@ -509,6 +501,32 @@ export async function attachProjectToLot(
   }
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_attached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, project_name: project.name, force } })
   return mapLot(data as LotRow)
+}
+
+/**
+ * Let a house start on a lot land development has not delivered. The exception
+ * takes the same authority as a forced status change, needs a reason, and
+ * stays on the lot as the evidence the start gate reads back.
+ */
+export async function recordLotDeliveryException(
+  lotId: string,
+  input: { reason: string },
+  orgId?: string,
+): Promise<void> {
+  const parsed = lotDeliveryExceptionSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await Promise.all([requirePermission("lot.write", context), requirePermission("community.write", context)])
+  const before = await getLotById(context.supabase, context.orgId, lotId)
+  await requireCommunityScope(before.community_id, context)
+  const { data: current, error } = await context.supabase.from("lots").select("metadata, updated_at").eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
+  if (error || !current) throw new Error("Lot not found")
+  const exception = { reason: parsed.reason, by: context.userId, at: new Date().toISOString() }
+  const { data, error: updateError } = await context.supabase.from("lots")
+    .update({ metadata: { ...(current.metadata ?? {}), delivery_exception: exception } })
+    .eq("org_id", context.orgId).eq("id", lotId).eq("updated_at", current.updated_at).select("id").maybeSingle()
+  if (updateError) throw new Error(`Failed to record the delivery exception: ${updateError.message}`)
+  if (!data) throw new Error("The lot changed while you were recording the exception. Review it and try again.")
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.delivery_exception_recorded", entityId: lotId, action: "update", before: { delivery_exception: current.metadata?.delivery_exception ?? null }, after: { delivery_exception: exception }, payload: { community_id: before.community_id, reason: parsed.reason } })
 }
 
 /**

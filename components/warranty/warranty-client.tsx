@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { Company, WarrantyRequest } from "@/lib/types"
+import type { WarrantyRequest } from "@/lib/types"
 import { unwrapAction } from "@/lib/action-result"
 import { downloadCsv } from "@/lib/csv"
-import { createWarrantyRequestAction, updateWarrantyRequestAction } from "@/app/(app)/warranty/actions"
+import { createWarrantyRequestAction, searchWarrantyCompaniesAction, updateWarrantyRequestAction } from "@/app/(app)/warranty/actions"
 import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
@@ -29,7 +30,6 @@ import { Textarea } from "@/components/ui/textarea"
 import { Calendar, FileText, Plus } from "@/components/icons"
 import { cn, formatLocalDate, parseLocalDate, isDateExpired } from "@/lib/utils"
 
-const NONE_COMPANY = "__none__"
 
 const statusLabels: Record<string, string> = {
   open: "Open",
@@ -74,7 +74,7 @@ type WarrantyFormState = {
   description: string
   priority: string
   status: string
-  assigned_company_id: string | null
+  assigned_company: SearchPickerItem | null
   scheduled_date: string
   resolution_note: string
 }
@@ -84,7 +84,7 @@ const emptyForm: WarrantyFormState = {
   description: "",
   priority: "normal",
   status: "open",
-  assigned_company_id: null,
+  assigned_company: null,
   scheduled_date: "",
   resolution_note: "",
 }
@@ -92,23 +92,19 @@ const emptyForm: WarrantyFormState = {
 export function WarrantyClient({
   projectId,
   requests,
-  companies,
 }: {
   projectId: string
   requests: WarrantyRequest[]
-  companies: Company[]
 }) {
-  return <WarrantyClientContent key={projectId} projectId={projectId} requests={requests} companies={companies} />
+  return <WarrantyClientContent key={projectId} projectId={projectId} requests={requests} />
 }
 
 function WarrantyClientContent({
   projectId,
   requests,
-  companies,
 }: {
   projectId: string
   requests: WarrantyRequest[]
-  companies: Company[]
 }) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<WarrantyRequest[]>(requests)
@@ -135,11 +131,6 @@ function WarrantyClientContent({
     })
   }, [items, search, statusFilter])
 
-  const companyName = useCallback(
-    (companyId?: string | null) => (companyId ? companies.find((c) => c.id === companyId)?.name ?? null : null),
-    [companies],
-  )
-
   const openCreate = () => {
     setEditing(null)
     setForm(emptyForm)
@@ -154,7 +145,7 @@ function WarrantyClientContent({
       description: item.description ?? "",
       priority: item.priority ?? "normal",
       status: item.status ?? "open",
-      assigned_company_id: item.assigned_company_id ?? null,
+      assigned_company: item.assigned_company_id ? { id: item.assigned_company_id, name: item.assigned_company_name ?? "Assigned trade", detail: "" } : null,
       scheduled_date: item.scheduled_date ?? "",
       resolution_note: item.resolution_note ?? "",
     })
@@ -230,7 +221,7 @@ function WarrantyClientContent({
               description: form.description.trim() || null,
               priority: form.priority,
               status: form.status,
-              assigned_company_id: form.assigned_company_id,
+              assigned_company_id: form.assigned_company?.id ?? null,
               scheduled_date: form.scheduled_date || null,
               resolution_note: form.resolution_note.trim() || null,
             }),
@@ -266,7 +257,7 @@ function WarrantyClientContent({
       status: statusLabels[item.status] ?? item.status,
       priority: priorityLabels[item.priority ?? "normal"],
       requested_by: item.requested_by_name ?? "",
-      assigned_to: companyName(item.assigned_company_id) ?? "",
+      assigned_to: item.assigned_company_name ?? "",
       scheduled: item.scheduled_date ? formatLocalDate(item.scheduled_date, "MMM d, yyyy") : "",
       created: format(new Date(item.created_at), "MMM d, yyyy"),
       closed: item.closed_at ? format(new Date(item.closed_at), "MMM d, yyyy") : "",
@@ -373,25 +364,7 @@ function WarrantyClientContent({
                   <Separator />
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium leading-none">Assign to sub/vendor</label>
-                      <Select
-                        value={form.assigned_company_id ?? NONE_COMPANY}
-                        onValueChange={(value) =>
-                          setForm((prev) => ({ ...prev, assigned_company_id: value === NONE_COMPANY ? null : value }))
-                        }
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Unassigned" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NONE_COMPANY}>Unassigned</SelectItem>
-                          {companies.map((company) => (
-                            <SelectItem key={company.id} value={company.id}>
-                              {company.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <SearchPicker label="Assign to sub/vendor" noun="companies" value={form.assigned_company} onChange={(company) => setForm((prev) => ({ ...prev, assigned_company: company }))} search={searchWarrantyCompaniesAction} />
                       <p className="text-xs text-muted-foreground">
                         Assigning emails the company&apos;s contacts with the service details.
                       </p>
@@ -562,7 +535,7 @@ function WarrantyClientContent({
                 {filtered.map((item) => {
                   const subtitleParts = [
                     statusLabels[item.status] ?? item.status,
-                    companyName(item.assigned_company_id) ?? "Unassigned",
+                    item.assigned_company_name ?? "Unassigned",
                     item.requested_by_name,
                   ].filter(Boolean) as string[]
                   return (
@@ -629,7 +602,7 @@ function WarrantyClientContent({
                     </TableCell>
                     <TableCell className="hidden md:table-cell text-center">
                       <span className="text-xs text-muted-foreground truncate block">
-                        {companyName(item.assigned_company_id) ?? "Unassigned"}
+                        {item.assigned_company_name ?? "Unassigned"}
                       </span>
                     </TableCell>
                     <TableCell className="hidden sm:table-cell text-center">

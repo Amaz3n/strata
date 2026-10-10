@@ -77,6 +77,7 @@ import { Building2 } from "@/components/icons"
 import { BillingManageSheets } from "./billing-manage-sheets"
 import { PayApplicationWorkspace } from "@/components/financials/pay-application-workspace"
 import { BillCostsWorkspace } from "./bill-costs-workspace"
+import { selectionAfterBulk, selectionStillVisible } from "@/lib/invoices/bulk-selection"
 import { InvoiceBottomBar, type InvoiceBulkActions } from "./invoice-bottom-bar"
 import { InvoiceComposer, prefetchInvoiceComposer, type InvoiceComposerTarget } from "./invoice-composer"
 import { InvoiceInspector } from "./invoice-inspector"
@@ -226,7 +227,7 @@ export function BillingBook({
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [bulkBusy, setBulkBusy] = useState<"send" | "remind" | "void" | "delete" | null>(null)
-  const [bulkConfirm, setBulkConfirm] = useState<"void" | "delete" | null>(null)
+  const [bulkConfirm, setBulkConfirm] = useState<"send" | "remind" | "void" | "delete" | null>(null)
   const [rowBusyId, setRowBusyId] = useState<string | null>(null)
   const [plannedBusyKey, setPlannedBusyKey] = useState<string | null>(null)
   const [destructiveBusy, setDestructiveBusy] = useState(false)
@@ -558,7 +559,15 @@ export function BillingBook({
     }
   }
 
-  const selectedInvoices = useMemo(() => allRows.filter((invoice) => selectedIds.includes(invoice.id)), [allRows, selectedIds])
+  // A bulk action only ever touches rows the user can see: collapsing a band or
+  // searching hides rows, and hidden rows leave the selection with them.
+  const selectedInvoices = useMemo(() => orderedInvoices.filter((invoice) => selectedIds.includes(invoice.id)), [orderedInvoices, selectedIds])
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const kept = selectionStillVisible(current, orderedInvoices.map((invoice) => invoice.id))
+      return kept.length === current.length ? current : kept
+    })
+  }, [orderedInvoices])
   const bulk = useMemo<InvoiceBulkActions>(
     () => ({
       sendable: selectedInvoices.filter((invoice) => nextActionFor(invoice).key === "issue").length,
@@ -583,18 +592,21 @@ export function BillingBook({
     setBulkBusy(key)
     let done = 0
     const failures: string[] = []
+    const failedIds = new Set<string>()
     for (const invoice of targets) {
       try {
         await act(invoice)
         done += 1
       } catch {
         failures.push(invoice.invoice_number ?? invoice.id)
+        failedIds.add(invoice.id)
       }
     }
     setBulkBusy(null)
     if (done > 0) toast.success(`${verb} ${done} invoice${done === 1 ? "" : "s"}`)
     if (failures.length > 0) toast.error(`${failures.length} could not be ${verb.toLowerCase()}`, { description: failures.join(", ") })
-    if (failures.length === 0) setSelectedIds([])
+    // What succeeded leaves the selection; only the rows that failed stay, so a retry cannot repeat finished work.
+    setSelectedIds((current) => selectionAfterBulk(current, failedIds))
     await refreshAll()
   }
 
@@ -634,7 +646,7 @@ export function BillingBook({
     )
 
   function handleExportCsv() {
-    const exportRows = selectedIds.length > 0 ? allRows.filter((row) => selectedIds.includes(row.id)) : allRows
+    const exportRows = selectedInvoices.length > 0 ? selectedInvoices : allRows
     if (exportRows.length === 0) return
     const escape = (value: string | number) => {
       // Neutralize spreadsheet formula injection (=, +, -, @ leads) before CSV quoting.
@@ -1168,15 +1180,15 @@ export function BillingBook({
         </aside>
       </div>
 
-      {selectedIds.length > 0 ? (
+      {selectedInvoices.length > 0 ? (
         <InvoiceBottomBar
-          selectedCount={selectedIds.length}
+          selectedCount={selectedInvoices.length}
           totalCents={selectedInvoices.reduce((sum, invoice) => sum + balanceCentsOf(invoice), 0)}
           actions={bulk}
           busy={bulkBusy}
           onDeselectAll={() => setSelectedIds([])}
-          onSend={() => void handleBulkSend()}
-          onRemind={() => void handleBulkReminders()}
+          onSend={() => setBulkConfirm("send")}
+          onRemind={() => setBulkConfirm("remind")}
           onVoid={() => setBulkConfirm("void")}
           onDelete={() => setBulkConfirm("delete")}
           onExportCsv={handleExportCsv}
@@ -1186,26 +1198,30 @@ export function BillingBook({
       <AlertDialog open={bulkConfirm !== null} onOpenChange={(open) => !open && setBulkConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{bulkConfirm === "void" ? `Void ${bulk.voidable} invoice${bulk.voidable === 1 ? "" : "s"}?` : `Delete ${bulk.deletable} draft${bulk.deletable === 1 ? "" : "s"}?`}</AlertDialogTitle>
+            <AlertDialogTitle>{bulkConfirmTitle(bulkConfirm, bulk)}</AlertDialogTitle>
             <AlertDialogDescription>
-              {bulkConfirm === "void"
-                ? `This cancels each one and releases ${releaseDescription} so they can be billed again. Records and history stay.`
-                : "Drafts that were never issued are removed outright. Anything already billed is left alone."}
+              {bulkConfirm === "send"
+                ? "Each draft is issued and emailed to its customer. Issued invoices cannot be unsent."
+                : bulkConfirm === "remind"
+                  ? "Each customer with an open balance gets a payment reminder by email."
+                  : bulkConfirm === "void"
+                    ? `This cancels each one and releases ${releaseDescription} so they can be billed again. Records and history stay.`
+                    : "Drafts that were never issued are removed outright. Anything already billed is left alone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={bulkBusy !== null}>Keep them</AlertDialogCancel>
+            <AlertDialogCancel disabled={bulkBusy !== null}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={bulkBusy !== null}
               className={bulkConfirm === "delete" ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : undefined}
               onClick={(event) => {
                 event.preventDefault()
-                const action = bulkConfirm === "void" ? handleBulkVoid : handleBulkDelete
+                const action = { send: handleBulkSend, remind: handleBulkReminders, void: handleBulkVoid, delete: handleBulkDelete }[bulkConfirm ?? "delete"]
                 setBulkConfirm(null)
                 void action()
               }}
             >
-              {bulkConfirm === "void" ? "Void" : "Delete"}
+              {{ send: "Send", remind: "Send reminders", void: "Void", delete: "Delete" }[bulkConfirm ?? "delete"]}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1555,6 +1571,16 @@ export function BillingBook({
 }
 
 /** Internal memo only; customer-facing payment details are a separate field. */
+function bulkConfirmTitle(kind: "send" | "remind" | "void" | "delete" | null, bulk: InvoiceBulkActions): string {
+  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+  switch (kind) {
+    case "send": return `Send ${plural(bulk.sendable, "invoice")}?`
+    case "remind": return `Remind ${plural(bulk.remindable, "customer")}?`
+    case "void": return `Void ${plural(bulk.voidable, "invoice")}?`
+    default: return `Delete ${plural(bulk.deletable, "draft")}?`
+  }
+}
+
 function invoiceMemo(invoice: Invoice): string {
   return typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo.trim() : ""
 }

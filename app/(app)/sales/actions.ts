@@ -15,12 +15,13 @@ import {
   resumePurchaseAgreementSigning,
   endIncentive,
   getAgreementDraftContext,
-  listSpecInventory,
+  listSpecInventoryPage,
   priceAgreementDraft,
   releaseReservation,
   offerPlanInCommunity,
   withdrawPlanFromCommunity,
   setCommunityPlanPrice,
+  setSpecAskingPrice,
   upsertIncentive,
   voidPurchaseAgreement,
   type AgreementDraftContext,
@@ -142,8 +143,21 @@ export async function setCommunityPlanPriceAction(communityId: string, input: un
   return run(() => setCommunityPlanPrice(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }
 
+export async function setSpecAskingPriceAction(communityId: string, input: unknown) {
+  return run(() => setSpecAskingPrice(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
 export async function bulkRepriceCommunityPlansAction(communityId: string, input: unknown) {
   return run(() => bulkRepriceCommunityPlans(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
+}
+
+const SELLABLE_HOME_LIMIT = 250
+
+export interface SellableHomePage {
+  homes: SellableHome[]
+  /** More homes matched the scope than `limit` returned; the dialog says so. */
+  truncated: boolean
+  limit: number
 }
 
 /**
@@ -151,18 +165,18 @@ export async function bulkRepriceCommunityPlansAction(communityId: string, input
  * Loaded on open rather than with the board — a consultant opens the picker a
  * few times a day and the board a hundred, so 250 lots do not ride along.
  */
-export async function listSellableHomesAction(): Promise<ActionResult<SellableHome[]>> {
+export async function listSellableHomesAction(): Promise<ActionResult<SellableHomePage>> {
   try {
     const ambient = await getAmbientDeskContext()
-    const lots = await listSpecInventory({
+    const { lots, truncated } = await listSpecInventoryPage({
       communityId: ambient.communityId,
       divisionId: ambient.divisionId,
       includeToBeBuilt: true,
-      limit: 250,
+      limit: SELLABLE_HOME_LIMIT,
     })
     return {
       success: true,
-      data: lots.map((lot) => ({
+      data: { limit: SELLABLE_HOME_LIMIT, truncated, homes: lots.map((lot) => ({
         lotId: lot.lotId,
         lotLabel: lot.lotLabel,
         communityId: lot.communityId,
@@ -174,7 +188,7 @@ export async function listSellableHomesAction(): Promise<ActionResult<SellableHo
         isSpec: lot.isSpec,
         agingDays: lot.agingDays,
         askingPriceCents: lot.askingPriceCents,
-      })),
+      })) },
     }
   } catch (error) {
     return actionError(error)
@@ -248,10 +262,10 @@ export async function deleteDealAction(prospectId: string) {
   return run(() => deleteProspect({ prospectId: prospectIdSchema.parse(prospectId) }))
 }
 
-export async function listSellableLotsAction(communityId: string) {
+export async function listSellableLotsAction(communityId: string, search?: string) {
   return run(async () => {
     const { listSellableLots } = await import("@/lib/services/community-sales")
-    return listSellableLots(communityId)
+    return listSellableLots(communityId, search)
   }, [])
 }
 

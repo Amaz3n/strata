@@ -14,6 +14,7 @@ const COMMUNITY = "00000000-0000-4000-8000-000000000006"
 const VERSION_ONE = "00000000-0000-4000-8000-000000000011"
 const VERSION_TWO = "00000000-0000-4000-8000-000000000012"
 const PLAN = "00000000-0000-4000-8000-000000000013"
+const ELEVATION = "00000000-0000-4000-8000-000000000014"
 
 const SNAPSHOT = {
   budget_template: { id: "tpl-1", name: "Base", lines: [{ id: "line-1", cost_code_id: null, cost_type: "material", description: "Slab", amount_cents: 500_000, quantity: null, unit_cost_cents: null }] },
@@ -37,13 +38,13 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, delet
     orgs: [{ id: ORG, product_tier: "production" }],
     org_settings: [{ org_id: ORG, settings: {} }],
     projects: [{ id: PROJECT, org_id: ORG, metadata: projectMetadata }],
-    lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, project_id: PROJECT, house_plan_version_id: null, swing: "left" }],
+    lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, project_id: PROJECT, house_plan_version_id: null, swing: "left", metadata: {}, updated_at: "2026-09-01T00:00:00+00:00" }],
     house_plan_versions: [version(VERSION_ONE), version(VERSION_TWO)],
     project_financial_settings: [],
     house_plan_takeoff_lines: [],
     community_plan_availability: [{ id: "cpa-1", org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, is_available: true, elevation_id: null, effective_start: null, effective_end: null }],
     cost_codes: [],
-    house_plan_elevations: [],
+    house_plan_elevations: [{ id: ELEVATION, org_id: ORG, house_plan_id: PLAN, is_active: true }],
   })
   const context = { supabase, orgId: ORG, userId: ACTOR, productTier: "production" }
   const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], copies: [], deletes: [], cleared: [] }
@@ -234,4 +235,39 @@ test('an abandoned copy loses its object before its manifest, and a failed delet
   abandonedCopy(failing)
   await assert.rejects(failing.service.cleanupAbandonedPlanDrawingCopies(), /Storage unavailable/)
   assert.equal(failing.calls.cleared.length, 0)
+})
+
+test("a plan the lot's community does not offer is refused, not warned about", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.community_plan_availability[0].is_available = false
+
+  await assert.rejects(harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"])), /not offered in the lot's community/)
+  assert.equal(harness.calls.budgets.length, 0)
+  assert.equal(harness.supabase.store.lots[0].house_plan_version_id, null, "the lot is not pinned to the plan")
+})
+
+test("an elevation the plan sheet does not carry is refused, and an inactive one cannot be built", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.community_plan_availability[0].elevation_id = "00000000-0000-4000-8000-0000000000ff"
+  await assert.rejects(harness.service.instantiatePlanForProject({ ...input(VERSION_ONE, ["budget"]), elevationId: ELEVATION }), /not offered/)
+
+  const inactive = buildInstantiationHarness()
+  inactive.supabase.store.house_plan_elevations[0].is_active = false
+  await assert.rejects(inactive.service.instantiatePlanForProject({ ...input(VERSION_ONE, ["budget"]), elevationId: ELEVATION }), /inactive/)
+})
+
+test("a recorded offering override lets the plan through, with the reason carried as a warning", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.community_plan_availability[0].is_available = false
+  await harness.service.recordPlanOfferingOverride({ lotId: LOT, housePlanId: PLAN, reason: "Buyer signed before the plan was withdrawn" })
+
+  const result = await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))
+  assert.equal(result.success, true)
+  assert.match(result.warnings.join(" "), /Buyer signed before the plan was withdrawn/)
+})
+
+test("an offering override needs a real reason", async () => {
+  const harness = buildInstantiationHarness()
+  await assert.rejects(harness.service.recordPlanOfferingOverride({ lotId: LOT, housePlanId: PLAN, reason: "ok" }), /Say why/)
+  assert.deepEqual(harness.supabase.store.lots[0].metadata, {})
 })

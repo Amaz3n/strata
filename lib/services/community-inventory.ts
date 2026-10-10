@@ -11,7 +11,7 @@ import {
 import { readAllRows } from "@/lib/land/paging"
 import { getCommunity } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
-import { mapDimensions, type LotDimensions } from "@/lib/services/lots"
+import { readLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
 import { requirePermission } from "@/lib/services/permissions"
 
 /** A hold or reservation still standing against a lot. */
@@ -330,7 +330,7 @@ export async function listCommunityInventory(
       takedownName: relation(row.takedown as { name?: string | null } | null)?.name ?? null,
       // Stored snake_case alongside imported address parts, so it goes through
       // the same mapper every other lot read uses.
-      dimensions: mapDimensions(row.dimensions as Record<string, unknown> | null),
+      dimensions: readLotDimensions(row.dimensions as Record<string, unknown> | null),
       swing: (row.swing as InventoryLotDTO["swing"] | null) ?? "either",
       premiumCents: Number(row.premium_cents ?? 0),
       costBasisCents: row.cost_basis_cents == null ? null : Number(row.cost_basis_cents),

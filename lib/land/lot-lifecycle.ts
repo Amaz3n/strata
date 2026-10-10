@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export const LOT_STATUSES = [
   "controlled",
   "owned",
@@ -92,4 +94,43 @@ export function assertLotAttachTransition({ from, force = false }: { from: LotSt
  */
 export function assertLotDetachTransition({ from, force = false }: { from: LotStatus; force?: boolean }) {
   assertLotStatusTransition({ from, to: DETACHED_LOT_STATUS, hasProject: false, force })
+}
+
+/**
+ * Sales state is not land delivery. A hold on an owned lot advances it to
+ * `assigned` the moment a buyer is attached, but the dirt is still undeveloped.
+ * `lots.delivered_at` is the land fact (the database stamps it when a lot is
+ * developed), and a vertical start needs it — or a recorded exception, which is
+ * the only way a house starts on a lot that has not been delivered.
+ */
+export const MIN_DELIVERY_EXCEPTION_REASON_LENGTH = 10
+
+const deliveryExceptionSchema = z.object({
+  reason: z.string().trim().min(MIN_DELIVERY_EXCEPTION_REASON_LENGTH),
+  by: z.string().uuid(),
+  at: z.string(),
+})
+export type LotDeliveryException = z.infer<typeof deliveryExceptionSchema>
+
+export function lotDeliveryException(metadata: unknown): LotDeliveryException | null {
+  const parsed = z.object({ delivery_exception: deliveryExceptionSchema }).safeParse(metadata)
+  return parsed.success ? parsed.data.delivery_exception : null
+}
+
+/** Why a lot cannot take a house yet because its land is undelivered, or null when it can. */
+export function lotDeliveryRefusal(lot: { deliveredAt: string | null; metadata: unknown }): string | null {
+  if (lot.deliveredAt || lotDeliveryException(lot.metadata)) return null
+  return "This lot has not been delivered by land development. Record a delivery exception with a reason to build on it."
+}
+
+/** Why a lot cannot take a vertical start, or null when it can. */
+export function verticalStartRefusal(lot: {
+  status: string
+  deliveredAt: string | null
+  metadata: unknown
+}): string | null {
+  if (!["developed", "assigned"].includes(lot.status)) {
+    return "Only developed or assigned lots can enter the start pipeline."
+  }
+  return lotDeliveryRefusal(lot)
 }

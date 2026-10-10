@@ -1,8 +1,9 @@
 "use strict"
 
 /**
- * `lib/services/option-catalog.ts` — design studio appointments: who can read
- * the calendar, and who can book or move an appointment on a home.
+ * `lib/services/option-catalog.ts` — design studio appointments (who can read
+ * the calendar, who can book or move an appointment on a home) and the legacy
+ * package save.
  */
 
 const assert = require("node:assert/strict")
@@ -11,7 +12,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { listAppointments, upsertAppointment } = freshRequire("lib/services/option-catalog.ts")
+const { listAppointments, upsertAppointment, upsertPackage } = freshRequire("lib/services/option-catalog.ts")
 
 const MINE = id(1)
 const THEIRS = id(2)
@@ -91,5 +92,67 @@ describe("upsertAppointment", () => {
     const service = harness({ permissions: ["selections.read"] })
     await assert.rejects(service.run(() => upsertAppointment(booking())), /Missing permission/)
     assert.deepEqual(service.writes(), [])
+  })
+})
+
+describe("upsertPackage", () => {
+  const PACKAGE = id(20)
+  const OPTION = id(21)
+  const stored = { id: PACKAGE, org_id: ORG, community_id: null, name: "Bundle", description: null, image_url: null, price_cents: 123, cost_cents: 7777, is_available: true, is_archived: false, sort_order: 0 }
+
+  function packageHarness({ permissions = ["selections.catalog.manage"], rpc } = {}) {
+    const saves = []
+    const service = createServiceHarness({
+      permissions,
+      tables: { selection_packages: [stored] },
+      rpc: {
+        save_selection_package: rpc ?? ((args) => {
+          saves.push(args)
+          return { data: PACKAGE, error: null }
+        }),
+      },
+    })
+    return { service, saves }
+  }
+
+  const request = { id: PACKAGE, name: "Bundle", priceCents: 123, optionIds: [OPTION] }
+
+  test("the package row and its members are saved by one database call", async () => {
+    const { service, saves } = packageHarness()
+    const saved = await service.run(() => upsertPackage(request))
+    assert.equal(saves.length, 1)
+    assert.deepEqual(saves[0].p_option_ids, [OPTION])
+    assert.equal(saved.id, PACKAGE)
+    assert.deepEqual(saved.option_ids, [OPTION])
+    assert.deepEqual(service.writes("selection_package_items"), [])
+  })
+
+  test("a failed save reports the failure and writes nothing else", async () => {
+    const { service } = packageHarness({ rpc: () => ({ data: null, error: { message: "member write failed" } }) })
+    await assert.rejects(service.run(() => upsertPackage(request)), /member write failed/)
+    assert.deepEqual(service.audits, [])
+    assert.deepEqual(service.writes("selection_package_items"), [])
+  })
+
+  test("a cost left out of the request is not sent, and cost stays hidden from a reader without margin access", async () => {
+    const { service, saves } = packageHarness()
+    const saved = await service.run(() => upsertPackage(request))
+    assert.equal(Object.hasOwn(saves[0].p_fields, "cost_cents"), false)
+    assert.equal(Object.hasOwn(saved, "cost_cents"), false)
+
+    const privileged = packageHarness({ permissions: ["selections.catalog.manage", "financials.margin.read"] })
+    const visible = await privileged.service.run(() => upsertPackage(request))
+    assert.equal(visible.cost_cents, 7777)
+  })
+
+  test("assigning or clearing a cost takes margin access, checked before anything is written", async () => {
+    for (const costCents of [null, 0, 100]) {
+      const { service, saves } = packageHarness()
+      await assert.rejects(service.run(() => upsertPackage({ ...request, costCents })), /Missing permission/)
+      assert.deepEqual(saves, [])
+    }
+    const { service, saves } = packageHarness({ permissions: ["selections.catalog.manage", "financials.margin.read"] })
+    await service.run(() => upsertPackage({ ...request, costCents: null }))
+    assert.equal(saves[0].p_fields.cost_cents, null)
   })
 })

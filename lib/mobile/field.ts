@@ -18,8 +18,7 @@ async function requireProject(context: MobileOrgContext, projectId: string) {
 }
 
 const TASK_SELECT =
-  "id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at, " +
-        "task_assignments(user:app_users!task_assignments_user_id_fkey(full_name, email), contact:contacts!task_assignments_contact_id_fkey(full_name))"
+  "id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at, task_assignments(user:app_users!task_assignments_user_id_fkey(full_name, email), contact:contacts!task_assignments_contact_id_fkey(full_name))"
 
 function mapTask(row: any): MobileTaskDTO {
   const assignees: string[] = []

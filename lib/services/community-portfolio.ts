@@ -34,6 +34,8 @@ const PROJECT_FILTER_BATCH = 400
  * runaway rather than a real portfolio.
  */
 const HOMED_LOT_SCAN_CAP = 20_000
+/** The same kind of ceiling for each fact read (reservations, starts, closings, takedowns). */
+const FACT_SCAN_CAP = 20_000
 
 export type PaceState = "ahead" | "on" | "behind" | "unknown"
 
@@ -191,63 +193,98 @@ export async function getCommunityPortfolio(
     lots,
     marginReport,
   ] = await Promise.all([
-    context.supabase
-      .from("lot_reservations")
-      .select("community_id, lot_id, status, expires_at")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .in("status", LIVE_RESERVATION_STATUSES)
-      .limit(2_000),
-    context.supabase
-      .from("lot_reservations")
-      .select("community_id, converted_at")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .gte("converted_at", rateSince.toISOString())
-      .limit(2_000),
-    context.supabase
-      .from("lot_reservations")
-      .select("community_id, released_at, converted_at")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "released")
-      .not("converted_at", "is", null)
-      .gte("released_at", rateSince.toISOString())
-      .limit(2_000),
-    context.supabase
-      .from("start_packages")
-      .select("community_id")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "released")
-      .gte("actual_start_date", isoDay(rateSince))
-      .limit(2_000),
-    context.supabase
-      .from("closings")
-      .select("community_id, status, scheduled_date")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .neq("status", "cancelled")
-      .gte("scheduled_date", isoDay(today))
-      .lte("scheduled_date", isoDay(horizonEnd))
-      .limit(2_000),
-    context.supabase
-      .from("lot_takedowns")
-      .select("id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, deposit_cents")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "scheduled")
-      .gte("scheduled_date", isoDay(today))
-      .lte("scheduled_date", isoDay(horizonEnd))
-      .order("scheduled_date", { ascending: true })
-      .limit(500),
-    context.supabase
-      .from("start_packages")
-      .select("community_id, status")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "attention")
-      .limit(1_000),
+    readAllRows<{ community_id: string; lot_id: string; status: string; expires_at: string | null }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_reservations")
+          .select("community_id, lot_id, status, expires_at")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .in("status", LIVE_RESERVATION_STATUSES)
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_reservations")
+          .select("community_id, converted_at")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .gte("converted_at", rateSince.toISOString())
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_reservations")
+          .select("community_id, released_at, converted_at")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "released")
+          .not("converted_at", "is", null)
+          .gte("released_at", rateSince.toISOString())
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("start_packages")
+          .select("community_id")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "released")
+          .gte("actual_start_date", isoDay(rateSince))
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string; scheduled_date: string | null }>(
+      (from, to) =>
+        context.supabase
+          .from("closings")
+          .select("community_id, status, scheduled_date")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .neq("status", "cancelled")
+          .gte("scheduled_date", isoDay(today))
+          .lte("scheduled_date", isoDay(horizonEnd))
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ id: string; community_id: string; name: string; scheduled_date: string | null; lot_count: number | null; price_per_lot_cents: number | null; deposit_cents: number | null }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_takedowns")
+          .select("id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, deposit_cents")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "scheduled")
+          .gte("scheduled_date", isoDay(today))
+          .lte("scheduled_date", isoDay(horizonEnd))
+          .order("scheduled_date", { ascending: true })
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("start_packages")
+          .select("community_id, status")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "attention")
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
     // Only lots that carry a live home, read to exhaustion. Lot *counts* come
     // from the status aggregate on each community, so this read exists purely to
     // find the houses behind the aging and cutoff alerts — and a flat 5,000-row
@@ -270,19 +307,7 @@ export async function getCommunityPortfolio(
       : Promise.resolve(null),
   ])
 
-  for (const result of [
-    liveReservations,
-    convertedReservations,
-    cancelledReservations,
-    releasedStarts,
-    closings,
-    takedowns,
-    blockedStarts,
-  ]) {
-    if (result.error) throw new Error(`Failed to load community portfolio: ${result.error.message}`)
-  }
-
-  const reservedLotIds = new Set((liveReservations.data ?? []).map((row) => row.lot_id as string))
+  const reservedLotIds = new Set(liveReservations.rows.map((row) => row.lot_id as string))
   const startedProjectIds = new Set(
     lots.rows
       .filter((row) => row.project_id && row.status === "started" && !reservedLotIds.has(row.id))
@@ -301,22 +326,23 @@ export async function getCommunityPortfolio(
   const projectIds = [...projectCommunity.keys()]
   const cutoffBatches = await Promise.all(
     Array.from({ length: Math.ceil(projectIds.length / PROJECT_FILTER_BATCH) }, (_, index) =>
-      context.supabase
-        .from("project_selections")
-        .select("project_id, due_date, status")
-        .eq("org_id", context.orgId)
-        .in("project_id", projectIds.slice(index * PROJECT_FILTER_BATCH, (index + 1) * PROJECT_FILTER_BATCH))
-        .not("due_date", "is", null)
-        .lte("due_date", isoDay(cutoffWarning))
-        .not("status", "in", "(confirmed,ordered,received)")
-        .limit(2_000),
+      readAllRows<{ project_id: string }>(
+        (from, to) =>
+          context.supabase
+            .from("project_selections")
+            .select("project_id, due_date, status")
+            .eq("org_id", context.orgId)
+            .in("project_id", projectIds.slice(index * PROJECT_FILTER_BATCH, (index + 1) * PROJECT_FILTER_BATCH))
+            .not("due_date", "is", null)
+            .lte("due_date", isoDay(cutoffWarning))
+            .not("status", "in", "(confirmed,ordered,received)")
+            .order("id")
+            .range(from, to),
+        { cap: FACT_SCAN_CAP, label: "Failed to load selection cutoffs" },
+      ),
     ),
   )
-  const cutoffRows: Array<{ project_id: string }> = []
-  for (const batch of cutoffBatches) {
-    if (batch.error) throw new Error(`Failed to load selection cutoffs: ${batch.error.message}`)
-    for (const row of batch.data ?? []) cutoffRows.push({ project_id: row.project_id as string })
-  }
+  const cutoffRows = cutoffBatches.flatMap((batch) => batch.rows)
 
   const months = Array.from({ length: RUNWAY_HORIZON_MONTHS }, (_, index) => {
     const month = new Date(today.getFullYear(), today.getMonth() + index, 1)
@@ -334,12 +360,12 @@ export async function getCommunityPortfolio(
     return map
   }
 
-  const convertedByCommunity = countBy(convertedReservations.data ?? [], (row) => row.community_id as string)
-  const cancelledByCommunity = countBy(cancelledReservations.data ?? [], (row) => row.community_id as string)
-  const startsByCommunity = countBy(releasedStarts.data ?? [], (row) => row.community_id as string)
-  const blockedByCommunity = countBy(blockedStarts.data ?? [], (row) => row.community_id as string)
+  const convertedByCommunity = countBy(convertedReservations.rows, (row) => row.community_id as string)
+  const cancelledByCommunity = countBy(cancelledReservations.rows, (row) => row.community_id as string)
+  const startsByCommunity = countBy(releasedStarts.rows, (row) => row.community_id as string)
+  const blockedByCommunity = countBy(blockedStarts.rows, (row) => row.community_id as string)
   const expiringByCommunity = countBy(
-    (liveReservations.data ?? []).filter(
+    liveReservations.rows.filter(
       (row) => row.status === "hold" && row.expires_at && new Date(row.expires_at as string) <= holdWarning,
     ),
     (row) => row.community_id as string,
@@ -347,7 +373,7 @@ export async function getCommunityPortfolio(
   const cutoffsByCommunity = countBy(cutoffRows, (row) => projectCommunity.get(row.project_id))
 
   const closingsByCommunityMonth = new Map<string, number>()
-  for (const row of closings.data ?? []) {
+  for (const row of closings.rows) {
     if (!row.scheduled_date) continue
     const key = `${row.community_id as string}:${monthKey(row.scheduled_date as string)}`
     closingsByCommunityMonth.set(key, (closingsByCommunityMonth.get(key) ?? 0) + 1)
@@ -365,7 +391,7 @@ export async function getCommunityPortfolio(
   }
 
   const takedownsByCommunity = new Map<string, CommunityTakedown[]>()
-  for (const row of takedowns.data ?? []) {
+  for (const row of takedowns.rows) {
     const scheduledDate = row.scheduled_date as string | null
     if (!scheduledDate) continue
     const communityId = row.community_id as string
@@ -490,7 +516,12 @@ export async function getCommunityPortfolio(
   return {
     horizonMonths: RUNWAY_HORIZON_MONTHS,
     lanes,
-    truncated: lots.truncated,
+    truncated:
+      lots.truncated ||
+      cutoffBatches.some((batch) => batch.truncated) ||
+      [liveReservations, convertedReservations, cancelledReservations, releasedStarts, closings, takedowns, blockedStarts].some(
+        (fact) => fact.truncated,
+      ),
     totals: {
       communities: lanes.length,
       totalLots: lanes.reduce((sum, lane) => sum + lane.totalLots, 0),

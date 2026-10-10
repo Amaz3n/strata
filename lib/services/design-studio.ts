@@ -1,8 +1,9 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { readAllRows } from "@/lib/land/paging"
 import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
 import { intersectProjectReadScopes } from "@/lib/services/authorization-policy"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
-import { listAppointments, listCatalog, type AppointmentDto, type CatalogDto } from "@/lib/services/option-catalog"
+import { countAppointments, listAppointments, listCatalog, type AppointmentDto, type CatalogDto } from "@/lib/services/option-catalog"
 
 /**
  * The Design Studio desk. Two surfaces sit on top of this file:
@@ -21,6 +22,30 @@ import { listAppointments, listCatalog, type AppointmentDto, type CatalogDto } f
 const DAY_MS = 86_400_000
 const DEFAULT_HORIZON_DAYS = 84
 const SOON_WINDOW_DAYS = 14
+/** PostgREST puts `in()` filters in the URL, so long id lists go out in batches. */
+const ID_BATCH = 200
+/** A ceiling on one fact read, not a page size. Hitting it is an error, never a quiet undercount. */
+const FACT_ROW_CAP = 100_000
+/** Open cutoffs the runway plots. Past this the board says so instead of dropping the tail. */
+const RUNWAY_INSTANCE_CAP = 5_000
+
+type RangedRead<Row> = (from: number, to: number) => PromiseLike<{ data: Row[] | null; error: { message: string } | null }>
+
+async function readComplete<Row>(label: string, read: RangedRead<Row>): Promise<Row[]> {
+  const { rows, truncated } = await readAllRows<Row>(read, { cap: FACT_ROW_CAP, label: `Failed to load ${label}` })
+  if (truncated) throw new Error(`Too many ${label} to read accurately; narrow the community or division and retry`)
+  return rows
+}
+
+/** Reads one fact for a long id list: batched for URL length, each batch read to exhaustion. */
+async function readForIds<Row>(
+  label: string,
+  ids: string[],
+  read: (batch: string[], from: number, to: number) => ReturnType<RangedRead<Row>>,
+): Promise<Row[]> {
+  const batches = Array.from({ length: Math.ceil(ids.length / ID_BATCH) }, (_, index) => ids.slice(index * ID_BATCH, (index + 1) * ID_BATCH))
+  return (await Promise.all(batches.map((batch) => readComplete<Row>(label, (from, to) => read(batch, from, to))))).flat()
+}
 
 export type CutoffState = "overdue" | "due_soon" | "scheduled" | "unresolved" | "locked"
 
@@ -84,6 +109,8 @@ export interface StudioRunway {
   counters: RunwayCounters
   appointments: AppointmentDto[]
   blockedStarts: BlockedStart[]
+  /** Set when more open cutoffs exist than the board plots; the board says so. */
+  truncatedAt: number | null
 }
 
 interface StudioScope {
@@ -97,20 +124,21 @@ async function resolveStudioScope(
   opts: { communityId?: string; divisionId?: string },
 ): Promise<StudioScope> {
   const membershipScope = await getDivisionScopedProjectIds(context)
-  const [divisionResult, communityResult] = await Promise.all([
-    opts.divisionId
-      ? context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("division_id", opts.divisionId).limit(2000)
-      : Promise.resolve({ data: null, error: null }),
-    opts.communityId
-      ? context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", opts.communityId).not("project_id", "is", null).limit(2000)
-      : Promise.resolve({ data: null, error: null }),
+  const { divisionId, communityId } = opts
+  const [divisionRows, communityRows] = await Promise.all([
+    divisionId
+      ? readComplete<{ id: string }>("design studio scope", (from, to) =>
+          context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("division_id", divisionId).order("id").range(from, to))
+      : Promise.resolve(null),
+    communityId
+      ? readComplete<{ id: string; project_id: string | null }>("design studio scope", (from, to) =>
+          context.supabase.from("lots").select("id, project_id").eq("org_id", context.orgId).eq("community_id", communityId).not("project_id", "is", null).order("id").range(from, to))
+      : Promise.resolve(null),
   ])
-  if (divisionResult.error) throw new Error(`Failed to scope the design studio: ${divisionResult.error.message}`)
-  if (communityResult.error) throw new Error(`Failed to scope the design studio: ${communityResult.error.message}`)
 
-  const divisionIds = divisionResult.data ? divisionResult.data.map((row) => row.id as string) : null
-  const communityIds = communityResult.data
-    ? Array.from(new Set(communityResult.data.map((row) => row.project_id).filter((value): value is string => Boolean(value))))
+  const divisionIds = divisionRows ? divisionRows.map((row) => row.id) : null
+  const communityIds = communityRows
+    ? Array.from(new Set(communityRows.map((row) => row.project_id).filter((value): value is string => Boolean(value))))
     : null
   const projectIds = intersectProjectReadScopes(intersectProjectReadScopes(membershipScope, divisionIds), communityIds)
   return { projectIds, empty: projectIds !== null && projectIds.length === 0 }
@@ -139,6 +167,16 @@ interface GroupRow {
   sort_order: number
 }
 
+interface RunwayInstanceRow {
+  id: string
+  project_id: string
+  group_id: string
+  cutoff_date: string | null
+  cutoff_source: string
+  status: string
+  group: Embedded<CutoffGroupRow>
+}
+
 interface CutoffGroupRow extends GroupRow {
   schedule_task_key: string
   cutoff_offset_days: number
@@ -150,6 +188,30 @@ interface CategoryRow {
   name: string
   description: string | null
   sort_order: number
+}
+
+interface IdentityLotRow {
+  id: string
+  project_id: string | null
+  community_id: string | null
+  lot_number: string | null
+  block: string | null
+  premium_cents: number | null
+  asking_price_override_cents: number | null
+  house_plan_id: string | null
+  house_plan_version_id: string | null
+}
+
+interface IdentityReservationRow {
+  lot_id: string
+  asking_price_cents: number | null
+  buyer: Embedded<{ full_name: string }>
+  prospect: Embedded<{ name: string }>
+}
+
+interface IdentityContractRow {
+  project_id: string
+  total_cents: number | null
 }
 
 /**
@@ -165,52 +227,54 @@ export async function loadHomeIdentities(
   const identities = new Map<string, StudioHomeIdentity>()
   if (projectIds.length === 0) return identities
 
-  const { data: lots, error: lotsError } = await context.supabase
-    .from("lots")
-    .select("id, project_id, community_id, lot_number, block, premium_cents, asking_price_override_cents, house_plan_id, house_plan_version_id")
-    .eq("org_id", context.orgId)
-    .in("project_id", projectIds)
-    .limit(2000)
-  if (lotsError) throw new Error(`Failed to load lots for the design studio: ${lotsError.message}`)
-
-  const lotRows = lots ?? []
+  const lotRows = await readForIds<IdentityLotRow>("lots for the design studio", projectIds, (batch, from, to) =>
+    context.supabase
+      .from("lots")
+      .select("id, project_id, community_id, lot_number, block, premium_cents, asking_price_override_cents, house_plan_id, house_plan_version_id")
+      .eq("org_id", context.orgId)
+      .in("project_id", batch)
+      .order("id")
+      .range(from, to),
+  )
   const planIds = Array.from(new Set(lotRows.map((row) => row.house_plan_id).filter((value): value is string => Boolean(value))))
   const communityIds = Array.from(new Set(lotRows.map((row) => row.community_id).filter((value): value is string => Boolean(value))))
-  const lotIds = lotRows.map((row) => row.id as string)
+  const lotIds = lotRows.map((row) => row.id)
 
-  const [plansResult, communitiesResult, reservationsResult, contractsResult] = await Promise.all([
+  const [plansResult, communitiesResult, reservationRows, contractRows] = await Promise.all([
     planIds.length
       ? context.supabase.from("house_plans").select("id, name").eq("org_id", context.orgId).in("id", planIds)
       : Promise.resolve({ data: [], error: null }),
     communityIds.length
       ? context.supabase.from("communities").select("id, name").eq("org_id", context.orgId).in("id", communityIds)
       : Promise.resolve({ data: [], error: null }),
-    lotIds.length
-      ? context.supabase
-          .from("lot_reservations")
-          .select("lot_id, asking_price_cents, buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name), prospect:prospects(name)")
-          .eq("org_id", context.orgId)
-          .in("lot_id", lotIds)
-          .in("status", ["hold", "reserved", "converted"])
-          .limit(2000)
-      : Promise.resolve({ data: [], error: null }),
-    context.supabase
-      .from("contracts")
-      .select("project_id, total_cents")
-      .eq("org_id", context.orgId)
-      .eq("contract_type", "purchase_agreement")
-      .in("project_id", projectIds)
-      .limit(2000),
+    readForIds<IdentityReservationRow>("buyers", lotIds, (batch, from, to) =>
+      context.supabase
+        .from("lot_reservations")
+        .select("id, lot_id, asking_price_cents, buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name), prospect:prospects(name)")
+        .eq("org_id", context.orgId)
+        .in("lot_id", batch)
+        .in("status", ["hold", "reserved", "converted"])
+        .order("id")
+        .range(from, to),
+    ),
+    readForIds<IdentityContractRow>("agreements", projectIds, (batch, from, to) =>
+      context.supabase
+        .from("contracts")
+        .select("id, project_id, total_cents")
+        .eq("org_id", context.orgId)
+        .eq("contract_type", "purchase_agreement")
+        .in("project_id", batch)
+        .order("id")
+        .range(from, to),
+    ),
   ])
   if (plansResult.error) throw new Error(`Failed to load plans: ${plansResult.error.message}`)
   if (communitiesResult.error) throw new Error(`Failed to load communities: ${communitiesResult.error.message}`)
-  if (reservationsResult.error) throw new Error(`Failed to load buyers: ${reservationsResult.error.message}`)
-  if (contractsResult.error) throw new Error(`Failed to load agreements: ${contractsResult.error.message}`)
 
   const planById = new Map((plansResult.data ?? []).map((row) => [row.id as string, row.name as string]))
   const communityById = new Map((communitiesResult.data ?? []).map((row) => [row.id as string, row.name as string]))
-  const reservationByLot = new Map((reservationsResult.data ?? []).map((row) => [row.lot_id as string, row]))
-  const contractByProject = new Map((contractsResult.data ?? []).map((row) => [row.project_id as string, row]))
+  const reservationByLot = new Map(reservationRows.map((row) => [row.lot_id, row]))
+  const contractByProject = new Map(contractRows.map((row) => [row.project_id, row]))
 
   for (const lot of lotRows) {
     const projectId = lot.project_id as string | null
@@ -285,51 +349,72 @@ export async function getStudioRunway(
     counters: { overdue: 0, dueSoon: 0, unbooked: 0, sessionsThisWeek: 0, readyToSign: 0 },
     appointments: [],
     blockedStarts: [],
+    truncatedAt: null,
   }
   if (scope.empty) return emptyRunway
 
-  let instanceQuery = context.supabase
-    .from("project_selection_groups")
-    .select("id, project_id, group_id, cutoff_date, cutoff_source, status, group:selection_groups(id, name, sort_order, schedule_task_key, cutoff_offset_days, cutoff_anchor)")
-    .eq("org_id", context.orgId)
-    .eq("status", "open")
-    .or(`cutoff_date.is.null,cutoff_date.lte.${horizonDate}`)
-    .limit(600)
-  if (scope.projectIds) instanceQuery = instanceQuery.in("project_id", scope.projectIds)
-  const { data: instances, error: instanceError } = await instanceQuery
-  if (instanceError) throw new Error(`Failed to load selection cutoffs: ${instanceError.message}`)
-  if (!instances?.length) {
+  const scopeBatches: Array<string[] | null> = scope.projectIds
+    ? Array.from({ length: Math.ceil(scope.projectIds.length / ID_BATCH) }, (_, index) => scope.projectIds?.slice(index * ID_BATCH, (index + 1) * ID_BATCH) ?? [])
+    : [null]
+  const instanceReads = await Promise.all(
+    scopeBatches.map((batch) =>
+      readAllRows<RunwayInstanceRow>(
+        (from, to) => {
+          let query = context.supabase
+            .from("project_selection_groups")
+            .select("id, project_id, group_id, cutoff_date, cutoff_source, status, group:selection_groups(id, name, sort_order, schedule_task_key, cutoff_offset_days, cutoff_anchor)")
+            .eq("org_id", context.orgId)
+            .eq("status", "open")
+            .or(`cutoff_date.is.null,cutoff_date.lte.${horizonDate}`)
+          if (batch) query = query.in("project_id", batch)
+          return query.order("id").range(from, to)
+        },
+        { cap: RUNWAY_INSTANCE_CAP, label: "Failed to load selection cutoffs" },
+      ),
+    ),
+  )
+  const instances = instanceReads.flatMap((read) => read.rows)
+  const truncatedAt = instanceReads.some((read) => read.truncated) ? RUNWAY_INSTANCE_CAP : null
+  if (!instances.length) {
     const week = startOfWeekIso(now)
-    const appointments = await listAppointments({ communityId: opts.communityId, from: week.from, to: week.to, limit: 50 })
-    return { ...emptyRunway, appointments, counters: { ...emptyRunway.counters, sessionsThisWeek: appointments.length } }
+    const [appointments, sessionsThisWeek] = await Promise.all([
+      listAppointments({ communityId: opts.communityId, from: week.from, to: week.to, limit: 50 }),
+      countAppointments({ communityId: opts.communityId, from: week.from, to: week.to }),
+    ])
+    return { ...emptyRunway, appointments, counters: { ...emptyRunway.counters, sessionsThisWeek } }
   }
 
   const projectIds = Array.from(new Set(instances.map((row) => row.project_id as string)))
   const week = startOfWeekIso(now)
 
-  const [selectionsResult, appointments, upcoming, startsResult, identities] = await Promise.all([
-    context.supabase
-      .from("project_selections")
-      .select("project_id, group_id, selected_option_id, status")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .limit(8000),
+  const [selectionRows, appointments, sessionsThisWeek, upcoming, startRows, identities] = await Promise.all([
+    readForIds<{ id: string; project_id: string; group_id: string; selected_option_id: string | null }>("selections", projectIds, (batch, from, to) =>
+      context.supabase
+        .from("project_selections")
+        .select("id, project_id, group_id, selected_option_id, status")
+        .eq("org_id", context.orgId)
+        .in("project_id", batch)
+        .order("id")
+        .range(from, to),
+    ),
     listAppointments({ communityId: opts.communityId, from: week.from, to: week.to, limit: 50 }),
+    countAppointments({ communityId: opts.communityId, from: week.from, to: week.to }),
     listAppointments({ communityId: opts.communityId, from: now.toISOString(), status: "scheduled", limit: 100 }),
-    context.supabase
-      .from("start_packages")
-      .select("project_id, status, target_week")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .is("released_at", null)
-      .limit(600),
+    readForIds<{ id: string; project_id: string; target_week: string | null }>("start packages", projectIds, (batch, from, to) =>
+      context.supabase
+        .from("start_packages")
+        .select("id, project_id, status, target_week")
+        .eq("org_id", context.orgId)
+        .in("project_id", batch)
+        .is("released_at", null)
+        .order("id")
+        .range(from, to),
+    ),
     loadHomeIdentities(context, projectIds),
   ])
-  if (selectionsResult.error) throw new Error(`Failed to load selections: ${selectionsResult.error.message}`)
-  if (startsResult.error) throw new Error(`Failed to load start packages: ${startsResult.error.message}`)
 
   const tally = new Map<string, { chosen: number; total: number }>()
-  for (const row of selectionsResult.data ?? []) {
+  for (const row of selectionRows) {
     const key = `${row.project_id}:${row.group_id}`
     const entry = tally.get(key) ?? { chosen: 0, total: 0 }
     entry.total += 1
@@ -343,11 +428,11 @@ export async function getStudioRunway(
     }
   }
   const pendingStartByProject = new Map(
-    (startsResult.data ?? []).map((row) => [row.project_id as string, row.target_week as string | null]),
+    startRows.map((row) => [row.project_id, row.target_week]),
   )
 
   const laneById = new Map<string, RunwayLane & { sortOrder: number }>()
-  const counters: RunwayCounters = { overdue: 0, dueSoon: 0, unbooked: 0, sessionsThisWeek: appointments.length, readyToSign: 0 }
+  const counters: RunwayCounters = { overdue: 0, dueSoon: 0, unbooked: 0, sessionsThisWeek, readyToSign: 0 }
   const blockedByProject = new Map<string, BlockedStart>()
 
   for (const instance of instances) {
@@ -427,6 +512,7 @@ export async function getStudioRunway(
     blockedStarts: Array.from(blockedByProject.values())
       .sort((a, b) => (b.worstDaysOverdue ?? 0) - (a.worstDaysOverdue ?? 0))
       .slice(0, 12),
+    truncatedAt,
   }
 }
 
@@ -667,35 +753,79 @@ export async function getSelectionSheet(projectId: string): Promise<SelectionShe
   }
 }
 
+export interface BookableHome {
+  projectId: string
+  label: string
+  communityId: string | null
+}
+
+/** Homes the booking picker shows at once; typing a lot number reaches the rest. */
+const BOOKABLE_HOME_LIMIT = 25
+const BOOKABLE_SCAN_PAGE = 200
+
 /**
  * Homes a coordinator can actually book: under contract, carrying at least one
- * open selection group. Replaces handing the whole project list to a picker.
+ * open selection group. Searched on the server by lot number and bounded —
+ * `truncated` means more homes match than the picker shows.
  */
 export async function listBookableHomes(
-  opts: { communityId?: string; divisionId?: string } = {},
-): Promise<Array<{ projectId: string; label: string; communityId: string | null }>> {
+  opts: { communityId?: string; divisionId?: string; search?: string } = {},
+): Promise<{ homes: BookableHome[]; truncated: boolean }> {
+  const none = { homes: [], truncated: false }
   const context = await requireOrgContext()
   await requirePermission("selections.read", context)
   const scope = await resolveStudioScope(context, opts)
-  if (scope.empty) return []
+  if (scope.empty) return none
 
-  let query = context.supabase
-    .from("project_selection_groups")
-    .select("project_id")
-    .eq("org_id", context.orgId)
-    .eq("status", "open")
-    .limit(2000)
-  if (scope.projectIds) query = query.in("project_id", scope.projectIds)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to load bookable homes: ${error.message}`)
+  let candidateIds = scope.projectIds
+  const term = opts.search?.trim().replace(/[\\%_,()]/g, "")
+  if (term) {
+    const { communityId } = opts
+    const matches = await readComplete<{ id: string; project_id: string | null }>("lots", (from, to) => {
+      let lotQuery = context.supabase.from("lots").select("id, project_id").eq("org_id", context.orgId).not("project_id", "is", null).ilike("lot_number", `%${term}%`)
+      if (communityId) lotQuery = lotQuery.eq("community_id", communityId)
+      return lotQuery.order("id").range(from, to)
+    })
+    candidateIds = intersectProjectReadScopes(
+      candidateIds,
+      Array.from(new Set(matches.map((row) => row.project_id).filter((value): value is string => Boolean(value)))),
+    )
+    if (candidateIds?.length === 0) return none
+  }
 
-  const projectIds = Array.from(new Set((data ?? []).map((row) => row.project_id as string)))
-  const identities = await loadHomeIdentities(context, projectIds)
-  return Array.from(identities.values())
+  const batches: Array<string[] | null> = candidateIds
+    ? Array.from({ length: Math.ceil(candidateIds.length / ID_BATCH) }, (_, index) => candidateIds?.slice(index * ID_BATCH, (index + 1) * ID_BATCH) ?? [])
+    : [null]
+  const found = new Set<string>()
+  // Page through open groups only until one more than the picker shows has been
+  // seen: that extra home is what proves the list was cut short.
+  scan: for (const batch of batches) {
+    for (let from = 0; ; from += BOOKABLE_SCAN_PAGE) {
+      let query = context.supabase
+        .from("project_selection_groups")
+        .select("id, project_id")
+        .eq("org_id", context.orgId)
+        .eq("status", "open")
+      if (batch) query = query.in("project_id", batch)
+      const { data, error } = await query.order("project_id").order("id").range(from, from + BOOKABLE_SCAN_PAGE - 1)
+      if (error) throw new Error(`Failed to load bookable homes: ${error.message}`)
+      for (const row of data ?? []) {
+        found.add(row.project_id as string)
+        if (found.size > BOOKABLE_HOME_LIMIT) break scan
+      }
+      if ((data ?? []).length < BOOKABLE_SCAN_PAGE) break
+    }
+  }
+
+  const projectIds = Array.from(found)
+  const truncated = projectIds.length > BOOKABLE_HOME_LIMIT
+  const identities = await loadHomeIdentities(context, projectIds.slice(0, BOOKABLE_HOME_LIMIT))
+  const homes = Array.from(identities.values())
     .map((home) => ({
       projectId: home.projectId,
       label: `${home.lotLabel} · ${home.buyerName}${home.planName ? ` · ${home.planName}` : ""}`,
       communityId: home.communityId,
     }))
     .sort((a, b) => a.label.localeCompare(b.label))
+  return { homes, truncated }
 }

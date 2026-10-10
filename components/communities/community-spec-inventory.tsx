@@ -1,5 +1,6 @@
 import Link from "next/link"
 
+import { SpecRepriceDialog } from "@/components/communities/spec-reprice-dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
@@ -34,9 +35,10 @@ function ageTone(days: number) {
  * manager's second lever after price, and it is the reason a spec gets an
  * incentive rather than a discount.
  *
- * Read-only: specs are released from Starts and sold from the Sales desk.
+ * Specs are released from Starts and sold from the Sales desk; the only write
+ * here is a manager moving one house's asking price.
  */
-export function CommunitySpecInventory({ rows }: { rows: SpecRow[] }) {
+export function CommunitySpecInventory({ rows, communityId, canManage }: { rows: SpecRow[]; communityId: string; canManage: boolean }) {
   const sorted = [...rows].sort((a, b) => b.agingDays - a.agingDays)
   const aging = sorted.filter((row) => row.agingDays >= AGING_ALERT_DAYS).length
   const standingValue = sorted.reduce((sum, row) => sum + row.askingPriceCents, 0)
@@ -77,6 +79,7 @@ export function CommunitySpecInventory({ rows }: { rows: SpecRow[] }) {
                 <TableHead className="text-right">Asking</TableHead>
                 <TableHead className="text-right">$/sf</TableHead>
                 <TableHead className="text-right">Standing</TableHead>
+                {canManage ? <TableHead className="w-16" /> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -111,6 +114,18 @@ export function CommunitySpecInventory({ rows }: { rows: SpecRow[] }) {
                   <TableCell className={cn("text-right tabular-nums", ageTone(row.agingDays))}>
                     {row.agingDays}d
                   </TableCell>
+                  {canManage ? (
+                    <TableCell className="text-right">
+                      {row.askingPriceCents > 0 ? (
+                        <SpecRepriceDialog
+                          communityId={communityId}
+                          lotId={row.lotId}
+                          lotLabel={row.lotLabel}
+                          askingPriceCents={row.askingPriceCents}
+                        />
+                      ) : null}
+                    </TableCell>
+                  ) : null}
                 </TableRow>
               ))}
             </TableBody>

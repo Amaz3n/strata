@@ -22,6 +22,7 @@ import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { createInspectionFromSnapshot } from "@/lib/services/inspections";
 import { requirePermission } from "@/lib/services/permissions";
+import { isPlanOffered, offeringOverrideFor, MIN_OFFERING_OVERRIDE_REASON_LENGTH } from "@/lib/sales/plan-offering";
 import { applyScheduleTemplateSnapshot } from "@/lib/services/schedule";
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs";
 import {
@@ -221,6 +222,52 @@ function completedSteps(
   return done;
 }
 
+const offeringOverrideInputSchema = z.object({
+  lotId: z.string().uuid(),
+  housePlanId: z.string().uuid(),
+  reason: z.string().trim().min(MIN_OFFERING_OVERRIDE_REASON_LENGTH, "Say why this plan is being built where it is not offered.").max(1000),
+});
+
+/**
+ * Let one lot carry a plan its community does not offer. This is the only way
+ * past the offering refusal: it takes plan-release authority, needs a reason,
+ * speaks for one plan on one lot, and is audited. Instantiation and the start
+ * package's plan gate both read it back; neither accepts it silently.
+ */
+export async function recordPlanOfferingOverride(input: unknown, orgId?: string) {
+  const parsed = offeringOverrideInputSchema.parse(input);
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.release", context);
+  const { data: lot, error } = await context.supabase
+    .from("lots")
+    .select("id, metadata, updated_at")
+    .eq("org_id", context.orgId)
+    .eq("id", parsed.lotId)
+    .maybeSingle();
+  if (error || !lot) throw new Error("Lot not found");
+  const override = {
+    house_plan_id: parsed.housePlanId,
+    reason: parsed.reason,
+    by: context.userId,
+    at: new Date().toISOString(),
+  };
+  const { data, error: updateError } = await context.supabase
+    .from("lots")
+    .update({ metadata: { ...asRecord(lot.metadata), offering_override: override } })
+    .eq("org_id", context.orgId)
+    .eq("id", lot.id)
+    .eq("updated_at", lot.updated_at)
+    .select("id")
+    .maybeSingle();
+  if (updateError) throw new Error(`Failed to record the offering override: ${updateError.message}`);
+  if (!data) throw new Error("The lot changed while you were recording the override. Review it and try again.");
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot.plan_offering_overridden", entityType: "lot", entityId: lot.id, payload: { house_plan_id: parsed.housePlanId, reason: parsed.reason } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: lot.id, before: { offering_override: asRecord(lot.metadata).offering_override ?? null }, after: { offering_override: override } }),
+  ]);
+  return override;
+}
+
 export async function listPlanInstantiationOptionsForProject(
   projectId: string,
   orgId?: string,
@@ -389,7 +436,7 @@ async function loadInstantiationContext(
         .maybeSingle(),
       context.supabase
         .from("lots")
-        .select("id, community_id, project_id, house_plan_version_id, swing")
+        .select("id, community_id, project_id, house_plan_version_id, swing, metadata")
         .eq("org_id", context.orgId)
         .eq("id", input.lotId)
         .maybeSingle(),
@@ -427,13 +474,15 @@ async function loadInstantiationContext(
   if (input.elevationId) {
     const { data, error } = await context.supabase
       .from("house_plan_elevations")
-      .select("id")
+      .select("id, is_active")
       .eq("org_id", context.orgId)
       .eq("house_plan_id", versionResult.data.house_plan_id)
       .eq("id", input.elevationId)
       .maybeSingle();
     if (error || !data)
       throw new Error("Elevation does not belong to this plan");
+    if (!data.is_active && !input.dryRun)
+      throw new Error("This elevation is inactive and cannot be built.");
   }
   const [takeoffResult, availabilityResult] = await Promise.all([
     context.supabase
@@ -508,19 +557,28 @@ async function loadInstantiationContext(
     version.bundle_snapshot ?? (await buildDraftSnapshot(version, context));
   const warnings: string[] = [];
   const today = input.startDate;
-  const available = (availabilityResult.data ?? []).some((row) => {
-    const elevationMatches =
-      row.elevation_id === null ||
-      row.elevation_id === (input.elevationId ?? null);
-    const dateMatches =
-      (!row.effective_start || row.effective_start <= today) &&
-      (!row.effective_end || row.effective_end >= today);
-    return row.is_available && elevationMatches && dateMatches;
+  const offered = isPlanOffered(availabilityResult.data ?? [], {
+    elevationId: input.elevationId ?? null,
+    onDate: today,
   });
-  if (!available)
-    warnings.push(
-      "Plan or elevation is not currently available in this community; operations override recorded.",
+  if (!offered) {
+    const override = offeringOverrideFor(
+      lotResult.data.metadata,
+      versionResult.data.house_plan_id,
     );
+    if (override)
+      warnings.push(
+        `Plan or elevation is not offered in this community; building under a recorded override (${override.reason}).`,
+      );
+    else if (input.dryRun)
+      warnings.push(
+        "Plan or elevation is not offered in this community; it cannot be instantiated without an offering override.",
+      );
+    else
+      throw new Error(
+        "This plan or elevation is not offered in the lot's community. Offer it there, or record an offering override with a reason.",
+      );
+  }
   const orgCostCodesDefault = await getOrgCostCodesEnabled(context.supabase, context.orgId);
   return {
     ...context,

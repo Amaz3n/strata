@@ -1,5 +1,6 @@
 import "server-only"
 
+import { readAllRows } from "@/lib/land/paging"
 import { calendarDaysBetween, normalizeWorkGroupKey } from "@/lib/starts/even-flow-math"
 import { getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -79,6 +80,21 @@ function assignedHousesQuery(
   return query
 }
 
+/** Rows read per fact for one page of houses; hitting it is an error, never a quiet undercount. */
+const ROLLUP_ROW_CAP = 100_000
+/** PostgREST puts `in()` filters in the URL. */
+const PROJECT_ID_BATCH = 200
+
+async function readComplete<Row>(
+  label: string,
+  read: (from: number, to: number) => PromiseLike<{ data: Row[] | null; error: { message: string } | null }>,
+  cap = ROLLUP_ROW_CAP,
+): Promise<Row[]> {
+  const { rows, truncated } = await readAllRows<Row>(read, { cap, label: `Failed to load ${label}` })
+  if (truncated) throw new Error(`Too many ${label} to total accurately; narrow the division and retry`)
+  return rows
+}
+
 export async function listMyHouses(
   opts: { userId?: string; divisionId?: string; page?: number; pageSize?: number } = {},
   orgId?: string,
@@ -101,16 +117,16 @@ export async function listMyHouses(
   const projectIds = (projects ?? []).map((project) => project.id)
   if (!projectIds.length) return { houses: [], total: count ?? 0 }
   const today = new Date().toISOString().slice(0, 10)
-  const [schedule, punch, tasks, logs] = await Promise.all([
-    context.supabase.from("schedule_items").select("project_id,status,progress,phase,start_date,end_date")
-      .eq("org_id", context.orgId).in("project_id", projectIds).limit(5000),
-    context.supabase.from("punch_items").select("project_id,status").eq("org_id", context.orgId).in("project_id", projectIds).limit(5000),
-    context.supabase.from("tasks").select("project_id,status").eq("org_id", context.orgId).in("project_id", projectIds).limit(5000),
-    context.supabase.from("daily_logs").select("project_id,log_date").eq("org_id", context.orgId).in("project_id", projectIds).order("log_date", { ascending: false }).limit(5000),
+  const [scheduleRows, punchRows, taskRows, logRows] = await Promise.all([
+    readComplete("schedule items", (from, to) => context.supabase.from("schedule_items").select("id,project_id,status,progress,phase,start_date,end_date")
+      .eq("org_id", context.orgId).in("project_id", projectIds).order("id").range(from, to)),
+    readComplete("punch items", (from, to) => context.supabase.from("punch_items").select("id,project_id,status")
+      .eq("org_id", context.orgId).in("project_id", projectIds).order("id").range(from, to)),
+    readComplete("tasks", (from, to) => context.supabase.from("tasks").select("id,project_id,status")
+      .eq("org_id", context.orgId).in("project_id", projectIds).order("id").range(from, to)),
+    readComplete("daily logs", (from, to) => context.supabase.from("daily_logs").select("id,project_id,log_date")
+      .eq("org_id", context.orgId).in("project_id", projectIds).order("log_date", { ascending: false }).order("id").range(from, to)),
   ])
-  for (const result of [schedule, punch, tasks, logs]) {
-    if (result.error) throw new Error(`Failed to load My Houses rollups: ${result.error.message}`)
-  }
   return {
     total: count ?? 0,
     houses: (projects ?? []).map((project) => {
@@ -118,7 +134,7 @@ export async function listMyHouses(
       const community = one(lot?.community)
       const plan = one(lot?.plan)
       const elevation = one(lot?.elevation)
-      const items = (schedule.data ?? []).filter((item) => item.project_id === project.id)
+      const items = scheduleRows.filter((item) => item.project_id === project.id)
       const open = items.filter((item) => item.status !== "completed")
       const current = [...open].sort((a, b) => String(a.start_date ?? "9999").localeCompare(String(b.start_date ?? "9999")))[0]
       const endDates = items.flatMap((item) => item.end_date ? [item.end_date] : [])
@@ -132,9 +148,9 @@ export async function listMyHouses(
         percentComplete: items.length ? Math.round(items.reduce((sum, item) => sum + Number(item.progress ?? (item.status === "completed" ? 100 : 0)), 0) / items.length) : 0,
         currentPhase: current?.phase ?? null,
         lateCount: open.filter((item) => item.end_date && item.end_date < today).length,
-        openPunch: (punch.data ?? []).filter((item) => item.project_id === project.id && !["closed", "completed"].includes(item.status)).length,
-        openTasks: (tasks.data ?? []).filter((item) => item.project_id === project.id && item.status !== "completed").length,
-        lastDailyLogDate: (logs.data ?? []).find((log) => log.project_id === project.id)?.log_date ?? null,
+        openPunch: punchRows.filter((item) => item.project_id === project.id && !["closed", "completed"].includes(item.status)).length,
+        openTasks: taskRows.filter((item) => item.project_id === project.id && item.status !== "completed").length,
+        lastDailyLogDate: logRows.find((log) => log.project_id === project.id)?.log_date ?? null,
       }
     }),
   }
@@ -152,22 +168,24 @@ export async function listMyHouseWork(
   const projectQuery = assignedHousesQuery(context, scope, `
     id,lot:lots!lots_project_id_fkey(lot_number,block,community:communities(name))
   `, userId, opts.divisionId)
-  const { data: projects, error: projectError } = await projectQuery.limit(100).returns<Pick<AssignedHouseRow, "id" | "lot">[]>()
-  if (projectError) throw new Error(`Failed to load assigned houses: ${projectError.message}`)
-  const projectIds = (projects ?? []).map((project) => project.id)
+  const projects = await readComplete("assigned houses", (from, to) =>
+    projectQuery.order("id").range(from, to).returns<Pick<AssignedHouseRow, "id" | "lot">[]>(), 5_000)
+  const projectIds = projects.map((project) => project.id)
   if (!projectIds.length) return []
   const start = new Date()
   const end = new Date(start)
   end.setUTCDate(end.getUTCDate() + (opts.window === "today" ? 0 : opts.window === "week" ? 7 : 14))
   const startDate = start.toISOString().slice(0, 10)
   const endDate = end.toISOString().slice(0, 10)
-  const { data, error } = await context.supabase.from("schedule_items").select("id,project_id,name,trade,status,start_date,end_date")
-    .eq("org_id", context.orgId).in("project_id", projectIds).not("start_date", "is", null)
-    .lte("start_date", endDate).gte("end_date", startDate).neq("status", "completed").order("start_date").limit(500)
-  if (error) throw new Error(`Failed to load house work: ${error.message}`)
-  const projectById = new Map((projects ?? []).map((project) => [project.id, project]))
+  // Project ids ride in the URL, so a long assignment list is read in batches.
+  const batches = Array.from({ length: Math.ceil(projectIds.length / PROJECT_ID_BATCH) }, (_, index) => projectIds.slice(index * PROJECT_ID_BATCH, (index + 1) * PROJECT_ID_BATCH))
+  const data = (await Promise.all(batches.map((batch) => readComplete("house work", (from, to) => context.supabase.from("schedule_items").select("id,project_id,name,trade,status,start_date,end_date")
+    .eq("org_id", context.orgId).in("project_id", batch).not("start_date", "is", null)
+    .lte("start_date", endDate).gte("end_date", startDate).neq("status", "completed").order("start_date").order("id").range(from, to), 20_000)))).flat()
+    .sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)))
+  const projectById = new Map(projects.map((project) => [project.id, project]))
   const groups = new Map<string, MyHouseTaskGroupDTO>()
-  for (const item of data ?? []) {
+  for (const item of data) {
     const key = normalizeWorkGroupKey(item.name)
     const project = projectById.get(item.project_id)
     const lot = one(project?.lot)

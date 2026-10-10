@@ -57,3 +57,33 @@ test("being the assigned superintendent does not complete work on a house outsid
     assert.deepEqual(service.writes(), [])
   }
 })
+
+test("a house's rollups count every schedule item even when PostgREST caps each response", async () => {
+  const items = Array.from({ length: 2500 }, (_, index) => ({
+    id: id(100000 + index),
+    org_id: ORG,
+    project_id: NORTH_HOUSE,
+    name: `Task ${index}`,
+    status: index < 1000 ? "completed" : "in_progress",
+    progress: index < 1000 ? 100 : 0,
+    start_date: "2026-09-01",
+    end_date: "2026-09-02",
+  }))
+  const service = createServiceHarness({
+    permissions: ["project.read", "start.read"],
+    divisions: [NORTH],
+    maxRows: 1000,
+    tables: {
+      projects: [house(NORTH_HOUSE, NORTH, "12")],
+      schedule_items: items,
+      punch_items: [],
+      tasks: [],
+      daily_logs: [],
+    },
+  })
+
+  const { houses } = await service.run(() => listMyHouses())
+
+  assert.equal(houses[0].percentComplete, 40)
+  assert.equal(houses[0].lateCount, 1500)
+})

@@ -855,7 +855,7 @@ export function BudgetTab({
       try {
         unwrapAction(await lockBudgetBaselineAction(projectId));
         toast({
-          title: baselineLockedAt ? "Baseline updated" : "Baseline locked",
+          title: "Baseline locked",
         });
         router.refresh();
       } catch (error) {
@@ -1138,15 +1138,13 @@ export function BudgetTab({
                 <Download className="h-4 w-4" />
                 Export CSV
               </DropdownMenuItem>
-              {canWrite && (
+              {canWrite && !baselineLockedAt && (
                 <DropdownMenuItem
                   onClick={lockBaseline}
                   disabled={isPending || unifiedRows.length === 0}
                 >
                   <Lock className="h-4 w-4" />
-                  {baselineLockedAt
-                    ? "Re-baseline budget"
-                    : "Lock budget baseline"}
+                  Lock budget baseline
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>

@@ -27,7 +27,11 @@ function gateFixture(overrides = {}) {
   }))
   tables.lots[0].house_plan_version_id = VERSION
   tables.lots[0].house_plan_elevation_id = "elev-1"
-  tables.lots[0].version = { status: "released" }
+  tables.lots[0].version = { status: "released", house_plan_id: "plan-1" }
+  tables.lots[0].delivered_at = "2026-01-01T00:00:00.000Z"
+  tables.community_plan_availability = overrides.offering ?? [
+    { id: "cpa-1", org_id: ORG, community_id: tables.lots[0].community_id, house_plan_id: "plan-1", elevation_id: null, is_available: true, effective_start: null, effective_end: null },
+  ]
   tables.files = [{ id: "file-1", org_id: ORG, project_id: PROJECT, archived_at: null, metadata: { document_kind: "plot_plan" } }]
   tables.project_selection_groups = overrides.selectionGroups ?? []
   tables.po_generation_runs = overrides.poRuns ?? []
@@ -141,6 +145,41 @@ test("a package goes ready only once every auto gate is proven and the manual on
   assert.equal(harness.store.start_packages[0].status, "ready")
 })
 
+test("a plan the community no longer offers does not clear the plan gate without a recorded override", async () => {
+  const withdrawn = [{ id: "cpa-1", org_id: ORG, community_id: "00000000-0000-4000-8000-000000000006", house_plan_id: "plan-1", elevation_id: null, is_available: false, effective_start: null, effective_end: null }]
+  buildHarness({ tables: gateFixture({ offering: withdrawn }), instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "plan_pinned"), "pending")
+})
+
+test("a recorded offering override clears the plan gate only for the plan it names", async () => {
+  const withdrawn = [{ id: "cpa-1", org_id: ORG, community_id: "00000000-0000-4000-8000-000000000006", house_plan_id: "plan-1", elevation_id: null, is_available: false, effective_start: null, effective_end: null }]
+  const override = (housePlanId) => ({ offering_override: { house_plan_id: housePlanId, reason: "Buyer pre-sold this plan before withdrawal", by: "00000000-0000-4000-8000-0000000000aa", at: "2026-09-01T00:00:00.000Z" } })
+  for (const [housePlanId, expected] of [["00000000-0000-4000-8000-0000000000b1", "passed"], ["00000000-0000-4000-8000-0000000000b2", "pending"]]) {
+    const tables = gateFixture({ offering: withdrawn })
+    tables.lots[0].version = { status: "released", house_plan_id: "00000000-0000-4000-8000-0000000000b1" }
+    tables.community_plan_availability[0].house_plan_id = "00000000-0000-4000-8000-0000000000b1"
+    tables.lots[0].metadata = override(housePlanId)
+    buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+    assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "plan_pinned"), expected)
+  }
+})
+
+test("a house cannot be started on a lot a buyer is holding, or on land that was never delivered", async () => {
+  const cases = [
+    { lot: { project_id: null, delivered_at: "2026-01-01T00:00:00.000Z", metadata: {} }, reservations: [{ id: "res-1", org_id: ORG, lot_id: "lot-open", status: "hold", expires_at: "2999-01-01T00:00:00.000Z" }], expected: /live hold or reservation/ },
+    { lot: { project_id: null, delivered_at: null, metadata: {} }, reservations: [], expected: /not been delivered/ },
+  ]
+  for (const { lot, reservations, expected } of cases) {
+    const tables = gateFixture()
+    tables.role_permissions.push({ role_id: tables.memberships[0].role_id, permission_key: "start.write" })
+    tables.lots = [{ id: "lot-open", org_id: ORG, community_id: tables.lots[0].community_id, status: "developed", lot_number: "9", ...lot }]
+    tables.lot_reservations = reservations
+    const harness = buildHarness({ tables })
+    await assert.rejects(loadStarts().openStartPackage("lot-open", {}), expected)
+    assert.equal(harness.store.start_packages.length, 1, "no second package was opened")
+  }
+})
+
 test("automatic readiness evidence read failures surface instead of recording a false verdict", async () => {
   for (const failingTable of ["lots", "files", "budgets", "po_generation_runs"]) {
     const tables = gateFixture({ purchasing: true })
@@ -200,7 +239,7 @@ test("the yard lists every lot still waiting for a package, past the first page 
   const community = { name: "Cypress Run", settings: {} }
   tables.lots = Array.from({ length: 1_100 }, (_, index) => ({
     id: `lot-${String(index).padStart(4, "0")}`, org_id: ORG, community_id: "community-1", project_id: null,
-    status: "developed", lot_number: String(index).padStart(4, "0"), block: null, community,
+    status: "developed", delivered_at: "2026-01-01T00:00:00.000Z", metadata: {}, lot_number: String(index).padStart(4, "0"), block: null, community,
     plan: null, elevation: null, project: null,
     // The first 600 lots already have a package; only the rest are waiting.
     packages: index < 600 ? [{ id: `pkg-${index}`, status: "open" }] : [],
@@ -209,4 +248,21 @@ test("the yard lists every lot still waiting for a package, past the first page 
 
   const candidates = await loadStarts().listStartPackageCandidates()
   assert.equal(candidates.length, 500)
+})
+
+test("the yard does not offer a lot that land development has not delivered", async () => {
+  const tables = releasingFixture({ purchasing: false })
+  const row = (id, extra) => ({
+    id, org_id: ORG, community_id: "community-1", project_id: null, status: "assigned", lot_number: id, block: null,
+    community: { name: "Cypress Run", settings: {} }, plan: null, elevation: null, project: null, packages: [], ...extra,
+  })
+  tables.lots = [
+    row("delivered", { delivered_at: "2026-01-01T00:00:00.000Z", metadata: {} }),
+    row("reserved-but-undeveloped", { delivered_at: null, metadata: {} }),
+    row("excepted", { delivered_at: null, metadata: { delivery_exception: { reason: "Lot finishes with the house pad", by: "00000000-0000-4000-8000-0000000000aa", at: "2026-09-01T00:00:00.000Z" } } }),
+  ]
+  buildHarness({ tables })
+
+  const candidates = await loadStarts().listStartPackageCandidates()
+  assert.deepEqual(candidates.map((candidate) => candidate.lotLabel).sort(), ["delivered", "excepted"])
 })

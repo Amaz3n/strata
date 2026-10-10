@@ -276,3 +276,11 @@ test('enabled cost, defect and company analytics pass trusted actor/scope withou
  const failed=harness({divisionIds:null,projectMembershipRequired:false},()=>[],{enabled:true})
  await assert.rejects(failed.service.getWarrantyCostSummary(),/Scoped RPC unavailable/);assert.equal(failed.calls.length,0)
 })
+
+test('verification counts only requests that have a completed visit to show, so total and rows are the same unit', async () => {
+  const h = harness({ divisionIds: null, projectMembershipRequired: false })
+  await h.service.listWarrantyVisitsPendingVerification()
+  const q = h.calls[0].params
+  assert.equal(q.get('metadata->>pending_verification'), 'eq.true')
+  assert.equal(q.get('metadata->>completed_visit_id'), 'not.is.null')
+})

@@ -23,7 +23,6 @@ type BucketKey = "past" | "week" | "next" | "month" | "later" | "none"
 interface Props {
   runway: StudioRunway
   communityId?: string
-  bookableHomes: Array<{ projectId: string; label: string; communityId: string | null }>
   canManage: boolean
 }
 
@@ -83,7 +82,7 @@ function formatSlot(value: string) {
   return new Date(value).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })
 }
 
-export function RunwayBoard({ runway, communityId, bookableHomes, canManage }: Props) {
+export function RunwayBoard({ runway, communityId, canManage }: Props) {
   const router = useRouter()
   const [focus, setFocus] = useState<Focus>("all")
   const [booking, setBooking] = useState(false)
@@ -165,6 +164,12 @@ export function RunwayBoard({ runway, communityId, bookableHomes, canManage }: P
           </button>
         ))}
       </div>
+
+      {runway.truncatedAt !== null && (
+        <p className="border-b px-4 py-2 text-xs text-warning" role="status">
+          Showing the first {runway.truncatedAt.toLocaleString()} open cutoffs. Narrow the community or division scope to see the rest; the counts above cover only these.
+        </p>
+      )}
 
       {isEmpty ? (
         <div className="flex flex-col items-center gap-2 px-6 py-20 text-center">
@@ -349,7 +354,6 @@ export function RunwayBoard({ runway, communityId, bookableHomes, canManage }: P
         <BookAppointmentDialog
           open={booking}
           onOpenChange={setBooking}
-          homes={bookableHomes}
           communityId={communityId}
           onBooked={() => router.refresh()}
         />

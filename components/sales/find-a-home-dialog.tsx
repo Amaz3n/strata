@@ -78,6 +78,7 @@ interface FindAHomeDialogProps {
  */
 export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: FindAHomeDialogProps) {
   const [homes, setHomes] = useState<SellableHome[] | null>(null)
+  const [loadedLimit, setLoadedLimit] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [availability, setAvailability] = useState<string>("all")
@@ -92,11 +93,15 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
     if (!open) return
     let cancelled = false
     setHomes(null)
+    setLoadedLimit(null)
     setError(null)
     setHoldLot(null)
     listSellableHomesAction()
       .then((result) => {
-        if (!cancelled) setHomes(unwrapAction(result))
+        if (cancelled) return
+        const page = unwrapAction(result)
+        setHomes(page.homes)
+        setLoadedLimit(page.truncated ? page.limit : null)
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError((cause as Error).message)
@@ -349,6 +354,12 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
               <>
                 <span className="font-medium text-foreground tabular-nums">{visible.length}</span> available ·{" "}
                 <span className="tabular-nums">{specCount}</span> ready or building
+                {loadedLimit !== null ? (
+                  <span className="text-warning">
+                    {" "}
+                    · Showing the newest {loadedLimit} homes in this scope; narrow the community or division to see the rest
+                  </span>
+                ) : null}
               </>
             )}
           </p>

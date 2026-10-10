@@ -6,7 +6,6 @@ import { Suspense } from "react"
 import { connection } from "next/server"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
-import { listCompanies } from "@/lib/services/companies"
 import { isWarrantyAnalyticsAvailable, getWarrantyCostSummary, getWarrantyDefectAnalysis, listWarrantyBackcharges, listWarrantyRequestsForOrg, listWarrantyTechnicians, listWarrantyVisitsForDispatch, listWarrantyVisitsPendingVerification } from "@/lib/services/warranty"
 import { WarrantyDeskClient } from "./warranty-desk-client"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
@@ -29,7 +28,7 @@ async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?
   const week = warrantyDispatchWeek(warrantyDeskUrlValue(params.week))
   const search = normalizeWarrantyDeskSearch(warrantyDeskUrlValue(params.search)), sla = warrantyQueueSlaFilter(warrantyDeskUrlValue(params.sla))
   const analyticsAvailable = tab !== "analytics" || await isWarrantyAnalyticsAvailable({ divisionId: ambient.divisionId, communityId: ambient.communityId })
-  const [requests, visits, pendingVerification, backcharges, defects, costs, technicians, companies, booksAccess] = await Promise.all([
+  const [requests, visits, pendingVerification, backcharges, defects, costs, technicians, booksAccess] = await Promise.all([
     tab === "queue" ? listWarrantyRequestsForOrg({ status: ["open","in_progress"], search, slaState: sla === "all" ? undefined : sla, page, pageSize, communityId: ambient.communityId, divisionId: ambient.divisionId }) : { rows: [], total: 0 },
     tab === "dispatch" ? listWarrantyVisitsForDispatch({ from: week.from, to: week.to, divisionId: ambient.divisionId, communityId: ambient.communityId, page, pageSize }) : { rows: [], total: 0 },
     tab === "verify" ? listWarrantyVisitsPendingVerification({ divisionId: ambient.divisionId, communityId: ambient.communityId, page, pageSize }) : { rows: [], total: 0 },
@@ -37,7 +36,6 @@ async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?
     tab === "analytics" && analyticsAvailable ? getWarrantyDefectAnalysis({ groupBy: "community", divisionId: ambient.divisionId, communityId: ambient.communityId }) : [],
     tab === "analytics" && analyticsAvailable ? getWarrantyCostSummary({ communityId: ambient.communityId, divisionId: ambient.divisionId }) : [],
     tab === "queue" ? listWarrantyTechnicians() : [],
-    tab === "queue" ? listCompanies() : [],
     tab === "analytics" ? getBooksUiAccess() : { adjust: false },
   ])
   const query = new URLSearchParams()
@@ -63,7 +61,7 @@ async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?
       <span className="text-muted-foreground">Week of {week.week} · UTC</span>
       <Link prefetch href={weekHref(week.next)}>Next week</Link>
     </nav>}
-    <WarrantyDeskClient key={`${tab}:${page}:${week.week}:${search}:${sla}:${ambient.divisionId ?? ""}:${ambient.communityId ?? ""}:${dataKey}`} initialTab={tab} analyticsAvailable={analyticsAvailable} initialSearch={search} initialSla={sla} dispatchWeekStart={week.from} canReviewAccounting={booksAccess.adjust} requests={requests.rows} total={requests.total} visits={visits.rows} pendingVerification={pendingVerification.rows} backcharges={backcharges.rows} defects={defects} costs={costs} technicians={technicians} companies={companies.map((company) => ({ id: company.id, name: company.name }))} />
+    <WarrantyDeskClient key={`${tab}:${page}:${week.week}:${search}:${sla}:${ambient.divisionId ?? ""}:${ambient.communityId ?? ""}:${dataKey}`} initialTab={tab} analyticsAvailable={analyticsAvailable} initialSearch={search} initialSla={sla} dispatchWeekStart={week.from} canReviewAccounting={booksAccess.adjust} requests={requests.rows} total={requests.total} visits={visits.rows} pendingVerification={pendingVerification.rows} backcharges={backcharges.rows} defects={defects} costs={costs} technicians={technicians} />
     {tab !== "analytics" && <QueuePagination page={page} pageSize={pageSize} total={total} href={href} label="Warranty pages" />}
   </div>
 }
