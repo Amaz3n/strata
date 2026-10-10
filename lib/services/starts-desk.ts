@@ -18,7 +18,36 @@ const WEEKS_AHEAD = 11
 const COVERAGE_WEEKS = 4
 /** How far back the ribbon looks for slots that never got a house. */
 const MISSED_WEEKS = 4
+/** Packages the lane draws per status band; past this the lane says how many it left out. */
 const PACKAGE_PAGE_SIZE = 200
+/**
+ * The ribbon counts every package in scope even when the lane draws only the
+ * first page. Past this many it refuses rather than counting a sample.
+ */
+const COUNTER_PACKAGE_CAP = 5_000
+
+type PackageFilters = Parameters<typeof listStartPackages>[0]
+
+/**
+ * Every package matching `filters`, page by page, starting from the page the
+ * lane already loaded. Only called when that page was not the whole set.
+ */
+async function readEveryPackage(
+  filters: PackageFilters,
+  first: { packages: StartPackageListItemDTO[]; total: number },
+): Promise<StartPackageListItemDTO[]> {
+  if (first.total <= first.packages.length) return first.packages
+  if (first.total > COUNTER_PACKAGE_CAP) {
+    throw new Error(`More than ${COUNTER_PACKAGE_CAP} start packages are in scope; narrow the desk by community.`)
+  }
+  const pages = Math.ceil(first.total / PACKAGE_PAGE_SIZE)
+  const rest = await Promise.all(
+    Array.from({ length: pages - 1 }, (_, index) =>
+      listStartPackages({ ...filters, page: index + 2, pageSize: PACKAGE_PAGE_SIZE }),
+    ),
+  )
+  return [...first.packages, ...rest.flatMap((page) => page.packages)]
+}
 
 export interface DeskWeek {
   weekStart: string
@@ -49,6 +78,8 @@ export interface StartsDesk {
   counters: DeskCounters
   /** True when more packages exist than the desk loaded — the UI must say so. */
   truncated: boolean
+  /** Every package in scope, whether or not the lane drew it. */
+  packageTotal: number
   canWrite: boolean
   canRelease: boolean
   canSetSlots: boolean
@@ -60,7 +91,7 @@ export interface StartsDesk {
  * and the counters the ribbon filters by.
  */
 export async function getStartsDesk(
-  scope: { communityId?: string; divisionId?: string } = {},
+  { refused = false, ...scope }: { communityId?: string; divisionId?: string; refused?: boolean } = {},
 ): Promise<StartsDesk> {
   const currentWeek = mondayOfIsoWeek(new Date())
   const windowStart = addWeeks(currentWeek, -WEEKS_BACK)
@@ -69,11 +100,23 @@ export async function getStartsDesk(
   const isAdmin = grants.includes("*") || grants.includes("org.admin")
   const canWrite = isAdmin || grants.includes("start.write")
   const canRelease = isAdmin || grants.includes("start.release")
+  const canSetSlots = isAdmin || grants.includes("start.slots")
 
+  // A refused community lens (see resolveProductionDeskScope) draws nothing.
+  if (refused) {
+    return {
+      currentWeek, weeks: [], packages: [], candidates: [], truncated: false, packageTotal: 0,
+      counters: { precon: 0, ready: 0, atRisk: 0, failed: 0, slotsAhead: 0, filledAhead: 0, soldAtRisk: 0, unpackagedSold: 0, missedStarts: 0, missedStartsWeeks: MISSED_WEEKS },
+      canWrite, canRelease, canSetSlots,
+    }
+  }
+
+  const activeFilters: PackageFilters = { ...scope, status: ["open", "ready", "releasing", "attention"] }
+  const releasedFilters: PackageFilters = { ...scope, status: ["released"], targetWeekFrom: windowStart }
   const [slots, active, released, candidates, missed] = await Promise.all([
     getCommunityReleaseSlots({ ...scope, weeksBack: WEEKS_BACK, weeksAhead: WEEKS_AHEAD }),
-    listStartPackages({ ...scope, status: ["open", "ready", "releasing", "attention"], pageSize: PACKAGE_PAGE_SIZE }),
-    listStartPackages({ ...scope, status: ["released"], targetWeekFrom: windowStart, pageSize: PACKAGE_PAGE_SIZE }),
+    listStartPackages({ ...activeFilters, pageSize: PACKAGE_PAGE_SIZE }),
+    listStartPackages({ ...releasedFilters, pageSize: PACKAGE_PAGE_SIZE }),
     canWrite ? listStartPackageCandidates(scope) : Promise.resolve([]),
     getMissedStarts({ ...scope, weeksBack: MISSED_WEEKS }),
   ])
@@ -97,19 +140,25 @@ export async function getStartsDesk(
   })
 
   const packages = [...active.packages, ...released.packages]
+  // The ribbon counts the whole scope, not the page the lane drew: a counter
+  // that tops out at the page size reads as "200 at risk" when it is 340.
+  const [everyActive, everyReleased] = await Promise.all([
+    readEveryPackage(activeFilters, active),
+    readEveryPackage(releasedFilters, released),
+  ])
   const coverageWeeks = new Set(
     Array.from({ length: COVERAGE_WEEKS }, (_, index) => addWeeks(currentWeek, index)),
   )
   const counters: DeskCounters = {
-    precon: active.packages.length,
-    ready: active.packages.filter((pkg) => pkg.status === "ready").length,
-    atRisk: active.packages.filter((pkg) => pkg.risk === "at_risk" || pkg.risk === "late").length,
-    failed: active.packages.filter((pkg) => pkg.status === "attention").length,
+    precon: active.total,
+    ready: everyActive.filter((pkg) => pkg.status === "ready").length,
+    atRisk: everyActive.filter((pkg) => pkg.risk === "at_risk" || pkg.risk === "late").length,
+    failed: everyActive.filter((pkg) => pkg.status === "attention").length,
     slotsAhead: weeks
       .filter((week) => coverageWeeks.has(week.weekStart))
       .reduce((sum, week) => sum + week.targetStarts, 0),
-    filledAhead: packages.filter((pkg) => pkg.targetWeek && coverageWeeks.has(pkg.targetWeek)).length,
-    soldAtRisk: active.packages.filter((pkg) => pkg.sale.isSold && (pkg.risk === "at_risk" || pkg.risk === "late")).length,
+    filledAhead: [...everyActive, ...everyReleased].filter((pkg) => pkg.targetWeek && coverageWeeks.has(pkg.targetWeek)).length,
+    soldAtRisk: everyActive.filter((pkg) => pkg.sale.isSold && (pkg.risk === "at_risk" || pkg.risk === "late")).length,
     unpackagedSold: candidates.filter((candidate) => candidate.sale.isSold).length,
     missedStarts: missed.missed,
     missedStartsWeeks: missed.weeks,
@@ -122,8 +171,9 @@ export async function getStartsDesk(
     candidates,
     counters,
     truncated: active.total > active.packages.length || released.total > released.packages.length,
+    packageTotal: active.total + released.total,
     canWrite,
     canRelease,
-    canSetSlots: isAdmin || grants.includes("start.slots"),
+    canSetSlots,
   }
 }

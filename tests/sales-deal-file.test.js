@@ -145,3 +145,21 @@ test('deal error boundary retries server reads and offers the owning sales desk'
   assert.equal(retries,1);assert.equal(all.find(e=>e.type===Link).props.href,'/sales')
   const html=renderToStaticMarkup(tree);assert.match(html,/role="alert"/);assert.doesNotMatch(html,/sensitive source detail/)
 })
+
+test('a division-limited consultant is told the board is cut even when their own rows fall under the cap', async () => {
+  const { createServiceHarness } = require('./support/service')
+  const { freshRequire } = require('./support/modules')
+  const { listSalesBoard } = freshRequire('lib/services/sales-deals.ts')
+  const OWN = id(20), OTHER = id(21)
+  const deal = (n, divisionId) => ({ deal_id: `prospect:${n}`, division_id: divisionId, stage: 'working', is_open: true, open_gate_count: 0 })
+  const service = createServiceHarness({
+    permissions: ['sales.read'],
+    divisions: [OWN],
+    rpc: { get_sales_deals: ({ p_limit }) => ({ data: [deal(1, OWN), deal(2, OTHER), deal(3, OTHER)].slice(0, p_limit), error: null }) },
+  })
+
+  const board = await service.run(() => listSalesBoard({ limit: 3 }))
+
+  assert.deepEqual(board.deals.map((row) => row.dealId), ['prospect:1'])
+  assert.equal(board.truncated, true)
+})

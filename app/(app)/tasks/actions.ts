@@ -8,6 +8,7 @@ import { z } from "zod"
 import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { resolveVisibleProjectIds } from "@/lib/services/projects"
 import { recordEvent } from "@/lib/services/events"
 import type { Task } from "@/lib/types"
 import { taskInputSchema, taskUpdateSchema, type TaskInput } from "@/lib/validation/tasks"
@@ -507,21 +508,25 @@ export async function deleteMyTaskAction(taskId: string): Promise<ActionResult<v
   })
 }
 
-/** Projects for the task's project picker/filter. */
+/** Projects for the task's project picker/filter: only the ones the caller can open. */
 export async function listTaskProjectsAction(): Promise<Array<{ id: string; name: string }>> {
-      const { supabase, orgId } = await requireOrgContext()
+      const { supabase, orgId, userId } = await requireOrgContext()
+      const visibleProjectIds = await resolveVisibleProjectIds({ supabase, orgId, userId, includePrecon: true })
+      if (visibleProjectIds?.length === 0) return []
 
-      const { data, error } = await supabase
+      let query = supabase
         .from("projects")
         .select("id, name")
         .eq("org_id", orgId)
         .order("name", { ascending: true })
+      if (visibleProjectIds) query = query.in("id", visibleProjectIds)
+      const { data, error } = await query
 
       if (error) {
         throw new Error(`Failed to list projects: ${error.message}`)
       }
 
-      return (data ?? []).map((row: any) => ({ id: row.id as string, name: String(row.name ?? "Untitled project") }))
+      return (data ?? []).map((row) => ({ id: row.id, name: row.name ?? "Untitled project" }))
 }
 
 /** Org-wide people a task can be assigned to: team members + contacts (no companies). */

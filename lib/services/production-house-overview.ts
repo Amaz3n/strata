@@ -1,6 +1,7 @@
 import "server-only"
 
 import { projectedMargin } from "@/lib/financials/production-margin"
+import { readAllRowsById, type RangeResult } from "@/lib/land/paging"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
 
@@ -68,6 +69,20 @@ export type ProductionHouseOverviewData = {
   }
 }
 
+/** One home's money rows. Past this the overview fails rather than understating cost. */
+const HOUSE_MONEY_ROW_CAP = 50_000
+
+type IdRow = { id: string }
+type CostRow = IdRow & { cost_cents: number | null }
+type VpoRow = IdRow & { total_cents: number | null; status: string; reason: unknown }
+type SelectionRow = IdRow & { price_cents_snapshot: number | null; status: string }
+type ChangeOrderRow = IdRow & { total_cents: number | null }
+
+/** Every row of one home's money set, keyset-paged past the API's row cap. */
+function readHouseMoney<Row extends IdRow>(label: string, read: (afterId: string | null, limit: number) => PromiseLike<RangeResult<Row>>) {
+  return readAllRowsById<Row>(read, { cap: HOUSE_MONEY_ROW_CAP, label, pageSize: 1000 })
+}
+
 export async function getProductionHouseOverview(projectId: string, orgId?: string): Promise<ProductionHouseOverviewData> {
   const context = await requireOrgContext(orgId)
   await requireProjectPermission(context.userId, projectId, "project.read")
@@ -79,22 +94,41 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
     .maybeSingle()
   if (error || !project) throw new Error("Home not found")
 
-  const [{ data: lot }, { data: schedule }, { data: startPackage }, { data: contracts }, { data: budgetRows }, { data: costs }, { data: vpos }, { data: selectionGroups }, { data: selections }, { data: closing }, { count: punchCount }, { data: photos }, { data: logs }, { count: warrantyCount }, { data: approvedCos }] = await Promise.all([
+  const { supabase, orgId: resolvedOrgId } = context
+  const [{ data: lot }, { data: schedule }, { data: startPackage }, { data: contracts }, { data: budgetRows }, costs, vpos, { data: selectionGroups }, selections, { data: closing }, { count: punchCount }, { data: photos }, { data: logs }, { count: warrantyCount }, approvedCos] = await Promise.all([
     context.supabase.from("lots").select("id,lot_number,address,dimensions,swing,premium_cents,community_id,community:communities(name,settings),phase:community_phases(name),house_plan_id,plan:house_plans(name,code),elevation:house_plan_elevations(name,code),version:house_plan_versions(version_number)").eq("org_id", context.orgId).eq("project_id", projectId).maybeSingle(),
     context.supabase.from("schedule_items").select("id,name,status,start_date,end_date,progress,item_type,sort_order").eq("org_id", context.orgId).eq("project_id", projectId).order("sort_order").limit(500),
     context.supabase.from("start_packages").select("id,status,actual_start_date,released_at,gates:start_package_gates(status)").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
     context.supabase.from("contracts").select("id,total_cents,status,snapshot,signed_at").eq("org_id", context.orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").order("signed_at", { ascending: false, nullsFirst: false }).limit(1),
-    context.supabase.from("budgets").select("total_cents,version").eq("org_id", context.orgId).eq("project_id", projectId).order("version", { ascending: false }).limit(1),
-    context.supabase.from("job_cost_entries").select("cost_cents").eq("org_id", context.orgId).eq("project_id", projectId).eq("status", "posted").limit(5_000),
-    context.supabase.from("commitment_change_orders").select("id,total_cents,status,reason:variance_reason_codes(label,code)").eq("org_id", context.orgId).eq("project_id", projectId).not("reason_code_id", "is", null).in("status", ["approved", "executed"]).limit(500),
+    // The baseline is the newest budget that has left draft: a draft being
+    // worked on must never replace the approved number the margin is read against.
+    context.supabase.from("budgets").select("total_cents,version").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "draft").order("version", { ascending: false }).limit(1),
+    readHouseMoney<CostRow>("Unable to read this home's job cost", (afterId, limit) => {
+      let query = supabase.from("job_cost_entries").select("id,cost_cents").eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("status", "posted")
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<CostRow[]>()
+    }),
+    readHouseMoney<VpoRow>("Unable to read this home's variance POs", (afterId, limit) => {
+      let query = supabase.from("commitment_change_orders").select("id,total_cents,status,reason:variance_reason_codes(label,code)").eq("org_id", resolvedOrgId).eq("project_id", projectId).not("reason_code_id", "is", null).in("status", ["approved", "executed"])
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<VpoRow[]>()
+    }),
     context.supabase.from("project_selection_groups").select("id,status,cutoff_date").eq("org_id", context.orgId).eq("project_id", projectId).order("cutoff_date", { ascending: true, nullsFirst: false }).limit(100),
-    context.supabase.from("project_selections").select("price_cents_snapshot,status").eq("org_id", context.orgId).eq("project_id", projectId).limit(1_000),
+    readHouseMoney<SelectionRow>("Unable to read this home's selections", (afterId, limit) => {
+      let query = supabase.from("project_selections").select("id,price_cents_snapshot,status").eq("org_id", resolvedOrgId).eq("project_id", projectId)
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<SelectionRow[]>()
+    }),
     context.supabase.from("closings").select("id,status,scheduled_date,actual_date,items:closing_checklist_items(status)").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
     context.supabase.from("punch_items").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("project_id", projectId).not("status", "in", "(completed,closed,resolved)"),
     context.supabase.from("photos").select("taken_at,created_at").eq("org_id", context.orgId).eq("project_id", projectId).order("taken_at", { ascending: false, nullsFirst: false }).limit(1),
     context.supabase.from("daily_logs").select("log_date").eq("org_id", context.orgId).eq("project_id", projectId).order("log_date", { ascending: false }).limit(1),
     context.supabase.from("warranty_requests").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("project_id", projectId).in("status", ["open", "in_progress"]),
-    context.supabase.from("change_orders").select("total_cents").eq("org_id", context.orgId).eq("project_id", projectId).eq("status", "approved").limit(500),
+    readHouseMoney<ChangeOrderRow>("Unable to read this home's change orders", (afterId, limit) => {
+      let query = supabase.from("change_orders").select("id,total_cents").eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("status", "approved")
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<ChangeOrderRow[]>()
+    }),
   ])
 
   const scheduleRows = schedule ?? []
@@ -107,15 +141,15 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   const basePrice = Number(pricing.base_price_cents ?? 0)
   const lotPremium = Number(pricing.lot_premium_cents ?? lot?.premium_cents ?? 0)
   const structuralOptions = Number(pricing.structural_options_cents ?? 0)
-  const selectionPrice = Number(pricing.design_selections_cents ?? (selections ?? []).reduce((total, row) => total + Number(row.price_cents_snapshot ?? 0), 0))
-  const changeOrders = (approvedCos ?? []).reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
+  const selectionPrice = Number(pricing.design_selections_cents ?? selections.reduce((total, row) => total + Number(row.price_cents_snapshot ?? 0), 0))
+  const changeOrders = approvedCos.reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
   const salePrice = Number(contract?.total_cents ?? basePrice + lotPremium + structuralOptions + selectionPrice + changeOrders)
   const budget = Number(budgetRows?.[0]?.total_cents ?? 0)
-  const actualCost = (costs ?? []).reduce((total, row) => total + Number(row.cost_cents ?? 0), 0)
-  const vpoCents = (vpos ?? []).reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
+  const actualCost = costs.reduce((total, row) => total + Number(row.cost_cents ?? 0), 0)
+  const vpoCents = vpos.reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
   const margin = projectedMargin({ revenueCents: salePrice, budgetCents: budget, actualCostCents: actualCost, vpoCents })
   const reasonTotals = new Map<string, number>()
-  for (const row of vpos ?? []) {
+  for (const row of vpos) {
     const reason = one<any>(row.reason)
     const label = reason?.label ?? reason?.code ?? "Uncoded"
     reasonTotals.set(label, (reasonTotals.get(label) ?? 0) + Number(row.total_cents ?? 0))
@@ -189,7 +223,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       budgetCents: budget,
       actualCostCents: actualCost,
       vpoCents,
-      vpoCount: vpos?.length ?? 0,
+      vpoCount: vpos.length,
       topVpoReason: Array.from(reasonTotals.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
       projectedMarginCents: margin.marginCents,
       projectedMarginPercent: margin.marginPercent,

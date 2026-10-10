@@ -1,7 +1,9 @@
 import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+import { readAllRowsById, type RangeResult } from "@/lib/land/paging"
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { resolveVisibleProjectIds } from "@/lib/services/projects"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
@@ -14,6 +16,27 @@ import { recordEvent } from "@/lib/services/events"
  */
 export type AccountingExportKind = "ap" | "job_cost"
 
+/** An export past this many rows per set fails loudly rather than shipping part of the books. */
+const EXPORT_ROW_CAP = 50_000
+/** One ID-keyed `.in()` list per request; a long list does not fit in a PostgREST URL. */
+const PROJECT_CHUNK = 100
+
+function chunked(ids: string[]) {
+  const out: string[][] = []
+  for (let index = 0; index < ids.length; index += PROJECT_CHUNK) out.push(ids.slice(index, index + PROJECT_CHUNK))
+  return out
+}
+
+/** Reads one set to the end, keyed on `id`, once per project chunk. */
+async function readAllForProjects<Row extends { id: string }>(
+  projectIds: string[],
+  label: string,
+  read: (ids: string[], afterId: string | null, limit: number) => PromiseLike<RangeResult<Row>>,
+) {
+  const sets = await Promise.all(chunked(projectIds).map((ids) => readAllRowsById<Row>((afterId, limit) => read(ids, afterId, limit), { cap: EXPORT_ROW_CAP, label, pageSize: 1000 })))
+  return sets.flat()
+}
+
 function csvCell(value: unknown) {
   const text = value == null ? "" : String(value)
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
@@ -23,22 +46,31 @@ function toCsv(headers: string[], rows: unknown[][]) {
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n")
 }
 
+function readScopeProjects(supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"], orgId: string, divisionId: string | null) {
+  return readAllRowsById<{ id: string }>((afterId, limit) => {
+    let query = supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery")
+    if (divisionId) query = query.eq("division_id", divisionId)
+    if (afterId) query = query.gt("id", afterId)
+    return query.order("id").limit(limit)
+  }, { cap: EXPORT_ROW_CAP, label: "Unable to load export projects", pageSize: 1000 })
+}
+
 async function projectIdsForScope(supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"], orgId: string, mapId?: string | null) {
   if (!mapId) {
-    const { data } = await supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery")
-    return (data ?? []).map((row) => row.id)
+    return (await readScopeProjects(supabase, orgId, null)).map((row) => row.id)
   }
   const { data: map, error } = await supabase.from("accounting_entity_map").select("project_id,community_id,division_id").eq("org_id", orgId).eq("id", mapId).maybeSingle()
   if (error || !map) throw new Error(error?.message ?? "Accounting scope not found")
   if (map.project_id) return [map.project_id]
   if (map.community_id) {
-    const { data } = await supabase.from("lots").select("project_id").eq("org_id", orgId).eq("community_id", map.community_id).not("project_id", "is", null)
-    return (data ?? []).map((row) => row.project_id).filter((id): id is string => Boolean(id))
+    const lots = await readAllRowsById<{ id: string; project_id: string | null }>((afterId, limit) => {
+      let query = supabase.from("lots").select("id,project_id").eq("org_id", orgId).eq("community_id", map.community_id as string).not("project_id", "is", null)
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit)
+    }, { cap: EXPORT_ROW_CAP, label: "Unable to load export lots", pageSize: 1000 })
+    return lots.map((row) => row.project_id).filter((id): id is string => Boolean(id))
   }
-  let query = supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery")
-  if (map.division_id) query = query.eq("division_id", map.division_id)
-  const { data } = await query
-  return (data ?? []).map((row) => row.id)
+  return (await readScopeProjects(supabase, orgId, map.division_id)).map((row) => row.id)
 }
 
 async function projectReferences(supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"], orgId: string, projectIds: string[]) {
@@ -64,7 +96,15 @@ async function projectReferences(supabase: Awaited<ReturnType<typeof requireOrgC
 export async function createAccountingExport(input: { kind: AccountingExportKind; startDate: string; endDate: string; entityMapId?: string | null }) {
   const context = await requireOrgContext()
   await requirePermission("financials.export", context)
-  const projectIds = await projectIdsForScope(context.supabase, context.orgId, input.entityMapId)
+  // The entity map picks the books scope; the caller's division and project
+  // access bound it. An export is a read, so it never reaches past what the
+  // caller could open on screen.
+  const [scopeProjectIds, visibleProjectIds] = await Promise.all([
+    projectIdsForScope(context.supabase, context.orgId, input.entityMapId),
+    resolveVisibleProjectIds({ supabase: context.supabase, orgId: context.orgId, userId: context.userId, includePrecon: false }),
+  ])
+  const visible = visibleProjectIds ? new Set(visibleProjectIds) : null
+  const projectIds = visible ? scopeProjectIds.filter((projectId) => visible.has(projectId)) : scopeProjectIds
   const projectRefs = await projectReferences(context.supabase, context.orgId, projectIds)
   let csv: string
 
@@ -86,29 +126,36 @@ export async function createAccountingExport(input: { kind: AccountingExportKind
     ]
     if (projectIds.length === 0) csv = toCsv(headers, [])
     else {
-      const [{ data: bills, error }, { data: payments, error: paymentError }] = await Promise.all([
-        context.supabase
-          .from("vendor_bills")
-          .select("id,project_id,bill_number,bill_date,due_date,total_cents,accounting_coding,company:companies(name),commitment:commitments(company:companies(name))")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-          .gte("bill_date", input.startDate)
-          .lte("bill_date", input.endDate)
-          .order("bill_date"),
-        context.supabase
-          .from("payments")
-          .select("id,project_id,bill_id,amount_cents,method,reference,received_at,bill:vendor_bills(bill_number,project_id,company:companies(name))")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .not("bill_id", "is", null)
-          .neq("status", "failed")
-          .gte("received_at", `${input.startDate}T00:00:00Z`)
-          .lte("received_at", `${input.endDate}T23:59:59Z`)
-          .order("received_at"),
+      const [unsortedBills, unsortedPayments] = await Promise.all([
+        readAllForProjects(projectIds, "Unable to build AP export bills", (ids, afterId, limit) => {
+          let query = context.supabase
+            .from("vendor_bills")
+            .select("id,project_id,bill_number,bill_date,due_date,total_cents,accounting_coding,company:companies(name),commitment:commitments(company:companies(name))")
+            .eq("org_id", context.orgId)
+            .in("project_id", ids)
+            .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
+            .gte("bill_date", input.startDate)
+            .lte("bill_date", input.endDate)
+          if (afterId) query = query.gt("id", afterId)
+          return query.order("id").limit(limit)
+        }),
+        readAllForProjects(projectIds, "Unable to build AP export payments", (ids, afterId, limit) => {
+          let query = context.supabase
+            .from("payments")
+            .select("id,project_id,bill_id,amount_cents,method,reference,received_at,bill:vendor_bills(bill_number,project_id,company:companies(name))")
+            .eq("org_id", context.orgId)
+            .in("project_id", ids)
+            .not("bill_id", "is", null)
+            .neq("status", "failed")
+            .gte("received_at", `${input.startDate}T00:00:00Z`)
+            .lte("received_at", `${input.endDate}T23:59:59Z`)
+          if (afterId) query = query.gt("id", afterId)
+          return query.order("id").limit(limit)
+        }),
       ])
-      if (error || paymentError) throw new Error(`Unable to build AP export: ${error?.message ?? paymentError?.message}`)
-      const billRows = (bills ?? []).map((bill) => {
+      const bills = [...unsortedBills].sort((x, y) => String(x.bill_date).localeCompare(String(y.bill_date)))
+      const payments = [...unsortedPayments].sort((x, y) => String(x.received_at).localeCompare(String(y.received_at)))
+      const billRows = bills.map((bill) => {
         const company = Array.isArray(bill.company) ? bill.company[0] : bill.company
         const commitment = Array.isArray(bill.commitment) ? bill.commitment[0] : bill.commitment
         const commitmentCompany = Array.isArray(commitment?.company) ? commitment.company[0] : commitment?.company
@@ -130,7 +177,7 @@ export async function createAccountingExport(input: { kind: AccountingExportKind
           ref?.division,
         ]
       })
-      const paymentRows = (payments ?? []).map((payment) => {
+      const paymentRows = payments.map((payment) => {
         const bill = Array.isArray(payment.bill) ? payment.bill[0] : payment.bill
         const company = Array.isArray(bill?.company) ? bill.company[0] : bill?.company
         const projectId = payment.project_id ?? bill?.project_id ?? ""
@@ -160,17 +207,20 @@ export async function createAccountingExport(input: { kind: AccountingExportKind
     const headers = ["project", "project_id", "community", "division", "cost_code", "period", "amount_cents"]
     if (projectIds.length === 0) csv = toCsv(headers, [])
     else {
-      const { data: entries, error } = await context.supabase
-        .from("job_cost_entries")
-        .select("project_id,incurred_on,cost_cents,cost_code:cost_codes(code,name)")
-        .eq("org_id", context.orgId)
-        .in("project_id", projectIds)
-        .eq("status", "posted")
-        .gte("incurred_on", input.startDate)
-        .lte("incurred_on", input.endDate)
-      if (error) throw new Error(`Unable to build job-cost export: ${error.message}`)
+      const entries = await readAllForProjects(projectIds, "Unable to build job-cost export", (ids, afterId, limit) => {
+        let query = context.supabase
+          .from("job_cost_entries")
+          .select("id,project_id,incurred_on,cost_cents,cost_code:cost_codes(code,name)")
+          .eq("org_id", context.orgId)
+          .in("project_id", ids)
+          .eq("status", "posted")
+          .gte("incurred_on", input.startDate)
+          .lte("incurred_on", input.endDate)
+        if (afterId) query = query.gt("id", afterId)
+        return query.order("id").limit(limit)
+      })
       const totals = new Map<string, { projectId: string; code: string; period: string; amount: number }>()
-      for (const entry of entries ?? []) {
+      for (const entry of entries) {
         const code = Array.isArray(entry.cost_code) ? entry.cost_code[0] : entry.cost_code
         const label = [code?.code, code?.name].filter(Boolean).join(" ") || "Uncoded"
         const period = String(entry.incurred_on).slice(0, 7)

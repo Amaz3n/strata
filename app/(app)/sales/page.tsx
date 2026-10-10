@@ -8,7 +8,7 @@ import { SalesBoardSkeleton } from "@/components/sales/deal-board-skeleton"
 import { isDealView, type DealView } from "@/lib/sales/board"
 import { isDealFilter, type DealFilter } from "@/lib/sales/next-action"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
-import { listLostReasons, listSalesDeals } from "@/lib/services/sales-deals"
+import { listLostReasons, listSalesBoard } from "@/lib/services/sales-deals"
 import { listTeamMembers } from "@/lib/services/team"
 
 
@@ -41,7 +41,7 @@ async function SalesPageContent({ searchParams }: SalesPageProps) {
 async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFilter }) {
   await connection()
   const boardPromise = getAmbientDeskContext().then(async (ambient) => {
-    const deals = await listSalesDeals({
+    const { deals, truncated } = await listSalesBoard({
       divisionId: ambient.divisionId,
       communityId: ambient.communityId,
       includeClosed: view !== "open",
@@ -52,9 +52,9 @@ async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFi
           deals.flatMap((deal) => (deal.stage === "lost" && deal.prospectId ? [deal.prospectId] : [])),
         )
       : new Map<string, string>()
-    return { ambient, deals, lostReasons }
+    return { ambient, deals, truncated, lostReasons }
   })
-  const [{ ambient, deals, lostReasons }, teamMembers] = await Promise.all([
+  const [{ ambient, deals, truncated, lostReasons }, teamMembers] = await Promise.all([
     boardPromise,
     listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => []),
   ])
@@ -70,7 +70,7 @@ async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFi
       owners={owners}
       lostReasons={Object.fromEntries(lostReasons)}
       communities={communityOptions}
-      truncated={deals.length >= ROW_CAP}
+      truncated={truncated}
       now={new Date()}
       actions={
         <NewInquirySheet

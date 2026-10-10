@@ -1,3 +1,4 @@
+import { logger } from "@/lib/logging/logger"
 import { afterResponse } from "@/lib/observability/after-response"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
@@ -30,6 +31,10 @@ export interface EntityAuditEntry {
  *
  * The audit table is intentionally append-only evidence. This reader returns
  * the snapshots as stored rather than attempting to recreate mutable rows.
+ *
+ * The table's read policy is `audit.read` (the whole org's history). A record's
+ * own trail is authorized here by the record's permission and project instead,
+ * and then read with the service role, scoped to that one entity.
  */
 export async function listEntityAuditTrail(input: {
   entityType: string
@@ -51,7 +56,7 @@ export async function listEntityAuditTrail(input: {
     resourceId: input.entityId,
   })
 
-  const { data, error } = await context.supabase
+  const { data, error } = await createServiceSupabaseClient()
     .from("audit_log")
     .select(`
       id,
@@ -94,6 +99,13 @@ export async function listEntityAuditTrail(input: {
   })
 }
 
+/**
+ * Append one audit row. Never throws: it runs after the mutation it describes
+ * has committed, so failing here would report a completed write as failed. A
+ * missing row is still a gap in the evidence, so every failure is reported to
+ * the error pipeline (log + Sentry) with the entity it was for — never the
+ * snapshots, which can hold payroll and banking data.
+ */
 export async function recordAudit(input: AuditInput) {
   try {
     let resolvedOrgId = input.orgId
@@ -126,7 +138,7 @@ export async function recordAudit(input: AuditInput) {
     })
 
     if (error) {
-      console.error("Failed to record audit log", error)
+      reportAuditFailure(input, resolvedOrgId, error)
     }
 
     // Keep the unified search index in sync as a side effect of audited
@@ -144,6 +156,23 @@ export async function recordAudit(input: AuditInput) {
       }
     }
   } catch (error) {
-    console.error("Unable to record audit log", error)
+    reportAuditFailure(input, input.orgId, error)
   }
+}
+
+function reportAuditFailure(input: AuditInput, orgId: string | undefined, error: unknown) {
+  logger.error("audit.record_failed", {
+    error: error instanceof Error ? error : new Error(errorMessage(error)),
+    domain: "audit",
+    orgId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    source: input.source,
+  })
+}
+
+function errorMessage(error: unknown) {
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message
+  return "Audit insert failed"
 }

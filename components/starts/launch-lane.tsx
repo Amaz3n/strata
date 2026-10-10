@@ -327,7 +327,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
               {desk.counters.soldAtRisk} sold {desk.counters.soldAtRisk === 1 ? "home" : "homes"} will miss its close
             </button>
           ) : null}
-          {desk.truncated ? <span>Showing the first 200 packages — narrow by community.</span> : null}
+          {desk.truncated ? <span>Showing {desk.packages.length} of {desk.packageTotal} packages — narrow by community.</span> : null}
         </div>
       </div>
 

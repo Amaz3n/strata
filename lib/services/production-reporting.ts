@@ -7,6 +7,7 @@ import {
 } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { readAllRowsById, type RangeResult } from "@/lib/land/paging"
 
 type Relation<T> = T | T[] | null
 
@@ -83,6 +84,37 @@ export type ProductionPortfolioReport = {
   }
 }
 
+/** IDs per `.in()` filter; a longer list does not fit in a PostgREST URL. */
+const ID_CHUNK = 100
+/** Past this many rows in one set the report fails instead of understating it. */
+const REPORT_ROW_CAP = 200_000
+
+type IdRow = { id: string }
+type CommunityRow = IdRow & { name: string; division_id: string | null; settings: unknown }
+type LotRow = IdRow & { community_id: string; project_id: string; lot_number: string; status: string; house_plan_id: string | null; plan: unknown; project: unknown }
+type ContractRow = IdRow & { project_id: string; total_cents: number | null; signed_at: string | null }
+type ClosingRow = IdRow & { project_id: string; status: string; settlement: unknown; actual_date: string | null; scheduled_date: string | null }
+type BudgetRow = IdRow & { project_id: string; total_cents: number | null; version: number | null }
+type CostRow = IdRow & { project_id: string; cost_cents: number | null }
+type VpoRow = IdRow & { project_id: string; total_cents: number | null; reason: unknown; company: unknown }
+
+/**
+ * Every row matching `read` for each ID chunk, keyset-paged to the end. A
+ * portfolio summed from the first API page is not a smaller number, it is a
+ * wrong one — the margin of every home past the cap simply vanished.
+ */
+async function readForIds<Row extends IdRow>(
+  ids: string[],
+  label: string,
+  read: (chunk: string[], afterId: string | null, limit: number) => PromiseLike<RangeResult<Row>>,
+): Promise<Row[]> {
+  const chunks: string[][] = []
+  for (let index = 0; index < ids.length; index += ID_CHUNK) chunks.push(ids.slice(index, index + ID_CHUNK))
+  const pages = await Promise.all(chunks.map((chunk) =>
+    readAllRowsById<Row>((afterId, limit) => read(chunk, afterId, limit), { cap: REPORT_ROW_CAP, label, pageSize: 1000 })))
+  return pages.flat()
+}
+
 export async function getProductionPortfolioReport(
   filters: { communityId?: string; divisionId?: string } = {},
   orgId?: string,
@@ -106,95 +138,97 @@ export async function getProductionPortfolioReport(
     supabase: context.supabase,
   })
 
-  let communityQuery = context.supabase
-    .from("communities")
-    .select("id,name,division_id,settings")
-    .eq("org_id", context.orgId)
-    .is("archived_at", null)
-    .order("name")
-    .limit(250)
-  if (filters.communityId) communityQuery = communityQuery.eq("id", filters.communityId)
-  if (filters.divisionId) communityQuery = communityQuery.eq("division_id", filters.divisionId)
-  else if (divisionAccess.assignedOnly) {
-    if (divisionAccess.divisionIds.length === 0) return emptyPortfolio()
-    communityQuery = communityQuery.in("division_id", divisionAccess.divisionIds)
-  }
-  const { data: communities, error: communityError } = await communityQuery
-  if (communityError) throw new Error(`Failed to load reporting communities: ${communityError.message}`)
-  const communityIds = (communities ?? []).map((row) => row.id as string)
+  if (!filters.divisionId && divisionAccess.assignedOnly && divisionAccess.divisionIds.length === 0) return emptyPortfolio()
+  const { supabase, orgId: scopedOrgId } = context
+  const communities = (await readAllRowsById<CommunityRow>((afterId, limit) => {
+    let query = supabase
+      .from("communities")
+      .select("id,name,division_id,settings")
+      .eq("org_id", scopedOrgId)
+      .is("archived_at", null)
+    if (filters.communityId) query = query.eq("id", filters.communityId)
+    if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
+    else if (divisionAccess.assignedOnly) query = query.in("division_id", divisionAccess.divisionIds)
+    if (afterId) query = query.gt("id", afterId)
+    return query.order("id").limit(limit).returns<CommunityRow[]>()
+  }, { cap: REPORT_ROW_CAP, label: "Failed to load reporting communities", pageSize: 1000 }))
+    .sort((left, right) => left.name.localeCompare(right.name))
+  const communityIds = communities.map((row) => row.id)
   if (communityIds.length === 0 || (authorizedProjectIds !== null && authorizedProjectIds.length === 0)) {
     return emptyPortfolio()
   }
 
-  let lotQuery = context.supabase
-    .from("lots")
-    .select("id,community_id,project_id,lot_number,status,house_plan_id,plan:house_plans(id,name,code),project:projects(name,division_id)")
-    .eq("org_id", context.orgId)
-    .in("community_id", communityIds)
-    .not("project_id", "is", null)
-    .limit(2_000)
-  if (authorizedProjectIds !== null) lotQuery = lotQuery.in("project_id", authorizedProjectIds)
-  const { data: lots, error: lotError } = await lotQuery
-  if (lotError) throw new Error(`Failed to load community homes: ${lotError.message}`)
-  const projectIds = Array.from(new Set((lots ?? []).map((row) => row.project_id as string).filter(Boolean)))
+  const authorized = authorizedProjectIds === null ? null : new Set(authorizedProjectIds)
+  const lots = (await readForIds<LotRow>(communityIds, "Failed to load community homes", (chunk, afterId, limit) => {
+    let query = supabase
+      .from("lots")
+      .select("id,community_id,project_id,lot_number,status,house_plan_id,plan:house_plans(id,name,code),project:projects(name,division_id)")
+      .eq("org_id", scopedOrgId)
+      .in("community_id", chunk)
+      .not("project_id", "is", null)
+    if (afterId) query = query.gt("id", afterId)
+    return query.order("id").limit(limit).returns<LotRow[]>()
+  })).filter((lot) => authorized === null || authorized.has(lot.project_id))
+  const projectIds = Array.from(new Set(lots.map((row) => row.project_id).filter(Boolean)))
   if (projectIds.length === 0) {
-    return { ...emptyPortfolio(), communities: (communities ?? []).map((row) => emptyCommunity(row)) }
+    return { ...emptyPortfolio(), communities: communities.map((row) => emptyCommunity(row)) }
   }
 
-  const [contractsResult, closingsResult, budgetsResult, costsResult, vpoResult] = await Promise.all([
-    context.supabase
-      .from("contracts")
-      .select("project_id,total_cents,status,contract_type,signed_at")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .eq("contract_type", "purchase_agreement")
-      .order("signed_at", { ascending: false, nullsFirst: false })
-      .limit(2_000),
-    context.supabase
-      .from("closings")
-      .select("project_id,status,settlement,actual_date,scheduled_date")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .neq("status", "cancelled")
-      .limit(2_000),
-    context.supabase
-      .from("budgets")
-      .select("project_id,total_cents,version,status")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .order("version", { ascending: false })
-      .limit(2_000),
-    context.supabase
-      .from("job_cost_entries")
-      .select("project_id,cost_cents")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .eq("status", "posted")
-      .limit(10_000),
-    context.supabase
-      .from("commitment_change_orders")
-      .select("project_id,total_cents,status,reason:variance_reason_codes(code,label),company:companies(name)")
-      .eq("org_id", context.orgId)
-      .in("project_id", projectIds)
-      .not("reason_code_id", "is", null)
-      .in("status", ["approved", "executed"])
-      .limit(5_000),
+  const [contractRows, closingRows, budgetRows, costRows, vpoRows] = await Promise.all([
+    readForIds<ContractRow>(projectIds, "Failed to load purchase agreements", (chunk, afterId, limit) => {
+      let query = supabase.from("contracts").select("id,project_id,total_cents,signed_at")
+        .eq("org_id", scopedOrgId).in("project_id", chunk).eq("contract_type", "purchase_agreement")
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<ContractRow[]>()
+    }),
+    readForIds<ClosingRow>(projectIds, "Failed to load closings", (chunk, afterId, limit) => {
+      let query = supabase.from("closings").select("id,project_id,status,settlement,actual_date,scheduled_date")
+        .eq("org_id", scopedOrgId).in("project_id", chunk).neq("status", "cancelled")
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<ClosingRow[]>()
+    }),
+    // The baseline is the newest budget that has left draft: a draft being
+    // worked on must never replace the approved number margin is read against.
+    readForIds<BudgetRow>(projectIds, "Failed to load budgets", (chunk, afterId, limit) => {
+      let query = supabase.from("budgets").select("id,project_id,total_cents,version")
+        .eq("org_id", scopedOrgId).in("project_id", chunk).neq("status", "draft")
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<BudgetRow[]>()
+    }),
+    readForIds<CostRow>(projectIds, "Failed to load job cost", (chunk, afterId, limit) => {
+      let query = supabase.from("job_cost_entries").select("id,project_id,cost_cents")
+        .eq("org_id", scopedOrgId).in("project_id", chunk).eq("status", "posted")
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<CostRow[]>()
+    }),
+    readForIds<VpoRow>(projectIds, "Failed to load variance POs", (chunk, afterId, limit) => {
+      let query = supabase.from("commitment_change_orders").select("id,project_id,total_cents,reason:variance_reason_codes(code,label),company:companies(name)")
+        .eq("org_id", scopedOrgId).in("project_id", chunk).not("reason_code_id", "is", null).in("status", ["approved", "executed"])
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<VpoRow[]>()
+    }),
   ])
-  for (const result of [contractsResult, closingsResult, budgetsResult, costsResult, vpoResult]) {
-    if (result.error) throw new Error(`Failed to load production reporting data: ${result.error.message}`)
+
+  // The newest signed agreement per home (unsigned ones last), as the old
+  // `signed_at desc nulls last` ordering chose.
+  const contracts = new Map<string, ContractRow>()
+  for (const row of contractRows) {
+    const current = contracts.get(row.project_id)
+    if (!current || (row.signed_at ?? "") > (current.signed_at ?? "")) contracts.set(row.project_id, row)
   }
-
-  const contracts = new Map<string, any>()
-  for (const row of contractsResult.data ?? []) if (!contracts.has(row.project_id)) contracts.set(row.project_id, row)
-  const closings = new Map((closingsResult.data ?? []).map((row) => [row.project_id as string, row]))
-  const budgets = new Map<string, number>()
-  for (const row of budgetsResult.data ?? []) if (!budgets.has(row.project_id)) budgets.set(row.project_id, Number(row.total_cents ?? 0))
+  const closings = new Map<string, ClosingRow>(closingRows.map((row) => [row.project_id, row]))
+  const latestBudget = new Map<string, BudgetRow>()
+  for (const row of budgetRows) {
+    const current = latestBudget.get(row.project_id)
+    if (!current || Number(row.version ?? 0) > Number(current.version ?? 0)) latestBudget.set(row.project_id, row)
+  }
+  const budgets = new Map<string, number>(Array.from(latestBudget, ([projectId, row]) => [projectId, Number(row.total_cents ?? 0)]))
   const costs = new Map<string, number>()
-  for (const row of costsResult.data ?? []) costs.set(row.project_id, (costs.get(row.project_id) ?? 0) + Number(row.cost_cents ?? 0))
+  for (const row of costRows) costs.set(row.project_id, (costs.get(row.project_id) ?? 0) + Number(row.cost_cents ?? 0))
   const vpos = new Map<string, number>()
-  for (const row of vpoResult.data ?? []) vpos.set(row.project_id, (vpos.get(row.project_id) ?? 0) + Number(row.total_cents ?? 0))
+  for (const row of vpoRows) vpos.set(row.project_id, (vpos.get(row.project_id) ?? 0) + Number(row.total_cents ?? 0))
 
-  const lotRows: Array<ProductionLotPnlRow & { communityId: string }> = (lots ?? []).map((lot: any) => {
+  const lotRows: Array<ProductionLotPnlRow & { communityId: string }> = lots.map((lot) => {
     const contract = contracts.get(lot.project_id)
     const closing: any = closings.get(lot.project_id)
     const settlementTotal = closing?.settlement?.finalPriceCents ?? closing?.settlement?.final_price_cents
@@ -221,7 +255,7 @@ export async function getProductionPortfolioReport(
     }
   })
 
-  const communityRows = (communities ?? []).map((community) => {
+  const communityRows = communities.map((community) => {
     const scopedLots = lotRows.filter((row) => row.communityId === community.id)
     const revenueCents = sum(scopedLots.map((row) => ({ amount: row.revenueCents })))
     const budgetCents = sum(scopedLots.map((row) => ({ amount: row.budgetCents })))
@@ -274,7 +308,7 @@ export async function getProductionPortfolioReport(
 
   const totalDirectCost = sum(lotRows.map((row) => ({ amount: row.projectedCostCents })))
   const varianceMap = new Map<string, ProductionPortfolioReport["variance"][number]>()
-  for (const row of vpoResult.data ?? []) {
+  for (const row of vpoRows) {
     const reasonRow = one<any>(row.reason)
     const companyRow = one<any>(row.company)
     const reason = reasonRow?.label ?? reasonRow?.code ?? "Uncoded"

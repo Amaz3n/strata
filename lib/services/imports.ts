@@ -1,7 +1,7 @@
 import "server-only"
 
 import { z } from "zod"
-import { readAllRows } from "@/lib/land/paging"
+import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { importRowStatusSchema } from "@/lib/validation/import-navigation"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -188,20 +188,44 @@ export async function getImportMappingProfile(importer: ImporterKey, headers: st
   return (data?.column_mapping ?? null) as Record<string, string | null> | null
 }
 
+type CostCodeLookup = { id: string; code: string; parent_id: string | null }
+type CompanyLookup = { id: string; name: string }
+type PlanLookup = {
+  id: string
+  code: string
+  versions: Array<{ id: string; status: string; version_number: number; schedule_template_id: string | null }> | null
+  elevations: Array<{ id: string; code: string }> | null
+}
+type CommunityLookup = { id: string; name: string; code: string | null; division_id: string | null }
+type DivisionLookup = { id: string; name: string; code: string | null }
+type RoleLookup = { id: string; key: string }
+
+/**
+ * One org-owned reference table, read to the end. A lookup cut off at the API's
+ * row cap rejects rows whose community or vendor plainly exists ("Community
+ * Maple Ridge was not found"); past `cap` the import refuses instead.
+ */
+function readLookup<Row extends { id: string }>(context: ResolvedImportContext, table: string, columns: string, cap: number) {
+  return readAllRowsById<Row>((afterId, limit) => {
+    let query = context.supabase.from(table).select(columns).eq("org_id", context.orgId)
+    if (afterId) query = query.gt("id", afterId)
+    return query.order("id").limit(limit).returns<Row[]>()
+  }, { cap, label: `Failed to preload import validation data (${table})`, pageSize: 1000 })
+}
+
 async function loadValidationLookups(context: ResolvedImportContext) {
-  const [costCodes, companies, plans, communities, divisions, roles, lots] = await Promise.all([
-    context.supabase.from("cost_codes").select("id,code,parent_id").eq("org_id", context.orgId).limit(10000),
-    context.supabase.from("companies").select("id,name").eq("org_id", context.orgId).limit(5000),
-    context.supabase.from("house_plans").select("id,code,versions:house_plan_versions(id,status,version_number,schedule_template_id),elevations:house_plan_elevations(id,code)").eq("org_id", context.orgId).limit(1000),
-    context.supabase.from("communities").select("id,name,code,division_id").eq("org_id", context.orgId).limit(1000),
-    context.supabase.from("divisions").select("id,name,code").eq("org_id", context.orgId).limit(200),
-    context.supabase.from("roles").select("id,key").eq("scope", "org").limit(100),
-    context.supabase.from("lots").select("id,community_id,lot_number,block,project_id").eq("org_id", context.orgId).limit(10000),
+  const [costCodes, companies, plans, communities, divisions, roles] = await Promise.all([
+    readLookup<CostCodeLookup>(context, "cost_codes", "id,code,parent_id", 50_000),
+    readLookup<CompanyLookup>(context, "companies", "id,name", 100_000),
+    readLookup<PlanLookup>(context, "house_plans", "id,code,versions:house_plan_versions(id,status,version_number,schedule_template_id),elevations:house_plan_elevations(id,code)", 10_000),
+    readLookup<CommunityLookup>(context, "communities", "id,name,code,division_id", 20_000),
+    readLookup<DivisionLookup>(context, "divisions", "id,name,code", 5_000),
+    // Roles are the system catalog — the table has no org column, and an org
+    // assigns only org-scope roles. Nothing here can name another org's data.
+    context.supabase.from("roles").select("id,key").eq("scope", "org").order("key").returns<RoleLookup[]>(),
   ])
-  for (const result of [costCodes, companies, plans, communities, divisions, roles, lots]) {
-    if (result.error) throw new Error(`Failed to preload import validation data: ${result.error.message}`)
-  }
-  return { costCodes: costCodes.data ?? [], companies: companies.data ?? [], plans: plans.data ?? [], communities: communities.data ?? [], divisions: divisions.data ?? [], roles: roles.data ?? [], lots: lots.data ?? [] }
+  if (roles.error) throw new Error(`Failed to preload import validation data: ${roles.error.message}`)
+  return { costCodes, companies, plans, communities, divisions, roles: roles.data ?? [] }
 }
 
 function withIssue(row: ImportRowRecord, issue: ImportIssue) {
@@ -425,7 +449,7 @@ export async function stageImportBatch(input: { importer: ImporterKey; csvText: 
     await recordEvent({ orgId: resolved.orgId, actorId: resolved.userId, eventType: "import_batch_staged", entityType: "import_batch", entityId: batch.id, payload: { importer: input.importer, ...counts }, channel: "activity" })
     return mapBatch(saved)
   } catch (error) {
-    await resolved.supabase.from("import_batches").update({ status: "failed", report: { error: error instanceof Error ? error.message : "Staging failed" } }).eq("id", batch.id)
+    await resolved.supabase.from("import_batches").update({ status: "failed", report: { error: error instanceof Error ? error.message : "Staging failed" } }).eq("org_id", resolved.orgId).eq("id", batch.id)
     throw error
   }
 }
@@ -499,8 +523,9 @@ async function ensureCompany(context: ResolvedImportContext, row: ImportRowRecor
 
 async function commitCostCodes(rows: ImportRowRecord[], context: ResolvedImportContext, updateExisting: boolean) {
   const ordered = topologicalOrder(rows.map((row) => ({ row, code: String(row.parsed.code ?? ""), parent_code: typeof row.parsed.parent_code === "string" ? row.parsed.parent_code : null })))
-  const { data: existingRows } = await context.supabase.from("cost_codes").select("*").eq("org_id", context.orgId)
-  const byCode = new Map((existingRows ?? []).map((row) => [normalizeKey(row.code), row]))
+  // Every existing code: one missed past the API's row cap would be inserted again.
+  const existingRows = await readLookup<CostCodeLookup>(context, "cost_codes", "id,code,parent_id", 50_000)
+  const byCode = new Map(existingRows.map((row) => [normalizeKey(row.code), row]))
   const results = new Map<string, { id: string; action: string }>()
   for (const item of ordered) {
     const row = item.row
@@ -519,11 +544,11 @@ async function commitCostCodes(rows: ImportRowRecord[], context: ResolvedImportC
 
 async function commitPlans(rows: ImportRowRecord[], context: ResolvedImportContext, updateExisting: boolean, fileKind: string) {
   const results = new Map<string, { id: string; action: string }>()
-  const { data: plans } = await context.supabase.from("house_plans").select("id,code,versions:house_plan_versions(id,status,version_number),elevations:house_plan_elevations(id,code)").eq("org_id", context.orgId)
-  const byCode = new Map((plans ?? []).map((plan) => [normalizeKey(plan.code), plan]))
+  const plans = await readLookup<PlanLookup>(context, "house_plans", "id,code,versions:house_plan_versions(id,status,version_number,schedule_template_id),elevations:house_plan_elevations(id,code)", 10_000)
+  const byCode = new Map(plans.map((plan) => [normalizeKey(plan.code), plan]))
   if (fileKind === "takeoffs") {
-    const { data: costCodes } = await context.supabase.from("cost_codes").select("id,code,cost_type").eq("org_id", context.orgId)
-    const costs = new Map((costCodes ?? []).map((row) => [normalizeKey(row.code), row]))
+    const costCodes = await readLookup<{ id: string; code: string; cost_type: string | null }>(context, "cost_codes", "id,code,cost_type", 50_000)
+    const costs = new Map(costCodes.map((row) => [normalizeKey(row.code), row]))
     for (const row of rows) {
       const plan = byCode.get(normalizeKey(row.parsed.plan_code))
       const version = Array.isArray(plan?.versions) ? plan.versions.find((item) => item.status === "draft") : null
@@ -533,7 +558,7 @@ async function commitPlans(rows: ImportRowRecord[], context: ResolvedImportConte
       const { data: existing } = await context.supabase.from("house_plan_takeoff_lines").select("id").eq("org_id", context.orgId).eq("house_plan_version_id", version.id).eq("cost_code_id", costCode?.id).eq("description", row.parsed.description).is("elevation_id", elevation?.id ?? null).maybeSingle()
       if (existing && !updateExisting) { results.set(row.id, { id: existing.id, action: "skipped_existing" }); continue }
       const payload = { org_id: context.orgId, house_plan_version_id: version.id, elevation_id: elevation?.id ?? null, cost_code_id: costCode?.id, cost_type: costCode?.cost_type ?? null, description: row.parsed.description, quantity: row.parsed.quantity, uom: row.parsed.uom, unit_cost_cents: row.parsed.unit_cost_cents, metadata: { imported: true } }
-      const query = existing ? context.supabase.from("house_plan_takeoff_lines").update(payload).eq("id", existing.id) : context.supabase.from("house_plan_takeoff_lines").insert(payload)
+      const query = existing ? context.supabase.from("house_plan_takeoff_lines").update(payload).eq("org_id", context.orgId).eq("id", existing.id) : context.supabase.from("house_plan_takeoff_lines").insert(payload)
       const { data, error } = await query.select("id").single()
       if (error || !data) throw new Error(`Failed to import takeoff line: ${error?.message}`)
       results.set(row.id, { id: data.id, action: existing ? "updated" : "created" })
@@ -546,7 +571,7 @@ async function commitPlans(rows: ImportRowRecord[], context: ResolvedImportConte
     if (!plan) {
       const { data, error } = await context.supabase.from("house_plans").insert({ org_id: context.orgId, code, name: row.parsed.plan_name, series: row.parsed.series, status: "draft", heated_sqft: row.parsed.heated_sqft, total_sqft: row.parsed.total_sqft, beds: row.parsed.beds, baths: row.parsed.baths, stories: row.parsed.stories, garage_bays: row.parsed.garage_bays, created_by: context.userId, metadata: { imported: true } }).select("id,code").single()
       if (error || !data) throw new Error(`Failed to create plan ${code}: ${error?.message}`)
-      const { data: version, error: versionError } = await context.supabase.from("house_plan_versions").insert({ org_id: context.orgId, house_plan_id: data.id, version_number: 1, status: "draft", created_by: context.userId }).select("id,status,version_number").single()
+      const { data: version, error: versionError } = await context.supabase.from("house_plan_versions").insert({ org_id: context.orgId, house_plan_id: data.id, version_number: 1, status: "draft", created_by: context.userId }).select("id,status,version_number,schedule_template_id").single()
       if (versionError || !version) throw new Error(`Failed to create plan version: ${versionError?.message}`)
       plan = { ...data, versions: [version], elevations: [] }
       byCode.set(normalizeKey(code), plan)

@@ -15,7 +15,7 @@ async function StartsPageContent({
   await connection()
   const params = await searchParams
   const scope = await resolveProductionDeskScope({ communityId: params.community })
-  const desk = await getStartsDesk({ communityId: scope.communityId, divisionId: scope.divisionId })
+  const desk = await getStartsDesk({ communityId: scope.communityId, divisionId: scope.divisionId, refused: scope.refused })
   return (
     <PageLayout title="Starts" fullBleed>
       <LaunchLane

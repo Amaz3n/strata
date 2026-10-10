@@ -2292,7 +2292,9 @@ export async function listFileTimeline(
       .eq("file_id", fileId)
       .order("created_at", { ascending: false })
       .limit(limit),
-    supabase
+    // The session client only sees audit rows its holder wrote or may read via
+    // `audit.read`; the docs.read gate above is the authorization for this trail.
+    createServiceSupabaseClient()
       .from("audit_log")
       .select("id, action, before_data, after_data, actor_user_id, created_at")
       .eq("org_id", resolvedOrgId)

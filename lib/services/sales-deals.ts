@@ -156,6 +156,16 @@ export interface ListSalesDealsOptions {
   dealId?: string
 }
 
+export interface SalesBoard {
+  deals: SalesDeal[]
+  /**
+   * The read stopped at the row cap, so deals exist that are not here. Decided
+   * on what the database returned, before division filtering — a division-limited
+   * consultant whose visible rows fall under the cap is still looking at a cut list.
+   */
+  truncated: boolean
+}
+
 /**
  * Every deal the caller may see, one row per buyer. Division scoping mirrors
  * getBacklogReport: the RPC filters on the requested division, and an
@@ -163,20 +173,21 @@ export interface ListSalesDealsOptions {
  * Deals with no community (an unattributed lead) stay visible to everyone —
  * otherwise a brand-new inquiry would be invisible until someone tags it.
  */
-export async function listSalesDeals(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesDeal[]> {
+export async function listSalesBoard(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesBoard> {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
   const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
   if (opts.divisionId && access.assignedOnly && !access.divisionIds.includes(opts.divisionId)) {
-    return []
+    return { deals: [], truncated: false }
   }
 
+  const limit = opts.limit ?? 500
   const { data, error } = await context.supabase.rpc("get_sales_deals", {
     p_org_id: context.orgId,
     p_division_id: opts.divisionId ?? null,
     p_community_id: opts.communityId ?? null,
     p_include_closed: opts.includeClosed ?? true,
-    p_limit: opts.limit ?? 500,
+    p_limit: limit,
     p_deal_id: opts.dealId ?? null,
   })
   if (error) throw new Error(`Failed to load sales deals: ${error.message}`)
@@ -185,7 +196,12 @@ export async function listSalesDeals(opts: ListSalesDealsOptions = {}, orgId?: s
   const scoped = access.assignedOnly
     ? rows.filter((row) => !row.division_id || access.divisionIds.includes(row.division_id))
     : rows
-  return scoped.map(mapDeal)
+  return { deals: scoped.map(mapDeal), truncated: rows.length >= limit }
+}
+
+/** The deals alone, for callers that page or cap on their own. */
+export async function listSalesDeals(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesDeal[]> {
+  return (await listSalesBoard(opts, orgId)).deals
 }
 
 /**
