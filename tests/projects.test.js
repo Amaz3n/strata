@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { createProject } = freshRequire("lib/services/projects.ts")
+const { createProject, prepareProjectOpeningContract } = freshRequire("lib/services/projects.ts")
 
 describe("createProject", () => {
   const harness = () =>
@@ -42,5 +42,22 @@ describe("createProject", () => {
       assert.equal(service.db.contracts.length, 1, property_type)
       assert.equal(service.db.contracts[0].status, "active", property_type)
     }
+  })
+})
+
+describe("prepareProjectOpeningContract", () => {
+  const open = (productTier, callerInput) =>
+    prepareProjectOpeningContract({ callerInput, input: { name: "Lot 9", ...callerInput }, productTier, orgId: "org", projectId: "project", projectName: "Lot 9" })
+
+  test("a production home opens no contract in any org tier, so a sale's purchase agreement is its revenue contract", () => {
+    for (const tier of ["residential", "commercial", "production"]) {
+      assert.equal(open(tier, { property_type: "production" }), null, tier)
+    }
+  })
+
+  test("a production home given billing terms, a custom home and a commercial job each open their contract", () => {
+    assert.equal(open("production", { property_type: "production", billing_model: "cost_plus_percent" }).contract_type, "cost_plus")
+    assert.equal(open("production", { property_type: "residential" }).project_id, "project")
+    assert.equal(open("residential", { property_type: "commercial" }).project_id, "project")
   })
 })

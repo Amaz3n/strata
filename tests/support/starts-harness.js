@@ -84,9 +84,8 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
       calls.projects.push(input)
       return { input, project: { ...input, org_id: orgId, created_by: userId } }
     },
-    prepareProjectBillingContract: ({ orgId, projectId, projectName }) => ({
-      billingModel: "fixed_price", contract: { org_id: orgId, project_id: projectId, title: `${projectName} Contract` },
-    }),
+    // A production home opens no placeholder contract; its purchase agreement is its revenue contract.
+    prepareProjectOpeningContract: () => null,
     prepareProjectAccountingDimensions: () => ({}),
   })
   stubModule("@/lib/services/project-financial-setup", {

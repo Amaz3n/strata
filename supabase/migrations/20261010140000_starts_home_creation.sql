@@ -85,18 +85,23 @@ begin
     select v.id,v.org_id,v.name,v.status,v.phase,v.start_date,v.end_date,v.location,v.client_id,v.property_type,v.project_type,v.description,
       v.retainage_percent,v.total_value,v.created_by,v.prospect_id,v.division_id
     from jsonb_populate_record(null::public.projects,v_value) v returning * into v_home;
+  -- A production home earns through the purchase agreement its sale signs, so
+  -- it opens without a contract; a prepared one is written only when the
+  -- service chose to open one (explicit billing terms).
   v_value:=p_home->'billingContract';
-  if v_value->>'org_id' is distinct from p_org_id::text or v_value->>'project_id' is distinct from v_home_id::text then
-    raise exception 'Prepared start home billing ownership mismatch'; end if;
-  insert into public.contracts(org_id,project_id,title,status,contract_type,total_cents,currency,markup_percent,gmp_cents,contingency_cents,
-      fixed_fee_cents,fee_presentation,savings_split_owner_pct,savings_split_builder_pct,labor_burden_multiplier,rate_schedule_id,
-      requires_client_cost_approval,open_book,retainage_percent,retainage_applies_to_fee,retainage_schedule,stored_materials_retainage_percent,snapshot)
-    select v.org_id,v.project_id,v.title,v.status,v.contract_type,v.total_cents,v.currency,v.markup_percent,v.gmp_cents,v.contingency_cents,
-      v.fixed_fee_cents,v.fee_presentation,v.savings_split_owner_pct,v.savings_split_builder_pct,v.labor_burden_multiplier,v.rate_schedule_id,
-      v.requires_client_cost_approval,v.open_book,v.retainage_percent,v.retainage_applies_to_fee,v.retainage_schedule,v.stored_materials_retainage_percent,v.snapshot
-    from jsonb_populate_record(null::public.contracts,v_value) v returning id into v_contract_id;
-  insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source)
-    values(p_org_id,p_actor_id,'insert','contract',v_contract_id,v_value,'project_settings');
+  if v_value is not null and jsonb_typeof(v_value) is distinct from 'null' then
+    if v_value->>'org_id' is distinct from p_org_id::text or v_value->>'project_id' is distinct from v_home_id::text then
+      raise exception 'Prepared start home billing ownership mismatch'; end if;
+    insert into public.contracts(org_id,project_id,title,status,contract_type,total_cents,currency,markup_percent,gmp_cents,contingency_cents,
+        fixed_fee_cents,fee_presentation,savings_split_owner_pct,savings_split_builder_pct,labor_burden_multiplier,rate_schedule_id,
+        requires_client_cost_approval,open_book,retainage_percent,retainage_applies_to_fee,retainage_schedule,stored_materials_retainage_percent,snapshot)
+      select v.org_id,v.project_id,v.title,v.status,v.contract_type,v.total_cents,v.currency,v.markup_percent,v.gmp_cents,v.contingency_cents,
+        v.fixed_fee_cents,v.fee_presentation,v.savings_split_owner_pct,v.savings_split_builder_pct,v.labor_burden_multiplier,v.rate_schedule_id,
+        v.requires_client_cost_approval,v.open_book,v.retainage_percent,v.retainage_applies_to_fee,v.retainage_schedule,v.stored_materials_retainage_percent,v.snapshot
+      from jsonb_populate_record(null::public.contracts,v_value) v returning id into v_contract_id;
+    insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source)
+      values(p_org_id,p_actor_id,'insert','contract',v_contract_id,v_value,'project_settings');
+  end if;
   v_value:=p_home->'financialSettings';
   if v_value->>'org_id' is distinct from p_org_id::text or v_value->>'project_id' is distinct from v_home_id::text
     or v_value->>'created_by' is distinct from p_actor_id::text then raise exception 'Prepared start home settings ownership mismatch'; end if;
@@ -118,7 +123,7 @@ begin
     values(p_org_id,p_actor_id,'insert','project',v_home_id,to_jsonb(v_home),'starts.home_created');
   insert into public.outbox(org_id,job_type,payload)
     select p_org_id,'reindex_search',jsonb_build_object('entity_type',entity,'entity_id',entity_id)
-    from (values('project',v_home_id),('contract',v_contract_id)) indexed(entity,entity_id);
+    from (values('project',v_home_id),('contract',v_contract_id)) indexed(entity,entity_id) where entity_id is not null;
   return v_home_id;
 end $$;
 revoke all on function public.create_start_home(uuid,uuid,public.lots,jsonb) from public,anon,authenticated;

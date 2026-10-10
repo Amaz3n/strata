@@ -902,6 +902,26 @@ function opensProjectSettingsContract(posture: ProjectPosture, callerInput: Part
   return !isProductionProjectPosture(posture) || hasBillingInput(callerInput)
 }
 
+/**
+ * The billing contract a new project opens with, or null when its posture
+ * earns revenue elsewhere. Every path that creates a home (createProject, the
+ * start desk, reservation conversion) asks here, so a production home never
+ * opens a placeholder beside its purchase agreement. `callerInput` is what the
+ * caller supplied, not the normalized input, which always carries retainage.
+ */
+export function prepareProjectOpeningContract({ callerInput, input, productTier, orgId, projectId, projectName }: {
+  callerInput: Partial<ProjectInput>
+  input: Partial<ProjectInput>
+  productTier: OrgServiceContext["productTier"]
+  orgId: string
+  projectId: string
+  projectName: string
+}) {
+  const posture = getProjectPosture(input.property_type, productTier)
+  if (!opensProjectSettingsContract(posture, callerInput)) return null
+  return prepareProjectBillingContract({ input, orgId, projectId, projectName }).contract
+}
+
 async function upsertProjectBillingContract({
   supabase,
   orgId,

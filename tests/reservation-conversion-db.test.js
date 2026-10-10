@@ -72,16 +72,16 @@ async function fixture(t,{existing=false,started=false}={}) {
   }
   return {db,scope,prepare,rpc,counts}
 }
-test('saved review creates no home or invoice; atomic commit preserves original financial owners and exact cents',async t=>{
+test('saved review creates no home or invoice; atomic commit opens the home with no placeholder contract and preserves original financial owners and exact cents',async t=>{
   const h=await fixture(t),p=await h.prepare();const review=await h.rpc('register',p)
   assert.equal(review.status,'pending');assert.equal(review.review.buyerName,'Original buyer');assert.equal(review.review.createsHome,true)
   assert.equal((await h.counts()).projects,0);assert.equal((await h.counts()).invoices,0)
   const result=await h.rpc('commit',p);assert.equal(result.status,'committed');assert.equal(result.receipt.projectId,p.bundle.projectId)
-  const totals=await h.counts();assert.equal(totals.projects,1);assert.equal(totals.contracts,1);assert.equal(totals.project_financial_settings,1)
+  const totals=await h.counts();assert.equal(totals.projects,1);assert.equal(totals.contracts,0);assert.equal(totals.project_financial_settings,1)
   assert.equal(totals.invoices,1);assert.equal(totals.invoice_lines,1);assert.equal(totals.reservation_conversion_receipts,1)
-  const settings=(await h.db.query('select * from project_financial_settings')).rows[0],contract=(await h.db.query('select * from contracts')).rows[0]
+  const settings=(await h.db.query('select * from project_financial_settings')).rows[0]
   assert.equal(settings.billing_model,'fixed_price');assert.equal(settings.cost_codes_enabled,null);assert.equal(settings.open_book_required,false)
-  assert.equal(contract.total_cents,null);assert.equal(Number(contract.retainage_percent),0)
+  assert.equal(p.bundle.billingContract,null)
   const invoice=(await h.db.query('select * from invoices')).rows[0];assert.equal(invoice.total_cents,500001);assert.equal(invoice.product_posture,'production')
   assert.deepEqual(invoice.sent_to_emails,['buyer@example.test']);assert.equal(invoice.issued_snapshot.totals.total_cents,500001)
   assert.equal(Number((await h.db.query('select unit_price_cents from invoice_lines')).rows[0].unit_price_cents),500001)

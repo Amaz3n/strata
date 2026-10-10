@@ -17,7 +17,7 @@ import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { requirePermission } from "@/lib/services/permissions"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
-import { prepareProjectAccountingDimensions, prepareProjectBillingContract, prepareProjectCreation } from "@/lib/services/projects"
+import { prepareProjectAccountingDimensions, prepareProjectOpeningContract, prepareProjectCreation } from "@/lib/services/projects"
 import { prepareProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { readAllRows } from "@/lib/land/paging"
 import { verticalStartRefusal } from "@/lib/land/lot-lifecycle"
@@ -173,11 +173,9 @@ function prepareStartHome(context: OrgServiceContext, lot: { lot_number: unknown
   const community = relation(lot.community)
   const name = `${text(community?.code) ?? text(community?.name) ?? "Lot"} ${String(lot.lot_number)}`
   const projectId = randomUUID()
-  const { input, project } = prepareProjectCreation({
-    input: { name, status: "active", phase: "precon", property_type: "production", address: text(lot.address) ?? undefined },
-    orgId: context.orgId, userId: context.userId, productTier: context.productTier,
-  })
-  const { contract } = prepareProjectBillingContract({ input, orgId: context.orgId, projectId, projectName: name })
+  const callerInput = { name, status: "active" as const, phase: "precon" as const, property_type: "production" as const, address: text(lot.address) ?? undefined }
+  const { input, project } = prepareProjectCreation({ input: callerInput, orgId: context.orgId, userId: context.userId, productTier: context.productTier })
+  const contract = prepareProjectOpeningContract({ callerInput, input, productTier: context.productTier, orgId: context.orgId, projectId, projectName: name })
   return {
     projectId, project, billingContract: contract,
     financialSettings: prepareProjectFinancialSettings({

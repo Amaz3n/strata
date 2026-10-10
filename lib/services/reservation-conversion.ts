@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { prepareProjectCreation, prepareProjectBillingContract, prepareProjectAccountingDimensions } from "@/lib/services/projects"
+import { prepareProjectCreation, prepareProjectOpeningContract, prepareProjectAccountingDimensions } from "@/lib/services/projects"
 import { prepareProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { prepareInvoiceAmounts, prepareInvoiceCreation } from "@/lib/services/invoices"
 import type { InvoiceInput } from "@/lib/validation/invoices"
@@ -28,9 +28,10 @@ export function prepareReservationConversionBundle({ context, requestKey, input,
   if (!buyer) throw new Error("The reviewed reservation buyer is unavailable")
   const projectId = expected.home?.id ?? randomUUID()
   const homeName = expected.home?.name ?? savedInput.projectName ?? `Lot ${expected.lot.lot_number}`
-  const project = expected.home ? null : prepareProjectCreation({ input: { name: homeName, property_type: "production", status: "planning", client_id: buyer.id, prospect_id: expected.reservation.prospect_id }, orgId: context.orgId, userId: context.userId, productTier: context.productTier })
-  const billing = project ? prepareProjectBillingContract({ input: project.input, orgId: context.orgId, projectId, projectName: homeName }) : null
-  const settings = project && billing ? prepareProjectFinancialSettings({ orgId: context.orgId, projectId, userId: context.userId, input: project.input, existingContract: billing.contract, existingRawCostCodesEnabled: null, now }) : null
+  const callerInput = { name: homeName, property_type: "production" as const, status: "planning" as const, client_id: buyer.id, prospect_id: expected.reservation.prospect_id }
+  const project = expected.home ? null : prepareProjectCreation({ input: callerInput, orgId: context.orgId, userId: context.userId, productTier: context.productTier })
+  const billingContract = project ? prepareProjectOpeningContract({ callerInput, input: project.input, productTier: context.productTier, orgId: context.orgId, projectId, projectName: homeName }) : null
+  const settings = project ? prepareProjectFinancialSettings({ orgId: context.orgId, projectId, userId: context.userId, input: project.input, existingContract: billingContract, existingRawCostCodesEnabled: null, now }) : null
   const recipients = savedInput.depositCents > 0 && buyer.email ? [buyer.email] : []
   const invoiceInput: InvoiceInput = {
     project_id: projectId, invoice_number: `DEP-${requestKey}`, title: "Earnest deposit", issue: true,
@@ -41,7 +42,7 @@ export function prepareReservationConversionBundle({ context, requestKey, input,
   }
   const invoice = savedInput.depositCents > 0 ? prepareInvoiceCreation({ input: invoiceInput, orgId: context.orgId, userId: context.userId, productPosture: "production", approvalStatus: "not_required", sourceContext: null, ...prepareInvoiceAmounts(invoiceInput, null), orgInfo: expected.organization, token: randomUUID(), now }) : null
   return {
-    expected, projectId, project: project?.project ?? null, billingContract: billing?.contract ?? null,
+    expected, projectId, project: project?.project ?? null, billingContract,
     financialSettings: settings, accountingDimensions: prepareProjectAccountingDimensions({ classId: null, customerId: null }), invoice,
     review: { buyerName: buyer.full_name, lotLabel: expected.lot.lot_number, communityName: expected.community.name, homeName, createsHome: expected.home === null, recipients, expiresAt: expected.reservation.expires_at },
   }
