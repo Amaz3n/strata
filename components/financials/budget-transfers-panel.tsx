@@ -39,6 +39,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
+import { formatDate } from "@/lib/reports/format";
 
 type Line = {
   id: string;
@@ -317,7 +318,7 @@ export function BudgetTransfersPanel({
                         {transfer.transfer_number}
                       </TableCell>
                       <TableCell>
-                        {new Date(transfer.created_at).toLocaleDateString()}
+                        {formatDate(transfer.created_at)}
                       </TableCell>
                       <TableCell>{transfer.reason}</TableCell>
                       <TableCell className="text-xs">

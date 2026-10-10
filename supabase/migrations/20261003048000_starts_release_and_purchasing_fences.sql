@@ -990,6 +990,14 @@ begin
    select * into v_revision from public.drawing_revisions where org_id=v_pkg.org_id and id=(new.payload->>'draftRevisionId')::uuid for share;
    if not found or v_revision.project_id is distinct from v_pkg.project_id or v_revision.drawing_set_id is distinct from (new.payload->>'drawingSetId')::uuid
      or v_revision.source_file_id is distinct from v_file.id then raise exception 'Starts drawing job revision mismatch' using errcode='42501'; end if;
+ elsif new.job_type='reindex_search' then
+   if new.payload->>'entity_type'='lot' then
+     if new.payload->>'entity_id' is distinct from v_pkg.lot_id::text then raise exception 'Starts reindex scope mismatch' using errcode='42501'; end if;
+   elsif new.payload->>'entity_type'='schedule_item' then
+     if new.payload->>'entity_id'!~'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then raise exception 'Starts reindex scope mismatch' using errcode='42501'; end if;
+     perform 1 from public.schedule_items where org_id=v_pkg.org_id and project_id=v_pkg.project_id and id=(new.payload->>'entity_id')::uuid;
+     if not found then raise exception 'Starts reindex scope mismatch' using errcode='42501'; end if;
+   else raise exception 'Starts worker cannot enqueue this job family' using errcode='42501'; end if;
  else raise exception 'Starts worker cannot enqueue this job family' using errcode='42501'; end if;
  return new;
 end $$;
@@ -1381,6 +1389,14 @@ begin
    select * into v_revision from public.drawing_revisions where org_id=v_pkg.org_id and id=(new.payload->>'draftRevisionId')::uuid for share;
    if not found or v_revision.project_id is distinct from v_pkg.project_id or v_revision.drawing_set_id is distinct from (new.payload->>'drawingSetId')::uuid
      or v_revision.source_file_id is distinct from v_file.id then raise exception 'Starts drawing job revision mismatch' using errcode='42501'; end if;
+ elsif new.job_type='reindex_search' then
+   if new.payload->>'entity_type'='lot' then
+     if new.payload->>'entity_id' is distinct from v_pkg.lot_id::text then raise exception 'Starts reindex scope mismatch' using errcode='42501'; end if;
+   elsif new.payload->>'entity_type'='schedule_item' then
+     if new.payload->>'entity_id'!~'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then raise exception 'Starts reindex scope mismatch' using errcode='42501'; end if;
+     perform 1 from public.schedule_items where org_id=v_pkg.org_id and project_id=v_pkg.project_id and id=(new.payload->>'entity_id')::uuid;
+     if not found then raise exception 'Starts reindex scope mismatch' using errcode='42501'; end if;
+   else raise exception 'Starts worker cannot enqueue this job family' using errcode='42501'; end if;
  else raise exception 'Starts worker cannot enqueue this job family' using errcode='42501'; end if;
  return new;
 end $$;

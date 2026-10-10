@@ -1819,7 +1819,7 @@ export function EnvelopeWizard({
                       : "All signer emails are sent at once; CC receives the executed document."}
                   </p>
 
-                  <DndContext sensors={recipientSensors} collisionDetection={closestCenter} onDragEnd={handleRecipientDragEnd}>
+                  <DndContext id="envelope-recipients" sensors={recipientSensors} collisionDetection={closestCenter} onDragEnd={handleRecipientDragEnd}>
                     <SortableContext items={recipients.map((recipient) => recipient.id)} strategy={verticalListSortingStrategy}>
                       <div className="space-y-2">
                         {recipients.map((recipient, index) => (

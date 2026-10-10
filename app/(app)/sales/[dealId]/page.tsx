@@ -128,7 +128,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             <>
               {prospect ? (
                 <DealActionsMenu
-                  key={`${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
+                  key={`actions:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
                   deal={{
                     prospectId: prospect.id,
                     fullName: deal.buyerName,
@@ -165,7 +165,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
                 />
               ) : null}
               <DealPrimaryAction
-                key={`${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
+                key={`primary:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
                 deal={deal}
                 buyer={holdBuyer}
                 communities={communityOptions}
@@ -195,7 +195,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             runs the full page. Stacked on phones, each pane sizes to content. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 lg:flex-1">
           <DealOverviewHistory
-            key={`${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
+            key={`history:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
             canLog={capabilities.canEditProspect && prospect?.status !== "lost" && prospect?.status !== "won"}
             activity={activity}
             truncated={activity.length >= ACTIVITY_CAP}
@@ -203,7 +203,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             buyerName={deal.buyerName}
           />
           <DealOverviewMeta
-            key={`${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
+            key={`meta:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
             canEditProspect={capabilities.canEditProspect && prospect?.status !== "lost" && prospect?.status !== "won"}
             deal={deal}
             reservation={reservation}

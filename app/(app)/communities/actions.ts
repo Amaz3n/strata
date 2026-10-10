@@ -23,6 +23,7 @@ import {
 import { listCommunityInventoryLotIds } from "@/lib/services/community-inventory"
 import { logCommunityTraffic } from "@/lib/services/community-traffic"
 import {
+  assignPlanToLot,
   attachProjectToLot,
   bulkUpdateLots,
   createLots,
@@ -46,6 +47,7 @@ import {
 import {
   bulkLotPatchSchema,
   createLotsInputSchema,
+  lotPlanAssignmentSchema,
   lotRangeSchema,
   lotDeliveryExceptionSchema,
   lotStatusSchema,
@@ -160,6 +162,10 @@ export async function bulkUpdateLotsAction(communityId: string, input: unknown) 
 
 export async function recordLotDeliveryExceptionAction(id: string, communityId: string, input: unknown) {
   return run(() => recordLotDeliveryException(z.string().uuid().parse(id), lotDeliveryExceptionSchema.parse(input)), [`/communities/${communityId}`])
+}
+
+export async function assignPlanToLotAction(lotId: string, communityId: string, input: unknown) {
+  return run(() => assignPlanToLot(z.string().uuid().parse(lotId), lotPlanAssignmentSchema.parse(input)), [`/communities/${communityId}`])
 }
 
 export async function setLotStatusAction(id: string, communityId: string, input: unknown) {

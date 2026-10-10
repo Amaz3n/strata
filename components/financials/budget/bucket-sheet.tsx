@@ -62,6 +62,7 @@ import {
   type CostBucketDraft,
   type UnifiedBudgetRow,
 } from "./shared";
+import { formatDate } from "@/lib/reports/format";
 
 const SOURCE_TYPE_LABELS: Record<string, string> = {
   vendor_bill_line: "Bill",
@@ -482,7 +483,7 @@ export function BudgetBucketSheet({
                           {co.approved_at && (
                             <span className="block text-xs text-muted-foreground">
                               Approved{" "}
-                              {new Date(co.approved_at).toLocaleDateString()}
+                              {formatDate(co.approved_at)}
                             </span>
                           )}
                         </div>
@@ -737,9 +738,7 @@ export function BudgetBucketSheet({
                             {SOURCE_TYPE_LABELS[txn.source_type] ?? "Cost"}
                           </TableCell>
                           <TableCell className="px-3 text-xs tabular-nums text-muted-foreground">
-                            {new Date(
-                              `${txn.incurred_on}T00:00:00`,
-                            ).toLocaleDateString()}
+                            {formatDate(txn.incurred_on)}
                           </TableCell>
                           <TableCell className="px-3 text-right text-sm tabular-nums">
                             {formatCurrency(txn.cost_cents)}

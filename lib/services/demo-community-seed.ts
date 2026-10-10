@@ -98,10 +98,10 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
   await importCsv({ orgId, importer: "plan_library", name: "sample-takeoffs.csv", headers: Object.keys(takeoffRows[0]), rows: takeoffRows, context: { file_kind: "takeoffs", is_sample: true } })
 
   const scheduleItems = [
-    { name: "Permit release", offset_days: -35, duration_days: 1 }, { name: "Foundation", offset_days: 0, duration_days: 14 },
-    { name: "Framing", offset_days: 14, duration_days: 21 }, { name: "Dry-in", offset_days: 35, duration_days: 10 },
-    { name: "MEP rough", offset_days: 45, duration_days: 18 }, { name: "Drywall", offset_days: 63, duration_days: 14 },
-    { name: "Interior finishes", offset_days: 77, duration_days: 28 }, { name: "Punch and close", offset_days: 105, duration_days: 14 },
+    { name: "Permit release", start_offset_days: -35, duration_days: 1 }, { name: "Foundation", start_offset_days: 0, duration_days: 14 },
+    { name: "Framing", start_offset_days: 14, duration_days: 21 }, { name: "Dry-in", start_offset_days: 35, duration_days: 10 },
+    { name: "MEP rough", start_offset_days: 45, duration_days: 18 }, { name: "Drywall", start_offset_days: 63, duration_days: 14 },
+    { name: "Interior finishes", start_offset_days: 77, duration_days: 28 }, { name: "Punch and close", start_offset_days: 105, duration_days: 14 },
   ]
   const { data: schedule, error: scheduleError } = await supabase.from("schedule_templates").insert({ org_id: orgId, name: "Cypress Landing 120-day build", property_type: "production", items: scheduleItems, created_by: actorUserId }).select("id").single()
   if (scheduleError || !schedule) throw new Error(`Failed to create sample schedule: ${scheduleError?.message}`)

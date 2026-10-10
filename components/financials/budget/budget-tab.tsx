@@ -73,6 +73,7 @@ import {
   SaveBudgetTemplateDialog,
   UnifiedBudgetEmptyState,
 } from "./import-dialogs";
+import { formatDate } from "@/lib/reports/format";
 import {
   dollarsToCents,
   formatCurrency,
@@ -1037,10 +1038,10 @@ export function BudgetTab({
         ) : baselineLockedAt ? (
           <span
             className="hidden items-center gap-1.5 border px-2 py-1 text-xs text-muted-foreground lg:inline-flex"
-            title={`Baseline locked ${new Date(baselineLockedAt).toLocaleString()}`}
+            title={`Baseline locked ${formatDate(baselineLockedAt)}`}
           >
             <Lock className="h-3 w-3" />
-            Baseline {new Date(baselineLockedAt).toLocaleDateString()}
+            Baseline {formatDate(baselineLockedAt)}
           </span>
         ) : null}
         <div className="ml-auto flex items-center gap-2">

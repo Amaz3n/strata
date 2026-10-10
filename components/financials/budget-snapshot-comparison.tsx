@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatDate } from "@/lib/reports/format";
 
 type Snapshot = Pick<
   BudgetSnapshotRow,
@@ -38,7 +39,7 @@ const money = (cents: number) =>
 
 const snapshotLabel = (snapshot: Snapshot) =>
   snapshot.label ??
-  `${new Date(`${snapshot.snapshot_date}T12:00:00`).toLocaleDateString()} · ${snapshot.source}`;
+  `${formatDate(snapshot.snapshot_date)} · ${snapshot.source}`;
 
 export function BudgetSnapshotComparison({
   projectId,

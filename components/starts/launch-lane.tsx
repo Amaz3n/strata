@@ -348,6 +348,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
         </Empty>
       ) : (
         <DndContext
+          id="launch-lane"
           sensors={sensors}
           onDragStart={(event: DragStartEvent) => setDraggingId(String(event.active.id))}
           onDragCancel={() => setDraggingId(null)}

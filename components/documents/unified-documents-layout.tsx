@@ -1101,6 +1101,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
         />
       ) : (
       <DndContext
+        id="documents-layout"
         sensors={dragSensors}
         collisionDetection={documentsCollisionDetection}
         accessibility={{

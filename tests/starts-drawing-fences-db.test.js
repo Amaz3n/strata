@@ -591,6 +591,7 @@ async function fanout(t) {
     company_id: h.vendor.id,
   })
   await h.asWorker(true)
+  h.item = item
   h.enqueue = (jobType, payload) =>
     h.service((tx) => insert(tx, "outbox", { org_id: h.orgId, job_type: jobType, payload }))
   h.notice = (payload = {}) =>
@@ -628,6 +629,20 @@ test("release notices stay within the claimed package, actor and assigned vendor
   await h.db.query("delete from schedule_assignments where company_id = $1", [h.vendor.id])
   await h.asWorker(true)
   await assert.rejects(h.notice(), /not assigned to this home/)
+})
+
+test("a release reindexes its own lot and schedule items, and nothing else", async (t) => {
+  const h = await fanout(t)
+  const reindex = (entityType, entityId) =>
+    h.enqueue("reindex_search", { entity_type: entityType, entity_id: entityId })
+
+  await reindex("lot", h.lot.id)
+  await reindex("schedule_item", h.item.id)
+  assert.equal(await h.count("outbox where job_type = 'reindex_search'"), 2)
+
+  await assert.rejects(reindex("lot", h.otherHome.id), /reindex scope mismatch/)
+  await assert.rejects(reindex("schedule_item", h.otherHome.id), /reindex scope mismatch/)
+  await assert.rejects(reindex("invoice", h.item.id), /job family/)
 })
 
 test("a fanned-out drawing job must match the published file, set and revision", async (t) => {

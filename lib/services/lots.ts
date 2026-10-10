@@ -13,6 +13,7 @@ import {
 import { readLotDimensions, storeLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
 import { readAllRows } from "@/lib/land/paging"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
+import { isPlanOffered, offeringOverrideFor } from "@/lib/sales/plan-offering"
 import { resolveDivisionScope } from "@/lib/land/scope"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
@@ -24,8 +25,10 @@ import {
   bulkLotPatchSchema,
   createLotsInputSchema,
   lotDeliveryExceptionSchema,
+  lotPlanAssignmentSchema,
   lotStatusSchema,
   lotUpdateSchema,
+  type LotPlanAssignmentInput,
   type LotCreateInput,
   type LotUpdateInput,
 } from "@/lib/validation/lots"
@@ -442,6 +445,70 @@ export async function setLotStatus(
   const { data, error } = await context.supabase.from("lots").update({ status: parsed.status }).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to set lot status: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.status_changed", entityId: id, action: "update", before, after: data, payload: { community_id: before.community_id, from: before.status, to: parsed.status, force: parsed.force } })
+  return mapLot(data as LotRow)
+}
+
+/**
+ * Pin a released plan version and elevation to a lot nobody has bought, so a
+ * spec home can be started on it. A lot with a home already took its plan from
+ * instantiation, and a held or sold lot takes it from the purchase agreement,
+ * so both refuse here. The plan must be on the community's price sheet today, or
+ * carry a recorded offering override — the same answer the start package's plan
+ * gate re-derives at release.
+ */
+export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInput, orgId?: string): Promise<LotDTO> {
+  const parsed = lotPlanAssignmentSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
+  const { data: lot, error: lotError } = await context.supabase.from("lots")
+    .select("id, community_id, status, project_id, metadata, house_plan_version_id, house_plan_elevation_id, updated_at")
+    .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
+  if (lotError || !lot) throw new Error("Lot not found")
+  await requireCommunityScope(lot.community_id, context)
+  if (lot.project_id) throw new Error("This lot already has a home; its plan comes from that home.")
+  if (lot.status === "started" || lot.status === "closed") throw new Error("A started or closed lot cannot take a new plan.")
+
+  const [reservations, version, elevation] = await Promise.all([
+    context.supabase.from("lot_reservations").select("id").eq("org_id", context.orgId).eq("lot_id", lotId)
+      .in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(1),
+    context.supabase.from("house_plan_versions").select("id, house_plan_id, status").eq("org_id", context.orgId).eq("id", parsed.versionId).maybeSingle(),
+    context.supabase.from("house_plan_elevations").select("id, house_plan_id, is_active").eq("org_id", context.orgId).eq("id", parsed.elevationId).maybeSingle(),
+  ])
+  if (reservations.error) throw new Error(`Failed to check the lot's reservations: ${reservations.error.message}`)
+  if (version.error || !version.data) throw new Error("Plan version not found")
+  if (elevation.error || !elevation.data) throw new Error("Plan elevation not found")
+  if ((reservations.data ?? []).length > 0) throw new Error("This lot is held or sold; its plan comes from the purchase agreement.")
+  if (version.data.status !== "released") throw new Error("Only a released plan version can be pinned to a lot.")
+  if (elevation.data.house_plan_id !== version.data.house_plan_id || elevation.data.is_active === false) {
+    throw new Error("That elevation does not belong to the plan, or is no longer offered.")
+  }
+
+  const { data: offering, error: offeringError } = await context.supabase.from("community_plan_availability")
+    .select("is_available, elevation_id, effective_start, effective_end")
+    .eq("org_id", context.orgId).eq("community_id", lot.community_id).eq("house_plan_id", version.data.house_plan_id)
+  if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
+  const offered = isPlanOffered(offering ?? [], { elevationId: parsed.elevationId, onDate: new Date().toISOString().slice(0, 10) })
+  if (!offered && !offeringOverrideFor(lot.metadata, version.data.house_plan_id)) {
+    throw new Error("This plan or elevation is not offered in the lot's community. Offer it there, or record an offering override with a reason.")
+  }
+
+  const { data, error } = await context.supabase.from("lots")
+    .update({
+      house_plan_id: version.data.house_plan_id,
+      house_plan_version_id: version.data.id,
+      house_plan_elevation_id: elevation.data.id,
+      ...(parsed.swing ? { swing: parsed.swing } : {}),
+    })
+    .eq("org_id", context.orgId).eq("id", lotId).eq("updated_at", lot.updated_at).is("project_id", null)
+    .select(LOT_SELECT).maybeSingle()
+  if (error) throw new Error(`Failed to assign the plan: ${error.message}`)
+  if (!data) throw new Error("The lot changed while you were assigning the plan. Review it and try again.")
+  await logLotMutation({
+    orgId: context.orgId, userId: context.userId, eventType: "lot.plan_assigned", entityId: lotId, action: "update",
+    before: { house_plan_version_id: lot.house_plan_version_id, house_plan_elevation_id: lot.house_plan_elevation_id },
+    after: { house_plan_id: version.data.house_plan_id, house_plan_version_id: version.data.id, house_plan_elevation_id: elevation.data.id },
+    payload: { community_id: lot.community_id, house_plan_id: version.data.house_plan_id },
+  })
   return mapLot(data as LotRow)
 }
 

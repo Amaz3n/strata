@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { attachProjectToLot, recordLotDeliveryException } = freshRequire("lib/services/lots.ts")
+const { assignPlanToLot, attachProjectToLot, recordLotDeliveryException } = freshRequire("lib/services/lots.ts")
 
 const COMMUNITY = id(1)
 const LOT = id(2)
@@ -92,5 +92,56 @@ describe("attachProjectToLot", () => {
   test("an expired hold no longer blocks the lot", async () => {
     const service = harness({ client: OTHER_BUYER, reservations: [hold(BUYER, { expires_at: "2020-01-01T00:00:00+00:00" })] })
     assert.equal((await attach(service)).projectId, HOME)
+  })
+})
+
+describe("assignPlanToLot", () => {
+  const PLAN = id(60)
+  const VERSION = id(61)
+  const ELEVATION = id(62)
+  const permissions = ["lot.write", "plan.instantiate", "community.read"]
+
+  function planHarness({ offered = true, versionStatus = "released", reservations = [], lot = {} } = {}) {
+    const service = harness({ permissions, reservations })
+    Object.assign(service.db.lots[0], lot)
+    service.db.house_plan_versions = [{ id: VERSION, org_id: ORG, house_plan_id: PLAN, status: versionStatus }]
+    service.db.house_plan_elevations = [{ id: ELEVATION, org_id: ORG, house_plan_id: PLAN, is_active: true }]
+    service.db.community_plan_availability = offered
+      ? [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, is_available: true, elevation_id: null, effective_start: null, effective_end: null }]
+      : []
+    return service
+  }
+  const assign = (service) => service.run(() => assignPlanToLot(LOT, { versionId: VERSION, elevationId: ELEVATION }))
+
+  test("an unsold lot takes a released plan its community offers, and the pin is audited", async () => {
+    const service = planHarness()
+    await assign(service)
+    assert.equal(service.db.lots[0].house_plan_version_id, VERSION)
+    assert.equal(service.db.lots[0].house_plan_elevation_id, ELEVATION)
+    assert.deepEqual(service.events.map((event) => event.eventType), ["lot.plan_assigned"])
+  })
+
+  test("a plan the community does not offer is refused unless an override was recorded", async () => {
+    const service = planHarness({ offered: false })
+    await assert.rejects(assign(service), /not offered/)
+    assert.deepEqual(service.writes(), [])
+
+    const overridden = planHarness({
+      offered: false,
+      lot: { metadata: { offering_override: { house_plan_id: PLAN, reason: "Builder's choice here", by: id(900002), at: "2026-10-01T00:00:00Z" } } },
+    })
+    await assign(overridden)
+    assert.equal(overridden.db.lots[0].house_plan_version_id, VERSION)
+  })
+
+  test("a lot with a home, a live hold or a draft plan version is refused", async () => {
+    await assert.rejects(assign(planHarness({ lot: { project_id: HOME } })), /already has a home/)
+    await assert.rejects(assign(planHarness({ reservations: [hold(BUYER)] })), /held or sold/)
+    await assert.rejects(assign(planHarness({ versionStatus: "draft" })), /released plan version/)
+  })
+
+  test("assigning a plan takes plan authority as well as lot authority", async () => {
+    const clerk = harness({ permissions: ["lot.write", "community.read"] })
+    await assert.rejects(assign(clerk), /Missing permission/)
   })
 })

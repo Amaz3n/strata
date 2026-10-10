@@ -1152,6 +1152,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
             style={{ width: sidebarWidth, minWidth: sidebarWidth }}
           >
             <DndContext
+              id="gantt-chart"
               sensors={sensors}
               collisionDetection={closestCenter}
               onDragEnd={handleDragEnd}

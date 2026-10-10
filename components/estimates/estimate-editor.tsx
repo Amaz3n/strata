@@ -1199,6 +1199,7 @@ export function EstimateEditor({
                       </div>
 
                       <DndContext
+                        id="estimate-lines"
                         sensors={sensors}
                         collisionDetection={closestCenter}
                         onDragEnd={reorderLines}

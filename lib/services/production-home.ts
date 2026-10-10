@@ -7,6 +7,7 @@ import { getStudioRunway } from "@/lib/services/design-studio"
 import { listMyHouses, listMyHouseWork, type MyHouseDTO, type MyHouseTaskGroupDTO } from "@/lib/services/my-houses"
 import { hasPermission } from "@/lib/services/permissions"
 import { listStartPackages } from "@/lib/services/starts"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const STALLED_DAYS = 7
 
@@ -146,7 +147,9 @@ export async function getProductionHomeData(
     access.assignedOnly ? access.divisionIds : null,
   )
   const [{ data: statRollup, error: statError }, { data: vpos, error: vposError }, { data: stalled, error: stalledError }, { data: takedowns, error: takedownsError }, { data: selectionDates, error: selectionDatesError }, { data: openClosingItems, error: openClosingItemsError }, assigned, workGroups] = await Promise.all([
-    context.supabase.rpc("production_home_stat_rollup", {
+    // Service-role-only function: scope was authorized above, so it takes the
+    // caller's already-resolved project and community ids, never a raw org.
+    createServiceSupabaseClient().rpc("production_home_stat_rollup", {
       p_org_id: context.orgId,
       p_project_ids: scopedProjectIds,
       p_community_ids: scopedCommunityIds,

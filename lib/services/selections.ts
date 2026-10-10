@@ -76,8 +76,12 @@ export async function listSelectionOptions(orgId: string, categoryId: string): P
   return data ?? []
 }
 
-export async function listProjectSelections(orgId?: string, projectId?: string, options: { portalAccess?: boolean } = {}): Promise<ProjectSelectionDto[]> {
-  const context = options.portalAccess
+export async function listProjectSelections(orgId?: string, projectId?: string, options: { portalAccess?: boolean; permissionChecked?: boolean } = {}): Promise<ProjectSelectionDto[]> {
+  // `permissionChecked`: the caller already required selections.write, so the read
+  // skips the project_selections RLS that hides a home from non-members (the
+  // design coordinator is org-scoped, never a project member). Same pattern as
+  // loadSelectionMutationContext.
+  const context = options.portalAccess || options.permissionChecked
     ? { supabase: createServiceSupabaseClient(), orgId: orgId ?? "" }
     : await requireOrgContext(orgId)
   const { supabase, orgId: resolvedOrgId } = context
@@ -435,7 +439,11 @@ export async function confirmSelection(input: { orgId: string; projectId: string
 }
 
 export async function confirmSelectionGroup(input: { orgId: string; projectId: string; groupId: string; portalAccess?: boolean }) {
-  const selections = await listProjectSelections(input.orgId, input.projectId, { portalAccess: input.portalAccess })
+  if (!input.portalAccess) {
+    const context = await requireOrgContext(input.orgId)
+    await requirePermission("selections.write", context)
+  }
+  const selections = await listProjectSelections(input.orgId, input.projectId, { portalAccess: input.portalAccess, permissionChecked: true })
   const members = selections.filter((selection) => selection.group_id === input.groupId)
   if (!members.length) throw new Error("Selection group was not found")
   if (members.some((selection) => !selection.selected_option_id)) throw new Error("Choose an option for every category before confirming")

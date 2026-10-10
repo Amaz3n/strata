@@ -36,7 +36,7 @@ stubModule("@/lib/services/selection-change-orders", {
   createVarianceOrdersForSelectionChange: async () => ({ created: 0, unrouted: 0 }),
 })
 
-const { applySelectionChangeFromChangeOrder, confirmSelection, selectProjectPackage } = freshRequire("lib/services/selections.ts")
+const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, selectProjectPackage } = freshRequire("lib/services/selections.ts")
 
 const priced = (optionId, priceCents) => ({ available: true, optionId, priceCents, costCents: priceCents / 2, categoryIds: [CATEGORY] })
 
@@ -90,6 +90,31 @@ describe("confirmSelection", () => {
     await service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION }))
     assert.equal(stored(service).price_cents_snapshot, 1_500_00)
     assert.equal(stored(service).cost_cents_snapshot, 750_00)
+  })
+})
+
+describe("confirmSelectionGroup", () => {
+  const GROUP = id(10)
+  const members = () => [
+    { id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: GROUP, package_id: null, price_cents_snapshot: 1_200_00, cost_cents_snapshot: 600_00, locked_at: null, metadata: {} },
+    { id: SECOND, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: GROUP, package_id: null, price_cents_snapshot: 800_00, cost_cents_snapshot: 400_00, locked_at: null, metadata: {} },
+  ]
+
+  test("an org-level coordinator who is not a member of the home confirms the whole group", async () => {
+    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
+    const { service } = harness({ selections: members() })
+    const result = await service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP }))
+    assert.equal(result.confirmed, 2)
+    assert.deepEqual([stored(service).status, stored(service, SECOND).status], ["confirmed", "confirmed"])
+  })
+
+  test("without selections.write nothing is read or confirmed", async () => {
+    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
+    const { service } = harness({ selections: members() })
+    service.grant([])
+    await assert.rejects(service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP })))
+    assert.deepEqual(service.writes(), [])
+    assert.deepEqual(service.reads().filter((q) => q.table === "project_selections"), [])
   })
 })
 

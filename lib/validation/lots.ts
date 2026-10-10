@@ -75,5 +75,12 @@ export const lotStatusSchema = z.object({
   force: z.boolean().default(false),
 })
 
+export const lotPlanAssignmentSchema = z.object({
+  versionId: z.string().uuid(),
+  elevationId: z.string().uuid(),
+  swing: lotSwingSchema.optional(),
+})
+
+export type LotPlanAssignmentInput = z.infer<typeof lotPlanAssignmentSchema>
 export type LotCreateInput = z.infer<typeof lotCreateSchema>
 export type LotUpdateInput = z.infer<typeof lotUpdateSchema>
