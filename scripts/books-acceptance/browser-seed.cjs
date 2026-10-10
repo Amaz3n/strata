@@ -268,6 +268,57 @@ commit;`)
     await kit.as(org.owner, () => app("books/vendor-1099-packages").setPayerTaxIdentity({ legalEntityId: primary, tin: "112223334", address: ADDRESS("100 Builder Way") }))
     return org
   },
+  // A production builder: one division, a community of twenty lots, two released plans with
+  // options, and a home at each stage (closed and in warranty, released spec, start package
+  // ready, reserved, on hold), with a member for every production role. EP13-01 / EP14-07.
+  async production(kit, password) {
+    const seed = require("./production-seed.cjs")
+    // PRODUCTION_SEED_LOTS scales the community (default 20; the first ten are bought in the opening tranche).
+    const org = await seed.productionBuilder(kit, { name: "Browser acceptance — production builder", password, lots: Number(process.env.PRODUCTION_SEED_LOTS ?? 20) })
+    await seed.seedCommunity(kit, org)
+    await seed.seedProduct(kit, org)
+    await seed.takeDownTranche(kit, org)
+    const closed = await seed.presoldThroughClosing(kit, org, { lot: org.lots[0], plan: org.plans[0], buyer: { name: "Dana Whitfield", email: "dana.whitfield@acceptance.example.test" }, skus: ["ST-GAR", ...Object.values(seed.DESIGN_PICKS)] })
+    // A spec home released with no buyer.
+    seed.pinSpecPlan(kit, { lot: org.lots[1], plan: org.plans[1] })
+    const specGates = await seed.clearStartGates(kit, org, { lotId: org.lots[1].id, spec: true })
+    const spec = { projectId: specGates.projectId }
+    await seed.releaseHome(kit, org, { packageId: specGates.packageId, projectId: spec.projectId, adoptInventory: false })
+    // A sold home whose start package is ready and waiting for the release day.
+    const ready = await seed.registerBuyer(kit, org, { name: "Marcus Bell", email: "marcus.bell@acceptance.example.test" })
+    const { reservation: readyReservation } = await seed.reserveLot(kit, org, { prospect: ready, lotId: org.lots[2].id, depositCents: 2000000, receivedOn: "2026-06-20" })
+    const readySale = await seed.signAgreement(kit, org, { reservationId: readyReservation.id, config: seed.configuration(org, { lotId: org.lots[2].id, plan: org.plans[1], swing: "right", skus: ["ST-GAR"] }) })
+    await seed.chooseDesign(kit, org, { projectId: readySale.projectId })
+    const readyPackage = await seed.clearStartGates(kit, org, { lotId: org.lots[2].id, projectId: readySale.projectId })
+    // A reserved lot, a lot on hold and a walk-in still working.
+    const reserved = await seed.registerBuyer(kit, org, { name: "Priya Nair", email: "priya.nair@acceptance.example.test" })
+    await seed.reserveLot(kit, org, { prospect: reserved, lotId: org.lots[3].id, depositCents: 1000000 })
+    const held = await seed.registerBuyer(kit, org, { name: "Tomas Ruiz", email: "tomas.ruiz@acceptance.example.test" })
+    await kit.as(org.team.sales, () => require("../../lib/services/community-sales").createLotHoldFromProspect({ prospectId: held.id, lotId: org.lots[4].id, expiresAt: new Date(Date.now() + 5 * 86400000).toISOString() }))
+    await seed.registerBuyer(kit, org, { name: "Walk-in Prospect", email: "walk-in@acceptance.example.test" })
+    // A warranty request on the closed home, with a visit booked.
+    const warranty = require("../../lib/services/warranty-operations")
+    const request = await kit.as(org.owner, () => warranty.createWarrantyRequest({ input: { project_id: closed.projectId, title: "Drywall crack at stairwell", description: "Hairline crack above the first-floor stair landing.", priority: "normal" } }))
+    await kit.drainOutbox(org.orgId)
+    const deals = await kit.as(org.team.sales, () => require("../../lib/services/sales-deals").listSalesDeals({ includeClosed: true }))
+    const dealOf = (projectId) => deals.find((deal) => deal.projectId === projectId)?.dealId
+    // Record IDs the sweep fills into the pages that open one record.
+    org.periods.community = { periodId: org.communityId }
+    org.periods.plan = { periodId: org.plans[0].id }
+    org.periods.closedHome = { periodId: closed.projectId }
+    org.periods.specHome = { periodId: spec.projectId }
+    org.periods.readyHome = { periodId: readySale.projectId }
+    org.periods.startPackage = { periodId: readyPackage.packageId }
+    org.periods.releasedPackage = { periodId: specGates.packageId }
+    org.periods.deal = { periodId: dealOf(readySale.projectId) }
+    org.periods.closedDeal = { periodId: dealOf(closed.projectId) }
+    org.periods.warrantyRequest = { periodId: request.id }
+    const bank = await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name: "Operating checking", accountType: "depository", glAccountId: seed.glId(kit, org, "1000") }))
+    org.periods.bank = { periodId: bank.bankAccountId }
+    org.periods.vendor = { periodId: org.vendorIds["Gulf Concrete"] }
+    org.periods.contact = { periodId: closed.reservation.buyerContactId }
+    return org
+  },
   // A brand-new company with a July period and no books yet.
   async "greenfield-launch"(kit, password) {
     const { CONSTRUCTION_CHART_TEMPLATE } = app("books/chart-of-accounts")
@@ -297,7 +348,7 @@ async function seed(workspace, journey) {
   kit.sql(`update public.orgs set billing_model='license' where id=${kit.q(org.orgId)}`)
   const file = path.join(workspace, "browser-users.json")
   const existing = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {}
-  existing[journey] = { orgId: org.orgId, password, owner: org.owner.email, reviewer: org.reviewer.email, periods: Object.fromEntries(Object.entries(org.periods).map(([key, value]) => [key, value.periodId])) }
+  existing[journey] = { orgId: org.orgId, password, owner: org.owner.email, reviewer: org.reviewer.email, team: Object.fromEntries(Object.entries(org.team ?? {}).map(([role, actor]) => [role, actor.email])), periods: Object.fromEntries(Object.entries(org.periods).map(([key, value]) => [key, value.periodId])) }
   fs.writeFileSync(file, JSON.stringify(existing, null, 2) + "\n", { mode: 0o600 })
   return { orgId: org.orgId, file }
 }

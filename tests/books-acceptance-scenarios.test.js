@@ -73,3 +73,56 @@ test("the catalog verifier reports unknown scenarios, unsaved evidence and alter
   const { findings } = verifyCatalog({ trackerPath, evidenceRoot: dir })
   assert.deepEqual(findings, ["B02.1 names unknown scenario NOPE-01", "B02.2 is verified without saved evidence", `B03.1 evidence ${relative} no longer matches its recorded hash`])
 })
+
+test("a subcase held open by a product defect runs only when asked, and passes once the defect is gone", async () => {
+  const run = (options) => runScenario("UNIT-01", {}, {
+    expected: expected({ main: { cents: 1 }, held: { status: "NOT_IMPLEMENTED", cents: 2 } }),
+    scenario: scenario({
+      main: async (_kit, spec, check) => { check.equal("main", spec.cents, 1) },
+      held: async (_kit, spec, check) => { check.equal("held", spec.cents, 2) },
+    }),
+  }, null, options)
+  const plain = await run()
+  assert.equal(plain.status, "INCOMPLETE")
+  assert.deepEqual(plain.subcases.map((s) => s.status), ["PASSED", "NOT_IMPLEMENTED"])
+  const asked = await run({ includePending: true })
+  assert.equal(asked.status, "PASSED")
+})
+
+test("LOT-01's reviewed numbers follow from the production fixtures it runs on", () => {
+  const seed = require("../scripts/books-acceptance/production-seed.cjs")
+  const { subcases } = require("../scripts/books-acceptance/expected/LOT-01.json")
+  const plan = seed.PLANS[0]
+  const design = Object.values(seed.DESIGN_PICKS).map((sku) => seed.OPTIONS.find((option) => option.sku === sku))
+  const garage = seed.OPTIONS.find((option) => option.sku === "ST-GAR")
+  const lotPremiumCents = 1500000
+
+  // The agreement: plan price, lot premium, structural option, design choices.
+  const priced = plan.basePriceCents + lotPremiumCents + garage.priceCents + design.reduce((sum, option) => sum + option.priceCents, 0)
+  assert.equal(subcases["agreement-priced-and-signed"].expected.quote.totalCents, priced)
+
+  // The release buys the plan's trades and the design choices (not the structural option), from the trade that supplies each.
+  const byVendor = Object.fromEntries(seed.TRADES.map((trade) => [trade.vendor, Math.round((trade.uom === "sf" ? plan.heatedSqft : 1) * trade.unitPriceDollars * 100)]))
+  for (const option of design) byVendor[option.vendor] += option.costCents
+  const release = subcases["release-creates-the-house"].expected
+  assert.deepEqual(release.purchaseOrders, Object.fromEntries(Object.entries(byVendor).sort(([a], [b]) => a.localeCompare(b))))
+  assert.equal(release.purchaseOrderCents, seed.planTradeCostCents(plan) + design.reduce((sum, option) => sum + option.costCents, 0))
+  assert.equal(subcases["agreed-options-reach-purchase-orders"].expected.purchaseOrderCents, release.purchaseOrderCents + garage.costCents)
+
+  // The books: cost of sales is the land plus what was billed; margin is price less that.
+  const closing = subcases["completion-and-closing"].expected
+  const landCents = subcases["land-takedown"].inputs.landPerLotCents
+  assert.equal(subcases["built-and-billed"].expected.houseInventoryCents, landCents + release.purchaseOrderCents)
+  assert.deepEqual(closing.costOfSalesByComponent, { construction: release.purchaseOrderCents, land_and_development: landCents })
+  assert.equal(closing.revenue, priced)
+  assert.equal(closing.grossMarginCents, priced - landCents - release.purchaseOrderCents)
+  assert.equal(closing.settlement.balanceDueCents, priced - closing.settlement.depositsApplied[0])
+})
+
+test("the production fixtures keep every month a release dated days from now can land in open", () => {
+  const { defaultPeriods } = require("../scripts/books-acceptance/production-seed.cjs")
+  const periods = defaultPeriods(new Date("2026-10-10T12:00:00Z"))
+  assert.equal(periods[0], "2026-06")
+  assert.equal(periods.at(-1), "2026-12")
+  assert.equal(new Set(periods).size, periods.length)
+})

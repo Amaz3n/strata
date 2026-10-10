@@ -179,3 +179,65 @@ the operator holds access.
 | Bank feeds (Plaid) | A secret reference on each feed connection (`bank_feed_connections.secret_ref`), never archived | Reconnect from `/books/banking`; restored copies always start disconnected |
 | Connected accounting system (QuickBooks) | OAuth tokens on the accounting connection, server-only, never archived | Reconnect from `/settings/integrations` |
 | Filing partner (TaxBandits) | `TAXBANDITS_ENV`, `TAXBANDITS_CLIENT_ID`, `TAXBANDITS_CLIENT_SECRET`, `TAXBANDITS_USER_TOKEN` in Vercel (sandbox keys never in production) | Without them, File with TaxBandits is hidden: download the import file and record the submission by hand |
+
+## Production builders (acceptance)
+
+The same isolated stack, runner and browser harness rehearse a production builder.
+Nothing here ever points at production data: a run builds its own organisation on the
+acceptance stack and the kit refuses any other container.
+
+**What exists**
+
+| Piece | Where | What it is |
+|---|---|---|
+| Production seed | `scripts/books-acceptance/production-seed.cjs` | A builder with Books launched and a member for every production role (land, sales, starts, purchasing, superintendent, warranty, design studio): one division, one community of 20 lots (`PRODUCTION_SEED_LOTS` scales it), a first land tranche bought in Books, two released plans with elevations, takeoffs and a schedule, a price book, a priced option catalog with a cutoff group, and the community's offering. Every step goes through the service as the role that owns it; the places it cannot (file storage, an unsold lot's plan pin) are written directly and commented as such |
+| Browser journey `production` | `browser-seed.cjs --journey production` | The seed plus a home at each stage: lot 1 sold, built, closed and in warranty; lot 2 a spec home released with no buyer; lot 3 sold with its start package ready; lot 4 reserved; lot 5 on hold; a walk-in. Writes each role's sign-in to `browser-users.json` |
+| LOT-01 | `scenarios/lot-01.cjs`, `expected/LOT-01.json` | A presold home from land takedown to warranty with the books tied out the way HOME-01 ties them (below) |
+| Production sweep | `journeys/production-sweep.spec.ts`, `journeys/sweep.ts` | Every signed-in page as the owner; the production desks and a home's tabs as each role, at desktop width (mobile web is out of scope; field use is the iOS app) |
+
+**LOT-01.** Land is bought in Books and the takedown closes; the consultant holds and
+reserves the lot with a $20,000 deposit; the agreement is quoted ($433,100), executed
+and the lead is won; the buyer's design choices pass their cutoff; the starts desk
+clears the gates and releases (schedule, five purchase orders, budget, land moved into
+the house); the trades are billed against their orders; the home completes, closes
+(revenue $433,100, cost of sales by component, deposit applied, four home controls tie)
+and enrols in warranty. Each role is also checked at its boundary (a land manager
+cannot hold a lot, a superintendent or a consultant cannot release). The arithmetic of
+every reviewed number is derived in the expected file and bound to the fixtures by a
+unit test (`tests/books-acceptance-scenarios.test.js`).
+
+```sh
+# stack as in books-acceptance-runner.md (bootstrap, then api.cjs --auth)
+node scripts/books-acceptance/scenario-runner.cjs --container <db container> \
+  --api-url http://127.0.0.1:<port> --scenario LOT-01 --evidence-dir NEW_DIR
+#   --only name[,name]   run named subcases;  --include-pending   also run the open ones
+node scripts/books-acceptance/browser-seed.cjs --workspace W --journey production
+BOOKS_ACCEPTANCE_WORKSPACE=W PRODUCTION_SWEEP_ROLES=owner,sales \
+  npx playwright test -c scripts/books-acceptance/playwright.production.config.ts
+node scripts/books-acceptance/sweep-report.cjs --workspace W --errors
+```
+
+A run takes about a minute for the scenario and nine seconds for the seed. The release
+and the closing run for real; two harness limits are named in the code: the plan-set
+PDF copy and the signing packet need file storage, so without `--storage-env` the
+drawings step of the release is settled directly and the agreement is executed through
+the service the envelope handler calls. Both are listed as open subcases that need
+`--storage-env`.
+
+**Reading the result.** A production scenario with open steps is `INCOMPLETE`, and an
+all-scenarios run reports it ("open by design") without failing; a failed step fails
+the run. Open subcases are the explicit pending list: each is either waiting on storage
+or on a product defect, with the defect and its source in the expected file. The defect
+checks are written; `--include-pending` runs them and a step reports `PASSED` the day
+its defect is fixed, at which point its `status` line is removed from the expected file
+and its entry from `OPEN_SUBCASES` in `catalog.cjs`.
+
+**The sweep.** A page is `clean`, `refused` (an authorization refusal was the only thing
+it said), `errors` (an exception, a console error, a 5xx, a crash screen, or a person's
+own desk refused) or `skipped` (it needs a record the seed does not create). A finding
+that does not come back on a second load is counted as a flaky first load, not an error.
+Reports are `W/production-sweep-<role>-desktop.json`. Each role's own desk is the one
+named in `docs/production-org-playbook.md`.
+
+**Defects these runs found** (open subcases in `expected/LOT-01.json` carry D1–D4, D7, D10, D11; the rest came from the sweep and are not yet checks):
+D12 the production Home (`/`, `/my-houses`) fails for every role: `production_home_stat_rollup` is executable only by `service_role` but `lib/services/production-home.ts` calls it with the user's client. D13 the Offering tab cannot list plans to offer: `listOfferablePlans` filters `house_plans.is_archived`, which does not exist. D14 `app/(app)/sales/[dealId]/page.tsx` gives four siblings the same React key. D15 `DndContext` has no `id` in `components/starts/launch-lane.tsx` and `components/documents/unified-documents-layout.tsx` (hydration mismatch). D2 shows in the browser as the purchasing manager's own desk refusing (`Missing permission: org.member`). D4 shows as the Inventory and Warranty tabs of a sold home crashing ("contracts that earn revenue differently"). D5 release leaves schedule items and lots out of search ("Starts worker cannot enqueue this job family"). D6 the sample-community schedule uses `offset_days` where the schedule reads `start_offset_days`. D8 `pay_on_po_enabled` has no writer. D9 nothing pins a plan to an unsold lot, so a spec home cannot be started from the app.

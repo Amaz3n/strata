@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process"
 
 export const workspace = process.env.BOOKS_ACCEPTANCE_WORKSPACE as string
 
-export type JourneyUsers = { orgId: string; password: string; owner: string; reviewer: string; periods: Record<string, string> }
+export type JourneyUsers = { orgId: string; password: string; owner: string; reviewer: string; team?: Record<string, string>; periods: Record<string, string> }
 
 export function journey(name: string): JourneyUsers {
   const users = JSON.parse(readFileSync(join(workspace, "browser-users.json"), "utf8")) as Record<string, JourneyUsers>

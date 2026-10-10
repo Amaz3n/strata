@@ -28,6 +28,7 @@ const GOLDEN_SCENARIOS = [
   "RESTORE-01",
   "CAP-01",
   "AUTH-01",
+  "LOT-01",
 ];
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 function parseArgs(args) {

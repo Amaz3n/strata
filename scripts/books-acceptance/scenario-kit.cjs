@@ -27,6 +27,8 @@ function createKit(stack) {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = localJwt({ role: "anon" })
   process.env.SUPABASE_SERVICE_ROLE_KEY = localJwt({ role: "service_role" })
   process.env.CRON_SECRET = randomUUID()
+  // Signing links and portal tokens need server secrets; a run mints its own.
+  for (const name of ["DOCUMENT_SIGNING_SECRET", "PORTAL_ACCESS_SECRET", "PROPOSAL_SECRET"]) process.env[name] = randomBytes(32).toString("hex")
   // A shell that carries production storage settings must never send scenario
   // files there. Storage comes only from the file `--storage-env` names, and only
   // for a bucket named as an acceptance bucket; otherwise there is none.
@@ -162,6 +164,21 @@ function createKit(stack) {
     return { orgId, owner, reviewer }
   }
 
+  // One more signed-in member of an existing organisation under a role (a
+  // purchasing manager, a superintendent, a sales consultant ...).
+  function addMember(org, role, { password = null } = {}) {
+    const actor = { userId: randomUUID(), orgId: org.orgId, productTier: org.owner.productTier, role }
+    actor.email = `${actor.userId}@acceptance.example.test`
+    const secret = password ? `extensions.crypt(${q(password)}, extensions.gen_salt('bf'))` : "''"
+    const statements = ["begin;",
+      `insert into auth.users(id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at,raw_app_meta_data,raw_user_meta_data,confirmation_token,recovery_token,email_change_token_new,email_change,email_change_token_current,phone_change,phone_change_token,reauthentication_token) values(${q(actor.userId)},'00000000-0000-0000-0000-000000000000','authenticated','authenticated',${q(actor.email)},${secret},${password ? "now()" : "null"},now(),now(),'{"provider":"email","providers":["email"]}','{}','','','','','','','','');`]
+    if (password) statements.push(`insert into auth.identities(id,provider_id,user_id,identity_data,provider,last_sign_in_at,created_at,updated_at) values(gen_random_uuid(),${q(actor.userId)},${q(actor.userId)},jsonb_build_object('sub',${q(actor.userId)},'email',${q(actor.email)},'email_verified',true),'email',now(),now(),now());`)
+    statements.push(`insert into public.app_users(id,email,full_name) values(${q(actor.userId)},${q(actor.email)},${q(role)}) on conflict (id) do nothing;`,
+      `insert into public.memberships(org_id,user_id,role_id,status) select ${q(org.orgId)},${q(actor.userId)},id,'active' from public.roles where key=${q(role)};`, "commit;")
+    sql(statements.join("\n"))
+    return actor
+  }
+
   // Posted journals for a source, as account-code → net debit cents.
   function postedNet(orgId, filter) {
     const result = {}
@@ -172,7 +189,7 @@ function createKit(stack) {
     return result
   }
 
-  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, taxbandits, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
+  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, taxbandits, sql, rows, q, as, service, settle, organization, addMember, postedNet, drainOutbox, localJwt }
 }
 
 // Expected-versus-observed recorder. A subcase passes only if every check passes.

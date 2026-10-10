@@ -28,6 +28,7 @@ const IMPLEMENTED = {
   "AUTH-01": "./scenarios/auth-01.cjs",
   "GREEN-01": "./scenarios/green-01.cjs",
   "STORE-01": "./scenarios/store-01.cjs",
+  "LOT-01": "./scenarios/lot-01.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -44,7 +45,27 @@ const NOT_IMPLEMENTED = {
   "PAY-02": { status: "deferred", packages: ["B13"], reason: "Payroll is not day one; it arrives as a reviewed summary journal." },
 }
 
-/** Subcases a built scenario names but does not implement yet, and who owns each. */
-const OPEN_SUBCASES = {}
+/**
+ * Production scenarios (EP14). They run on the same stack and runner, but a step the
+ * chain cannot take yet (a product defect, or storage this run does not have) is listed
+ * as open with its reason, so the scenario is INCOMPLETE rather than FAILED. An
+ * incomplete production scenario does not fail an all-scenarios run; a failed one does.
+ */
+const PRODUCTION = { "LOT-01": { checklist: "EP14-01" } }
 
-module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, OPEN_SUBCASES }
+/** Subcases a built scenario names but does not implement yet, and who owns each. */
+const OPEN_SUBCASES = {
+  "LOT-01": {
+    "design-choices-open-after-signing": "EP14-01",
+    "purchasing-manager-reaches-a-house": "EP14-01",
+    "preview-matches-release": "EP14-01",
+    "agreed-options-reach-purchase-orders": "EP14-01",
+    "presold-home-adopts-inventory-without-repair": "EP14-01",
+    "deposit-invoice-reaches-the-buyer": "EP14-01",
+    "closing-completes-without-repair": "EP14-01",
+    "agreement-signs-through-an-envelope": "EP14-01",
+    "release-copies-the-plan-set": "EP14-01",
+  },
+}
+
+module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, OPEN_SUBCASES, PRODUCTION }

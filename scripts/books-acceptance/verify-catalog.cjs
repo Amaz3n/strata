@@ -6,7 +6,7 @@ require("../register-ts-node-test")
 const fs = require("node:fs"),
   path = require("node:path")
 const { GOLDEN_SCENARIOS } = require("./runtime.cjs")
-const { IMPLEMENTED, NOT_IMPLEMENTED, OPEN_SUBCASES } = require("./catalog.cjs")
+const { IMPLEMENTED, NOT_IMPLEMENTED, OPEN_SUBCASES, PRODUCTION } = require("./catalog.cjs")
 
 const root = path.join(__dirname, "../..")
 
@@ -51,6 +51,11 @@ function verifyCatalog({ trackerPath = path.join(root, "advisor-plans/013-arc-bo
   }
   walk(tracker.items)
   const ids = new Set(items.map((item) => item.id))
+  // Production scenarios (EP14) are owned by the enterprise-production checklist.
+  const checklistPath = path.join(root, "docs/enterprise-production/completion-checklist.json")
+  const checklistIds = new Set(fs.existsSync(checklistPath) ? (JSON.parse(fs.readFileSync(checklistPath, "utf8")).items ?? []).map((item) => item.id) : [])
+  for (const [id, entry] of Object.entries(PRODUCTION)) if (!checklistIds.has(entry.checklist)) findings.push(`${id} names checklist item ${entry.checklist}, which is not in the enterprise-production checklist`)
+  for (const id of checklistIds) ids.add(id)
   const owners = [...Object.values(NOT_IMPLEMENTED).flatMap((entry) => entry.packages), ...Object.values(OPEN_SUBCASES).flatMap((open) => Object.values(open))]
   for (const owner of owners) if (!ids.has(owner) && ![...ids].some((id) => id.startsWith(`${owner}.`))) findings.push(`package ${owner} is not in the tracker`)
   for (const item of items) {
