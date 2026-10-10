@@ -21,6 +21,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { ContractTemplateSettings } from "@/components/settings/contract-template-settings"
 import { DocumentNumberingForm } from "@/components/settings/document-numbering-form"
+import { OrgSecurityGroup } from "@/components/settings/org-security-group"
 import { InfoRow, RowControl, SettingsError, SettingsField, SettingsGroup } from "@/components/settings/settings-section"
 import {
   getOrganizationSettingsAction,
@@ -438,6 +439,8 @@ export function OrganizationPanel({
           </SettingsField>
         </SettingsGroup>
       ) : null}
+
+      {canManage ? <OrgSecurityGroup /> : null}
 
       <SettingsGroup title="Workspace">
         <InfoRow label="Workspace ID">

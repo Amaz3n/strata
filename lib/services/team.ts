@@ -18,6 +18,7 @@ import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { sendInviteEmail } from "@/lib/services/mailer"
 import { authorize, requireAuthorization } from "@/lib/services/authorization"
+import { logger } from "@/lib/logging/logger"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
   const { data, error } = await client.from("roles").select("id").eq("scope", "org").eq("key", role).maybeSingle()
@@ -1159,6 +1160,17 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     throw new Error("Membership not found")
   }
 
+  // A suspended member holds no authority, so suspending the last administrator
+  // strands the org exactly as demoting or removing them would.
+  if (status === "suspended") {
+    await assertNotLastOrgAdmin({
+      client: createServiceSupabaseClient(),
+      orgId: resolvedOrgId,
+      membershipId,
+      nextRoleId: null,
+    })
+  }
+
   const { data, error } = await supabase
     .from("memberships")
     .update({ status })
@@ -1187,10 +1199,63 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     after: data,
   })
 
+  if (status !== existing.status && (status === "suspended" || existing.status === "suspended")) {
+    const sessions =
+      status === "suspended"
+        ? await revokeSessionsOfDepartedMember(createServiceSupabaseClient(), resolvedOrgId, existing.user_id as string)
+        : null
+    await recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: status === "suspended" ? "member_suspended" : "member_reactivated",
+      entityType: "membership",
+      entityId: data.id as string,
+      payload: { user_id: existing.user_id, ...(sessions ? { sessions } : {}) },
+    })
+  }
+
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
   const mfaEnabledByUser = await mapMfaEnabledByUser(createServiceSupabaseClient(), [selectedUser?.id].filter(Boolean), resolvedOrgId)
   return mapTeamMember(data, projectCounts, mfaEnabledByUser)
+}
+
+type SuspensionSessionOutcome =
+  | { revoked: true; count: number }
+  | { revoked: false; reason: "other_active_memberships" | "revocation_failed" }
+
+/**
+ * End the suspended member's Supabase sessions (and, by cascade, their refresh
+ * tokens) so an open browser or phone cannot keep minting access tokens.
+ *
+ * Suspension itself is already effective on the next request - membership is
+ * re-read from the database on every authorization - so this closes the
+ * remaining window: a token that would otherwise keep refreshing. A person who
+ * is still active in another organization keeps their sessions, because one
+ * org's decision must not sign them out of another's; the per-request
+ * membership check is what excludes them here. A failed revocation does not
+ * undo the suspension; it is reported in the event so it is never silent.
+ */
+async function revokeSessionsOfDepartedMember(
+  client: SupabaseClient,
+  orgId: string,
+  memberUserId: string,
+): Promise<SuspensionSessionOutcome> {
+  const { count, error: othersError } = await client
+    .from("memberships")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", memberUserId)
+    .eq("status", "active")
+    .neq("org_id", orgId)
+  if (othersError) return { revoked: false, reason: "revocation_failed" }
+  if ((count ?? 0) > 0) return { revoked: false, reason: "other_active_memberships" }
+
+  const { data, error } = await client.rpc("revoke_user_sessions", { p_user_id: memberUserId })
+  if (error) {
+    logger.error("team.session_revocation_failed", { error: new Error(error.message), domain: "team", userId: memberUserId })
+    return { revoked: false, reason: "revocation_failed" }
+  }
+  return { revoked: true, count: typeof data === "number" ? data : 0 }
 }
 
 export function suspendMember(membershipId: string, orgId?: string) {
@@ -1258,6 +1323,16 @@ export async function removeMember(membershipId: string, orgId?: string) {
     entityId: membershipId,
     before: membership,
     after: null,
+  })
+
+  const sessions = await revokeSessionsOfDepartedMember(createServiceSupabaseClient(), resolvedOrgId, membership.user_id as string)
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "member_removed",
+    entityType: "membership",
+    entityId: membershipId,
+    payload: { user_id: membership.user_id, sessions },
   })
 
   return true

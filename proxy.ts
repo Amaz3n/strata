@@ -6,8 +6,11 @@ import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
 import {
   MFA_GATE_COOKIE,
   MFA_GATE_TTL_SECONDS,
+  ORG_MFA_POLICY_COOKIE,
   signMfaGateCookie,
+  signOrgMfaPolicyCookie,
   verifyMfaGateCookie,
+  verifyOrgMfaPolicyCookie,
 } from "@/lib/auth/mfa-gate-cookie"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
@@ -217,6 +220,32 @@ export async function proxy(request: NextRequest) {
     if (gate.stepUp) {
       return withSupabaseCookies(response, NextResponse.redirect(new URL("/auth/mfa", request.url)))
     }
+    // No verified factor on this session. If one of the user's organizations
+    // requires two-factor, they enroll before using the app.
+    const policy = await resolveOrgMfaPolicy(request, supabase, claims)
+    if (policy.enrollmentRequired) {
+      if (pathname.startsWith("/api/")) {
+        return withSupabaseCookies(
+          response,
+          NextResponse.json(
+            { error: "Your organization requires two-factor authentication.", code: "mfa_enrollment_required" },
+            { status: 403 },
+          ),
+        )
+      }
+      return withSupabaseCookies(response, NextResponse.redirect(new URL("/auth/mfa/enroll", request.url)))
+    }
+    if (policy.proof) {
+      response.cookies.set({
+        name: ORG_MFA_POLICY_COOKIE,
+        value: policy.proof,
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: MFA_GATE_TTL_SECONDS,
+      })
+    }
     // Read `response` here, not before the await: a token refresh during the
     // lookup above rebinds it, and a cookie set on the old object never ships.
     if (gate.proof) {
@@ -285,6 +314,38 @@ async function resolveMfaGate(
   }
 
   return { stepUp: false, proof: identity ? (await signMfaGateCookie(identity)) ?? undefined : undefined }
+}
+
+/**
+ * Whether the session's user must enroll two-factor because an organization
+ * they belong to requires it. A member can read their own org's policy under
+ * RLS (writes are service-role only), so the lookup uses the user's own
+ * session. "No org requires it" is signed and cached like the factor gate; a
+ * policy that is on is never cached, so it applies on the very next request.
+ * A failed lookup leaves the session alone rather than locking anyone out.
+ */
+async function resolveOrgMfaPolicy(
+  request: NextRequest,
+  supabase: SupabaseClient,
+  claims: { sub?: unknown; session_id?: unknown },
+): Promise<{ enrollmentRequired: boolean; proof?: string }> {
+  const sub = typeof claims.sub === "string" ? claims.sub : null
+  const sessionId = typeof claims.session_id === "string" ? claims.session_id : null
+  const identity = sub && sessionId ? { sub, sessionId } : null
+
+  if (identity && (await verifyOrgMfaPolicyCookie(request.cookies.get(ORG_MFA_POLICY_COOKIE)?.value, identity))) {
+    return { enrollmentRequired: false }
+  }
+
+  const { data, error } = await supabase
+    .from("org_security_policies")
+    .select("org_id")
+    .eq("require_mfa", true)
+    .limit(1)
+  if (error) return { enrollmentRequired: false }
+  if ((data ?? []).length > 0) return { enrollmentRequired: true }
+
+  return { enrollmentRequired: false, proof: identity ? (await signOrgMfaPolicyCookie(identity)) ?? undefined : undefined }
 }
 
 function requireEnv(value: string | undefined, name: string) {

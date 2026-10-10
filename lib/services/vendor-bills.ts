@@ -48,6 +48,8 @@ import { readEvenFlowAssessment, type EvenFlowPriceAssessment } from "@/lib/fina
 import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { assertPayableApprovalPeriodOpen, notifyPayableApprovalDecision } from "@/lib/services/payable-approval-gate"
+import { BILL_SELF_APPROVAL_MESSAGE } from "@/lib/financials/payable-separation"
+import { refuseSelfApprovedBills } from "@/lib/services/payable-separation"
 import { createCompany, getCompany, saveCompanyAccountingVendorLink } from "@/lib/services/companies"
 import { assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 
@@ -330,6 +332,20 @@ export async function approveVendorBillsAtomic(
     } catch (error) {
       if (mode === "all_or_nothing") throw error
       preflightOutcomes.set(bill.id, { id: bill.id, ok: false, reason: error instanceof Error ? error.message : "Payable could not be approved" })
+    }
+  }
+
+  // The person who entered a payable does not approve it when someone else
+  // could. Refusals are audited by the service, not just thrown.
+  const selfApproved = await refuseSelfApprovedBills({
+    orgId: context.orgId,
+    userId: context.userId,
+    bills: (bills ?? []).map((bill) => ({ id: bill.id, project_id: bill.project_id, metadata: bill.metadata })),
+  })
+  if (selfApproved.size > 0) {
+    if (mode === "all_or_nothing") throw new Error(BILL_SELF_APPROVAL_MESSAGE)
+    for (const id of selfApproved) {
+      preflightOutcomes.set(id, { id, ok: false, reason: BILL_SELF_APPROVAL_MESSAGE })
     }
   }
 
@@ -1696,6 +1712,14 @@ export async function updateVendorBillStatus({
   // period or not depending on which screen you used.
   const isEnteringApproval = parsed.status === "approved" && existing.status !== "approved"
   if (isEnteringApproval) {
+    // A payable's own enterer cannot move it into approved when anyone else
+    // could. Checked before the period gate so the attempt is always audited.
+    const selfApproved = await refuseSelfApprovedBills({
+      orgId: resolvedOrgId,
+      userId,
+      bills: [{ id: billId, project_id: existing.project_id, metadata: existing.metadata }],
+    })
+    if (selfApproved.has(billId)) throw new Error(BILL_SELF_APPROVAL_MESSAGE)
     await assertPayableApprovalPeriodOpen({
       supabase,
       orgId: resolvedOrgId,

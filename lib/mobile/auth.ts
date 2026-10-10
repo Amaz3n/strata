@@ -3,11 +3,13 @@ import "server-only"
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { logger } from "@/lib/logging/logger"
 import { getOrgAccessStateForOrg } from "@/lib/services/access"
 import { normalizeProductTier } from "@/lib/product-tier"
 import { hasPlatformAccessByUserId } from "@/lib/services/platform-access"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { MobileAPIError } from "@/lib/mobile/api"
+import { ORG_MFA_REQUIRED_MESSAGE, assuranceLevelFromAccessToken, orgMfaPolicyBlocks } from "@/lib/auth/org-mfa-policy"
 import type { MobileOrganizationDTO, MobileUserDTO } from "@/lib/mobile/contracts"
 
 export interface MobileUserContext {
@@ -121,10 +123,24 @@ export async function requireMobileOrg(request: Request): Promise<MobileOrgConte
     }
   }
 
-  const [access, orgResult] = await Promise.all([
+  const [access, orgResult, policyResult] = await Promise.all([
     getOrgAccessStateForOrg(orgId, context.isPlatformAdmin),
     context.serviceSupabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
+    context.isPlatformAdmin
+      ? null
+      : context.serviceSupabase.from("org_security_policies").select("require_mfa").eq("org_id", orgId).maybeSingle(),
   ])
+  // Fails open like the web proxy: an unreadable policy must not take the whole
+  // mobile API down, and membership is still enforced above.
+  if (policyResult?.error) logger.error("mobile.org_security_policy_unreadable", { error: new Error(policyResult.error.message), domain: "auth" })
+  if (
+    orgMfaPolicyBlocks({
+      policyRequiresMfa: policyResult?.data?.require_mfa === true,
+      assuranceLevel: assuranceLevelFromAccessToken(context.token),
+    })
+  ) {
+    throw new MobileAPIError(403, "mfa_required", ORG_MFA_REQUIRED_MESSAGE)
+  }
   if (access.locked) {
     throw new MobileAPIError(423, "organization_locked", access.reason ?? "This organization is locked.")
   }

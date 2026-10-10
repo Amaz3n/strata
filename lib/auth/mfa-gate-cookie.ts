@@ -20,6 +20,12 @@
 
 export const MFA_GATE_COOKIE = "arc_mfa_gate"
 export const MFA_GATE_TTL_SECONDS = 600
+/**
+ * Signed proof that none of the session user's organizations requires
+ * two-factor. Same trust model and TTL as the gate cookie above, with its own
+ * signature domain so neither can stand in for the other.
+ */
+export const ORG_MFA_POLICY_COOKIE = "arc_org_mfa_policy"
 
 const encoder = new TextEncoder()
 let cachedKey: Promise<CryptoKey> | null = null
@@ -47,13 +53,13 @@ function toBase64Url(bytes: ArrayBuffer) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
 }
 
-async function sign(sub: string, sessionId: string, expiresAt: number) {
+async function sign(purpose: string, sub: string, sessionId: string, expiresAt: number) {
   const key = signingKey()
   if (!key) return null
   const signature = await crypto.subtle.sign(
     "HMAC",
     await key,
-    encoder.encode(`arc-mfa-gate:v1:${sub}:${sessionId}:${expiresAt}`),
+    encoder.encode(`${purpose}:v1:${sub}:${sessionId}:${expiresAt}`),
   )
   return toBase64Url(signature)
 }
@@ -70,21 +76,14 @@ function equals(left: string, right: string) {
 
 export type MfaGateIdentity = { sub: string; sessionId: string }
 
-/** Cookie value asserting this session's user has no verified factor. */
-export async function signMfaGateCookie({ sub, sessionId }: MfaGateIdentity) {
+async function signProof(purpose: string, { sub, sessionId }: MfaGateIdentity) {
   const expiresAt = Math.floor(Date.now() / 1000) + MFA_GATE_TTL_SECONDS
-  const signature = await sign(sub, sessionId, expiresAt)
+  const signature = await sign(purpose, sub, sessionId, expiresAt)
   if (!signature) return null
   return `${expiresAt}.${signature}`
 }
 
-/**
- * True only for an unexpired, correctly signed proof issued to this exact
- * session. Anything else — malformed, expired, another session's, unsigned
- * because the secret is missing — returns false and sends the caller back to
- * the authoritative lookup.
- */
-export async function verifyMfaGateCookie(value: string | undefined, { sub, sessionId }: MfaGateIdentity) {
+async function verifyProof(purpose: string, value: string | undefined, { sub, sessionId }: MfaGateIdentity) {
   if (!value) return false
   const separator = value.indexOf(".")
   if (separator <= 0) return false
@@ -92,7 +91,31 @@ export async function verifyMfaGateCookie(value: string | undefined, { sub, sess
   const expiresAt = Number(value.slice(0, separator))
   if (!Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) return false
 
-  const expected = await sign(sub, sessionId, expiresAt)
+  const expected = await sign(purpose, sub, sessionId, expiresAt)
   if (!expected) return false
   return equals(expected, value.slice(separator + 1))
+}
+
+/** Cookie value asserting this session's user has no verified factor. */
+export function signMfaGateCookie(identity: MfaGateIdentity) {
+  return signProof("arc-mfa-gate", identity)
+}
+
+/**
+ * True only for an unexpired, correctly signed proof issued to this exact
+ * session. Anything else - malformed, expired, another session's, unsigned
+ * because the secret is missing - returns false and sends the caller back to
+ * the authoritative lookup.
+ */
+export function verifyMfaGateCookie(value: string | undefined, identity: MfaGateIdentity) {
+  return verifyProof("arc-mfa-gate", value, identity)
+}
+
+/** Cookie value asserting no organization this user belongs to requires two-factor. */
+export function signOrgMfaPolicyCookie(identity: MfaGateIdentity) {
+  return signProof("arc-org-mfa-policy", identity)
+}
+
+export function verifyOrgMfaPolicyCookie(value: string | undefined, identity: MfaGateIdentity) {
+  return verifyProof("arc-org-mfa-policy", value, identity)
 }

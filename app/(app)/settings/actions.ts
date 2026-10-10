@@ -20,6 +20,8 @@ import { createInitialVersion } from "@/lib/services/file-versions"
 import { buildOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
 
 import { updateDocumentNumbering } from "@/lib/services/document-numbering"
+import { getOrgSecurityPolicy, setOrgRequireMfa } from "@/lib/services/org-security"
+import type { SetOrgRequireMfaInput } from "@/lib/validation/org-security"
 import { documentNumberingSchema } from "@/lib/validation/document-numbering"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -923,4 +925,16 @@ export async function updateDocumentNumberingAction(
   } catch (error) {
     return actionError(error)
   }
+}
+
+export async function getOrgSecurityPolicyAction() {
+  return run(() => getOrgSecurityPolicy())
+}
+
+export async function setOrgRequireMfaAction(input: SetOrgRequireMfaInput) {
+  return run(async () => {
+    const policy = await setOrgRequireMfa(input)
+    revalidatePath("/settings")
+    return policy
+  })
 }
