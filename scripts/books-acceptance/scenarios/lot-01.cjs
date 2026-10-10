@@ -110,7 +110,7 @@ const STEPS = {
     const projectId = org.projectId
     const design = await seed.chooseDesign(kit, org, { projectId })
     const afterCutoff = await refusal(() => kit.as(org.team.design, () => app("selections").selectProjectOption({ orgId: org.orgId, projectId, selectionId: design.rows[0].id, optionId: org.optionIds["EL-LGT"] })))
-    const rows = kit.rows(`select c.name, s.status, s.price_cents_snapshot p, s.cost_cents_snapshot c from public.project_selections s join public.selection_categories c on c.id=s.category_id where s.project_id=${kit.q(projectId)} order by c.name`)
+    const rows = kit.rows(`select c.name, s.status, s.price_cents_snapshot p, s.cost_cents_snapshot c from public.project_selections s join public.selection_categories c on c.id=s.category_id where s.project_id=${kit.q(projectId)} and s.group_id is not null order by c.name`)
     return { ...design, afterCutoff, choices: rows, group: kit.rows(`select status from public.project_selection_groups where project_id=${kit.q(projectId)}`)[0].status }
   },
 

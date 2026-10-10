@@ -240,10 +240,14 @@ async function runGeneration(
     throw new Error("The project must be linked to a lot with a pinned house plan version before PO generation.")
   }
 
+  // Every caller has authorized this project for the run. Selections are read
+  // through the service client because their row-level security admits only
+  // project members, so a preview by anyone else would silently drop every
+  // option line that the release (always the service) then buys.
   const [{ data: takeoffs, error: takeoffError }, { data: selections, error: selectionError }] = await Promise.all([
     supabase.from("house_plan_takeoff_lines").select("id,cost_code_id,cost_type,description,quantity,uom,elevation_id")
       .eq("org_id", orgId).eq("house_plan_version_id", lot.house_plan_version_id).order("sort_order"),
-    supabase.from("project_selections").select(`
+    createServiceSupabaseClient().from("project_selections").select(`
       id, selected_option_id, cost_cents_snapshot, status,
       option:selection_options(id,name,sku,vendor,cost_cents,cost_code_id)
     `).eq("org_id", orgId).eq("project_id", parsed.projectId).eq("status", "confirmed"),

@@ -101,13 +101,14 @@ test("LOT-01's reviewed numbers follow from the production fixtures it runs on",
   const priced = plan.basePriceCents + lotPremiumCents + garage.priceCents + design.reduce((sum, option) => sum + option.priceCents, 0)
   assert.equal(subcases["agreement-priced-and-signed"].expected.quote.totalCents, priced)
 
-  // The release buys the plan's trades and the design choices (not the structural option), from the trade that supplies each.
+  // The release buys the plan's trades, the structural option the agreement sold and the design choices, from the trade that supplies each.
+  const bought = [garage, ...design]
   const byVendor = Object.fromEntries(seed.TRADES.map((trade) => [trade.vendor, Math.round((trade.uom === "sf" ? plan.heatedSqft : 1) * trade.unitPriceDollars * 100)]))
-  for (const option of design) byVendor[option.vendor] += option.costCents
+  for (const option of bought) byVendor[option.vendor] += option.costCents
   const release = subcases["release-creates-the-house"].expected
   assert.deepEqual(release.purchaseOrders, Object.fromEntries(Object.entries(byVendor).sort(([a], [b]) => a.localeCompare(b))))
-  assert.equal(release.purchaseOrderCents, seed.planTradeCostCents(plan) + design.reduce((sum, option) => sum + option.costCents, 0))
-  assert.equal(subcases["agreed-options-reach-purchase-orders"].expected.purchaseOrderCents, release.purchaseOrderCents + garage.costCents)
+  assert.equal(release.purchaseOrderCents, seed.planTradeCostCents(plan) + bought.reduce((sum, option) => sum + option.costCents, 0))
+  assert.equal(subcases["agreed-options-reach-purchase-orders"].expected.purchaseOrderCents, release.purchaseOrderCents)
 
   // The books: cost of sales is the land plus what was billed; margin is price less that.
   const closing = subcases["completion-and-closing"].expected

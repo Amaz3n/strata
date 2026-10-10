@@ -56,13 +56,7 @@ const PRODUCTION = { "LOT-01": { checklist: "EP14-01" } }
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {
   "LOT-01": {
-    "design-choices-open-after-signing": "EP14-01",
     "purchasing-manager-reaches-a-house": "EP14-01",
-    "preview-matches-release": "EP14-01",
-    "agreed-options-reach-purchase-orders": "EP14-01",
-    "presold-home-adopts-inventory-without-repair": "EP14-01",
-    "deposit-invoice-reaches-the-buyer": "EP14-01",
-    "closing-completes-without-repair": "EP14-01",
     "agreement-signs-through-an-envelope": "EP14-01",
     "release-copies-the-plan-set": "EP14-01",
   },

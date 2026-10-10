@@ -4,6 +4,7 @@ import { readAgreementCatalogRevision } from "@/lib/services/agreement-catalog-r
 import { logger } from "@/lib/logging/logger"
 import { saveAgreementCreation, agreementCreationExpected, type AgreementCreationReceipt } from "@/lib/services/agreement-creation"
 import { agreementQuoteFingerprint, AgreementQuoteChangedError } from "@/lib/sales/agreement-quote"
+import { agreementStructuralSelections, assertOneStructuralOptionPerCategory } from "@/lib/sales/agreement-selections"
 import { readAllRowsById } from "@/lib/land/paging"
 import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
 import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
@@ -42,6 +43,7 @@ import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { createProject } from "@/lib/services/projects"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { createDocument } from "@/lib/services/documents"
 import { ensureDraftEnvelopeForDocument, replaceEnvelopeRecipients, createEnvelopeSigningRequests } from "@/lib/services/envelopes"
 import { createFileRecord } from "@/lib/services/files"
@@ -524,7 +526,9 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
   const parsed = convertReservationSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { reservation, homeSource } = await readReservationConversionSource(parsed, context)
+  const { reservation, buyers, homeSource } = await readReservationConversionSource(parsed, context)
+  // The deposit is billed to, and delivered to, the buyer who holds the lot.
+  const buyer = buyers?.find(row => row.id === reservation.buyer_contact_id)
   // Claim the hold before anything is built. The write is a no-op on the row's
   // values but moves its version, so of two conversions racing on one hold only
   // the first gets past here; the loser fails before it has created a home or an
@@ -549,7 +553,8 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
     const invoice = await createInvoice({ input: {
       project_id: projectId, invoice_number: `DEP-${Date.now().toString().slice(-9)}`, title: "Earnest deposit",
       issue: true, issue_date: new Date().toISOString().slice(0, 10), due_date: new Date().toISOString().slice(0, 10),
-      tax_rate: 0, customer_id: reservation.buyer_contact_id, lines: [{ description: "Earnest deposit", quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(parsed.depositCents), taxable: false }],
+      tax_rate: 0, customer_id: reservation.buyer_contact_id, customer_name: buyer?.full_name ?? null, sent_to_emails: buyer?.email ? [buyer.email] : [],
+      lines: [{ description: "Earnest deposit", quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(parsed.depositCents), taxable: false }],
       metadata: { invoice_kind: "earnest_deposit", source_reservation_id: reservation.id },
     }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
     invoiceId = invoice.id
@@ -940,7 +945,7 @@ export async function listOfferablePlans(communityId: string, orgId?: string) {
   await assertCommunityInSalesScope(context, communityId)
   const [{ data: offered, error: offeredError }, { data: plans, error: plansError }] = await Promise.all([
     context.supabase.from("community_plan_availability").select("house_plan_id").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true),
-    context.supabase.from("house_plans").select("id, code, name, versions:house_plan_versions(id, status), elevations:house_plan_elevations(id, name, code, is_active)").eq("org_id", context.orgId).eq("is_archived", false).order("code").limit(500),
+    context.supabase.from("house_plans").select("id, code, name, versions:house_plan_versions(id, status), elevations:house_plan_elevations(id, name, code, is_active)").eq("org_id", context.orgId).neq("status", "retired").order("code").limit(500),
   ])
   if (offeredError || plansError) throw new Error(`Failed to load offerable plans: ${(offeredError ?? plansError)?.message}`)
   const offeredIds = new Set((offered ?? []).map((row) => row.house_plan_id))
@@ -1132,7 +1137,7 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   const optionIds = resolved.map((item) => item.optionId).filter(Boolean) as string[]
   const packageIds = resolved.map((item) => item.packageId).filter(Boolean) as string[]
   const [optionsResult, packagesResult, incentivesResult] = await Promise.all([
-    optionIds.length ? context.supabase.from("selection_options").select("id, name, option_scope, category:selection_categories(name)").eq("org_id", context.orgId).in("id", optionIds) : Promise.resolve({ data: [] }),
+    optionIds.length ? context.supabase.from("selection_options").select("id, name, option_scope, category_id, category:selection_categories(name)").eq("org_id", context.orgId).in("id", optionIds) : Promise.resolve({ data: [] }),
     packageIds.length ? context.supabase.from("selection_packages").select("id, name").eq("org_id", context.orgId).in("id", packageIds) : Promise.resolve({ data: [] }),
     parsed.incentiveIds.length ? context.supabase.from("incentives").select("*").eq("org_id", context.orgId).in("id", parsed.incentiveIds) : Promise.resolve({ data: [] }),
   ])
@@ -1145,6 +1150,8 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
     || packages?.some(row => typeof row.name !== "string" || !row.name.trim())) {
     throw new Error("Configured option names and categories could not be fully verified")
   }
+  // Signing turns each structural option into the home's selection for its category.
+  assertOneStructuralOptionPerCategory((options ?? []).filter(row => row.option_scope === "structural").map(row => ({ name: row.name, categoryId: row.category_id })))
   if ("error" in incentivesResult && incentivesResult.error) throw new Error("Configured incentives could not be verified")
   const requestedIncentives = incentiveRows ?? []
   if (requestedIncentives.length !== parsed.incentiveIds.length) throw new Error("One or more incentives could not be found")
@@ -1573,6 +1580,50 @@ export async function hasExecutedPurchaseAgreement(projectId: string, orgId?: st
   return Boolean(data)
 }
 
+const purchaseAgreementSnapshotSchema = z.object({ purchase_agreement: z.object({ pricing: z.object({
+  structuralOptions: z.array(z.object({ optionId: z.string().optional(), label: z.string(), priceCents: z.number().int() })),
+}) }) })
+
+/**
+ * The structural options the buyer signed for become the home's confirmed,
+ * locked selections, so purchasing and the budget buy them like any other
+ * confirmed choice. Re-running on recovery writes the same rows.
+ */
+async function recordAgreementStructuralSelections(supabase: SupabaseClient, input: { orgId: string; projectId: string; contractId: string; snapshot: unknown; now: string }) {
+  const snapshot = purchaseAgreementSnapshotSchema.parse(input.snapshot)
+  const pricing = snapshot.purchase_agreement.pricing
+  if (pricing.structuralOptions.length === 0) return
+  const { data: lot, error } = await supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
+  if (error) throw new Error(`Purchase agreement execution failed: ${error.message}`)
+  // Cost resolves the way a design-studio choice's does: plan and community
+  // prices first. Availability is not re-checked; the buyer has signed for it.
+  const items = pricing.structuralOptions.flatMap((item) => item.optionId ? [{ optionId: item.optionId, name: item.label }] : [])
+  const resolved = items.length ? await resolveOptionPricing({ orgId: input.orgId, items: items.map(({ optionId }) => ({ optionId })),
+    housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined }) : []
+  const selections = agreementStructuralSelections(pricing, resolved.flatMap((row, index) => row.categoryId
+    ? [{ id: items[index].optionId, name: items[index].name, categoryId: row.categoryId, costCents: row.costCents }] : []))
+  const { error: writeError } = await supabase.from("project_selections").upsert(selections.map((selection) => ({
+    org_id: input.orgId, project_id: input.projectId, category_id: selection.categoryId, selected_option_id: selection.optionId,
+    status: "confirmed", selected_at: input.now, confirmed_at: input.now, locked_at: input.now,
+    price_cents_snapshot: selection.priceCents, cost_cents_snapshot: selection.costCents,
+    metadata: { source: "purchase_agreement", contract_id: input.contractId },
+  })), { onConflict: "project_id,category_id" })
+  if (writeError) throw new Error(`Purchase agreement execution failed: ${writeError.message}`)
+}
+
+/**
+ * What signing locks on the home. The policy (LOT-01 D1): a signature commits
+ * the structure of the house, not its finishes — structural selections (written
+ * locked above) and any choice already confirmed lock now; design selections
+ * stay open until their own group cutoff. To lock everything at signing instead,
+ * drop the status filter.
+ */
+async function lockSelectionsAtSigning(supabase: SupabaseClient, input: { orgId: string; projectId: string; now: string }) {
+  const { error } = await supabase.from("project_selections").update({ locked_at: input.now }).eq("org_id", input.orgId).eq("project_id", input.projectId)
+    .is("locked_at", null).in("status", ["confirmed", "ordered", "received"])
+  if (error) throw new Error(`Purchase agreement execution failed: ${error.message}`)
+}
+
 export async function executePurchaseAgreementFromEnvelopeExecution(input: { orgId: string; contractId: string; envelopeId: string; executedFileId?: string | null }) {
   const supabase = createServiceSupabaseClient()
   const checked = <T extends { error: any }>(result: T): T => {
@@ -1596,7 +1647,8 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
     }
   }
   await instantiateSelectionGroupsForProject(contract.project_id, input.orgId)
-  checked(await supabase.from("project_selections").update({ locked_at: now }).eq("org_id", input.orgId).eq("project_id", contract.project_id).is("locked_at", null))
+  await recordAgreementStructuralSelections(supabase, { orgId: input.orgId, projectId: contract.project_id, contractId: contract.id, snapshot: contract.snapshot, now })
+  await lockSelectionsAtSigning(supabase, { orgId: input.orgId, projectId: contract.project_id, now })
   if (projectLot) {
     const { data: existingClosing } = checked(await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle())
     if (!existingClosing) checked(await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null }))

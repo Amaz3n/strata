@@ -84,6 +84,7 @@ function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedO
       }
       if (name === "@/lib/land/paging") return require("../lib/land/paging")
       if (name === "@/lib/sales/agreement-quote") return require("../lib/sales/agreement-quote")
+      if (name === "@/lib/sales/agreement-selections") return require("../lib/sales/agreement-selections")
       if (name === "zod") return require("zod")
       if (name === "@/lib/validation/community-sales") return require("../lib/validation/community-sales")
       if (name === "@/lib/financials/purchase-agreement-pricing") return require("../lib/financials/purchase-agreement-pricing")

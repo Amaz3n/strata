@@ -18,7 +18,7 @@ import {
   saveBillingContractWithAmendment,
   upsertProjectFinancialSettingsFromProjectInput,
 } from "@/lib/services/project-financial-setup"
-import { getDefaultProjectPropertyType, getProjectPosture } from "@/lib/product-tier"
+import { getDefaultProjectPropertyType, getProjectPosture, isProductionProjectPosture, type ProjectPosture } from "@/lib/product-tier"
 import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
@@ -641,14 +641,25 @@ export async function createProject({
     after: data,
   })
 
-  await upsertProjectBillingContract({
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-    projectId: data.id as string,
-    projectName: data.name,
-    input: normalizedInput,
-  })
+  if (opensProjectSettingsContract(getProjectPosture(normalizedInput.property_type, productTier), input)) {
+    await upsertProjectBillingContract({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: data.id as string,
+      projectName: data.name,
+      input: normalizedInput,
+    })
+  } else {
+    await upsertProjectFinancialSettingsFromProjectInput({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: data.id as string,
+      input: normalizedInput,
+      existingContract: null,
+    })
+  }
 
   await saveProjectAccountingDimensions({
     supabase,
@@ -848,6 +859,49 @@ export function prepareProjectBillingContract({ input, existing, existingSetting
   return { billingModel, contract: payload }
 }
 
+const BILLING_INPUT_KEYS: ReadonlyArray<keyof ProjectInput> = [
+  "contract_type",
+  "billing_model",
+  "markup_percent",
+  "gmp_cents",
+  "contingency_cents",
+  "fixed_fee_cents",
+  "fee_presentation",
+  "savings_split_owner_pct",
+  "savings_split_builder_pct",
+  "labor_burden_multiplier",
+  "rate_schedule_id",
+  "requires_client_cost_approval",
+  "open_book",
+  "paid_costs_required",
+  "proof_required",
+  "cost_codes_enabled",
+  "retainage_percent",
+  "retainage_applies_to_fee",
+  "fixed_price_billing_basis",
+  "retainage_schedule",
+  "stored_materials_retainage_percent",
+  "total_contract_value_cents",
+]
+
+function hasBillingInput(input: Partial<ProjectInput>) {
+  return BILLING_INPUT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(input, key))
+}
+
+/**
+ * Whether creating a project opens a project-settings billing contract.
+ *
+ * A production home earns its revenue through the purchase agreement its buyer
+ * signs, so it opens without one unless the caller sets billing terms itself:
+ * a placeholder fixed-price contract beside the agreement gives the home two
+ * primary contracts that earn differently, and Books refuses to post to it or
+ * adopt it as inventory until someone approves a policy for each. Residential
+ * and commercial jobs always open one; their contract IS the project's terms.
+ */
+function opensProjectSettingsContract(posture: ProjectPosture, callerInput: Partial<ProjectInput>) {
+  return !isProductionProjectPosture(posture) || hasBillingInput(callerInput)
+}
+
 async function upsertProjectBillingContract({
   supabase,
   orgId,
@@ -863,32 +917,7 @@ async function upsertProjectBillingContract({
   projectName: string
   input: Partial<ProjectInput>
 }) {
-  const billingKeys: Array<keyof ProjectInput> = [
-    "contract_type",
-    "billing_model",
-    "markup_percent",
-    "gmp_cents",
-    "contingency_cents",
-    "fixed_fee_cents",
-    "fee_presentation",
-    "savings_split_owner_pct",
-    "savings_split_builder_pct",
-    "labor_burden_multiplier",
-    "rate_schedule_id",
-    "requires_client_cost_approval",
-    "open_book",
-    "paid_costs_required",
-    "proof_required",
-    "cost_codes_enabled",
-    "retainage_percent",
-    "retainage_applies_to_fee",
-    "fixed_price_billing_basis",
-    "retainage_schedule",
-    "stored_materials_retainage_percent",
-    "total_contract_value_cents",
-  ]
-  const hasBillingInput = billingKeys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
-  if (!hasBillingInput) return
+  if (!hasBillingInput(input)) return
 
   const ownerPct = input.savings_split_owner_pct ?? 0
   const builderPct = input.savings_split_builder_pct ?? 0

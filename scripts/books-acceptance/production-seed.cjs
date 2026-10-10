@@ -213,16 +213,14 @@ async function signAgreement(kit, org, { reservationId, config }) {
 }
 
 /**
- * The buyer's design choices, confirmed, and the group's cutoff passed.
- * DEFECT D1: signing locks every project_selections row, including the pending
- * design rows it has just instantiated, so no design choice can be made after
- * signing. The rows are unlocked directly here so the lifecycle can continue.
+ * The buyer's design choices, confirmed, and the group's cutoff passed. Signing
+ * locks only the structural rows the agreement wrote; design rows stay open until
+ * their group's cutoff.
  */
 async function chooseDesign(kit, org, { projectId, picks = DESIGN_PICKS }) {
   const selections = app("selections"), cutoffs = app("selection-cutoffs")
-  const rows = kit.rows(`select s.id, c.name, s.locked_at from public.project_selections s join public.selection_categories c on c.id=s.category_id where s.project_id=${kit.q(projectId)} order by c.name`)
+  const rows = kit.rows(`select s.id, c.name, s.locked_at from public.project_selections s join public.selection_categories c on c.id=s.category_id where s.project_id=${kit.q(projectId)} and s.group_id is not null order by c.name`)
   const lockedAfterSigning = rows.filter((row) => row.locked_at).length
-  kit.sql(`update public.project_selections set locked_at=null where project_id=${kit.q(projectId)}`)
   for (const row of rows) await kit.as(org.team.design, () => selections.selectProjectOption({ orgId: org.orgId, projectId, selectionId: row.id, optionId: org.optionIds[picks[row.name]] }))
   await kit.as(org.owner, () => selections.confirmSelectionGroup({ orgId: org.orgId, projectId, groupId: org.selectionGroupId }))
   await kit.as(org.team.design, () => cutoffs.overrideGroupCutoff({ projectId, groupId: org.selectionGroupId, cutoffDate: isoDay(-1), reason: "Buyer finished the design appointment" }))

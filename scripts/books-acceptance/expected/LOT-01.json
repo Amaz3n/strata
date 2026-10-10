@@ -67,43 +67,43 @@
       }
     },
     "release-creates-the-house": {
-      "derivation": "The plan's trades at the price-book rates: sitework $34,000, foundation $58,000, framing 1,650 sf at $44 = $72,600, plumbing $41,000, electrical $46,000 = $251,600. The three confirmed design choices are bought at cost from their trades: $2,900 + $4,300 to framing, $1,500 to electrical. By trade: sitework $34,000; foundation $58,000; framing $72,600 + $7,200 = $79,800; plumbing $41,000; electrical $46,000 + $1,500 = $47,500. Total $260,300; the budget is the same $260,300. Five trades, five orders, no open exceptions, and running the release worker again issues nothing more. The lot is started, the eight-step schedule is on the house, and the $72,000 of land has moved from land inventory to the house (1160).",
+      "derivation": "The plan's trades at the price-book rates: sitework $34,000, foundation $58,000, framing 1,650 sf at $44 = $72,600, plumbing $41,000, electrical $46,000 = $251,600. The extended garage the agreement sold is bought at its $11,000 cost from the foundation trade, and the three confirmed design choices at cost from theirs: $2,900 + $4,300 to framing, $1,500 to electrical. By trade: sitework $34,000; foundation $58,000 + $11,000 = $69,000; framing $72,600 + $7,200 = $79,800; plumbing $41,000; electrical $46,000 + $1,500 = $47,500. Total $271,300; the budget is the same $271,300. Five trades, five orders, no open exceptions, and running the release worker again issues nothing more. The lot is started, the eight-step schedule is on the house, and the $72,000 of land has moved from land inventory to the house (1160).",
       "inputs": { "trades": 5 },
       "expected": {
         "package": "released",
         "lot": "started",
         "scheduleItems": 8,
-        "purchaseOrders": { "Bright Electric": 4750000, "Coastal Plumbing": 4100000, "Cypress Sitework": 3400000, "Gulf Concrete": 5800000, "Palmetto Framing": 7980000 },
-        "purchaseOrderCents": 26030000,
-        "budgetCents": 26030000,
+        "purchaseOrders": { "Bright Electric": 4750000, "Coastal Plumbing": 4100000, "Cypress Sitework": 3400000, "Gulf Concrete": 6900000, "Palmetto Framing": 7980000 },
+        "purchaseOrderCents": 27130000,
+        "budgetCents": 27130000,
         "openExceptions": 0,
         "rerunIssuesNothingNew": true,
         "landInHouse": { "lot": 0, "house": 7200000 }
       }
     },
     "built-and-billed": {
-      "derivation": "Each of the five orders is approved and its trade bills it in full, $260,300 in all. The bills are approved, so accounts payable (2000) holds $260,300, unpaid. The house holds the $72,000 land plus the $260,300 of cost in inventory under construction (1160): $332,300.",
+      "derivation": "Each of the five orders is approved and its trade bills it in full, $271,300 in all. The bills are approved, so accounts payable (2000) holds $271,300, unpaid. The house holds the $72,000 land plus the $271,300 of cost in inventory under construction (1160): $343,300.",
       "inputs": {},
       "expected": {
         "ordersApproved": 5,
         "billsApproved": 5,
-        "billedCents": 26030000,
-        "payableCents": 26030000,
-        "houseInventoryCents": 33230000
+        "billedCents": 27130000,
+        "payableCents": 27130000,
+        "houseInventoryCents": 34330000
       }
     },
     "completion-and-closing": {
-      "derivation": "Completion moves the house's $332,300 (land $72,000 + construction $260,300) to completed homes (1170) and provides a $6,500 warranty reserve. The closing is settled at the contract price of $433,100; the buyer's $20,000 deposit is applied, leaving $413,100 due by wire. The sale relieves 1170 exactly by the cost it came from, one line per component: land and development $72,000 and construction $260,300, cost of sales $332,300; inventory and land are left at zero. Revenue is $433,100, gross margin $433,100 - $332,300 = $100,800. No deposit is left held. The four home controls tie to the ledger.",
-      "inputs": { "priceCents": 43310000, "landCents": 7200000, "constructionCents": 26030000, "depositCents": 2000000, "warrantyReserveCents": 650000 },
+      "derivation": "Completion moves the house's $343,300 (land $72,000 + construction $271,300) to completed homes (1170) and provides a $6,500 warranty reserve. The closing is settled at the contract price of $433,100; the buyer's $20,000 deposit is applied, leaving $413,100 due by wire. The sale relieves 1170 exactly by the cost it came from, one line per component: land and development $72,000 and construction $271,300, cost of sales $343,300; inventory and land are left at zero. Revenue is $433,100, gross margin $433,100 - $343,300 = $89,800. No deposit is left held. The four home controls tie to the ledger.",
+      "inputs": { "priceCents": 43310000, "landCents": 7200000, "constructionCents": 27130000, "depositCents": 2000000, "warrantyReserveCents": 650000 },
       "expected": {
-        "completedInventory": { "building": 0, "completed": 33230000 },
-        "costOfSalesByComponent": { "construction": 26030000, "land_and_development": 7200000 },
+        "completedInventory": { "building": 0, "completed": 34330000 },
+        "costOfSalesByComponent": { "construction": 27130000, "land_and_development": 7200000 },
         "inventoryLeft": { "1160": 0, "1170": 0 },
         "landLeft": 0,
         "settlement": { "finalPriceCents": 43310000, "depositsApplied": [2000000], "balanceDueCents": 41310000 },
         "homeDepositsHeld": 0,
         "revenue": 43310000,
-        "grossMarginCents": 10080000,
+        "grossMarginCents": 8980000,
         "closing": { "status": "closed", "lot": "closed" },
         "controlsTie": {
           "land_inventory_control": "passed",
@@ -126,9 +126,6 @@
       }
     },
     "design-choices-open-after-signing": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D1",
-      "reason": "Defect: signing a purchase agreement locks every selection row on the home, including the pending design rows it has just created, so the buyer cannot make a design choice after signing (executePurchaseAgreementFromEnvelopeExecution, lib/services/community-sales.ts, the project_selections update that sets locked_at). The lifecycle unlocks them by SQL to continue. Policy: design choices stay open until their group's cutoff; only structural options lock at signing.",
       "derivation": "After signing, none of the home's three design selections is locked.",
       "inputs": {},
       "expected": { "lockedAtSigning": 0 }
@@ -142,41 +139,26 @@
       "expected": { "purchasingManagerPreview": "allowed" }
     },
     "preview-matches-release": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D3",
-      "reason": "Defect: purchase-order generation reads project_selections through the caller's own client, which row-level security limits to project members, so a preview run by anyone but a member or admin leaves out every selected-option line while the release (service client) includes them. The price_book gate passes on the preview and the release then fails on the option exceptions (lib/services/po-generation.ts runGeneration selections read).",
-      "derivation": "The preview's total equals the total the release issues ($260,300).",
+      "derivation": "The preview's total equals the total the release issues ($271,300).",
       "inputs": {},
       "expected": { "previewMatchesIssued": true }
     },
     "agreed-options-reach-purchase-orders": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D7",
-      "reason": "Defect: options chosen in the agreement quote are stored only in the contract snapshot; nothing creates a selection for the structural option, so its cost never reaches the budget or a purchase order (lib/services/community-sales.ts createPurchaseAgreement writes option_items to the snapshot only; po-generation sources are plan takeoff lines and confirmed project_selections).",
       "derivation": "The release buys the extended garage as well: $260,300 + $11,000 cost = $271,300.",
       "inputs": {},
       "expected": { "purchaseOrderCents": 27130000 }
     },
     "presold-home-adopts-inventory-without-repair": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D4",
-      "reason": "Defect: reserving a lot creates the buyer's home with a placeholder fixed-price contract beside the purchase agreement. Books reads two primary contracts that earn revenue differently (percentage of completion and at closing) and refuses to adopt the home for inventory, or to post to it, until a controller proposes and a second member approves a revenue policy for each (lib/services/books/revenue-basis.ts, the 'earn revenue differently' refusal; lib/services/projects.ts prepareProjectBillingContract). HOME-01 builds its homes with the purchase agreement alone, which is why it never meets this.",
       "derivation": "Adoption succeeds on the first attempt.",
       "inputs": {},
       "expected": { "policyRepairedByHand": false }
     },
     "deposit-invoice-reaches-the-buyer": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D11",
-      "reason": "Defect: convertHoldToReservation issues the earnest deposit invoice without recipients (the buyer's email is not passed as sent_to_emails), so delivery defers to the outbox with 'Add at least one recipient' and the buyer is never told. The reviewed-conversion path (prepareReservationConversionBundle) does pass them (lib/services/community-sales.ts convertHoldToReservation createInvoice call).",
       "derivation": "The deposit invoice carries one recipient, the buyer.",
       "inputs": {},
       "expected": { "recipients": 1 }
     },
     "closing-completes-without-repair": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D10",
-      "reason": "Defect: settling a home sold on a real agreement records the money and then fails to complete: the settlement keeps the whole agreement quote, while readClosedSettlementEvidence (lib/financials/closing-settlement-evidence.ts) keeps only the fields its schema names, so the digest recoverClosingCompletion compares (lib/services/closings.ts) never matches. Warranty enrollment and the handoff are never queued. HOME-01 hand-builds a quote with only the schema's fields, which is why it passes.",
       "derivation": "The closing completes on the first settle.",
       "inputs": {},
       "expected": { "evidenceRepairedByHand": false }

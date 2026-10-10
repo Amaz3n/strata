@@ -13,6 +13,7 @@ const {
   verifyTap,
   execute,
 } = require("../scripts/books-acceptance/runtime.cjs");
+const { PRODUCTION } = require("../scripts/books-acceptance/catalog.cjs");
 const root = path.resolve(__dirname, ".."),
   instance = "99400000-0000-4000-8000-000000000001";
 const config = (dir) =>
@@ -45,8 +46,8 @@ function identity(m) {
   };
 }
 test("release catalog preserves every golden scenario and rejects unknown, duplicate or incomplete configuration", () => {
-  assert.equal(GOLDEN_SCENARIOS.length, 25);
-  assert.equal(new Set(GOLDEN_SCENARIOS).size, 25);
+  assert.equal(GOLDEN_SCENARIOS.length, 26);
+  assert.equal(new Set(GOLDEN_SCENARIOS).size, 26);
   const plan = fs.readFileSync(
     path.join(root, "advisor-plans/013-arc-books-completion-to-100.md"),
     "utf8",
@@ -54,7 +55,8 @@ test("release catalog preserves every golden scenario and rejects unknown, dupli
   const ids = [...plan.matchAll(/^\|\s+`([A-Z]+-\d{2})`\s+\|/gm)].map(
     (m) => m[1],
   );
-  assert.deepEqual(GOLDEN_SCENARIOS, ids);
+  // Production scenarios share the runner but belong to the production checklist, not the Books plan.
+  assert.deepEqual(GOLDEN_SCENARIOS.filter((id) => !(id in PRODUCTION)), ids);
   assert.throws(() => parseArgs(["--scenario", "all"]), /required/);
   assert.throws(
     () =>

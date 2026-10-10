@@ -35,7 +35,8 @@ function generation({ prior = null, exception = null, configurationError = null 
   } }
   const stubs = {
     "@/lib/services/configuration-rules": { assertProjectConfiguration: async () => { if (configurationError) throw new Error(configurationError) } },
-    "@/lib/supabase/server": { createServiceSupabaseClient() { throw new Error("Privileged client must not be reached") } },
+    // Selections are read through the service client once the run is authorized.
+    "@/lib/supabase/server": { createServiceSupabaseClient: () => supabase },
     "@/lib/services/context": { requireOrgContext: async () => ({ supabase, orgId: "org-a", userId: "user-a" }) },
     "@/lib/services/authorization": { requireAuthorization: async (input) => authorizations.push(input) },
     "@/lib/services/audit": {}, "@/lib/services/events": {},

@@ -29,7 +29,7 @@ stubModule("@/lib/services/invoices", {
   },
 })
 
-const { bulkRepriceCommunityPlans, convertHoldToReservation, listSellableLots, setSpecAskingPrice, voidPurchaseAgreement } =
+const { bulkRepriceCommunityPlans, convertHoldToReservation, executePurchaseAgreementFromEnvelopeExecution, listOfferablePlans, listSellableLots, setSpecAskingPrice, voidPurchaseAgreement } =
   freshRequire("lib/services/community-sales.ts")
 
 const COMMUNITY = id(1)
@@ -194,6 +194,74 @@ describe("listSellableLots", () => {
   })
 })
 
+describe("executePurchaseAgreementFromEnvelopeExecution", () => {
+  const LOT = id(61)
+  const GARAGE = id(62)
+  const STRUCTURE = id(63)
+  const KITCHEN = id(64)
+  const ELECTRICAL = id(65)
+  const PLAN_VERSION = id(66)
+
+  function harness() {
+    const pricing = {
+      basePriceCents: 389_000_00, lotPremiumCents: 0, incentives: [], incentivesCents: 0,
+      structuralOptions: [{ optionId: GARAGE, label: "Extended garage bay", category: "Structure", priceCents: 18_500_00, source: "option_base", scope: "structural" }],
+      designSelections: [], structuralOptionsCents: 18_500_00, designSelectionsCents: 0, totalCents: 407_500_00,
+    }
+    return createServiceHarness({
+      tables: {
+        contracts: [{ id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "draft", signed_at: null, signature_data: {}, buyer_contact_id: null, snapshot: { purchase_agreement: { pricing } }, project: { end_date: null } }],
+        lots: [{ id: LOT, org_id: ORG, project_id: HOME, community_id: COMMUNITY, house_plan_version_id: PLAN_VERSION, status: "assigned" }],
+        lot_reservations: [], prospects: [], closings: [], selection_groups: [], selection_catalog_prices: [],
+        selection_categories: [{ id: STRUCTURE, org_id: ORG, parent_category_id: null, community_id: null, is_archived: false }],
+        selection_options: [{ id: GARAGE, org_id: ORG, category_id: STRUCTURE, parent_option_id: null, community_id: null, is_archived: false, is_available: true, price_cents: 18_500_00, cost_cents: 11_000_00, cost_code_id: null, vendor: null, sku: "ST-GAR", lead_time_days: null }],
+        project_selections: [
+          { id: id(67), org_id: ORG, project_id: HOME, category_id: KITCHEN, status: "pending", selected_option_id: null, locked_at: null },
+          { id: id(68), org_id: ORG, project_id: HOME, category_id: ELECTRICAL, status: "confirmed", selected_option_id: id(69), locked_at: null },
+        ],
+      },
+    })
+  }
+  const execute = (service) => service.run(() => executePurchaseAgreementFromEnvelopeExecution({ orgId: ORG, contractId: CONTRACT, envelopeId: id(70) }))
+  const selection = (service, categoryId) => service.db.project_selections.find((row) => row.category_id === categoryId)
+
+  test("signing makes each structural option a confirmed, locked selection purchasing will buy", async () => {
+    const service = harness()
+    await execute(service)
+    const garage = selection(service, STRUCTURE)
+    assert.equal(garage.selected_option_id, GARAGE)
+    assert.equal(garage.status, "confirmed")
+    assert.ok(garage.locked_at)
+    assert.equal(garage.price_cents_snapshot, 18_500_00)
+    assert.equal(garage.cost_cents_snapshot, 11_000_00)
+  })
+
+  test("signing leaves design choices open until their cutoff and locks only what is already decided", async () => {
+    const service = harness()
+    await execute(service)
+    assert.equal(selection(service, KITCHEN).locked_at, null)
+    assert.ok(selection(service, ELECTRICAL).locked_at)
+  })
+})
+
+describe("listOfferablePlans", () => {
+  const released = [{ id: id(51), status: "released" }]
+  const plan = (n, status, versions = released) => ({ id: id(n), org_id: ORG, code: `P${n}`, name: `Plan ${n}`, status, versions, elevations: [] })
+
+  test("a community is offered every released plan it does not sell yet, never a retired one", async () => {
+    const service = createServiceHarness({
+      permissions: ["sales.read"],
+      tables: {
+        communities: [{ id: COMMUNITY, org_id: ORG, division_id: null }],
+        community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: id(44), is_available: true }],
+        house_plans: [plan(41, "active"), plan(42, "retired"), plan(43, "draft", [{ id: id(52), status: "draft" }]), plan(44, "active")],
+      },
+    })
+    const offerable = await service.run(() => listOfferablePlans(COMMUNITY))
+    assert.deepEqual(offerable.map((row) => row.name), ["Plan 41"])
+  })
+})
+
 describe("convertHoldToReservation (live path)", () => {
   const LOT = id(31)
   const BUYER = id(32)
@@ -230,6 +298,13 @@ describe("convertHoldToReservation (live path)", () => {
     assert.equal(created.invoices[0].input.lines[0].unit_cost, 5000.01)
     assert.equal(service.db.lot_reservations[0].deposit_required_cents, 500_001)
     assert.equal(service.db.lots[0].project_id, HOME_ID)
+  })
+
+  test("the deposit invoice is addressed to the buyer it bills", async () => {
+    const service = harness()
+    await convert(service)
+    assert.deepEqual(created.invoices[0].input.sent_to_emails, ["pat@example.com"])
+    assert.equal(created.invoices[0].input.customer_name, "Pat Buyer")
   })
 
   test("two conversions racing on one hold build one home and issue one deposit", async () => {
