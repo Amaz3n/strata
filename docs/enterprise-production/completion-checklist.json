@@ -2778,8 +2778,9 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Nav filtering, permission-gated Home tiles and seeded production roles are unchanged since Oct 5. The owner-permission gap found by the app sweep is fixed in a pending migration (20261009010000). Forbidden deep links still render a generic retry error, and the org-tier inline branches (Bids hidden at app-sidebar.tsx:184, /pipeline→/sales at pipeline/layout.tsx:22) still remove desks from custom projects in a production-tier org.",
+      "implementationNotes": "Nav filtering, permission-gated Home tiles and seeded production roles are unchanged since Oct 5. The owner-permission gap found by the app sweep is fixed in a pending migration (20261009010000). Forbidden deep links still render a generic retry error, and the org-tier inline branches (Bids hidden at app-sidebar.tsx:184, /pipeline→/sales at pipeline/layout.tsx:22) still remove desks from custom projects in a production-tier org. Found by LOT-01 and the production role sweep: the purchasing manager role held only its purchasing keys and could not open its desk (fix is migration 20261010200000, pending approval), and the production home and My Houses failed for every role because they called their service-role rollup with the signed-in client (fixed in 12c622af in code; broken in production until deployed). Purchasing opened only 7 of 58 pages clean in the sweep before the fix.",
       "remainingWork": [
+        "Apply migration 20261010200000_purchasing_manager_baseline_reads (pending approval) so the purchasing manager role holds its read keys in production.",
         "Throw a typed permission-denied error from requirePermission and render an explanatory forbidden state (naming the permission and who can grant it) instead of app/(app)/error.tsx's generic retry.",
         "Replace the org-tier branches at components/layout/app-sidebar.tsx:184 and app/(app)/pipeline/layout.tsx:22 with an 'org has any project of posture X' check so mixed orgs keep Bids/Pipeline.",
         "Add a role x desk matrix test (seeded production roles -> visible nav, Home tiles, desk load or explained denial) on the tests/support/service.js harness.",
@@ -2911,7 +2912,9 @@
         }
       ],
       "releaseState": "unverified",
-      "blockers": [],
+      "blockers": [
+        "Migration 20261010200000 pending approval."
+      ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
       "sourceAcceptanceIndices": [
@@ -2922,10 +2925,13 @@
         "Forbidden deep links show a generic 'Try again' (app/(app)/error.tsx:5-16) instead of naming the required permission."
       ],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Purchasing manager role lacked org.member, org.read, project.read and cost-side read keys, so its own desk and projects refused (D2) (found by LOT-01/sweep); needs migration 20261010200000 — fixed in 12c622af",
+        "Production home and My Houses failed for every role because the rollup was called with the signed-in client, which production refuses (D12) (found by LOT-01/sweep; also broken in production today) — fixed in 12c622af"
+      ],
       "plain": {
         "title": "Each role lands on its own desk",
-        "description": "Each person only sees the desks their role allows, and owners now get every page an admin gets (waiting on a database update). If someone opens a link they're not allowed to see, they get a vague 'try again' message instead of being told which permission they need. In a builder running both custom homes and communities, the Bids and Pipeline pages still disappear."
+        "description": "Each person only sees the desks their role allows, and owners now get every page an admin gets (waiting on a database update). If someone opens a link they're not allowed to see, they get a vague 'try again' message instead of being told which permission they need. In a builder running both custom homes and communities, the Bids and Pipeline pages still disappear. The role sweep found the purchasing role could not open its own desk and the production home failed for every role; both are fixed in code, the purchasing fix needs a database change awaiting approval."
       },
       "proposedScope": {
         "scope": "first",
@@ -6208,8 +6214,9 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Plan instantiation now refuses a plan or elevation the lot's community does not offer (and inactive elevations) unless a plan.release holder records an audited, reasoned, per-plan override on the lot (recordPlanOfferingOverride); the start package's plan gate re-derives the same rule at release (lib/sales/plan-offering.ts, 56b76687). No screen calls the override action yet, and plan pins from imports are not checked.",
+      "implementationNotes": "Plan instantiation now refuses a plan or elevation the lot's community does not offer (and inactive elevations) unless a plan.release holder records an audited, reasoned, per-plan override on the lot (recordPlanOfferingOverride); the start package's plan gate re-derives the same rule at release (lib/sales/plan-offering.ts, 56b76687). No screen calls the override action yet, and plan pins from imports are not checked. Found by LOT-01: the Offering tab listed no plans (fixed 4158415c) and a plan could not be pinned to an unsold lot (service and action added 12c622af, no UI yet).",
       "remainingWork": [
+        "Add the screen that assigns a plan to an unsold lot (service and action exist in lib/services/lots.ts and app/(app)/communities/actions.ts).",
         "Wire recordPlanOfferingOverrideAction into a screen so the override can be recorded by someone with plan.release.",
         "Apply the same offering rule to import paths that pin plans to lots (lib/services/imports.ts); approve 20261003033500_starts_release_lot_plan_scope.sql.",
         "QA workflow for instantiation and release refusal."
@@ -6361,11 +6368,15 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "Assigning a plan to an unsold lot (D9) has a service and action only; no screen calls it — still open."
+      ],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "lib/services/plan-instantiation.ts:519-521 turns an unavailable community offering into a warning ('operations override recorded') with no override permission or evidence, so an ineligible plan can be instantiated on a lot. — fixed in 56b76687",
-        "Start release does not re-check community offering (lib/services/starts.ts:421-427 only checks a released pinned version and elevation). — fixed in 56b76687"
+        "Start release does not re-check community offering (lib/services/starts.ts:421-427 only checks a released pinned version and elevation). — fixed in 56b76687",
+        "No way to pin a plan to an unsold lot so a spec home could start; assignPlanToLot service and action added with permission, scope, offering check and audit (D9) (found by LOT-01/sweep) — fixed in 12c622af",
+        "Offering tab filtered a column that does not exist so no plans listed; it now lists plans that aren't retired (D13) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
         "title": "Community plan and option offerings",
@@ -8819,7 +8830,9 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "The reviewed reservation conversion path still creates a placeholder fixed contract (lib/services/reservation-conversion.ts; unapplied SQL 20261005121409 requires billingContract), which blocks Books adoption of the home — open (see EP10-02)."
+      ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "tests/reservation-conversion-db.test.js fixture drift (missing public.budget_lines) fixed by the test overhaul; 8/8 cases pass on 2026-10-09."
@@ -9740,7 +9753,7 @@
         "EP05-08"
       ],
       "status": "implemented",
-      "implementationNotes": "Settlement is fenced by a unique closing-invoice index, bills the signed agreement's buyer and checks deposit writes (5dc16e16); retry-after-failure, refund-net deposits and closing reversal were already in place. The unique index is migration 20261010120000, pending approval; inventory relief and closing reversal depend on Books migrations 20261007180000-220000.",
+      "implementationNotes": "Settlement is fenced by a unique closing-invoice index, bills the signed agreement's buyer and checks deposit writes (5dc16e16); retry-after-failure, refund-net deposits and closing reversal were already in place. The unique index is migration 20261010120000, pending approval; inventory relief and closing reversal depend on Books migrations 20261007180000-220000. The deposit invoice now goes to the buyer (4158415c; found by LOT-01).",
       "remainingWork": [
         "Apply migration 20261010120000_closing_invoice_unique (pending approval).",
         "Approve the Books migrations 20261007180000-220000 that inventory relief and closing reversal depend on.",
@@ -9893,7 +9906,8 @@
         "Deposits applied at settlement are now the home's own, net of refunds and earlier applications (lib/services/closings.ts:107-125, 96c1987b).",
         "Concurrent settleClosing can create duplicate closing invoices: the prior-invoice lookup (lib/services/closings.ts:447) is unfenced and no unique constraint exists per closing (createInvoice at :455). — fixed in 5dc16e16",
         "Deposit-invoice settled_into_closing_id updates ignore errors (lib/services/closings.ts:483-486). — fixed in 5dc16e16",
-        "Settlement customer is projects.client_id (lib/services/closings.ts:442,458) rather than the agreement buyer. — fixed in 5dc16e16"
+        "Settlement customer is projects.client_id (lib/services/closings.ts:442,458) rather than the agreement buyer. — fixed in 5dc16e16",
+        "The deposit invoice had no recipient; it now goes to the buyer (D11) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
         "title": "Safe closing settlement and deposits",
@@ -9930,7 +9944,7 @@
         "EP11-02"
       ],
       "status": "partial",
-      "implementationNotes": "Readiness and enrollment are well tested, settlement now blocks on unverified punch (bb8d2c74), and coverage immutability is written in migration 20261010120100 (5dc16e16, pending approval). Remaining gaps: inspection readiness is flag- and migration-gated, and CO evidence is optional.",
+      "implementationNotes": "Readiness and enrollment are well tested, settlement now blocks on unverified punch (bb8d2c74), and coverage immutability is written in migration 20261010120100 (5dc16e16, pending approval). Remaining gaps: inspection readiness is flag- and migration-gated, and CO evidence is optional. Closing evidence keeps every key of the agreement quote, so a real closing reconciles and queues warranty enrollment (4158415c; found by LOT-01).",
       "remainingWork": [
         "Apply migration 20261010120100_warranty_coverage_write_scope (pending approval).",
         "Require an evidence file on the final inspection / CO gate.",
@@ -10066,7 +10080,8 @@
       "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "project_warranty_coverage terms are writable by any org member via the 'for all' RLS policy (supabase/migrations/20260718230810_warranty_coverage.sql:76-84); nothing enforces immutable coverage. — fixed in 5dc16e16"
+        "project_warranty_coverage terms are writable by any org member via the 'for all' RLS policy (supabase/migrations/20260718230810_warranty_coverage.sql:76-84); nothing enforces immutable coverage. — fixed in 5dc16e16",
+        "A real closing failed to reconcile and warranty enrollment was never queued because closing evidence dropped keys of the agreement quote it checks (D10) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
         "title": "Closing to warranty handoff",
@@ -10230,7 +10245,7 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Confirming or signing now keeps the price the option was chosen at rather than re-pricing from the live catalog (5dc16e16). Approval is still not bound to the exact signed option, and approval states (declined/expired) are not modelled.",
+      "implementationNotes": "Confirming or signing now keeps the price the option was chosen at rather than re-pricing from the live catalog (5dc16e16). Approval is still not bound to the exact signed option, and approval states (declined/expired) are not modelled. A design coordinator outside the project can now confirm a selection group (12c622af).",
       "remainingWork": [
         "Persist option id + price/cost snapshot in the approval document at send; on execution confirm only if the selection still matches, otherwise flag for re-approval.",
         "Model approval state (unsigned/sent/declined/expired/approved) synced from e-sign status.",
@@ -10364,7 +10379,8 @@
       "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "Signed selection approval re-prices at execution: confirmSelection recomputes price_cents_snapshot from the live catalog (lib/services/selections.ts:401-410), so the confirmed price can differ from the signed document. — fixed in 5dc16e16"
+        "Signed selection approval re-prices at execution: confirmSelection recomputes price_cents_snapshot from the live catalog (lib/services/selections.ts:401-410), so the confirmed price can differ from the signed document. — fixed in 5dc16e16",
+        "A design coordinator outside the project could not confirm a selection group; confirming now checks selections.write and reads through the service client (D2) (found by LOT-01/sweep) — fixed in 12c622af"
       ],
       "plain": {
         "title": "Buyer sign-off on selections",
@@ -10397,10 +10413,9 @@
       ],
       "dependencies": [],
       "status": "implemented",
-      "implementationNotes": "Cutoff enforcement and override governance are implemented; undoing a manual cutoff now needs a reason and is audited with an event (5dc16e16). Weaknesses unchanged: not race-safe at the DB, overrides authorized at org level only, and agreement execution locks every selection on the home.",
+      "implementationNotes": "Cutoff enforcement and override governance are implemented; undoing a manual cutoff now needs a reason and is audited with an event (5dc16e16). Weaknesses unchanged: not race-safe at the DB, overrides authorized at org level only, and agreement execution locks every selection on the home. Signing now locks only confirmed, ordered or received selections; design rows stay open to their cutoff (4158415c). Found by LOT-01.",
       "remainingWork": [
         "Authorize overrides against the project/division.",
-        "Confirm and fix locking of every selection at agreement execution (lib/services/community-sales.ts:1522) so pre-cutoff design selections stay editable.",
         "Make the cutoff check atomic (conditional update or trigger).",
         "QA cutoff/override walkthrough."
       ],
@@ -10522,16 +10537,15 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "executePurchaseAgreementFromEnvelopeExecution sets locked_at on ALL project_selections (lib/services/community-sales.ts:1522) and assertSelectionMutable rejects any locked selection (lib/services/selections.ts:207-212), so pre-cutoff design selections appear blocked after signing (needs product confirmation)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "revertCutoffToSchedule (lib/services/selection-cutoffs.ts:247-258) clears an override without reason, audit or event. — fixed in 5dc16e16"
+        "revertCutoffToSchedule (lib/services/selection-cutoffs.ts:247-258) clears an override without reason, audit or event. — fixed in 5dc16e16",
+        "Signing the purchase agreement locked every selection, so pre-cutoff design selections were blocked; signing now locks only confirmed, ordered or received selections (D1) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
         "title": "Selection deadlines and overrides",
-        "description": "Selection deadlines are set from the build schedule and enforced on every change, and pushing a deadline back or undoing that needs permission, a reason and leaves a record. Signing the purchase agreement appears to lock every selection, including design choices whose deadline hasn't passed."
+        "description": "Selection deadlines are set from the build schedule and enforced on every change, and pushing a deadline back or undoing that needs permission, a reason and leaves a record. Signing the purchase agreement now locks only choices already confirmed or ordered; design choices stay open until their deadline."
       },
       "proposedScope": {
         "scope": "first",
@@ -10671,7 +10685,7 @@
         "EP08-07"
       ],
       "status": "partial",
-      "implementationNotes": "Selection changes from an approved change order now apply all-or-nothing (5dc16e16, migration 20261010120200 pending approval). Variance orders on the trade side still use a compensating delete, and neither schedule nor agreement is updated. Depends on EP03-04 and EP08-07.",
+      "implementationNotes": "Selection changes from an approved change order now apply all-or-nothing (5dc16e16, migration 20261010120200 pending approval). Variance orders on the trade side still use a compensating delete, and neither schedule nor agreement is updated. Depends on EP03-04 and EP08-07. Structural options in a signed agreement become confirmed selections at the agreed price and reach the POs (4158415c; found by LOT-01). A quote with two structural options in one category is refused.",
       "remainingWork": [
         "Apply migration 20261010120200_apply_project_selection_writes (pending approval).",
         "Move variance-order creation into the same transaction or a receipt-keyed resumable job, idempotent per change order.",
@@ -10823,10 +10837,13 @@
         2
       ],
       "auditDefects": [
-        "Variance orders still use a manual compensating delete (lib/services/selection-change-orders.ts:354); the selection writes themselves now land in one transaction (apply_project_selection_writes, fixed in 5dc16e16, migration pending)."
+        "Variance orders still use a manual compensating delete (lib/services/selection-change-orders.ts:354); the selection writes themselves now land in one transaction (apply_project_selection_writes, fixed in 5dc16e16, migration pending).",
+        "A quote with two structural options in one category is now refused (lib/sales/agreement-selections.ts); no way yet to represent or choose between them — open."
       ],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Structural options in a signed agreement never reached the POs; they now become confirmed selections at the agreed price and flow to POs (D7) (found by LOT-01/sweep) — fixed in 4158415c"
+      ],
       "plain": {
         "title": "Selection changes flow to costs",
         "description": "An approved late selection change updates the home's selections as one unit and creates matching purchase-order revisions, and the price change carries into the closing. It doesn't update the schedule or the agreement, and the purchase-order side can still get out of step if it fails halfway."
@@ -14131,7 +14148,7 @@
         "EP07-16"
       ],
       "status": "implemented",
-      "implementationNotes": "Retry, cancel and publication are single SQL transactions. Publication (publish_start_release, 66900c27, migration 20261010100000 edited, pending approval) now proves the step ledger settled, starts the lot, moves the home to delivery, releases the package and writes its audit, start.released event and search reindex jobs together; the claimed start_release job is the durable notification intent and the worker only sends idempotent confirmations afterward. A lot that left its home publishes nothing.",
+      "implementationNotes": "Retry, cancel and publication are single SQL transactions. Publication (publish_start_release, 66900c27, migration 20261010100000 edited, pending approval) now proves the step ledger settled, starts the lot, moves the home to delivery, releases the package and writes its audit, start.released event and search reindex jobs together; the claimed start_release job is the durable notification intent and the worker only sends idempotent confirmations afterward. A lot that left its home publishes nothing. The starts worker may now queue reindex jobs for its own lot and schedule items (edit to unapplied 20261003048000, 12c622af; found by LOT-01).",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval).",
         "Full-schema, multi-session race tests; QA."
@@ -14292,7 +14309,8 @@
       "fixedSinceAudit": [
         "retryRelease updates status to 'releasing' with no .eq('status','attention') guard (lib/services/starts.ts:834-837), racing a concurrent cancel or retry. — fixed in dd770797",
         "cancelRelease has no lease check and resets package/steps/outbox non-atomically (lib/services/starts.ts:874-886). — fixed in dd770797",
-        "No audit record for release publication in the worker (lib/services/starts-pipeline.ts). — fixed in dd770797"
+        "No audit record for release publication in the worker (lib/services/starts-pipeline.ts). — fixed in dd770797",
+        "The starts release worker could not queue search reindex jobs for its own lot and schedule items, so release could not reindex them (D5) (found by LOT-01/sweep); needs edited migration 20261003048000 — fixed in 12c622af"
       ],
       "plain": {
         "title": "Release finishes all-or-nothing",
@@ -15422,7 +15440,7 @@
       ],
       "dependencies": [],
       "status": "implemented",
-      "implementationNotes": "Preview and commit share one pricing pass with an input fingerprint and validated resolutions; dismissing an exception only succeeds while it is open (bb8d2c74). An interactive commit is now refused unless it carries the fingerprint of the preview it was approved from (poGenerationInputSchema refine, 3bf6c38b); the panel previews first and sends it, and the starts release commits through generatePurchaseOrdersForStartsRelease, a system path that computes its own fingerprint. Unchanged weak spots: zero-price manual resolutions need no note and the preview does not list agreement expiry dates.",
+      "implementationNotes": "Preview and commit share one pricing pass with an input fingerprint and validated resolutions; dismissing an exception only succeeds while it is open (bb8d2c74). An interactive commit is now refused unless it carries the fingerprint of the preview it was approved from (poGenerationInputSchema refine, 3bf6c38b); the panel previews first and sends it, and the starts release commits through generatePurchaseOrdersForStartsRelease, a system path that computes its own fingerprint. Unchanged weak spots: zero-price manual resolutions need no note and the preview does not list agreement expiry dates. Preview and generation now read selections after authorization regardless of project membership (4158415c; found by LOT-01).",
       "remainingWork": [
         "Decide policy for zero-price manual resolutions.",
         "List which agreements expire and when in the preview.",
@@ -15594,7 +15612,8 @@
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "dismissPoException updates without a status='open' predicate (lib/services/po-generation.ts:577-582). — fixed in bb8d2c74",
-        "expectedFingerprint optional for commit (lib/validation/po-generation.ts:7; checked only when present at lib/services/po-generation.ts:400). — fixed in 3bf6c38b"
+        "expectedFingerprint optional for commit (lib/validation/po-generation.ts:7; checked only when present at lib/services/po-generation.ts:400). — fixed in 3bf6c38b",
+        "PO preview omitted selection options when the user was not a project member; PO generation now reads selections after authorization regardless of membership (D3) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
         "title": "Purchase order preview and price exceptions",
@@ -15931,11 +15950,12 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Requester now comes from the session, the reason code is immutable once requested, and approve/reject are conditional on the status they read (bb8d2c74). Cost evidence is still not required and approval does not change any budget baseline.",
+      "implementationNotes": "Requester now comes from the session, the reason code is immutable once requested, and approve/reject are conditional on the status they read (bb8d2c74). Cost evidence is still not required and approval does not change any budget baseline. Found by LOT-01: purchasing settings have no writer or screen (D8).",
       "remainingWork": [
         "Require cost evidence per org policy and validate file ancestry.",
         "Define and implement the budget baseline effect of an approved VPO.",
-        "Tests for thresholds, back-charges and baseline changes; QA."
+        "Tests for thresholds, back-charges and baseline changes; QA.",
+        "Add a writer and a settings screen for purchasing settings (pay-on-PO, VPO thresholds, reason codes, expiring agreement lead days)."
       ],
       "sources": [
         "lib/financials/vpo-approval-thresholds.ts",
@@ -16070,7 +16090,9 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "Purchasing settings (pay-on-PO, VPO approval thresholds, reason codes, expiring-agreement lead days) have no writer or screen, so they cannot be set (D8, found by LOT-01/sweep) — open."
+      ],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "SoD bypass: requested_by client-supplied (lib/validation/commitment-change-orders.ts:27; lib/services/commitment-change-orders.ts:505). — fixed in bb8d2c74",
@@ -16080,7 +16102,7 @@
       ],
       "plain": {
         "title": "Variance PO approvals and limits",
-        "description": "Variance POs need a reason that can't be removed, larger amounts need a higher approver, the requester is recorded from who is signed in and can't approve their own, and an approved variance can no longer be rejected by a late click. No backup (photo or cost detail) is required yet, and approval doesn't update the home's budget."
+        "description": "Variance POs need a reason that can't be removed, larger amounts need a higher approver, the requester is recorded from who is signed in and can't approve their own, and an approved variance can no longer be rejected by a late click. No backup (photo or cost detail) is required yet, and approval doesn't update the home's budget. Purchasing settings such as VPO thresholds and reason codes cannot yet be edited anywhere."
       },
       "proposedScope": {
         "scope": "first",
@@ -17969,12 +17991,13 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Inventory capitalization now covers acquisition, reviewed development allocation, interest, start transfer, completion, component sale relief, late post-sale cost, impairment and closing reversal, all verified in HOME-01/LOSS-01. The gap from Oct 5 narrowed to correcting an acquisition or a start transfer after it posted. All related migrations are on the production pending list.",
+      "implementationNotes": "Inventory capitalization now covers acquisition, reviewed development allocation, interest, start transfer, completion, component sale relief, late post-sale cost, impairment and closing reversal, all verified in HOME-01/LOSS-01. The gap from Oct 5 narrowed to correcting an acquisition or a start transfer after it posted. All related migrations are on the production pending list. Found by LOT-01: a placeholder contract beside the purchase agreement blocked Books adoption; agreement-driven production homes no longer get one (4158415c), but spec homes, the reviewed reservation conversion and already-created homes still do.",
       "remainingWork": [
         "Add a governed correction for a land acquisition (reverse, clear the lot's acquisition pointer, re-acquire) and for a start transfer (reverse and re-transfer when the start is undone or redated), preserving receipts.",
         "Tests (database tier) for those corrections.",
         "Approve and deploy 20261003033000_starts_land_posting_fences.sql and the 20261007180000-20261008040000 Books inventory migrations.",
-        "QA-org run from land takedown through closing cost of sales."
+        "QA-org run from land takedown through closing cost of sales.",
+        "Stop spec homes and the reviewed reservation conversion from creating the placeholder contract (starts.ts prepareStartHome, reservation-conversion.ts, SQL 20261010140000 and 20261005121409 billingContract) and repair existing homes that hold a placeholder beside an agreement."
       ],
       "sources": [
         "supabase/migrations/20261003033000_starts_land_posting_fences.sql",
@@ -18124,11 +18147,14 @@
         0
       ],
       "auditDefects": [
-        "supabase/migrations/20260908021851_books_land_inventory.sql:30,37 — a reversed land acquisition cannot be corrected: the lot keeps books_acquisition_entry_id/status 'owned' and re-acquisition is refused; there is no re-transfer path for a reversed start transfer."
+        "supabase/migrations/20260908021851_books_land_inventory.sql:30,37 — a reversed land acquisition cannot be corrected: the lot keeps books_acquisition_entry_id/status 'owned' and re-acquisition is refused; there is no re-transfer path for a reversed start transfer.",
+        "Spec homes (lib/services/starts.ts prepareStartHome) and the reviewed reservation conversion path (lib/services/reservation-conversion.ts; unapplied SQL 20261010140000 and 20261005121409 require billingContract) still create the placeholder contract, so Books cannot adopt those homes — still open.",
+        "Existing production homes that already have a placeholder contract beside an agreement are not repaired — still open."
       ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "Oct 5 'owned-inventory transitions (completion/sale_relief) have no automated test' — now proven by Books B11.3 HOME-01 (sale relief by component, closing reversal) on supabase/migrations/20261007180000_books_home_sale_relief.sql and 20261007220000_books_home_closing_reversal.sql"
+        "Oct 5 'owned-inventory transitions (completion/sale_relief) have no automated test' — now proven by Books B11.3 HOME-01 (sale relief by component, closing reversal) on supabase/migrations/20261007180000_books_home_sale_relief.sql and 20261007220000_books_home_closing_reversal.sql",
+        "A production home got a placeholder fixed contract beside its purchase agreement, which blocked Books adoption and left the inventory and warranty tabs unloadable; no placeholder is created unless billing terms are given (D4) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
         "title": "Land and house costs in inventory",
@@ -21512,9 +21538,9 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "The safe place to generate and run a load dataset now exists: Books' isolated acceptance stack rebuilds Arc from scratch, refuses to touch production, and runs in CI. It does not yet generate production data (divisions, communities, lots, homes, warranty history). Status raised to partial for the reusable isolated stack. The frozen targets (100 divisions, 2,000 communities, 100k active / 1M installed homes) are national scale; a first-builder target is proposed in notes.",
+      "implementationNotes": "The safe place to generate and run a load dataset now exists: Books' isolated acceptance stack rebuilds Arc from scratch, refuses to touch production, and runs in CI. It does not yet generate production data (divisions, communities, lots, homes, warranty history). Status raised to partial for the reusable isolated stack. The frozen targets (100 divisions, 2,000 communities, 100k active / 1M installed homes) are national scale; a first-builder target is proposed in notes. A production seed on the acceptance stack (scripts/books-acceptance/production-seed.cjs, 1842d2f0) now builds a division, a 20-lot community, a land tranche, two released plans with options and a price book, and homes at every stage from hold to warranty; LOT-01 and the role sweep run on it. It is not parameterized up to the load targets and no mixed-role workload exists.",
       "remainingWork": [
-        "Seeded production dataset generator on the acceptance stack at a first-builder size (see notes), then parameterized up to loadTargets.",
+        "Parameterize the production seed up to a first-builder size per notes and then toward loadTargets (divisions, communities, lots, installed homes, warranty history).",
         "Mixed-role workload scripts (starts, purchasing, sales, warranty desks, mobile) with recorded parameters.",
         "Owner review of representativeness via EP14-11."
       ],
@@ -21579,6 +21605,30 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "FIX-20261010-W4"
+          ],
+          "date": "2026-10-10",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The seed creates one division, a 20-lot community, a land tranche, two released plans with options and a price book, and homes at every stage from hold to warranty, each built by the role that owns the step. It is first-builder-sized demonstration data, not the agreed divisions/communities/installed-home history, and has no parameters to scale up."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "Generation is reproducible and cannot write to customer data (loopback-only stack). It is used by a scenario and a sweep, but no mixed-role performance workload with recorded parameters exists."
+            }
+          ],
+          "scope": "Isolated acceptance stack, 2026-10-10: production seed (scripts/books-acceptance/production-seed.cjs) built and used by LOT-01 and the role sweep."
         }
       ],
       "releaseState": "unverified",
@@ -21594,10 +21644,12 @@
         "scripts/benchmark-project-directory.mjs still reads production with the service role key (not an isolated workload) — still open."
       ],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Sample community schedule wrote offset_days instead of start_offset_days (D6) (found by LOT-01/sweep) — fixed in 12c622af"
+      ],
       "plain": {
         "title": "Realistic test builder dataset",
-        "description": "Arc now has an isolated copy of itself that can be filled with fake data and run safely, and Books uses it for accounting volume. It cannot yet generate a realistic production builder — communities, lots, homes under construction and closed homes under warranty."
+        "description": "Arc's isolated copy can now be filled with a realistic production builder: a community of 20 lots, two released plans, a price book and homes at every stage from hold to warranty, and it is used by the end-to-end test and the role sweep. It is demonstration size, not yet scaled up, and no mixed-role speed test runs on it."
       },
       "proposedScope": {
         "scope": "first",
@@ -22824,11 +22876,12 @@
         "EP09-05",
         "EP11-07"
       ],
-      "status": "pending",
-      "implementationNotes": "The scenario runner, expected-results files, evidence catalog and CI from Books are exactly what this needs, and HOME-01 already proves the money end of a home's life. Nobody has written the production story itself: lead to agreement, selections, permit, start, purchasing, build, close and warranty, with each role acting.",
+      "status": "partial",
+      "implementationNotes": "LOT-01 now exists on the Books acceptance runner (scripts/books-acceptance/scenarios/lot-01.cjs, expected/LOT-01.json, production-seed.cjs, 1842d2f0). Run on the isolated stack on 2026-10-10 at f06a35e1 its core checks passed 9/9 and the Books tie-out held (revenue $433,100, land cost of sales $72,000, construction cost of sales $260,300, $20,000 deposit applied, four home controls). The run found 15 defects (D1-D15); 4158415c and 12c622af fix 14 of them, and the scenario has NOT been re-run since. Only the presold story is covered; spec, cancellation and delay are EP14-02 to EP14-04, and nothing has run in the QA org.",
       "remainingWork": [
-        "Author LOT-01 on the Books acceptance runner (expected/LOT-01.json from policy, scenario using real services per role), reusing HOME-01 for the Books tie-out.",
-        "Add to CI; execute in the QA org after dependencies; owner review."
+        "Re-run LOT-01 on the acceptance stack (including --include-pending subcases) now that D1-D7 and D9-D15 are fixed, and record the result.",
+        "Add LOT-01 to CI as a gate; execute in the QA org after dependencies; owner review.",
+        "Close the open defects found by the run (D8 purchasing settings; placeholder contract on spec homes and reviewed reservation conversion) so the full story passes without carve-outs."
       ],
       "sources": [
         "e2e/buyer-portal-access.spec.ts",
@@ -22888,11 +22941,36 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "FIX-20261010-W4"
+          ],
+          "date": "2026-10-10",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "scripts/books-acceptance/scenarios/lot-01.cjs takes a presold home from lot takedown through reservation, agreement with deposit, selections, start release, POs, bills, closing and warranty, each step by the owning role; core 9/9 passed on the run. Books tie-out: revenue $433,100, land cost of sales $72,000, construction cost of sales $260,300, deposit $20,000 applied, four home controls pass. The run found defects D1-D15; the fixes landed after it and are not re-proven."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "scripts/books-acceptance/expected/LOT-01.json holds the expected results from policy; the evidence catalog references the scenario. Not yet tied to exact checklist items beyond EP14-01, and not added to CI as a release gate."
+            }
+          ],
+          "scope": "Isolated acceptance stack (loopback database, no customer data), 2026-10-10, HEAD f06a35e1: LOT-01 core checks 9/9 passed. LOT-01 has not been re-run since the defect fixes in 4158415c and 12c622af (Docker unavailable); checks held open for defects run only with --include-pending. Not run in the QA org; no owner review."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Dependency items not implemented; ~54 production-workflow migrations not in production."
+        "Dependency items not implemented; ~54 production-workflow migrations not in production.",
+        "LOT-01 re-run pending after fixes (Docker unavailable 2026-10-10)."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -22904,7 +22982,7 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Presold home end-to-end test",
-        "description": "There is no single test yet that walks a sold home from lead to agreement, selections, start, purchasing, build, closing and warranty with each person doing their part. The test machinery from Books is ready, and the accounting end is already proven."
+        "description": "A sold home now walks the whole story on an isolated copy of Arc, from lot takedown through reservation, signed agreement and deposit, selections, start, purchasing, building, closing and warranty, and the books tie out to the dollar. The core checks passed, the run found 15 defects and 14 are now fixed, but the test has not been re-run since and has not been tried in the QA org."
       },
       "proposedScope": {
         "scope": "first",
@@ -23508,10 +23586,10 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Status raised to partial for the reusable browser harness: Books can open every signed-in page and fail on any error, and it already caught and fixed real page crashes (commit abf88776, including a warranty-seeding race). It only signs in as an owner, on desktop, with no production community seeded, so production detail pages were skipped and no production workflow is exercised.",
+      "implementationNotes": "The browser harness now sweeps a seeded production builder as each production role (owner, sales, land, starts, purchasing, design, superintendent, warranty), desktop only: 8 roles, 198 pages as owner and 58 per other role, with clean/refused/errors/skipped counts recorded (1842d2f0; run 2026-10-10 at f06a35e1). It found real defects (purchasing role could not open its own desk, production home and My Houses failed for every role, duplicate React keys on the deal page, hydration mismatches); 12c622af fixes them and the sweep has not been re-run. Phone-width, accessibility (axe) and per-role workflow journeys are not done; production phone sweeps are out of scope by owner decision.",
       "remainingWork": [
-        "Seed a production community (division, community, lots, plan, start, deal) in browser-seed.cjs so the 20 skipped production pages are swept.",
-        "Run the sweep per production role and at phone width; add axe-core checks.",
+        "Re-run the production sweep for every role now that D2, D12, D14 and D15 are fixed; triage the remaining error pages per role (owner 12, purchasing 9) to a cause.",
+        "Add axe-core checks and keyboard checks; phone-width coverage only if the owner reverses the desktop-only decision for production.",
         "Journeys for critical production workflows (sales, starts release, purchasing, warranty visit) with loading/empty/error/dark checks."
       ],
       "sources": [
@@ -23573,25 +23651,51 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "FIX-20261010-W4"
+          ],
+          "date": "2026-10-10",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Pages opened / clean / refused by design / errors / skipped: owner 198/157/17/12/12, sales 58/40/13/5/0, land 58/34/20/4/0, starts 58/33/20/5/0, purchasing 58/7/42/9/0, design 58/30/23/5/0, superintendent 58/32/20/6/0, warranty 58/34/20/4/0. Purchasing opened only 7 clean pages (its read keys were missing, D2). Error pages were not all triaged to a cause; known causes D12-D15 are fixed after the run and not re-swept. Desktop only, no keyboard or accessibility checks, no workflow journeys per role."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "The sweep fails on any page error but does not systematically check loading, empty and error states against docs/design.md."
+            }
+          ],
+          "scope": "Isolated acceptance stack, desktop only, 2026-10-10, HEAD f06a35e1: production role sweep (journeys/production-sweep.spec.ts) over a seeded production builder. No phone-width checks (production phone sweeps are out of scope by owner decision) and no axe/accessibility checks."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "None for engineering on the acceptance stack; QA-org credentials for the in-org pass."
+        "QA-org credentials for the in-org pass; sweep re-run pending after fixes."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "App sweep seeds only residential/commercial projects (scripts/books-acceptance/browser-seed.cjs:44, :200, :236), so production-posture pages are never rendered with production terminology/modules."
-      ],
+      "auditDefects": [],
       "auditConfidence": "low",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "App sweep seeded only residential/commercial projects so production-posture pages were never rendered (browser-seed.cjs); a seeded production builder and per-role sweep now exist (1842d2f0) — fixed in 1842d2f0",
+        "Duplicate React keys on the deal page siblings (D14) (found by LOT-01/sweep) — fixed in 12c622af",
+        "Hydration mismatches: DndContext without a stable id, budget dates formatted by locale (D15) (found by LOT-01/sweep) — fixed in 12c622af"
+      ],
       "plain": {
         "title": "Screens checked on desktop and phone",
-        "description": "Arc can now open every signed-in page automatically and catch crashes, and it found and fixed several. It only does this as an owner, on desktop, with no production community set up, so production detail pages, other roles, phones and accessibility aren't checked yet."
+        "description": "Arc can now open every signed-in page automatically as each production role (owner, sales, land, starts, purchasing, design, superintendent, warranty) on desktop and catch crashes. The run found real page failures and most are now fixed, but it hasn't been repeated, and phones, accessibility checks and role workflows aren't covered."
       },
       "proposedScope": {
         "scope": "first",
@@ -27097,6 +27201,16 @@
       "files": [],
       "sourceHashes": {},
       "notes": "Re-checked 13 items against the two fix commits (EP01-02, EP01-03, EP01-07, EP03-04, EP03-05, EP03-06, EP03-08, EP04-04, EP04-06, EP04-07, EP04-08, EP09-01, EP09-02; EP11-03 unchanged): 18 audit defects moved to fixedSinceAudit (EP09-02's server half moved, its iOS half kept open), 1 status raise (EP04-07: partial -> implemented); no item set to verified or accepted; migrations 20261010160000, 20261010161000, 20261010162000 and 20261010170000 are pending approval."
+    },
+    {
+      "id": "FIX-20261010-W4",
+      "date": "2026-10-10",
+      "scope": "Fix wave 4: acceptance evidence from the first production LOT-01 and role-sweep run (1842d2f0, run at f06a35e1) and its fixes (4158415c, 12c622af).",
+      "command": [],
+      "counts": {},
+      "files": [],
+      "sourceHashes": {},
+      "notes": "Recorded acceptance_run evidence (partial, current, no tier) on EP14-01, EP14-07, EP13-01; EP14-01 pending -> partial; LOT-01 harness set to exists, re-run pending. LOT-01 core 9/9; desktop sweep over 8 roles. Defects D1-D15 mapped: 14 fixed (D1 EP06-03; D2 EP01-01/EP06-02; D3 EP08-06; D4 EP10-02; D5 EP07-17; D6 EP13-01; D7 EP06-05; D9 EP03-05 service only, no UI; D10 EP05-10; D11 EP05-09; D12 EP01-01; D13 EP03-05; D14, D15 EP14-07) and D8 open (EP08-09). Open from the fix: placeholder contract on spec homes and reviewed reservation conversion (EP10-02, EP05-02), unrepaired existing homes (EP10-02), two structural options in one category refused (EP06-05). LOT-01 not re-run since the fixes; sweep desktop-only by owner decision. No item set to verified or accepted; migration 20261010200000 is pending approval and 20261003048000 is edited (unapplied)."
     }
   ],
   "deferredBacklog": [
@@ -30363,11 +30477,12 @@
       {
         "id": "LOT-01",
         "story": "A presold home from lot takedown to warranty: lot released, buyer reserves, agreement signed with deposit, selections by cutoff, permit, start released, POs issued, built, closed, enrolled in warranty, and the books tie (land basis, inventory, deposit, revenue, reserve).",
-        "harness": "partial",
+        "harness": "exists",
         "covers": [
           "EP14-01"
         ],
-        "existingSupport": "HOME-01 (land allocation→sale at cost→deposit→warranty reserve→reversed closing), tests/support/starts-harness.js, agreement/esign PGlite suites"
+        "existingSupport": "HOME-01 (land allocation→sale at cost→deposit→warranty reserve→reversed closing), tests/support/starts-harness.js, agreement/esign PGlite suites",
+        "result": "core passing; re-run pending after fixes"
       },
       {
         "id": "SALE-01",
