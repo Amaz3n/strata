@@ -27,6 +27,7 @@ import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-c
 import {
   buildOrgScopedPath,
   copyFilesObject,
+  deleteFilesObjects,
 } from "@/lib/storage/files-storage";
 
 export type PriceResolver = (line: {
@@ -892,6 +893,39 @@ export async function queuePlanDrawings(
   return { drawing_set_id: drawingSetId, queued: true };
 }
 
+const abandonedDrawingCopySchema = z.object({
+  org_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  attempt_id: z.string().uuid(),
+  storage_path: z.string().min(1),
+});
+
+/**
+ * Removes plan-drawing copies whose reservation was never published: a worker
+ * reserved an attempt-unique path, may have copied the PDF there, and was lost
+ * before publication. SQL claims only reservations a day old, with no live
+ * release on the home and no file row naming the path, and marks them
+ * abandoned so nothing can start using that path again; the object is deleted;
+ * then SQL clears the manifest after re-checking, under the home lock, that no
+ * file references it. A crash in between is claimed again by the next sweep.
+ */
+export async function cleanupAbandonedPlanDrawingCopies(limit = 25) {
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.rpc("claim_abandoned_plan_drawing_copies", { p_limit: limit });
+  if (error) throw new Error(`Failed to claim abandoned drawing copies: ${error.message}`);
+  const copies = z.array(abandonedDrawingCopySchema).parse(data ?? []);
+  let cleared = 0;
+  for (const copy of copies) {
+    await deleteFilesObjects({ supabase, orgId: copy.org_id, paths: [copy.storage_path] });
+    const { data: done, error: clearError } = await supabase.rpc("clear_abandoned_plan_drawing_copy", {
+      p_org_id: copy.org_id, p_project_id: copy.project_id, p_attempt_id: copy.attempt_id,
+    });
+    if (clearError) throw new Error(`Failed to clear abandoned drawing copy: ${clearError.message}`);
+    if (done === true) cleared += 1;
+  }
+  return { claimed: copies.length, cleared };
+}
+
 const MARK_STEP_ATTEMPTS = 5;
 
 /**
@@ -1019,14 +1053,17 @@ export async function instantiatePlanForProject(
   };
   for (const step of requestedSteps) {
     if (completed.has(step)) {
-      const from = completed.get(step);
-      const message =
-        from && from !== context.version.id
-          ? `${step} was already generated for this project from a different plan version; re-running it would duplicate the work`
-          : `${step} was already instantiated for this project`;
+      const otherVersion = completed.get(step) !== context.version.id;
+      const message = otherVersion
+        ? `${step} was already generated for this project from a different plan version; re-running it would duplicate the work`
+        : `${step} was already instantiated for this project`;
+      // A worker replaying a release treats its own version's work as done.
+      // Work from another (or an unrecorded) version is not this release's
+      // receipt, and re-running it would cut a second copy onto the house, so
+      // that stays fatal on resume: the release parks for a person to decide
+      // rather than reporting a house it never built as complete.
       result.skipped.push(step);
-      // A worker replaying a release must treat this as done, not as fatal.
-      if (explicitlyRequested && !parsed.resume) result.errors.push(message);
+      if (explicitlyRequested && (!parsed.resume || otherVersion)) result.errors.push(message);
       else result.warnings.push(`${message}; skipped.`);
       continue;
     }

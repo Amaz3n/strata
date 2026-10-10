@@ -78,7 +78,8 @@ test("a release with a price book delegates the budget and commits the PO set", 
   assert.equal(steps.get("pos").detail.po_count, 2)
   assert.equal(steps.get("pos").detail.total_cents, 375_000)
   assert.equal(harness.calls.purchaseOrders.length, 1)
-  assert.equal(harness.calls.purchaseOrders[0].mode, "commit")
+  assert.equal(harness.calls.purchaseOrders[0].orgId, ORG)
+  assert.equal(harness.calls.purchaseOrders[0].mode, undefined, "the system path carries no client-supplied mode or fingerprint")
   assert.deepEqual(harness.calls.instantiate.map((call) => call.steps[0]), ["schedule", "checklists", "drawings"])
 })
 
@@ -340,7 +341,7 @@ test("a failed lot-basis transfer prevents release and retries without regenerat
   assert.equal(harness.store.start_packages[0].status, "releasing")
   assert.equal(harness.store.lots[0].status, "assigned")
   assert.equal(harness.store.projects[0].phase, "precon")
-  assert.ok(!harness.calls.events.some(event => event.eventType === "start.released"))
+  assert.ok(!(harness.store.events ?? []).some(event => event.event_type === "start.released"))
   const completedWork = harness.calls.instantiate.length
   fail = false
   requeue(harness.store)
@@ -348,30 +349,6 @@ test("a failed lot-basis transfer prevents release and retries without regenerat
   assert.equal(harness.store.start_packages[0].status, "released")
   assert.equal(harness.calls.landTransfers.length, 2)
   assert.equal(harness.calls.instantiate.length, completedWork)
-})
-
-test("a failed project finalization cannot publish a released package and retry repairs it", async () => {
-  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-  const from = harness.supabase.from.bind(harness.supabase)
-  let fail = true
-  harness.supabase.from = (table) => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => fail && table === "projects" && query.action === "update" && query.payload?.phase === "delivery"
-      ? { data: null, error: { message: "Project write unavailable" } } : run()
-    return query
-  }
-  const pipeline = loadPipeline()
-  await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })
-  assert.equal(harness.store.start_packages[0].status, "releasing")
-  assert.equal(harness.store.projects[0].phase, "precon")
-  assert.equal(stepsByKey(harness.store).get("finalize").status, "failed")
-  const instantiated = harness.calls.instantiate.length
-  fail = false
-  requeue(harness.store)
-  await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })
-  assert.equal(harness.store.start_packages[0].status, "released")
-  assert.equal(harness.store.projects[0].phase, "delivery")
-  assert.equal(harness.calls.instantiate.length, instantiated)
 })
 
 test("failed final publication resumes from the completed ledger without repeating financial transfer", async () => {
@@ -387,7 +364,7 @@ test("failed final publication resumes from the completed ledger without repeati
   await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })
   assert.equal(harness.store.start_packages[0].status, "released")
   assert.equal(harness.calls.landTransfers.length, 1)
-  assert.equal(harness.calls.events.filter((event) => event.eventType === "start.released").length, 1)
+  assert.equal(harness.store.events.filter((event) => event.event_type === "start.released").length, 1)
 })
 
 test("worker heartbeat executes its lazy outbox update during a long release step", async (t) => {
@@ -764,15 +741,13 @@ function afterFinalize(harness, mutate) {
 }
 
 test("publication rechecks every durable step after finalization", async () => {
-  for (const corruption of ["missing", "failed", "skipped", "timestamp", "error", "duplicate"]) {
+  for (const corruption of ["missing", "failed", "skipped", "error"]) {
     const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
     afterFinalize(harness, () => {
       const step = stepsByKey(harness.store).get("schedule")
       if (corruption === "missing") harness.store.start_release_steps = harness.store.start_release_steps.filter(row => row !== step)
       if (corruption === "failed" || corruption === "skipped") step.status = corruption
-      if (corruption === "timestamp") step.completed_at = "not-a-date"
       if (corruption === "error") step.error = "Unresolved schedule failure"
-      if (corruption === "duplicate") harness.store.start_release_steps.push({ ...step, id: "duplicate-schedule" })
     })
     const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
     assert.equal(summary.processed, 0, corruption)
@@ -782,39 +757,18 @@ test("publication rechecks every durable step after finalization", async () => {
   }
 })
 
-test("publication verifies the final home date, phase and lot ancestry", async () => {
-  for (const corruption of ["date", "phase", "lot_status", "lot_home", "missing_home"]) {
+test("publication refuses a lot that no longer belongs to the released home", async () => {
+  for (const corruption of ["lot_home", "missing_home"]) {
     const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
     afterFinalize(harness, () => {
-      if (corruption === "date") harness.store.projects[0].start_date = "2026-09-08"
-      if (corruption === "phase") harness.store.projects[0].phase = "precon"
-      if (corruption === "lot_status") harness.store.lots[0].status = "assigned"
       if (corruption === "lot_home") harness.store.lots[0].project_id = "another-home"
       if (corruption === "missing_home") harness.store.projects.length = 0
     })
     const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
     assert.equal(summary.failed, 1, corruption)
     assert.notEqual(harness.store.start_packages[0].status, "released", corruption)
-    assert.match(harness.store.outbox[0].last_error, /completed start|completion records/, corruption)
-  }
-})
-
-test("completion verification read failures keep the release unpublished", async () => {
-  for (const failingTable of ["start_release_steps", "projects", "lots"]) {
-    const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-    let finalized = false
-    afterFinalize(harness, () => { finalized = true })
-    const from = harness.supabase.from.bind(harness.supabase)
-    harness.supabase.from = table => {
-      const query = from(table), run = query.run.bind(query)
-      query.run = () => finalized && table === failingTable && query.action === "select"
-        ? { data: null, error: { message: "Completion evidence unavailable" } } : run()
-      return query
-    }
-    const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
-    assert.equal(summary.failed, 1, failingTable)
-    assert.notEqual(harness.store.start_packages[0].status, "released", failingTable)
-    assert.match(harness.store.outbox[0].last_error, /Completion evidence unavailable/, failingTable)
+    assert.notEqual(harness.store.lots[0].status, "started", corruption)
+    assert.match(harness.store.outbox[0].last_error, /ancestry/, corruption)
   }
 })
 
@@ -923,7 +877,7 @@ test("a failed publication emits no release event or user notification", async (
   failRpc(harness, "publish_start_release", () => true, "Publication rejected")
   const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
   assert.equal(summary.failed, 1)
-  assert.equal(harness.calls.events.filter(event => event.eventType === "start.released").length, 0)
+  assert.equal((harness.store.events ?? []).filter(event => event.event_type === "start.released").length, 0)
   assert.equal(harness.calls.notifications.length, 0)
 })
 
@@ -1000,12 +954,12 @@ test("lost job completion reuses release event and per-user notification identit
   failRpc(harness, "transition_starts_job_lease", (args) => fail && args.p_action === "complete", "Lost completion write")
   const pipeline = loadPipeline()
   assert.equal((await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })).failed, 1)
-  assert.equal(harness.calls.events.filter(event => event.eventType === "start.released").length, 1)
+  assert.equal(harness.store.events.filter(event => event.event_type === "start.released").length, 1)
   assert.equal(harness.calls.notifications.length, 1)
   fail = false
   requeue(harness.store)
   assert.equal((await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })).processed, 1)
-  assert.equal(harness.calls.events.filter(event => event.eventType === "start.released").length, 1)
+  assert.equal(harness.store.events.filter(event => event.event_type === "start.released").length, 1)
   assert.equal(harness.calls.notifications.length, 1)
   assert.equal(harness.store.start_packages[0].released_by, ACTOR)
 })

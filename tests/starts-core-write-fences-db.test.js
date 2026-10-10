@@ -94,6 +94,9 @@ async function desk(t, { role = "org_starts_coordinator", status = "ready" } = {
   h.asWorker = (job) => full.setRequestHeaders(db, job ? { "x-starts-job-id": String(job.job_id), "x-starts-claim-token": job.claim_token } : {})
   h.row = async (sql, params = [pkg.id]) => (await db.query(sql, params)).rows[0]
   h.audit = (source) => h.row("select count(*)::int as n from audit_log where entity_id = $1 and source = $2", [pkg.id, source])
+  h.reindexed = async () => (await db.query(
+    "select payload->>'entity_type' as type from outbox where job_type = 'reindex_search' order by 1",
+  )).rows.map((row) => row.type)
   return h
 }
 
@@ -193,22 +196,50 @@ test("cancel revokes a live worker claim so nothing the worker writes afterwards
   await assert.rejects(h.cancel(), /not cancellable/)
 })
 
-test("publication releases the package and writes its audit in one transaction under the claim", async (t) => {
+test("publication starts the lot and home, releases the package, and records its event, audit and reindex together", async (t) => {
   const h = await desk(t)
   await h.queue()
   const job = await h.claim()
-  const publish = (token = job.claim_token) => full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: token })
+  const eventId = full.uuid()
+  const publish = (token = job.claim_token) => full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: token, p_event_id: eventId })
+  const settle = () => h.db.query("update start_release_steps set status = 'completed', completed_at = now() where start_package_id = $1", [h.pkg.id])
 
-  await h.asWorker(job)
   await assert.rejects(publish(full.uuid()), /lease lost/)
+  await assert.rejects(publish(), /not proven for: budget, checklists, drawings, finalize, notify_trades, pos, schedule/)
+  await settle()
+  await h.db.query("update start_release_steps set error = 'Schedule failed' where start_package_id = $1 and step_key = 'schedule'", [h.pkg.id])
+  await assert.rejects(publish(), /not proven for: schedule/)
+  assert.equal((await h.row("select status from lots where id = $1", [h.lot.id])).status, h.lot.status)
   assert.equal((await h.audit("starts.release_published")).n, 0)
 
+  await settle()
+  await h.db.query("update start_release_steps set error = null where start_package_id = $1", [h.pkg.id])
   await publish()
-  await h.asWorker(null)
   const pkg = await h.row("select status, released_by, actual_start_date::text as started from start_packages where id = $1")
   assert.deepEqual(pkg, { status: "released", released_by: h.actorId, started: "2026-11-02" })
+  assert.equal((await h.row("select status from lots where id = $1", [h.lot.id])).status, "started")
+  assert.deepEqual(await h.row("select phase, start_date::text as start from projects where id = $1", [h.home.id]), { phase: "delivery", start: "2026-11-02" })
   assert.equal((await h.audit("starts.release_published")).n, 1)
+  assert.equal((await h.row("select event_type from events where id = $1", [eventId])).event_type, "start.released")
+  assert.deepEqual(await h.reindexed(), ["lot", "project", "start_package", "start_package"])
   await assert.rejects(publish(), /no longer releasing/)
+})
+
+test("a release whose lot left its home publishes nothing at all", async (t) => {
+  const h = await desk(t)
+  await h.queue()
+  const job = await h.claim()
+  await h.db.query("update start_release_steps set status = 'completed', completed_at = now() where start_package_id = $1", [h.pkg.id])
+  const other = await full.insert(h.db, "projects", { org_id: h.orgId, name: "Lot 8" })
+  await h.db.query("update lots set project_id = $1 where id = $2", [other.id, h.lot.id])
+
+  await assert.rejects(
+    full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: job.claim_token, p_event_id: full.uuid() }),
+    /ancestry/,
+  )
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "releasing")
+  assert.equal((await h.row("select status from lots where id = $1", [h.lot.id])).status, h.lot.status)
+  assert.equal((await h.row("select phase from projects where id = $1", [h.home.id])).phase, h.home.phase)
 })
 
 test("a release that never took its package lease still parks for attention on its final failure", async (t) => {
@@ -223,4 +254,104 @@ test("a release that never took its package lease still parks for attention on i
   assert.equal(moved, true)
   assert.equal((await h.row("select status from start_packages where id = $1")).status, "attention")
   assert.equal((await h.row("select status from outbox where id = $1", [job.job_id])).status, "failed")
+})
+
+// ---------------------------------------------------------------------------
+// A house's home is created and linked in the transaction that needs it, so a
+// failure orphans nothing and a retry reuses what committed.
+// ---------------------------------------------------------------------------
+
+/** What `prepareStartHome` hands SQL: the same rows createProject would write. */
+function preparedHome(orgId, actorId, projectId = full.uuid()) {
+  return {
+    projectId,
+    project: { org_id: orgId, created_by: actorId, name: "HP 9", status: "active", phase: "precon", property_type: "production", retainage_percent: 0 },
+    billingContract: {
+      org_id: orgId, project_id: projectId, title: "HP 9 Contract", status: "active", contract_type: "fixed", currency: "usd", fee_presentation: "embedded",
+      savings_split_owner_pct: 0, savings_split_builder_pct: 0, labor_burden_multiplier: 1, requires_client_cost_approval: false,
+      open_book: true, retainage_percent: 0, retainage_applies_to_fee: false, snapshot: {},
+    },
+    financialSettings: {
+      org_id: orgId, project_id: projectId, billing_model: "fixed_price", fixed_price_billing_basis: "draws", paid_costs_required: false,
+      proof_required: false, client_cost_approval_required: false, open_book_required: false, cost_codes_enabled: null,
+      setup_completed_by: actorId, updated_by: actorId, created_by: actorId, metadata: { source: "project_settings" },
+    },
+    accountingDimensions: {},
+  }
+}
+
+async function yard(t, { role = "org_starts_coordinator" } = {}) {
+  const db = await full.createDatabase(t)
+  const { orgId, userId: actorId } = await full.seedMember(db, { role })
+  const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
+  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, lot_number: "9", status: "developed" })
+  for (const [key, isActive] of [["permit", true], ["financing", true], ["retired", false]]) {
+    await full.insert(db, "start_gate_definitions", { org_id: orgId, key, label: key, check_kind: "manual", applies_when: "always", sort_order: 10, is_active: isActive })
+  }
+  const count = async (sql, params = []) => (await db.query(sql, params)).rows[0].n
+  const open = (home = preparedHome(orgId, actorId), actor = actorId) => full.rpc(db, "open_start_package", {
+    p_org_id: orgId, p_actor_id: actor, p_lot_id: lot.id, p_is_financed: false, p_target_week: null, p_home: home,
+  })
+  return { db, orgId, actorId, community, lot, count, open }
+}
+
+test("opening a lot creates its home, links it and opens the package with every active gate at once", async (t) => {
+  const y = await yard(t)
+  const home = preparedHome(y.orgId, y.actorId)
+  const opened = await y.open(home)
+
+  assert.equal(opened.project_id, home.projectId)
+  const lot = (await y.db.query("select project_id, status from lots where id = $1", [y.lot.id])).rows[0]
+  assert.deepEqual(lot, { project_id: home.projectId, status: "assigned" })
+  const project = (await y.db.query("select phase, property_type, division_id from projects where id = $1", [home.projectId])).rows[0]
+  assert.deepEqual(project, { phase: "precon", property_type: "production", division_id: null })
+  assert.equal(await y.count("select count(*)::int as n from contracts where project_id = $1", [home.projectId]), 1)
+  assert.equal(await y.count("select count(*)::int as n from project_financial_settings where project_id = $1", [home.projectId]), 1)
+  assert.equal(await y.count("select count(*)::int as n from start_package_gates where start_package_id = $1", [opened.start_package_id]), 2)
+  const reindexed = (await y.db.query("select payload->>'entity_type' as type from outbox where job_type = 'reindex_search' order by 1")).rows
+  assert.deepEqual(reindexed.map((row) => row.type), ["contract", "lot", "project", "start_package"])
+})
+
+test("a retried open finds the committed package and builds no second home", async (t) => {
+  const y = await yard(t)
+  await y.open()
+  await assert.rejects(y.open(), /already has an active start package/)
+  assert.equal(await y.count("select count(*)::int as n from projects where org_id = $1", [y.orgId]), 1)
+  assert.equal(await y.count("select count(*)::int as n from start_packages where org_id = $1", [y.orgId]), 1)
+})
+
+test("an open that fails leaves no orphaned home behind", async (t) => {
+  for (const failure of ["actor", "bundle"]) {
+    const y = await yard(t, { role: failure === "actor" ? "org_viewer" : "org_starts_coordinator" })
+    const home = preparedHome(y.orgId, y.actorId)
+    // A bundle prepared for someone else cannot become this actor's house.
+    if (failure === "bundle") home.financialSettings.created_by = full.uuid()
+    await assert.rejects(y.open(home), failure === "actor" ? /start\.write permission/ : /settings ownership mismatch/)
+    assert.equal(await y.count("select count(*)::int as n from projects where org_id = $1", [y.orgId]), 0, failure)
+    assert.equal(await y.count("select count(*)::int as n from start_packages where org_id = $1", [y.orgId]), 0, failure)
+    assert.equal((await y.db.query("select project_id from lots where id = $1", [y.lot.id])).rows[0].project_id, null, failure)
+  }
+})
+
+test("a lot that already has a home keeps it and the prepared one is never built", async (t) => {
+  const y = await yard(t)
+  const existing = await full.insert(y.db, "projects", { org_id: y.orgId, name: "Lot 9" })
+  await y.db.query("update lots set project_id = $1 where id = $2", [existing.id, y.lot.id])
+  const opened = await y.open()
+  assert.equal(opened.project_id, existing.id)
+  assert.equal(await y.count("select count(*)::int as n from projects where org_id = $1", [y.orgId]), 1)
+})
+
+test("a homeless package is given one home however often its release retries", async (t) => {
+  const y = await yard(t)
+  const pkg = await full.insert(y.db, "start_packages", { org_id: y.orgId, lot_id: y.lot.id, community_id: y.community.id, status: "ready" })
+  const ensure = (home) => full.rpc(y.db, "ensure_start_package_home", { p_org_id: y.orgId, p_actor_id: y.actorId, p_package_id: pkg.id, p_home: home })
+
+  const first = await ensure(preparedHome(y.orgId, y.actorId))
+  const second = await ensure(preparedHome(y.orgId, y.actorId))
+  assert.equal(second.project_id, first.project_id)
+  assert.equal(second.created_home, false)
+  assert.equal(await y.count("select count(*)::int as n from projects where org_id = $1", [y.orgId]), 1)
+  const linked = (await y.db.query("select p.project_id as package_home, l.project_id as lot_home from start_packages p join lots l on l.id = p.lot_id where p.id = $1", [pkg.id])).rows[0]
+  assert.deepEqual(linked, { package_home: first.project_id, lot_home: first.project_id })
 })

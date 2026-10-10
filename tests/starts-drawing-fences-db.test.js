@@ -687,3 +687,54 @@ test("browsers cannot queue drawing jobs; server writers without worker headers 
   await assert.rejects(drawingJob({ role: "authenticated", userId: h.actorId }), /authorized server writers/)
   await drawingJob({ role: "service_role" })
 })
+
+// ---------------------------------------------------------------------------
+// Cleanup: a reservation whose copy was never published is abandoned, its
+// object deleted, and its manifest cleared — never one a file references.
+// ---------------------------------------------------------------------------
+
+test("an abandoned drawing copy is claimed only once it is old, unclaimed and unreferenced", async (t) => {
+  const h = await publication(t)
+  const claim = () => rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 25 })
+  await h.asWorker(false)
+
+  assert.deepEqual(await claim(), [], "a fresh reservation may still be copying")
+  await h.db.query(
+    "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - interval '2 days')) where id = $1",
+    [h.home.id],
+  )
+  assert.deepEqual(await claim(), [], "a live release of the home may resume it")
+
+  await h.expireLease()
+  const file = await insert(h.db, "files", { org_id: h.orgId, project_id: h.home.id, file_name: "plan.pdf", storage_path: h.copy.storage_path })
+  assert.deepEqual(await claim(), [], "a file naming the path is a published copy")
+  await h.db.query("update files set storage_path = $1 where id = $2", [`${h.orgId}/elsewhere.pdf`, file.id])
+
+  const claimed = await claim()
+  assert.deepEqual(claimed.map((row) => row.storage_path), [h.copy.storage_path])
+  assert.equal((await h.ledger()).plan_instantiation.drawing_copy_attempt.status, "abandoned")
+  await assert.rejects(h.publish(), /not reserved with this evidence/)
+  assert.equal((await claim()).length, 1, "a sweep lost before clearing claims it again")
+})
+
+test("clearing an abandoned copy frees the home for a new reservation, unless a file references it", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  await h.expireLease()
+  await h.db.query(
+    "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - interval '2 days')) where id = $1",
+    [h.home.id],
+  )
+  const [copy] = await rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 25 })
+  const clear = () => rpc(h.db, "clear_abandoned_plan_drawing_copy", { p_org_id: h.orgId, p_project_id: h.home.id, p_attempt_id: copy.attempt_id })
+
+  const file = await insert(h.db, "files", { org_id: h.orgId, project_id: h.home.id, file_name: "plan.pdf", storage_path: copy.storage_path })
+  await assert.rejects(clear(), /referenced by a file/)
+  await h.db.query("update files set storage_path = $1 where id = $2", [`${h.orgId}/elsewhere.pdf`, file.id])
+
+  assert.equal(await clear(), true)
+  assert.equal((await h.ledger()).plan_instantiation.drawing_copy_attempt, undefined)
+  assert.equal(await clear(), false, "clearing twice is a no-op")
+  const next = await h.reserve()
+  assert.notEqual(next.attempt_id, copy.attempt_id)
+})

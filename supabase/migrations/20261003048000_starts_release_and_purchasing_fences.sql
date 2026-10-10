@@ -1468,6 +1468,7 @@ begin
    'reason',btrim(p_reason),'released_by',v_pkg.released_by,'project_id',v_pkg.project_id,'released_at',v_pkg.released_at,'actual_start_date',v_pkg.actual_start_date);
  insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,before_data,after_data,source)
    values(p_org_id,p_actor_id,'update','start_package',p_package_id,v_before,v_after,'starts.confirmation_recovery') returning id into v_audit_id;
+ insert into public.outbox(org_id,job_type,payload) values(p_org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',p_package_id));
  insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel)
    values(p_org_id,'start.confirmation_retried','start_package',p_package_id,v_after,'activity') returning id into v_event_id;
  -- Guard against late revocation or source-state changes in trigger side effects.
@@ -1678,6 +1679,7 @@ begin
    'actor_id',p_actor_id,'reason',btrim(p_reason),'project_id',v_pkg.project_id,'notification_id',v_note.id,'channel',v_receipt.job_type,'release_evidence',v_source);
  insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,before_data,after_data,source)
    values(p_org_id,p_actor_id,'update','start_package',p_package_id,jsonb_build_object('status','failed','receipt_id',p_receipt_id),v_evidence,'starts.notification_delivery_recovery') returning id into v_audit;
+ insert into public.outbox(org_id,job_type,payload) values(p_org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',p_package_id));
  insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel)
    values(p_org_id,'start.notification_delivery_retried','start_package',p_package_id,v_evidence,'activity') returning id into v_event;
  insert into public.notification_delivery_recoveries(id,org_id,receipt_id,package_id,actor_id,reason,previous_job_id,job_id,event_id,audit_id)

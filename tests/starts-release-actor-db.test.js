@@ -321,9 +321,10 @@ test('failed released-home confirmation recovery preserves source evidence and c
  const receipt=(await h.recover()).rows[0].receipt
  assert.equal(receipt.job_id,String(h.job.job_id));assert.equal(receipt.status,'pending')
  assert.deepEqual((await h.db.query('select * from start_packages')).rows[0],before)
- const job=(await h.db.query('select * from outbox')).rows[0]
+ const job=(await h.db.query("select * from outbox where job_type<>'reindex_search'")).rows[0]
  assert.equal(job.status,'pending');assert.equal(job.retry_count,0);assert.equal(job.last_error,null);assert.equal(job.start_claim_token,null)
- assert.equal((await h.db.query('select count(*)::int n from outbox')).rows[0].n,1)
+ assert.equal((await h.db.query("select count(*)::int n from outbox where job_type<>'reindex_search'")).rows[0].n,1)
+ assert.deepEqual((await h.db.query("select payload from outbox where job_type='reindex_search'")).rows.map(r=>r.payload),[{entity_type:'start_package',entity_id:before.id}])
  const audit=(await h.db.query('select * from audit_log')).rows[0]
  assert.equal(audit.actor_user_id,ACTOR);assert.equal(audit.source,'starts.confirmation_recovery');assert.equal(audit.after_data.reason,'Provider outage resolved')
  assert.equal((await h.db.query('select event_type from events')).rows[0].event_type,'start.confirmation_retried')

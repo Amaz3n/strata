@@ -8,13 +8,13 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
 import { normalizeProductTier } from "@/lib/product-tier"
-import { instantiatePlanForProject, type PlanInstantiationStep } from "@/lib/services/plan-instantiation"
+import { cleanupAbandonedPlanDrawingCopies, instantiatePlanForProject, type PlanInstantiationStep } from "@/lib/services/plan-instantiation"
 import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { readAllRows } from "@/lib/land/paging"
-import { generatePurchaseOrders } from "@/lib/services/po-generation"
+import { generatePurchaseOrdersForStartsRelease } from "@/lib/services/po-generation"
 import { ensureReleaseSlotsForActiveCommunities } from "@/lib/services/even-flow"
 import { assertReleaseGateCompletion, assertStartCommunityAccess, syncReleaseProducedGates } from "@/lib/services/starts"
 import { requirePermission } from "@/lib/services/permissions"
@@ -186,14 +186,16 @@ async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, proj
   }
 }
 
-async function confirmReleasedPackage(supabase: SupabaseClient, job: ClaimedJob, pkg: {
-  id: string; project_id: string | null; lot_id: string; community_id: string; actual_start_date: string | null; released_by?: string | null;
-}) {
-  if (!pkg.project_id || !pkg.actual_start_date) throw new Error("Released package is missing its confirmation scope")
-  await recordEvent({ orgId: job.org_id, actorId: pkg.released_by ?? requiredString(job.payload.actor_id, "actor_id"), eventType: "start.released",
-    idempotencyId: startsConfirmationId(job.org_id, pkg.id, "event"),
-    entityType: "start_package", entityId: pkg.id,
-    payload: { project_id: pkg.project_id, lot_id: pkg.lot_id, community_id: pkg.community_id, start_date: pkg.actual_start_date } })
+/**
+ * The release's notifications. `publish_start_release` wrote the
+ * `start.released` event in the transaction that released the house, and this
+ * job — still claimed — is the durable intent to notify: it completes only
+ * after this runs, and a retry of a released package runs only this. Every
+ * recipient has one stable notification identity, so a replay never
+ * double-sends.
+ */
+async function confirmReleasedPackage(supabase: SupabaseClient, job: ClaimedJob, pkg: { id: string; project_id: string | null }) {
+  if (!pkg.project_id) throw new Error("Released package is missing its confirmation scope")
   await notifyAssignedSuper(supabase, job.org_id, pkg.project_id, pkg.id)
 }
 
@@ -218,38 +220,7 @@ async function assertReleaseLease(supabase: SupabaseClient, job: ClaimedJob, pac
   }
 }
 
-async function assertReleaseCompletion(
-  supabase: SupabaseClient, orgId: string, packageId: string,
-  projectId: string, lotId: string, startDate: string, usePurchasing: boolean,
-) {
-  const [ledger, project, lot] = await Promise.all([
-    supabase.from("start_release_steps").select("step_key,status,completed_at,error,detail")
-      .eq("org_id", orgId).eq("start_package_id", packageId),
-    supabase.from("projects").select("phase,start_date").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
-    supabase.from("lots").select("status,project_id").eq("org_id", orgId).eq("id", lotId).maybeSingle(),
-  ])
-  if (ledger.error || project.error || lot.error) {
-    throw new Error(`Failed to verify release completion: ${ledger.error?.message ?? project.error?.message ?? lot.error?.message}`)
-  }
-  if (!ledger.data || !project.data || !lot.data) throw new Error("Release completion records unavailable")
-  const byStep = new Map(ledger.data.map(row => [row.step_key, row]))
-  if (byStep.size !== ledger.data.length) throw new Error("Release completion ledger contains duplicate steps")
-  for (const key of RELEASE_STEPS) {
-    const step = byStep.get(key)
-    const allowedSkip = key === "pos" && !usePurchasing && step?.status === "skipped"
-      && asRecord(step.detail).purchasing_enabled === false
-    if (!step || (step.status !== "completed" && !allowedSkip) || step.error
-      || typeof step.completed_at !== "string" || !Number.isFinite(Date.parse(step.completed_at))) {
-      throw new Error(`Release completion is not proven for the ${key} step`)
-    }
-  }
-  if (project.data.phase !== "delivery" || project.data.start_date !== startDate
-    || lot.data.status !== "started" || lot.data.project_id !== projectId) {
-    throw new Error("Release home and lot do not match the completed start")
-  }
-}
-
-async function executeRelease(supabase: SupabaseClient, job: ClaimedJob): Promise<ReleaseOutcome> {
+async function executeRelease(supabase: SupabaseClient, service: SupabaseClient, job: ClaimedJob): Promise<ReleaseOutcome> {
   const packageId = requiredString(job.payload.start_package_id, "start_package_id")
   const { data: pkg, error: packageError } = await supabase.from("start_packages").select(`
     *, lot:lots!inner(house_plan_version_id,house_plan_elevation_id,swing,status,division_id)
@@ -304,7 +275,7 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob): Promis
           await updateStep(supabase, job.org_id, packageId, step, { status: "skipped", completed_at: new Date().toISOString(), detail: { purchasing_enabled: false } })
           continue
         }
-        const generated = await generatePurchaseOrders({ projectId: pkg.project_id, mode: "commit", orgId: job.org_id })
+        const generated = await generatePurchaseOrdersForStartsRelease({ projectId: pkg.project_id, orgId: job.org_id })
         detail = {
           run_id: generated.runId, po_count: generated.purchaseOrders.length,
           total_cents: generated.purchaseOrders.reduce((sum, po) => sum + po.totalCents, 0),
@@ -350,22 +321,14 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob): Promis
         await assertProjectConfiguration(job.org_id, pkg.project_id)
         await transferLandAtStartForService(job.org_id, pkg.lot_id, pkg.scheduled_start_date, requiredString(job.payload.actor_id, "actor_id"))
         await assertReleaseLease(supabase, job, packageId)
-        // Every one of these is checked. The old version built a four-write
-        // Promise.all and destructured two of them, so the project update and
-        // the gate write could both fail with the error thrown away while the
-        // step was still marked completed.
-        const [lotResult, projectResult] = await Promise.all([
-          supabase.from("lots").update({ status: "started" }).eq("org_id", job.org_id).eq("id", pkg.lot_id),
-          // The house leaves preconstruction here, not when its package opened.
-          supabase.from("projects").update({ start_date: pkg.scheduled_start_date, phase: "delivery" }).eq("org_id", job.org_id).eq("id", pkg.project_id),
-        ])
-        if (lotResult.error) throw new Error(`Failed to start lot: ${lotResult.error.message}`)
-        if (projectResult.error) throw new Error(`Failed to move the house into delivery: ${projectResult.error.message}`)
+        // The lot starts and the house leaves preconstruction at publication,
+        // in the transaction that releases the package — not here, where a
+        // later failure would leave a started lot on an unreleased package.
         // Derived from what actually landed rather than force-passed: a skipped
         // PO step must not leave an audit trail asserting a PO set exists.
         const producedGates = await syncReleaseProducedGates(supabase, job.org_id, packageId, { projectId: pkg.project_id, lotId: pkg.lot_id })
         await assertReleaseLease(supabase, job, packageId)
-        detail = { project_id: pkg.project_id, actual_start_date: pkg.scheduled_start_date, gates: producedGates }
+        detail = { project_id: pkg.project_id, gates: producedGates }
       }
       await assertReleaseLease(supabase, job, packageId)
       await updateStep(supabase, job.org_id, packageId, step, { status: "completed", completed_at: new Date().toISOString(), error: null, detail })
@@ -378,21 +341,22 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob): Promis
     }
   }
   // Publish only after the artifacts and durable step ledger have succeeded.
-  // A failed final write leaves a releasing package that can resume without
-  // treating a partial project/lot update as an already completed release.
   await assertReleaseLease(supabase, job, packageId)
-  await assertReleaseCompletion(supabase, job.org_id, packageId, pkg.project_id, pkg.lot_id, pkg.scheduled_start_date, usePurchasing)
   await assertReleaseGateCompletion(supabase, job.org_id, packageId, {
     projectId: pkg.project_id, lotId: pkg.lot_id, communityId: pkg.community_id, startDate: pkg.scheduled_start_date, purchasingEnabled: usePurchasing,
   })
   await assertReleaseLease(supabase, job, packageId)
-  // The package turns released and its audit record lands in one transaction,
-  // under the claim, after the actor's authority is re-checked.
-  const { error: publishError } = await supabase.rpc("publish_start_release", {
+  // The step ledger is proven settled, the lot starts, the house enters
+  // delivery and the package turns released — with its audit, its event and
+  // their search reindex — in one transaction that re-checks the claim, the
+  // package lease and the actor. It runs on the service client: it fences
+  // itself, and the claim fences refuse the reindex jobs it enqueues.
+  const { error: publishError } = await service.rpc("publish_start_release", {
     p_org_id: job.org_id, p_job_id: job.job_id, p_token: job.claim_token,
+    p_event_id: startsConfirmationId(job.org_id, packageId, "event"),
   })
   if (publishError) throw new Error(`Failed to publish start release: ${publishError.message}`)
-  await confirmReleasedPackage(supabase, job, { ...pkg, actual_start_date: pkg.scheduled_start_date, released_by: requiredString(job.payload.actor_id, "actor_id") })
+  await confirmReleasedPackage(supabase, job, pkg)
   return "completed"
 }
 
@@ -479,7 +443,7 @@ async function processJob(service: SupabaseClient, job: ClaimedJob) {
     const context = await backgroundContext(supabase, job)
     const outcome = await runWithServiceSupabaseClient(supabase, () => runWithServiceOrgContext(context, async (): Promise<ReleaseOutcome> => {
       await requirePermission(job.job_type === "start_release" ? "start.release" : "start.write", context)
-      if (job.job_type === "start_release") return await executeRelease(supabase, job)
+      if (job.job_type === "start_release") return await executeRelease(supabase, service, job)
       if (job.job_type === "start_release_trade_notice") return await processReleaseTradeNotice(supabase, job)
       await processScheduleChangeNotice(supabase, job)
       return "completed"
@@ -529,5 +493,6 @@ export async function runStartsPipeline(options: { deadlineMs?: number } = {}): 
   if (countError || count === null) throw new Error(`Failed to count remaining starts jobs: ${countError?.message ?? "Count unavailable"}`)
   summary.remaining = count
   await ensureReleaseSlotsForActiveCommunities(200)
+  await cleanupAbandonedPlanDrawingCopies()
   return summary
 }

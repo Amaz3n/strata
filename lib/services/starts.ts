@@ -1,4 +1,5 @@
 import "server-only"
+import { randomUUID } from "node:crypto"
 import { loadPurchasingEnabledByCommunity } from "@/lib/services/purchasing-readiness"
 import { confirmationRecoveryEnabled, loadStartConfirmationJobs, queueStartConfirmationRecovery, queueStartNotificationRecovery, readStartNotificationDeliveries, type StartConfirmationJobDTO } from "@/lib/services/starts-confirmation-recovery"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -10,13 +11,14 @@ import { z } from "zod"
 import { RELEASE_PRODUCED_GATE_KEYS, canAttestFinalApproval, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
-import { requireOrgContext } from "@/lib/services/context"
+import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { getReleaseSlotTarget } from "@/lib/services/even-flow"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { requirePermission } from "@/lib/services/permissions"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
-import { createProject } from "@/lib/services/projects"
+import { prepareProjectAccountingDimensions, prepareProjectBillingContract, prepareProjectCreation } from "@/lib/services/projects"
+import { prepareProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { readAllRows } from "@/lib/land/paging"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
@@ -151,6 +153,37 @@ const queueReleaseResultSchema = z.discriminatedUnion("queued", [
 ])
 
 const cancelReleaseResultSchema = z.object({ preserved: z.array(z.string()), reset: z.array(z.string()) })
+
+const startHomeResultSchema = z.object({ project_id: z.string().uuid() })
+const openPackageResultSchema = startHomeResultSchema.extend({ start_package_id: z.string().uuid() })
+
+/**
+ * The home a lot gets when it enters the start pipeline, prepared with the same
+ * pure helpers createProject uses and written by SQL in the transaction that
+ * links it (`open_start_package`, `ensure_start_package_home`). It opens in
+ * `precon` and is promoted to `delivery` at release: an unreleased lot is not a
+ * house under construction, and counting it as one inflates every
+ * delivery-phase list, portfolio Gantt and under-construction rollup by the
+ * whole width of the precon pipeline.
+ */
+function prepareStartHome(context: OrgServiceContext, lot: { lot_number: unknown; address: unknown; community: unknown }) {
+  const community = relation(lot.community)
+  const name = `${text(community?.code) ?? text(community?.name) ?? "Lot"} ${String(lot.lot_number)}`
+  const projectId = randomUUID()
+  const { input, project } = prepareProjectCreation({
+    input: { name, status: "active", phase: "precon", property_type: "production", address: text(lot.address) ?? undefined },
+    orgId: context.orgId, userId: context.userId, productTier: context.productTier,
+  })
+  const { contract } = prepareProjectBillingContract({ input, orgId: context.orgId, projectId, projectName: name })
+  return {
+    projectId, project, billingContract: contract,
+    financialSettings: prepareProjectFinancialSettings({
+      orgId: context.orgId, projectId, userId: context.userId, input, existingContract: contract,
+      existingRawCostCodesEnabled: null, now: new Date().toISOString(),
+    }),
+    accountingDimensions: prepareProjectAccountingDimensions({ classId: null, className: null, customerId: null, customerName: null }),
+  }
+}
 
 const DEFAULT_GATE_DEFINITIONS = [
   { key: "permit", label: "Permit approved", check_kind: "manual", auto_source: null, applies_when: "always", sort_order: 10 },
@@ -591,50 +624,18 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   if (access.assignedOnly && (!lot.division_id || !access.divisionIds.includes(lot.division_id))) throw new Error("Lot is outside your division access")
   await seedDefaultGateDefinitions(context.orgId)
   if (!["developed", "assigned"].includes(lot.status)) throw new Error("Only developed or assigned lots can enter the start pipeline.")
-  const { count: activePackages } = await context.supabase.from("start_packages")
-    .select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("lot_id", lot.id).neq("status", "cancelled")
-  if ((activePackages ?? 0) > 0) throw new Error("This lot already has an active start package.")
-
-  // A preconstruction project is needed before release so plot-plan files,
-  // selections, and price-book dry runs have a stable project scope. It opens
-  // in `precon` and is promoted to `delivery` at release: an unreleased lot is
-  // not a house under construction, and counting it as one inflates every
-  // delivery-phase list, portfolio Gantt and under-construction rollup by the
-  // whole width of the precon pipeline.
-  let projectId = lot.project_id
-  if (!projectId) {
-    const community = relation(lot.community)
-    const project = await createProject({ input: {
-      name: `${text(community?.code) ?? text(community?.name) ?? "Lot"} ${lot.lot_number}`,
-      status: "active", phase: "precon", property_type: "production", address: lot.address ?? undefined,
-    }, context })
-    projectId = project.id
-    const [{ error: projectScopeError }, { error: lotLinkError }] = await Promise.all([
-      context.supabase.from("projects").update({ division_id: lot.division_id }).eq("org_id", context.orgId).eq("id", projectId),
-      context.supabase.from("lots").update({ project_id: projectId, status: "assigned" }).eq("org_id", context.orgId).eq("id", lot.id),
-    ])
-    if (projectScopeError) throw new Error(`Failed to scope start project: ${projectScopeError.message}`)
-    if (lotLinkError) throw new Error(`Failed to link start project: ${lotLinkError.message}`)
-  }
-  const writer = startsWriter()
-  const { data: pkg, error: insertError } = await writer.from("start_packages").insert({
-    org_id: context.orgId, lot_id: lot.id, community_id: lot.community_id, project_id: projectId,
-    is_financed: parsed.isFinanced, target_week: parsed.targetWeek ?? null,
-  }).select("*").single()
-  if (insertError) throw new Error(insertError.code === "23505" ? "This lot already has an active start package." : `Failed to open start package: ${insertError.message}`)
-  const { data: definitions, error: definitionsError } = await context.supabase.from("start_gate_definitions").select("id")
-    .eq("org_id", context.orgId).eq("is_active", true)
-  if (definitionsError) throw new Error(`Failed to load start gates: ${definitionsError.message}`)
-  const { error: gatesError } = await writer.from("start_package_gates").insert((definitions ?? []).map((definition) => ({
-    org_id: context.orgId, start_package_id: pkg.id, gate_definition_id: definition.id,
-  })))
-  if (gatesError) throw new Error(`Failed to initialize start gates: ${gatesError.message}`)
-  await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start_package.opened", entityType: "start_package", entityId: pkg.id, payload: { lot_id: lot.id, community_id: lot.community_id } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "start_package", entityId: pkg.id, after: pkg }),
-  ])
-  await refreshAutoGates(pkg.id, context.orgId)
-  return getStartPackage(pkg.id, context.orgId)
+  // A preconstruction home is needed before release so plot-plan files,
+  // selections, and price-book dry runs have a stable project scope. The home,
+  // the lot link, the package and its gates commit together — a failure leaves
+  // nothing behind, and a retry after a commit finds the lot's active package.
+  const { data, error: openError } = await startsWriter().rpc("open_start_package", {
+    p_org_id: context.orgId, p_actor_id: context.userId, p_lot_id: lot.id, p_is_financed: parsed.isFinanced,
+    p_target_week: parsed.targetWeek ?? null, p_home: lot.project_id ? null : prepareStartHome(context, lot),
+  })
+  if (openError) throw new Error(openError.code === "23505" ? "This lot already has an active start package." : `Failed to open start package: ${openError.message}`)
+  const { start_package_id: packageId } = openPackageResultSchema.parse(data)
+  await refreshAutoGates(packageId, context.orgId)
+  return getStartPackage(packageId, context.orgId)
 }
 
 export async function updateStartPackage(id: string, input: { targetWeek?: string | null; scheduledStartDate?: string | null; isFinanced?: boolean; notes?: string | null }, orgId?: string) {
@@ -741,25 +742,17 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
   const targetWeek = pkg.target_week ?? mondayOfIsoWeek(parsed.scheduledStartDate)
 
   if (!pkg.project_id) {
-    const { data: lot } = await context.supabase.from("lots").select("lot_number,address,division_id,community:communities(name,code)")
+    // A package opened before homes were created at open gets its home here,
+    // under the package lock: a retried release reuses it instead of building
+    // a second house for the same lot.
+    const { data: lot } = await context.supabase.from("lots").select("lot_number,address,community:communities(name,code)")
       .eq("org_id", context.orgId).eq("id", pkg.lot_id).maybeSingle()
     if (!lot) throw new Error("Lot not found")
-    const community = relation(lot.community)
-    const project = await createProject({ input: {
-      name: `${text(community?.code) ?? text(community?.name) ?? "Lot"} ${lot.lot_number}`,
-      status: "active", phase: "precon", property_type: "production",
-      address: lot.address ?? undefined,
-    }, context })
-    const { error: projectUpdateError } = await context.supabase.from("projects").update({ division_id: lot.division_id })
-      .eq("org_id", context.orgId).eq("id", project.id)
-    if (projectUpdateError) throw new Error(`Failed to scope start project: ${projectUpdateError.message}`)
-    const { error: lotUpdateError } = await context.supabase.from("lots").update({ project_id: project.id, status: "assigned" })
-      .eq("org_id", context.orgId).eq("id", pkg.lot_id)
-    if (lotUpdateError) throw new Error(`Failed to link start project: ${lotUpdateError.message}`)
-    const { error: packageUpdateError } = await startsWriter().from("start_packages").update({ project_id: project.id })
-      .eq("org_id", context.orgId).eq("id", packageId)
-    if (packageUpdateError) throw new Error(`Failed to link start package: ${packageUpdateError.message}`)
-    pkg = { ...pkg, project_id: project.id }
+    const { data, error } = await startsWriter().rpc("ensure_start_package_home", {
+      p_org_id: context.orgId, p_actor_id: context.userId, p_package_id: packageId, p_home: prepareStartHome(context, lot),
+    })
+    if (error) throw new Error(`Failed to give the start package its home: ${error.message}`)
+    pkg = { ...pkg, project_id: startHomeResultSchema.parse(data).project_id }
   }
 
   await assertProjectConfiguration(context.orgId, pkg.project_id)

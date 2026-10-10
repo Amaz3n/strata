@@ -11,6 +11,11 @@
 --
 -- Lock order everywhere is the package's start_release jobs, then the package —
 -- the order the worker fences and claim transitions use.
+--
+-- Every audit row written here is paired with a `reindex_search` outbox job in
+-- the same transaction: that job is what recordAudit() enqueues for TS writes,
+-- and SQL audits bypass recordAudit, so without it the start package's status
+-- in global search would only move on the next TS-side edit.
 
 create function public.lock_starts_release_control(p_org_id uuid,p_package_id uuid,p_actor_id uuid)
 returns public.start_packages language plpgsql set search_path=public,pg_catalog as $$
@@ -84,6 +89,7 @@ begin
       v_after,'starts.release_queued');
   insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel)
     values(p_org_id,case when v_over then 'start.released_over_slot' else 'start.release_queued' end,'start_package',p_package_id,v_after,'activity');
+  insert into public.outbox(org_id,job_type,payload) values(p_org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',p_package_id));
   return jsonb_build_object('queued',true,'job_id',v_job_id::text,'over_slot',v_over,
     'target_week',p_target_week,'target',p_slot_target,'already_targeted',v_others);
 end $$;
@@ -121,6 +127,7 @@ begin
     values(p_org_id,p_actor_id,'update','start_package',p_package_id,jsonb_build_object('status',v_pkg.status),v_after,'starts.release_retried');
   insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel)
     values(p_org_id,'start.release_retried','start_package',p_package_id,v_after,'activity');
+  insert into public.outbox(org_id,job_type,payload) values(p_org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',p_package_id));
   return jsonb_build_object('job_id',v_job.id::text);
 end $$;
 revoke all on function public.retry_start_release(uuid,uuid,uuid) from public,anon,authenticated;
@@ -159,18 +166,39 @@ begin
       jsonb_build_object('status',v_pkg.status,'release_lease_token',v_pkg.metadata->>'release_lease_token'),v_after,'starts.release_cancelled');
   insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel)
     values(p_org_id,'start.release_cancelled','start_package',p_package_id,v_after,'activity');
+  insert into public.outbox(org_id,job_type,payload) values(p_org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',p_package_id));
   return jsonb_build_object('preserved',to_jsonb(v_preserved),'reset',to_jsonb(v_reset));
 end $$;
 revoke all on function public.cancel_start_release(uuid,uuid,uuid) from public,anon,authenticated;
 grant execute on function public.cancel_start_release(uuid,uuid,uuid) to service_role;
 
--- Publication under the worker's claim: the package turns released and its
--- audit record is written in one transaction, or neither happens.
-create function public.publish_start_release(p_org_id uuid,p_job_id bigint,p_token uuid)
+
+-- Publication under the worker's claim. The house leaves preconstruction, the
+-- lot starts, the package turns released, and its audit, its `start.released`
+-- event and their search reindex are written in one transaction — or nothing
+-- is. The step ledger is the release's receipt: publication refuses unless
+-- every step settled without error, so an interrupted or failed step can never
+-- count as complete.
+--
+-- The worker calls this on the plain service client, not its fenced claim
+-- client: it re-checks the claim, the package lease and the actor itself, and
+-- the claim fences refuse the reindex jobs a worker may not enqueue.
+--
+-- p_event_id is the release's stable confirmation identity
+-- (startsConfirmationId(org, package, 'event')): the per-recipient
+-- notifications cite it, so the event they point at exists the moment the
+-- house is released. Notification intent is the claimed start_release job
+-- itself, locked here and still processing: it completes only after the
+-- idempotent confirmation (one notification identity per recipient) has run,
+-- and a worker lost after this commit leaves it to the lease reaper, whose
+-- retry re-enters a released package and only re-runs that confirmation.
+create function public.publish_start_release(p_org_id uuid,p_job_id bigint,p_token uuid,p_event_id uuid)
 returns jsonb language plpgsql set search_path=public,pg_catalog as $$
-declare v_job public.outbox%rowtype; v_pkg public.start_packages%rowtype; v_after public.start_packages%rowtype; v_audit_id bigint;
+declare v_job public.outbox%rowtype; v_pkg public.start_packages%rowtype; v_after public.start_packages%rowtype;
+  v_lot public.lots%rowtype; v_project public.projects%rowtype; v_audit_id bigint; v_unsettled text[];
 begin
   if current_user in ('anon','authenticated') then raise exception 'Starts publication requires service role' using errcode='42501'; end if;
+  if p_event_id is null then raise exception 'Starts publication requires its confirmation identity'; end if;
   select * into v_job from public.outbox where id=p_job_id and org_id=p_org_id and job_type='start_release'
     and status='processing' and start_claim_token=p_token and start_job_lease_expires_at>clock_timestamp() for update;
   if not found then raise exception 'Starts worker lease lost' using errcode='40001'; end if;
@@ -181,7 +209,20 @@ begin
     then raise exception 'Start package lease lost' using errcode='40001'; end if;
   if v_pkg.project_id is null or v_pkg.scheduled_start_date is null then
     raise exception 'Release package is missing its home or start date' using errcode='42501'; end if;
+  -- Also proves the lot still belongs to this package's community and home.
   perform public.assert_starts_release_actor(v_job,v_pkg);
+  select coalesce(array_agg(s.step order by s.step),'{}') into v_unsettled
+    from unnest(array['project','budget','schedule','checklists','drawings','pos','notify_trades','finalize']) s(step)
+    left join public.start_release_steps r on r.org_id=p_org_id and r.start_package_id=v_pkg.id and r.step_key=s.step
+    where r.id is null or r.error is not null or r.completed_at is null
+      or not(r.status='completed' or (s.step='pos' and r.status='skipped' and r.detail->>'purchasing_enabled'='false'));
+  if cardinality(v_unsettled)>0 then
+    raise exception 'Release completion is not proven for: %',array_to_string(v_unsettled,', ') using errcode='40001'; end if;
+  update public.lots set status='started' where org_id=p_org_id and id=v_pkg.lot_id and project_id=v_pkg.project_id returning * into v_lot;
+  if not found then raise exception 'Starts lot home ancestry differs from package' using errcode='42501'; end if;
+  update public.projects set start_date=v_pkg.scheduled_start_date,phase='delivery'
+    where org_id=p_org_id and id=v_pkg.project_id returning * into v_project;
+  if not found then raise exception 'Starts home not found in organization' using errcode='42501'; end if;
   update public.start_packages set status='released',released_at=clock_timestamp(),
     released_by=(v_job.payload->>'actor_id')::uuid,actual_start_date=v_pkg.scheduled_start_date
     where org_id=p_org_id and id=v_pkg.id returning * into v_after;
@@ -192,7 +233,14 @@ begin
         'actual_start_date',v_after.actual_start_date,'project_id',v_after.project_id,'lot_id',v_after.lot_id,'job_id',p_job_id::text),
       'starts.release_published')
     returning id into v_audit_id;
-  return jsonb_build_object('released_at',v_after.released_at,'actual_start_date',v_after.actual_start_date,'audit_id',v_audit_id::text);
+  insert into public.events(id,org_id,event_type,entity_type,entity_id,payload,channel)
+    values(p_event_id,p_org_id,'start.released','start_package',v_pkg.id,jsonb_build_object('project_id',v_pkg.project_id,
+      'lot_id',v_pkg.lot_id,'community_id',v_pkg.community_id,'start_date',v_after.actual_start_date,'actor_id',v_after.released_by),'activity');
+  insert into public.outbox(org_id,job_type,payload)
+    select p_org_id,'reindex_search',jsonb_build_object('entity_type',entity,'entity_id',entity_id)
+    from (values('start_package',v_pkg.id),('project',v_project.id),('lot',v_lot.id)) indexed(entity,entity_id);
+  return jsonb_build_object('released_at',v_after.released_at,'actual_start_date',v_after.actual_start_date,
+    'audit_id',v_audit_id::text,'event_id',p_event_id);
 end $$;
-revoke all on function public.publish_start_release(uuid,bigint,uuid) from public,anon,authenticated;
-grant execute on function public.publish_start_release(uuid,bigint,uuid) to service_role;
+revoke all on function public.publish_start_release(uuid,bigint,uuid,uuid) from public,anon,authenticated;
+grant execute on function public.publish_start_release(uuid,bigint,uuid,uuid) to service_role;

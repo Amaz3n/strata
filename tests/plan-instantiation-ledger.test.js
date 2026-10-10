@@ -32,7 +32,7 @@ function version(id) {
   }
 }
 
-function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}) {
+function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, deleteFails = false } = {}) {
   const supabase = createFakeSupabase({
     orgs: [{ id: ORG, product_tier: "production" }],
     org_settings: [{ org_id: ORG, settings: {} }],
@@ -46,7 +46,7 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}
     house_plan_elevations: [],
   })
   const context = { supabase, orgId: ORG, userId: ACTOR, productTier: "production" }
-  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], copies: [] }
+  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], copies: [], deletes: [], cleared: [] }
 
   stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => supabase })
   stubModule("@/lib/services/context", {
@@ -76,6 +76,10 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}
   })
   stubModule("@/lib/storage/files-storage", {
     buildOrgScopedPath: (...parts) => parts.join("/"), copyFilesObject: async (params) => { calls.copies.push(params); return { size: 100, sourceEtag: "source-etag", etag: "copy-etag" } },
+    deleteFilesObjects: async (params) => {
+      calls.deletes.push(params.paths)
+      if (deleteFails) throw new Error("Storage unavailable")
+    },
   })
   delete require.cache[require.resolve("@/lib/services/plan-instantiation")]
   return { supabase, calls, service: require("@/lib/services/plan-instantiation") }
@@ -127,6 +131,16 @@ test("a resuming worker treats an already-produced step as done, not as fatal", 
   assert.deepEqual(resumed.skipped, ["budget"])
   assert.match(resumed.warnings.join(" "), /already instantiated/)
   assert.equal(harness.calls.budgets.length, 1)
+})
+
+test("a resuming worker refuses a step another plan version produced instead of counting it done", async () => {
+  const harness = buildInstantiationHarness()
+  await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))
+
+  const resumed = await harness.service.instantiatePlanForProject({ ...input(VERSION_TWO, ["budget"]), resume: true })
+  assert.equal(resumed.success, false)
+  assert.match(resumed.errors.join(" "), /different plan version/)
+  assert.equal(harness.calls.budgets.length, 1, "and it does not cut a second budget either")
 })
 
 test("concurrent marks against one project do not lose each other", async () => {
@@ -199,4 +213,25 @@ test('disabling transactions with a durable attempt refuses a duplicate legacy c
   const harness = buildInstantiationHarness({ projectMetadata: { plan_instantiation: { drawing_copy_attempt: { status: 'reserved' } } } }), context = drawingContext(harness)
   await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /Recover the reserved drawing copy/)
   assert.equal(harness.calls.copies.length, 0)
+})
+
+function abandonedCopy(harness) {
+  const copy = { org_id: ORG, project_id: PROJECT, attempt_id: "00000000-0000-4000-8000-0000000000aa", storage_path: `${ORG}/projects/${PROJECT}/plans/copy.pdf` }
+  harness.supabase.rpc = async (name, args) => {
+    if (name === "claim_abandoned_plan_drawing_copies") return { data: [copy], error: null }
+    if (name === "clear_abandoned_plan_drawing_copy") { harness.calls.cleared.push(args); return { data: true, error: null } }
+    throw new Error(`unexpected rpc ${name}`)
+  }
+  return copy
+}
+test('an abandoned copy loses its object before its manifest, and a failed delete keeps the manifest', async () => {
+  const harness = buildInstantiationHarness(), copy = abandonedCopy(harness)
+  assert.deepEqual(await harness.service.cleanupAbandonedPlanDrawingCopies(), { claimed: 1, cleared: 1 })
+  assert.deepEqual(harness.calls.deletes, [[copy.storage_path]])
+  assert.equal(harness.calls.cleared[0].p_attempt_id, copy.attempt_id)
+
+  const failing = buildInstantiationHarness({ deleteFails: true })
+  abandonedCopy(failing)
+  await assert.rejects(failing.service.cleanupAbandonedPlanDrawingCopies(), /Storage unavailable/)
+  assert.equal(failing.calls.cleared.length, 0)
 })

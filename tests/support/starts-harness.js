@@ -78,8 +78,19 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
     getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }),
     getDivisionScopedProjectIds: async () => null,
   })
+  // The pure helpers that prepare a new home; SQL writes what they return.
   stubModule("@/lib/services/projects", {
-    createProject: async ({ input }) => { calls.projects.push(input); return { id: PROJECT } },
+    prepareProjectCreation: ({ input, orgId, userId }) => {
+      calls.projects.push(input)
+      return { input, project: { ...input, org_id: orgId, created_by: userId } }
+    },
+    prepareProjectBillingContract: ({ orgId, projectId, projectName }) => ({
+      billingModel: "fixed_price", contract: { org_id: orgId, project_id: projectId, title: `${projectName} Contract` },
+    }),
+    prepareProjectAccountingDimensions: () => ({}),
+  })
+  stubModule("@/lib/services/project-financial-setup", {
+    prepareProjectFinancialSettings: ({ orgId, projectId, userId }) => ({ org_id: orgId, project_id: projectId, created_by: userId }),
   })
   stubModule("@/lib/services/books/inventory", {
     transferLandAtStartForService: async (orgId, lotId, date, actorId) => {
@@ -108,9 +119,10 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
       calls.instantiate.push(input)
       return instantiate(input)
     },
+    cleanupAbandonedPlanDrawingCopies: async () => ({ claimed: 0, cleared: 0 }),
   })
   stubModule("@/lib/services/po-generation", {
-    generatePurchaseOrders: async (input) => {
+    generatePurchaseOrdersForStartsRelease: async (input) => {
       calls.purchaseOrders.push(input)
       return generatePurchaseOrders ? generatePurchaseOrders(input) : { runId: "run-1", purchaseOrders: [], exceptions: [] }
     },
@@ -273,12 +285,23 @@ const claimProtocol = {
     return ok(recovered)
   },
 
-  publish_start_release({ p_org_id: orgId, p_job_id: jobId, p_token: token }, store) {
+  publish_start_release({ p_org_id: orgId, p_job_id: jobId, p_token: token, p_event_id: eventId }, store) {
     const job = liveClaim(store, orgId, jobId, token)
     if (!job) return refused("Starts worker lease lost")
     const pkg = claimPackage(store, job)
     if (pkg?.status !== "releasing") return refused("Start package no longer releasing")
     if (pkg.metadata?.release_lease_token !== token || !leaseFresh(pkg)) return refused("Start package lease lost")
+    const lot = store.lots.find((row) => row.org_id === orgId && row.id === pkg.lot_id)
+    const home = store.projects.find((row) => row.org_id === orgId && row.id === pkg.project_id)
+    if (!lot || !home || lot.project_id !== pkg.project_id) return refused("Starts lot home ancestry differs from package")
+    const unsettled = RELEASE_STEPS.filter((key) => {
+      const step = store.start_release_steps.find((row) => row.start_package_id === pkg.id && row.step_key === key)
+      const skippedPos = key === "pos" && step?.status === "skipped" && step.detail?.purchasing_enabled === false
+      return !step || step.error || !step.completed_at || (step.status !== "completed" && !skippedPos)
+    })
+    if (unsettled.length) return refused(`Release completion is not proven for: ${unsettled.join(", ")}`)
+    lot.status = "started"
+    Object.assign(home, { start_date: pkg.scheduled_start_date, phase: "delivery" })
     const before = { status: pkg.status }
     Object.assign(pkg, { status: "released", released_at: iso(), released_by: job.payload.actor_id, actual_start_date: pkg.scheduled_start_date })
     ;(store.audit_log ??= []).push({
@@ -286,7 +309,11 @@ const claimProtocol = {
       before_data: before, after_data: { status: "released", actual_start_date: pkg.actual_start_date, job_id: String(jobId) },
       source: "starts.release_published",
     })
-    return ok({ released_at: pkg.released_at, actual_start_date: pkg.actual_start_date })
+    ;(store.events ??= []).push({
+      id: eventId, org_id: orgId, event_type: "start.released", entity_type: "start_package", entity_id: pkg.id,
+      payload: { project_id: pkg.project_id, lot_id: pkg.lot_id, community_id: pkg.community_id, start_date: pkg.actual_start_date, actor_id: pkg.released_by },
+    })
+    return ok({ released_at: pkg.released_at, actual_start_date: pkg.actual_start_date, event_id: eventId })
   },
 
   queue_start_release(args, store) {
