@@ -5,6 +5,9 @@ export const poGenerationInputSchema = z.object({
   mode: z.enum(["dry_run", "commit"]),
   asOfDate: z.string().date().optional(),
   expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).refine((input) => input.mode !== "commit" || input.expectedFingerprint !== undefined, {
+  path: ["expectedFingerprint"],
+  message: "Preview the purchase orders before generating them.",
 })
 
 export const poExceptionResolutionSchema = z.discriminatedUnion("kind", [

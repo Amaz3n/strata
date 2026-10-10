@@ -7,7 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
-import { sendPunchDispatchEmail } from "@/lib/services/punch-lists"
+import { createPunchItemFromInspection } from "@/lib/services/punch-lists"
 import { createObservation } from "@/lib/services/safety"
 import { resolveProjectLocation } from "@/lib/services/locations"
 import {
@@ -739,25 +739,14 @@ export async function createPunchItemFromInspectionItem(
   if (parent.id !== inspection.id || parent.project_id !== inspection.project_id) throw new Error("Inspection corrective work ancestry changed")
   if (!inspectionItemNeedsCorrection(item)) throw new Error("Corrective punch work requires a deficient inspection item")
 
-  const { data: punchItem, error } = await supabase
-    .from("punch_items")
-    .insert({
-      org_id: resolvedOrgId,
-      project_id: inspection.project_id,
-      title: item.prompt,
-      description: [item.note, `From inspection: ${inspection.title}`].filter(Boolean).join("\n"),
-      status: "open",
-      location: inspection.location ?? null,
-      location_id: inspection.location_id ?? null,
-      due_date: parsed.due_date ?? null,
-      assigned_company_id: parsed.company_id ?? null,
-      dispatched_at: parsed.company_id ? new Date().toISOString() : null,
-      created_from_inspection: true,
-      created_by: userId,
-    })
-    .select("id, title, description, location, severity, due_date, assigned_company_id")
-    .single()
-  if (error || !punchItem) throw new Error(`Failed to create punch item: ${error?.message}`)
+  const punchItem = await createPunchItemFromInspection({ supabase, orgId: resolvedOrgId, userId }, inspection.project_id, {
+    title: item.prompt,
+    description: [item.note, `From inspection: ${inspection.title}`].filter(Boolean).join("\n"),
+    location: inspection.location ?? null,
+    location_id: inspection.location_id ?? null,
+    due_date: parsed.due_date ?? null,
+    assigned_company_id: parsed.company_id ?? null,
+  }, inspection.id)
 
   if (item.photo_file_id) {
     const { error: linkError } = await supabase.from("file_links").insert({
@@ -780,25 +769,6 @@ export async function createPunchItemFromInspectionItem(
     .select(ITEM_SELECT)
     .single()
   if (updateError || !updated) throw new Error(`Punch item created but link failed: ${updateError?.message}`)
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "punch_item_created",
-    entityType: "punch_item",
-    entityId: punchItem.id,
-    payload: { project_id: inspection.project_id, title: punchItem.title, from_inspection: inspection.id },
-  })
-
-  if (parsed.company_id) {
-    await sendPunchDispatchEmail({
-      supabase,
-      orgId: resolvedOrgId,
-      projectId: inspection.project_id,
-      companyId: parsed.company_id,
-      items: [punchItem],
-      createdBy: userId,
-    })
-  }
 
   return updated as InspectionItem
 }

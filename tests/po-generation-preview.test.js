@@ -82,6 +82,22 @@ test("a removed selection cannot be marked resolved or create purchase orders", 
 
 test("an invalid home configuration blocks PO generation before any writes", async () => {
   const { service, writes } = generation({ configurationError: "Chef kitchen requires electrical upgrade" })
-  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit" }), /requires electrical upgrade/)
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: "f".repeat(64) }), /requires electrical upgrade/)
   assert.equal(writes.length, 0)
+})
+
+test("an interactive commit without a preview fingerprint is refused before anything runs", async () => {
+  const { service, writes, authorizations } = generation()
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate }), /Preview the purchase orders/)
+  assert.equal(writes.length, 0)
+  assert.equal(authorizations.length, 0)
+})
+
+test("the starts release commits on its own fingerprint and is authorized for the release org", async () => {
+  const fingerprint = math.createPoGenerationFingerprint({ asOfDate: new Date().toISOString().slice(0, 10), lines: [] })
+  const { service, writes, authorizations } = generation({ prior: { id: "prior-run", input_fingerprint: fingerprint, status: "succeeded" } })
+  const result = await service.generatePurchaseOrdersForStartsRelease({ projectId, orgId: "org-a" })
+  assert.equal(result.runId, "prior-run")
+  assert.equal(writes.length, 0)
+  assert.equal(authorizations[0].permission, "po.generate")
 })

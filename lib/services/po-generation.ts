@@ -503,6 +503,16 @@ export async function generatePurchaseOrders(args: { projectId: string; mode: "d
   return runGeneration(parsed, context)
 }
 
+/**
+ * System commit for the automatic starts release. It has no preview to match, so it
+ * computes its own fingerprint inside the run and is never reachable from a client.
+ */
+export async function generatePurchaseOrdersForStartsRelease(args: { projectId: string; orgId: string }): Promise<PoGenerationResult> {
+  const projectId = z.string().uuid().parse(args.projectId)
+  const context = await authorizeGeneration("po.generate", projectId, args.orgId)
+  return runGeneration({ projectId, mode: "commit" }, context)
+}
+
 export async function listGenerationRuns(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await authorizeGeneration("price_book.read", projectId, orgId)
   const { data, error } = await supabase.from("po_generation_runs").select("*").eq("org_id", resolvedOrgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(50)

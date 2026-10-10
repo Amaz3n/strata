@@ -718,9 +718,9 @@ export async function fetchBudgetBucketCommitmentsAction(
         .sort((a, b) => (b.allocated_cents ?? 0) - (a.allocated_cents ?? 0))
 }
 
-export async function generateProjectPurchaseOrdersAction(projectId: string, mode: "dry_run" | "commit") {
+export async function generateProjectPurchaseOrdersAction(projectId: string, mode: "dry_run" | "commit", expectedFingerprint?: string) {
   return run(async () => {
-    const result = await generatePurchaseOrders({ projectId, mode })
+    const result = await generatePurchaseOrders({ projectId, mode, expectedFingerprint })
     revalidatePath(`/projects/${projectId}/financials`)
     revalidatePath(`/projects/${projectId}/financials/budget`)
     revalidatePath("/purchasing")

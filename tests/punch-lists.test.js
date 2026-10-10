@@ -4,7 +4,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG, ACTOR } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { bulkAssignPunchCompany, createProjectPunchItem, updateProjectPunchItem } = freshRequire("lib/services/punch-lists.ts")
+const { bulkAssignPunchCompany, createProjectPunchItem, createPunchItemFromInspection, updateProjectPunchItem } = freshRequire("lib/services/punch-lists.ts")
 
 const PROJECT = id(1)
 const OTHER_PROJECT = id(2)
@@ -71,6 +71,22 @@ describe("who may change a project's punch list", () => {
     assert.equal(item.verification_required, true)
     assert.equal(service.db.punch_items[0].created_by, ACTOR)
     assert.equal(service.events[0].eventType, "punch_item_created")
+    assert.equal(service.audits[0].action, "insert")
+  })
+
+  test("an inspection's corrective item is validated, flagged, and leaves an event and an audit", async () => {
+    const service = harness({ permissions: ["project.read", "inspection.write"], items: [] })
+    const context = { supabase: service.client, orgId: ORG, userId: ACTOR }
+
+    await assert.rejects(service.run(() => createPunchItemFromInspection(context, PROJECT, { title: "  " }, id(40))))
+    assert.deepEqual(service.writes(), [])
+
+    const item = await service.run(() => createPunchItemFromInspection(context, PROJECT, { title: "Rail loose", assigned_company_id: null }, id(40)))
+
+    assert.equal(item.status, "open")
+    assert.equal(service.db.punch_items[0].created_from_inspection, true)
+    assert.equal(service.db.punch_items[0].verification_required, false)
+    assert.equal(service.events[0].payload.from_inspection, id(40))
     assert.equal(service.audits[0].action, "insert")
   })
 

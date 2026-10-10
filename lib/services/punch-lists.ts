@@ -20,6 +20,7 @@ import {
   type PunchItemUpdateInput,
 } from "@/lib/validation/punch-items"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import type { z } from "zod"
 
 const PORTAL_PUNCH_SELECT =
   "id, org_id, project_id, title, description, status, due_date, severity, location, location_id, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, verification_notes, created_at"
@@ -400,8 +401,32 @@ export async function listProjectPunchItems(projectId: string, orgId?: string): 
 export async function createProjectPunchItem(projectId: string, input: PunchItemCreateInput, orgId?: string): Promise<ProjectPunchItem> {
   const parsed = punchItemCreateSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  const { supabase, orgId: resolvedOrgId, userId } = context
   await authorizePunchWrite(context, projectId)
+  return insertPunchItem(context, projectId, parsed)
+}
+
+/**
+ * The corrective punch item a deficient inspection item spawns. The inspection
+ * path has already authorized the actor on this project (`inspection.write`), so
+ * this skips the `punch.write` gate and keeps everything else: validation,
+ * assignee and location checks, event, audit and dispatch.
+ */
+export async function createPunchItemFromInspection(
+  context: { supabase: SupabaseClient; orgId: string; userId: string },
+  projectId: string,
+  input: PunchItemCreateInput,
+  inspectionId: string,
+): Promise<ProjectPunchItem> {
+  return insertPunchItem(context, projectId, punchItemCreateSchema.parse(input), { inspectionId })
+}
+
+async function insertPunchItem(
+  context: { supabase: SupabaseClient; orgId: string; userId: string },
+  projectId: string,
+  parsed: z.output<typeof punchItemCreateSchema>,
+  origin: { inspectionId?: string } = {},
+): Promise<ProjectPunchItem> {
+  const { supabase, orgId: resolvedOrgId, userId } = context
   const [location] = await Promise.all([
     resolveProjectLocation(projectId, parsed.location_id, resolvedOrgId),
     assertPunchAssignees(supabase, resolvedOrgId, { assignedTo: parsed.assigned_to, companyId: parsed.assigned_company_id }),
@@ -423,6 +448,7 @@ export async function createProjectPunchItem(projectId: string, input: PunchItem
       assigned_company_id: parsed.assigned_company_id ?? null,
       dispatched_at: parsed.assigned_company_id ? new Date().toISOString() : null,
       verification_required: parsed.verification_required ?? false,
+      created_from_inspection: origin.inspectionId !== undefined,
       created_by: userId,
     })
     .select(PROJECT_PUNCH_ITEM_SELECT)
@@ -435,7 +461,7 @@ export async function createProjectPunchItem(projectId: string, input: PunchItem
     eventType: "punch_item_created",
     entityType: "punch_item",
     entityId: data.id,
-    payload: { project_id: projectId, title: data.title },
+    payload: { project_id: projectId, title: data.title, ...(origin.inspectionId ? { from_inspection: origin.inspectionId } : {}) },
   })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "punch_item", entityId: data.id, after: data })
 
