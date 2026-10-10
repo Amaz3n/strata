@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import type { WarrantyServiceVisitDTO } from "@/lib/services/warranty"
+import { formatWarrantyVisitWindow, resolveWarrantyTimeZone } from "@/lib/services/warranty/visit-time"
 import { confirmSubPortalWarrantyVisitAction, completeSubPortalWarrantyVisitAction } from "./actions"
 
 type PortalVisit = WarrantyServiceVisitDTO & { request?: Record<string, unknown> | null; project?: Record<string, unknown> | null }
@@ -51,7 +52,7 @@ export function WarrantyVisitsClient({ token, initialVisits }: { token: string; 
           <div key={visit.id} className="grid gap-3 px-4 py-3 md:grid-cols-[1fr_auto]">
             <div>
               <div className="flex items-center gap-2"><p className="text-sm font-medium">{String(visit.request?.title ?? `Service visit ${visit.visit_number}`)}</p><Badge variant="outline">{visit.status.replaceAll("_", " ")}</Badge></div>
-              <p className="mt-1 text-xs text-muted-foreground">{new Date(visit.window_start).toLocaleString()} – {new Date(visit.window_end).toLocaleTimeString()}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{formatWarrantyVisitWindow(visit.window_start, visit.window_end, resolveWarrantyTimeZone(visit.time_zone))}</p>
               {visit.project?.location ? <p className="text-xs text-muted-foreground">{String((visit.project.location as { address?: string }).address ?? "")}</p> : null}
             </div>
             <div className="flex items-start gap-2">

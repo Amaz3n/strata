@@ -118,3 +118,34 @@ test("an office resolution recorded without a photo or sign-off waits for verifi
   assert.equal(signed.status, "resolved")
   assert.equal(signed.metadata.pending_verification, false)
 })
+
+test("any member reads routing rules, only a warranty manager writes them, and a rule names exactly one owner", async (t) => {
+  const { db, orgId, manager, member } = await home(t)
+  const rule = { org_id: orgId, name: "Emergencies", severity: "emergency", assignee_kind: "tech", assigned_user_id: manager.userId }
+
+  await assert.rejects(asUser(db, member.userId, "insert into warranty_routing_rules (org_id, name, assignee_kind, assigned_user_id) values ($1, 'Mine', 'tech', $2)", [orgId, member.userId]))
+  await insert(db, "warranty_routing_rules", rule)
+
+  const read = await asUser(db, member.userId, "select name from warranty_routing_rules")
+  assert.deepEqual(read.rows, [{ name: "Emergencies" }])
+  const edited = await asUser(db, member.userId, "update warranty_routing_rules set priority = 1 returning id")
+  assert.deepEqual(edited.rows, [])
+  const managed = await asUser(db, manager.userId, "update warranty_routing_rules set priority = 1 returning priority")
+  assert.deepEqual(managed.rows, [{ priority: 1 }])
+
+  // A trade rule cannot also name a technician, and a rule must name somebody.
+  await assert.rejects(insert(db, "warranty_routing_rules", { ...rule, name: "Both", assignee_kind: "trade", assigned_company_id: null }), /check/)
+  await assert.rejects(insert(db, "warranty_routing_rules", { org_id: orgId, name: "Nobody", assignee_kind: "tech" }), /check/)
+})
+
+test("a homeowner's answer to an appointment is stored apart from the trade's confirmation", async (t) => {
+  const { db, orgId, manager, project, request } = await home(t)
+  const visit = await insert(db, "warranty_service_visits", {
+    org_id: orgId, request_id: request.id, project_id: project.id, visit_number: 1, assignee_kind: "tech", assigned_user_id: manager.userId,
+    window_start: "2026-10-12T14:00:00Z", window_end: "2026-10-12T16:00:00Z",
+  })
+  assert.equal(visit.buyer_confirmed_at, null)
+  const { rows } = await db.query("update warranty_service_visits set buyer_confirmed_at = now() where id = $1 returning buyer_confirmed_at, confirmed_at", [visit.id])
+  assert.ok(rows[0].buyer_confirmed_at)
+  assert.equal(rows[0].confirmed_at, null)
+})

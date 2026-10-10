@@ -1,3 +1,5 @@
+import { warrantyLocalDate, zonedStartOfDay } from "@/lib/services/warranty/visit-time"
+
 /** Keep PostgREST offsets finite, integral and within JavaScript's exact range. */
 export function warrantyDeskPage(page?: number, pageSize?: number) {
   const size = Number.isSafeInteger(pageSize) && pageSize! > 0 ? Math.min(200, pageSize!) : 100
@@ -10,16 +12,32 @@ export function warrantyDeskUrlPage(value?: string) {
   return warrantyDeskPage(Number(value)).page
 }
 
-/** Explicit UTC calendar dates keep server and browser week boundaries identical. */
-export function warrantyDispatchWeek(value?: string, now = new Date()) {
-  let start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    const candidate = new Date(`${value}T00:00:00.000Z`)
-    if (Number.isFinite(candidate.getTime()) && candidate.toISOString().slice(0, 10) === value && candidate.getUTCFullYear() >= 2000 && candidate.getUTCFullYear() <= 9998) start = candidate
+const isoDay = (date: Date) => date.toISOString().slice(0, 10)
+const addDays = (day: string, days: number) => isoDay(new Date(new Date(`${day}T00:00:00.000Z`).getTime() + days * 86_400_000))
+
+function validDispatchDay(value?: string) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+  const candidate = new Date(`${value}T00:00:00.000Z`)
+  if (!Number.isFinite(candidate.getTime()) || isoDay(candidate) !== value) return null
+  return candidate.getUTCFullYear() >= 2000 && candidate.getUTCFullYear() <= 9998 ? value : null
+}
+
+/**
+ * The dispatch week, Sunday to Saturday. Calendar dates are explicit so server
+ * and browser agree on the boundary. With a `timeZone` the week is that zone's
+ * calendar week — midnight Sunday to midnight Sunday at the houses, DST-correct
+ * (a week that crosses a clock change is 167 or 169 hours) — otherwise UTC's.
+ */
+export function warrantyDispatchWeek(value?: string, now = new Date(), timeZone?: string) {
+  const today = timeZone ? warrantyLocalDate(now.toISOString(), timeZone) : isoDay(now)
+  const anchor = validDispatchDay(value) ?? today
+  const sunday = addDays(anchor, -new Date(`${anchor}T00:00:00.000Z`).getUTCDay())
+  const boundary = (day: string) => timeZone ? zonedStartOfDay(day, timeZone) : `${day}T00:00:00.000Z`
+  return {
+    from: boundary(sunday), to: boundary(addDays(sunday, 7)), week: sunday,
+    previous: addDays(sunday, -7), next: addDays(sunday, 7),
+    days: Array.from({ length: 7 }, (_, day) => addDays(sunday, day)),
   }
-  start.setUTCDate(start.getUTCDate() - start.getUTCDay())
-  const shift = (days: number) => new Date(start.getTime() + days * 86_400_000)
-  return { from: start.toISOString(), to: shift(7).toISOString(), week: start.toISOString().slice(0, 10), previous: shift(-7).toISOString().slice(0, 10), next: shift(7).toISOString().slice(0, 10) }
 }
 
 export const WARRANTY_QUEUE_SLA_FILTERS = ["all", "awaiting_first_response", "first_response_breached", "breached", "due_soon", "first_response_due_soon"] as const

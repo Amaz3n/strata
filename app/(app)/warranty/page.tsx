@@ -6,9 +6,10 @@ import { Suspense } from "react"
 import { connection } from "next/server"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
-import { isWarrantyAnalyticsAvailable, getWarrantyCostSummary, getWarrantyDefectAnalysis, listWarrantyBackcharges, listWarrantyRequestsForOrg, listWarrantyTechnicians, listWarrantyVisitsForDispatch, listWarrantyVisitsPendingVerification } from "@/lib/services/warranty"
+import { getWarrantyDeskTimeZone, isWarrantyAnalyticsAvailable, getWarrantyCostSummary, getWarrantyDefectAnalysis, listWarrantyBackcharges, listWarrantyRequestsForOrg, listWarrantyTechnicians, listWarrantyVisitsForDispatch, listWarrantyVisitsPendingVerification } from "@/lib/services/warranty"
 import { WarrantyDeskClient } from "./warranty-desk-client"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import { DEFAULT_WARRANTY_TIME_ZONE } from "@/lib/services/warranty/visit-time"
 
 
 export default function WarrantyDeskPage(props: { searchParams: Promise<{ tab?: string; page?: string; week?: string; [key: string]: string | string[] | undefined }> }) {
@@ -25,7 +26,9 @@ async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?
   const requestedTab = warrantyDeskUrlValue(params.tab)
   const tab = ["queue", "dispatch", "verify", "backcharges", "analytics"].includes(requestedTab ?? "") ? requestedTab! : "queue"
   const page = warrantyDeskUrlPage(warrantyDeskUrlValue(params.page)), pageSize = 100
-  const week = warrantyDispatchWeek(warrantyDeskUrlValue(params.week))
+  // Only the dispatch week needs the org's zone up front; every other row carries its own home's.
+  const timeZone = tab === "dispatch" ? await getWarrantyDeskTimeZone() : DEFAULT_WARRANTY_TIME_ZONE
+  const week = warrantyDispatchWeek(warrantyDeskUrlValue(params.week), new Date(), timeZone)
   const search = normalizeWarrantyDeskSearch(warrantyDeskUrlValue(params.search)), sla = warrantyQueueSlaFilter(warrantyDeskUrlValue(params.sla))
   const analyticsAvailable = tab !== "analytics" || await isWarrantyAnalyticsAvailable({ divisionId: ambient.divisionId, communityId: ambient.communityId })
   const [requests, visits, pendingVerification, backcharges, defects, costs, technicians, booksAccess] = await Promise.all([
@@ -58,10 +61,10 @@ async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?
   return <div className="space-y-3">
     {tab === "dispatch" && <nav aria-label="Dispatch week" className="flex flex-wrap items-center justify-between gap-3 border border-border px-3 py-2 text-sm">
       <Link prefetch href={weekHref(week.previous)}>Previous week</Link>
-      <span className="text-muted-foreground">Week of {week.week} · UTC</span>
+      <span className="text-muted-foreground">Week of {week.week} · {timeZone.replaceAll("_", " ")}</span>
       <Link prefetch href={weekHref(week.next)}>Next week</Link>
     </nav>}
-    <WarrantyDeskClient key={`${tab}:${page}:${week.week}:${search}:${sla}:${ambient.divisionId ?? ""}:${ambient.communityId ?? ""}:${dataKey}`} initialTab={tab} analyticsAvailable={analyticsAvailable} initialSearch={search} initialSla={sla} dispatchWeekStart={week.from} canReviewAccounting={booksAccess.adjust} requests={requests.rows} total={requests.total} visits={visits.rows} pendingVerification={pendingVerification.rows} backcharges={backcharges.rows} defects={defects} costs={costs} technicians={technicians} />
+    <WarrantyDeskClient key={`${tab}:${page}:${week.week}:${search}:${sla}:${ambient.divisionId ?? ""}:${ambient.communityId ?? ""}:${dataKey}`} initialTab={tab} analyticsAvailable={analyticsAvailable} initialSearch={search} initialSla={sla} dispatchDays={week.days} timeZone={timeZone} canReviewAccounting={booksAccess.adjust} requests={requests.rows} total={requests.total} visits={visits.rows} pendingVerification={pendingVerification.rows} backcharges={backcharges.rows} defects={defects} costs={costs} technicians={technicians} />
     {tab !== "analytics" && <QueuePagination page={page} pageSize={pageSize} total={total} href={href} label="Warranty pages" />}
   </div>
 }

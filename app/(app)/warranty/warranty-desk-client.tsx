@@ -22,6 +22,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { formatWarrantyVisitClock, resolveWarrantyTimeZone, warrantyLocalDate, zonedWallTimeToUtc } from "@/lib/services/warranty/visit-time"
+import { routingRecordFrom } from "@/lib/services/warranty/domain"
 import type {
   WarrantyBackchargeDTO, WarrantyCostSummaryRow, WarrantyDefectAnalysisRow, WarrantyServiceVisitDTO,
 } from "@/lib/services/warranty"
@@ -33,10 +35,11 @@ import {
   findOriginatingCommitmentsAction, generateWarrantyCourtesyInspectionsAction, getWarrantyRequestCostBasisAction,
   issueWarrantyBackchargeAction, resolveWarrantyBackchargeAction, scheduleWarrantyVisitAction,
   verifyWarrantyVisitAction,
-  rejectWarrantyVisitCompletionAction, searchWarrantyCompaniesAction,
+  rejectWarrantyVisitCompletionAction, searchWarrantyCompaniesAction, updateWarrantyRequestAction,
 } from "./actions"
+import { WarrantyRoutingRulesSheet } from "./warranty-routing-rules-sheet"
 
-type DeskRequest = WarrantyRequest & { project_name?: string | null; community_name?: string | null }
+type DeskRequest = WarrantyRequest & { project_name?: string | null; community_name?: string | null; time_zone?: string }
 type DispatchVisit = WarrantyServiceVisitDTO & { request?: Record<string, unknown> | null; project?: Record<string, unknown> | null }
 type CostBasisDraft = { label: string; amount: string }
 
@@ -86,11 +89,12 @@ function draftTotalCents(rows: CostBasisDraft[]) {
 }
 
 export function WarrantyDeskClient({
-  initialTab = "queue", analyticsAvailable = true, dispatchWeekStart, initialSearch = "", initialSla = "all",
+  initialTab = "queue", analyticsAvailable = true, dispatchDays, timeZone, initialSearch = "", initialSla = "all",
   requests: initialRequests, total, visits, pendingVerification: initialPendingVerification,
   backcharges, defects, costs, technicians, canReviewAccounting = false,
 }: {
-  dispatchWeekStart: string
+  dispatchDays: string[]
+  timeZone: string
   initialSearch?: string
   initialSla?: string
   analyticsAvailable?: boolean
@@ -143,6 +147,11 @@ export function WarrantyDeskClient({
   const now = useMemo(() => new Date(), [])
 
   const visible = requests
+  const homeZone = resolveWarrantyTimeZone(selected?.time_zone, timeZone)
+  const selectedRouting = selected ? routingRecordFrom(selected.metadata) : null
+  const [reassignUserId, setReassignUserId] = useState("")
+  const [reassignReason, setReassignReason] = useState("")
+  const [rulesOpen, setRulesOpen] = useState(false)
   const applyQueueFilters = (search: string, sla: string) => {
     const href = warrantyQueueFilterHref(searchParams.toString(), search, sla)
     startTransition(() => router.push(href, { scroll: false }))
@@ -152,6 +161,7 @@ export function WarrantyDeskClient({
     setSelected(request)
     setAcknowledgeChannel("phone"); setAcknowledgeNote("")
     setAssigneeKind("tech"); setAssigneeId(""); setAssigneeCompany(null); setWindowStart(""); setWindowEnd("")
+    setReassignUserId(""); setReassignReason("")
     setCommitments([]); setCommitmentsLoaded(false); setCommitmentId("")
     setBackchargeCompany(request.assigned_company_id ? { id: request.assigned_company_id, name: request.assigned_company_name ?? "Assigned trade", detail: "" } : null)
     setBackchargeReason(""); setConfirmNoApHistory(false)
@@ -208,18 +218,21 @@ export function WarrantyDeskClient({
             <TabsTrigger disabled={pending} value="backcharges">Backcharges</TabsTrigger>
             <TabsTrigger disabled={pending} value="analytics">Analytics</TabsTrigger>
           </TabsList>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() => startTransition(async () => {
-              const result = await generateWarrantyCourtesyInspectionsAction()
-              if (!result.success) { toast.error(result.error); return }
-              toast.success(result.data.created ? `${result.data.created} courtesy inspection${result.data.created === 1 ? "" : "s"} scheduled` : "No courtesy inspections are due")
-            })}
-          >
-            Generate courtesy inspections
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() => startTransition(async () => {
+                const result = await generateWarrantyCourtesyInspectionsAction()
+                if (!result.success) { toast.error(result.error); return }
+                toast.success(result.data.created ? `${result.data.created} courtesy inspection${result.data.created === 1 ? "" : "s"} scheduled` : "No courtesy inspections are due")
+              })}
+            >
+              Generate courtesy inspections
+            </Button>
+            {initialTab === "queue" ? <Button size="sm" variant="outline" onClick={() => setRulesOpen(true)}>Routing rules</Button> : null}
+          </div>
         </div>
 
         <TabsContent value="queue" className="space-y-3">
@@ -294,14 +307,12 @@ export function WarrantyDeskClient({
 
         <TabsContent value="dispatch">
           <div className="grid gap-3 border border-border p-3 md:grid-cols-7">
-            {Array.from({ length: 7 }, (_, day) => {
-              const date = new Date(dispatchWeekStart)
-              date.setUTCDate(date.getUTCDate() + day)
-              const dayVisits = scheduledVisits.filter((visit) => new Date(visit.window_start).toISOString().slice(0, 10) === date.toISOString().slice(0, 10))
+            {dispatchDays.map((day) => {
+              const dayVisits = scheduledVisits.filter((visit) => warrantyLocalDate(visit.window_start, visit.time_zone ?? timeZone) === day)
               return (
                 <div key={day} className="min-h-40 border border-border">
                   <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs font-medium">
-                    <span>{date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" })}</span>
+                    <span>{new Date(`${day}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" })}</span>
                     <span className="tabular-nums text-muted-foreground">{dayVisits.length || ""}</span>
                   </div>
                   <div className="space-y-1 p-1">
@@ -310,7 +321,7 @@ export function WarrantyDeskClient({
                         <p className="font-medium">{String(visit.request?.title ?? "Service visit")}</p>
                         <Link href={`/projects/${visit.project_id}/warranty`} className="underline underline-offset-2">{String(visit.project?.name ?? "Home")} · Visit {visit.visit_number}</Link>
                         <p className="text-muted-foreground">
-                          {new Date(visit.window_start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" })} · {visit.assigned_user_name ?? visit.assigned_company_name}
+                          {formatWarrantyVisitClock(visit.window_start, visit.time_zone ?? timeZone, true)} · {visit.assigned_user_name ?? visit.assigned_company_name}
                         </p>
                       </div>
                     ))}
@@ -549,6 +560,8 @@ export function WarrantyDeskClient({
         </TabsContent>
       </Tabs>
 
+      <WarrantyRoutingRulesSheet open={rulesOpen} onOpenChange={setRulesOpen} technicians={technicians} />
+
       <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) { setSelected(null); router.refresh() } }}>
         <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
           <SheetHeader>
@@ -601,6 +614,36 @@ export function WarrantyDeskClient({
               ) : null}
 
               <section>
+                <h3 className="mb-2 text-sm font-semibold">Owner</h3>
+                <div className="space-y-3 border border-border p-3">
+                  <p className="text-sm">{selected.assigned_user_name ?? selected.assigned_company_name ?? "Unassigned"}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedRouting?.source === "rule"
+                      ? `Routed by rule "${selectedRouting.rule_name ?? "Routing rule"}".`
+                      : selectedRouting?.source === "manual"
+                        ? `Assigned by hand${selectedRouting.overridden_rule_id ? `, over a routing rule: ${selectedRouting.override_reason ?? ""}` : ""}.`
+                        : "Not routed. Assign it by hand, or add a routing rule."}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select value={reassignUserId} onValueChange={setReassignUserId}>
+                      <SelectTrigger><SelectValue placeholder="Reassign to technician" /></SelectTrigger>
+                      <SelectContent>{technicians.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Button variant="outline" disabled={pending || !reassignUserId || reassignUserId === selected.assigned_user_id || (selectedRouting?.source === "rule" && reassignReason.trim().length < 3)} onClick={() => startTransition(async () => {
+                      const result = await updateWarrantyRequestAction(selected.id, selected.project_id, { assigned_user_id: reassignUserId, routing_override_reason: reassignReason.trim() || null })
+                      if (!result.success) { toast.error(result.error); return }
+                      const next = { ...selected, assigned_user_id: result.data.assigned_user_id, assigned_user_name: result.data.assigned_user_name, metadata: result.data.metadata, updated_at: result.data.updated_at }
+                      setSelected(next)
+                      setRequests((rows) => rows.map((row) => row.id === selected.id ? { ...row, ...next } : row))
+                      setReassignReason("")
+                      toast.success("Request reassigned")
+                    })}>Reassign</Button>
+                  </div>
+                  {selectedRouting?.source === "rule" ? <Textarea value={reassignReason} onChange={(event) => setReassignReason(event.target.value)} placeholder="Why this request is not going to the routed owner (required)" rows={2} /> : null}
+                </div>
+              </section>
+
+              <section>
                 <h3 className="mb-2 text-sm font-semibold">Schedule service visit</h3>
                 <div className="space-y-3 border border-border p-3">
                   <div className="grid grid-cols-2 gap-2">
@@ -622,11 +665,11 @@ export function WarrantyDeskClient({
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-1.5">
-                      <Label htmlFor="window-start">Window start</Label>
+                      <Label htmlFor="window-start">Window start ({homeZone.replaceAll("_", " ")})</Label>
                       <Input id="window-start" type="datetime-local" value={windowStart} onChange={(event) => setWindowStart(event.target.value)} />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor="window-end">Window end</Label>
+                      <Label htmlFor="window-end">Window end ({homeZone.replaceAll("_", " ")})</Label>
                       <Input id="window-end" type="datetime-local" value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} />
                     </div>
                   </div>
@@ -635,12 +678,15 @@ export function WarrantyDeskClient({
                       request_id: selected.id, assignee_kind: assigneeKind,
                       assigned_user_id: assigneeKind === "tech" ? assigneeId : null,
                       assigned_company_id: assigneeKind === "trade" ? assigneeId : null,
-                      window_start: new Date(windowStart).toISOString(), window_end: new Date(windowEnd).toISOString(),
+                      window_start: zonedWallTimeToUtc(windowStart, homeZone), window_end: zonedWallTimeToUtc(windowEnd, homeZone),
                     }
                     let result = await scheduleWarrantyVisitAction(payload)
                     if (!result.success) {
-                      if (!result.error.includes("already booked") || !window.confirm(`${result.error}\n\nBook anyway?`)) { toast.error(result.error); return }
-                      result = await scheduleWarrantyVisitAction(payload, true)
+                      if (!result.error.includes("already booked")) { toast.error(result.error); return }
+                      // Double-booking is allowed, but never silently: the reason goes on the visit and the audit trail.
+                      const reason = window.prompt(`${result.error}\n\nWhy is it being booked anyway?`)?.trim()
+                      if (!reason) return
+                      result = await scheduleWarrantyVisitAction(payload, { reason })
                       if (!result.success) { toast.error(result.error); return }
                     }
                     const visit = result.data

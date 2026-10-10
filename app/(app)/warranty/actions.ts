@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import type { SearchPickerPage } from "@/components/ui/search-picker"
+import { listCommunityOptions } from "@/lib/services/communities"
 import { listDirectoryPage } from "@/lib/services/directory"
 import {
   acknowledgeWarrantyRequest,
@@ -11,6 +12,8 @@ import {
   completeWarrantyVisit,
   createWarrantyBackcharge,
   createWarrantyRequest,
+  deleteWarrantyRoutingRule,
+  listWarrantyRoutingRules,
   disputeWarrantyBackcharge,
   enrollProjectWarrantyCoverage,
   findOriginatingCommitments,
@@ -20,6 +23,7 @@ import {
   issueWarrantyBackcharge,
   listWarrantyRequests,
   rescheduleWarrantyVisit,
+  saveWarrantyRoutingRule,
   resolveWarrantyBackcharge,
   scheduleWarrantyVisit,
   updateWarrantyRequest,
@@ -34,7 +38,8 @@ import {
   type WarrantyVisitConflict,
 } from "@/lib/services/warranty"
 import type { RankedOriginatingCommitment, WarrantyCostBasisItem } from "@/lib/services/warranty/domain"
-import { warrantyVisitCompleteWithCostSchema } from "@/lib/services/warranty/validation"
+import type { WarrantyRoutingRule } from "@/lib/services/warranty/domain"
+import { warrantyRoutingRuleSchema, warrantyVisitCompleteWithCostSchema } from "@/lib/services/warranty/validation"
 import {
   warrantyBackchargeDisputeSchema,
   warrantyBackchargeInputSchema,
@@ -134,10 +139,10 @@ export async function acknowledgeWarrantyRequestAction(input: unknown): Promise<
   } catch (error) { return actionError(error) }
 }
 
-export async function scheduleWarrantyVisitAction(input: unknown, allowConflict = false): Promise<ActionResult<WarrantyServiceVisitDTO>> {
+export async function scheduleWarrantyVisitAction(input: unknown, override?: { reason: string }): Promise<ActionResult<WarrantyServiceVisitDTO>> {
   try {
     const parsed = warrantyVisitScheduleSchema.parse(input)
-    const visit = await scheduleWarrantyVisit({ ...parsed, allow_conflict: allowConflict })
+    const visit = await scheduleWarrantyVisit({ ...parsed, allow_conflict: Boolean(override), conflict_reason: override?.reason ?? null })
     revalidateWarranty(visit.project_id)
     return { success: true, data: visit }
   } catch (error) { return actionError(error) }
@@ -242,5 +247,29 @@ export async function resolveWarrantyBackchargeAction(input: unknown): Promise<A
     const backcharge = await resolveWarrantyBackcharge({ backchargeId: parsed.backcharge_id, resolution: parsed.resolution, recoveredCents: parsed.recovered_cents, note: parsed.note })
     revalidateWarranty(backcharge.project_id)
     return { success: true, data: backcharge }
+  } catch (error) { return actionError(error) }
+}
+
+export async function saveWarrantyRoutingRuleAction(input: unknown): Promise<ActionResult<WarrantyRoutingRule>> {
+  try {
+    const rule = await saveWarrantyRoutingRule(warrantyRoutingRuleSchema.parse(input))
+    revalidateWarranty()
+    return { success: true, data: rule }
+  } catch (error) { return actionError(error) }
+}
+
+export async function deleteWarrantyRoutingRuleAction(ruleId: string): Promise<ActionResult<{ id: string }>> {
+  try {
+    await deleteWarrantyRoutingRule(z.string().uuid().parse(ruleId))
+    revalidateWarranty()
+    return { success: true, data: { id: ruleId } }
+  } catch (error) { return actionError(error) }
+}
+
+/** The rule editor loads on demand — it is a sheet, not part of the desk's first paint. */
+export async function loadWarrantyRoutingEditorAction(): Promise<ActionResult<{ rules: WarrantyRoutingRule[]; communities: Array<{ id: string; name: string }> }>> {
+  try {
+    const [rules, communities] = await Promise.all([listWarrantyRoutingRules(), listCommunityOptions()])
+    return { success: true, data: { rules, communities: communities.map((community) => ({ id: community.id, name: community.name })) } }
   } catch (error) { return actionError(error) }
 }

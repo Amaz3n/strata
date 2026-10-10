@@ -13,6 +13,7 @@ export {
 } from "./external-password-reset-email"
 export { ExternalVerifyEmail, type ExternalVerifyEmailProps } from "./external-verify-email"
 export { RfiNotificationEmail, type RfiNotificationEmailProps } from "./rfi-notification-email"
+export { WarrantyVisitEmail, type WarrantyVisitEmailProps } from "./warranty-visit-email"
 export {
   WeeklyExecutiveSnapshotEmail,
   type WeeklyExecutiveSnapshotEmailProps,

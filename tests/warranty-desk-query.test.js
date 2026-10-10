@@ -9,11 +9,26 @@ test('warranty pagination rejects fractional, infinite, unsafe and malformed URL
   assert.deepEqual(warrantyDeskPage(3, 500), { page: 3, pageSize: 200, from: 400, to: 599 })
 })
 test('dispatch weeks round trip as UTC calendar dates across year and daylight-saving boundaries', () => {
-  assert.deepEqual(warrantyDispatchWeek('2026-10-08'), { from: '2026-10-04T00:00:00.000Z', to: '2026-10-11T00:00:00.000Z', week: '2026-10-04', previous: '2026-09-27', next: '2026-10-11' })
+  const week = warrantyDispatchWeek('2026-10-08')
+  assert.deepEqual({ from: week.from, to: week.to, week: week.week, previous: week.previous, next: week.next }, { from: '2026-10-04T00:00:00.000Z', to: '2026-10-11T00:00:00.000Z', week: '2026-10-04', previous: '2026-09-27', next: '2026-10-11' })
+  assert.deepEqual(week.days, ['2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10'])
   assert.equal(warrantyDispatchWeek('2026-01-01').week, '2025-12-28')
   const dst = warrantyDispatchWeek('2026-11-01')
   assert.equal(Date.parse(dst.to) - Date.parse(dst.from), 7 * 86400000)
   for (const bad of ['2026-02-30', '2026-13-01', '2026-1-2', 'invalid', '9999-12-31']) assert.equal(warrantyDispatchWeek(bad, new Date('2026-10-08T23:59:00Z')).week, '2026-10-04')
+})
+
+test('a dispatch week in the houses\' time zone starts at local midnight and absorbs the clock change', () => {
+  const zone = 'America/New_York'
+  const ordinary = warrantyDispatchWeek('2026-10-08', new Date(), zone)
+  assert.equal(ordinary.from, '2026-10-04T04:00:00.000Z')
+  assert.equal(ordinary.to, '2026-10-11T04:00:00.000Z')
+  // The week of 1 Nov 2026 gains an hour when daylight time ends.
+  const fallBack = warrantyDispatchWeek('2026-11-01', new Date(), zone)
+  assert.equal(fallBack.week, '2026-11-01')
+  assert.equal(Date.parse(fallBack.to) - Date.parse(fallBack.from), 7 * 86_400_000 + 3_600_000)
+  // Late on a Saturday evening in New York it is already Sunday in UTC; "this week" is still the local one.
+  assert.equal(warrantyDispatchWeek(undefined, new Date('2026-10-11T02:00:00Z'), zone).week, '2026-10-04')
 })
 
 test('warranty filters reset page and preserve unrelated scope and week query parameters', () => {

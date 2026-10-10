@@ -438,3 +438,68 @@ export function findOverlappingVisits<T extends WarrantyVisitWindow>(
     return new Date(visit.window_start).getTime() < end && start < new Date(visit.window_end).getTime()
   })
 }
+
+export interface WarrantyRoutingRule {
+  id: string
+  name: string
+  priority: number
+  severity: WarrantySeverity | null
+  category: string | null
+  community_id: string | null
+  cost_code_id: string | null
+  assignee_kind: "tech" | "trade"
+  assigned_user_id: string | null
+  assigned_company_id: string | null
+  is_active: boolean
+}
+
+export interface WarrantyRoutingContext {
+  severity: WarrantySeverity
+  category: string | null
+  community_id: string | null
+  cost_code_id: string | null
+}
+
+const normalizedCategory = (value: string | null) => value?.trim().toLowerCase() || null
+
+function routingConditions(rule: WarrantyRoutingRule) {
+  return [rule.severity, normalizedCategory(rule.category), rule.community_id, rule.cost_code_id].filter((condition) => condition !== null).length
+}
+
+/**
+ * Who owns a new request. A rule matches when every condition it sets agrees
+ * with the request (an unset condition matches anything). Among matches the
+ * lowest priority number wins; between equal priorities the rule that says more
+ * (severity + community beats severity alone) wins, so a broad catch-all can
+ * sit under specific rules without the coordinator ordering them by hand. The
+ * id breaks the last tie so the same request always routes the same way.
+ */
+export function selectWarrantyRoutingRule(rules: WarrantyRoutingRule[], context: WarrantyRoutingContext): WarrantyRoutingRule | null {
+  const category = normalizedCategory(context.category)
+  const matches = rules.filter((rule) =>
+    rule.is_active
+    && (rule.severity === null || rule.severity === context.severity)
+    && (normalizedCategory(rule.category) === null || normalizedCategory(rule.category) === category)
+    && (rule.community_id === null || rule.community_id === context.community_id)
+    && (rule.cost_code_id === null || rule.cost_code_id === context.cost_code_id))
+  return matches.sort((a, b) => a.priority - b.priority || routingConditions(b) - routingConditions(a) || a.id.localeCompare(b.id))[0] ?? null
+}
+
+/** How a request came to have its owner: the metadata the desk and the audit trail read. */
+export interface WarrantyRoutingRecord {
+  source: "rule" | "manual"
+  rule_id: string | null
+  rule_name: string | null
+  routed_at: string
+  routed_by: string | null
+  overridden_rule_id?: string | null
+  override_reason?: string | null
+}
+
+export function routingRecordFrom(metadata: unknown): WarrantyRoutingRecord | null {
+  const value = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? (metadata as Record<string, unknown>).routing : null
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record.source !== "rule" && record.source !== "manual") return null
+  return record as unknown as WarrantyRoutingRecord
+}

@@ -107,6 +107,11 @@ export type NotificationType =
   | "purchase_agreement_executed"
   | "warranty_visit_assigned"
   | "warranty_visit_confirmed"
+  | "warranty_visit_rescheduled"
+  | "warranty_visit_canceled"
+  | "warranty_visit_buyer_confirmed"
+  | "warranty_buyer_reschedule_requested"
+  | "warranty_request_routed"
   | "warranty_visit_completed"
   | "warranty_backcharge_disputed"
   | "warranty_sla_breached"
@@ -503,6 +508,30 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "warranty",
     label: "Warranty visit assigned",
     description: "Email me when a warranty service visit is assigned to me.",
+  },
+  {
+    key: "warranty_visit_rescheduled",
+    category: "warranty",
+    label: "Warranty visit moved",
+    description: "Email me when a warranty visit assigned to me is moved to a new time.",
+  },
+  {
+    key: "warranty_visit_canceled",
+    category: "warranty",
+    label: "Warranty visit canceled",
+    description: "Email me when a warranty visit assigned to me is canceled.",
+  },
+  {
+    key: "warranty_request_routed",
+    category: "warranty",
+    label: "Warranty request routed to me",
+    description: "Email me when a new warranty request is routed to me by a routing rule.",
+  },
+  {
+    key: "warranty_buyer_reschedule_requested",
+    category: "warranty",
+    label: "Homeowner asked for another time",
+    description: "Email me when a homeowner asks to move a warranty appointment I own.",
   },
   {
     key: "warranty_sla_breached",

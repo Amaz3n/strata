@@ -37,6 +37,7 @@ export const warrantyRequestUpdateSchema = z.object({
   coverage_override_reason: nullableText(1000),
   assigned_company_id: nullableUuid,
   assigned_user_id: nullableUuid,
+  routing_override_reason: nullableText(500),
   scheduled_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").nullable().optional(),
   resolution_note: nullableText(4000),
   structural_claim: z.boolean().optional(),
