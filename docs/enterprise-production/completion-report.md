@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 15.2% — a documented lower bound, not an ETA |
+| Implemented | 18.7% — a documented lower bound, not an ETA |
 | Fully verified | 0% |
 | Release ready | 0% |
-| Code implemented | 26 items |
-| Partially implemented | 87 items |
+| Code implemented | 30 items |
+| Partially implemented | 83 items |
 | Known pending tasks | 23 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 101 items; this does not imply full workflow verification |
@@ -55,12 +55,12 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP01-01 | Role navigation | partial | Throw a typed permission-denied error from requirePermission and render an explanatory forbidden state (naming the permission and who can grant it) instead of app/(app)/error.tsx's generic retry. |
-| EP01-02 | Complete desk queues | partial | Warranty verify tab: count the same population the rows show (completed visits pending verification). |
-| EP01-03 | Searchable operator pickers | partial | Swap the lot-hold, Find-a-home, design-studio booking, warranty vendor and tasks project Selects to the shared server-searched entity picker (scoped, paged). |
+| EP01-02 | Complete desk queues | partial | Plan aggregates, tasks, schedule: page or bound reads and show 'first N of M' when truncated. |
+| EP01-03 | Searchable operator pickers | partial | Make Find-a-home server-searched and paged instead of a capped client-filtered list; swap the tasks project Select to the shared server-searched picker (components/ui/search-picker.tsx). |
 | EP01-04 | Shared scope across desks | partial | Bring tasks and directory onto the ambient lens or record their exclusion. |
 | EP01-05 | Desk states and recovery | partial | Add desk-level error boundaries for communities, projects, tasks, payables, schedule, starts/[id], directory/[id]. |
 | EP01-06 | Home and lot drill-down | partial | Adopt initialPackageId changes in LaunchLane/StartPackageSheet and fence stale responses. |
-| EP01-07 | Bulk operator actions | partial | Use a stable idempotency key per pay-batch attempt (generated once per dialog session). |
+| EP01-07 | Bulk operator actions | partial | Starts: clear or rebase selection on filter change; resend only over-target homes. |
 | EP01-08 | Page exposure inventory | partial | Regenerate the surface inventory from the route tree (reuse the app-sweep route enumeration) and add the ~33 new pages. |
 
 ### EP02: Enterprise organization and security
@@ -83,11 +83,11 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP03-01 | Versioned product definition | partial | Give elevations a revision identity (version under house_plan_versions or snapshot in the release bundle) so post-release edits cannot change a priced home's elevation. |
 | EP03-02 | Option dependency controls | implemented | Approve and apply 20261003013000_selection_configuration_rules.sql (migration approval). |
 | EP03-03 | Configuration preflight | implemented | Approve EP03-02 migration and enable the rules flag in the QA org. |
-| EP03-04 | Atomic configuration mutation | partial | Apply migration 20261010120200_apply_project_selection_writes (pending approval). |
-| EP03-05 | Community offering restrictions | partial | Make instantiatePlanForProject reject plans/elevations not offered in the lot community (and inactive elevations) unless a permissioned, evidenced override is recorded. |
-| EP03-06 | Lot fit and orientation | partial | Model lot buildable constraints (dimensions, setbacks, orientation, allowed elevations) and plan/elevation footprint requirements; reconcile lots.dimensions key casing between imports and lib/validation/lots.ts. |
+| EP03-04 | Atomic configuration mutation | partial | Apply migration 20261010162000_selection_package_save (pending approval). |
+| EP03-05 | Community offering restrictions | partial | Wire recordPlanOfferingOverrideAction into a screen so the override can be recorded by someone with plan.release. |
+| EP03-06 | Lot fit and orientation | partial | Model lot buildable constraints (dimensions, setbacks, orientation, allowed elevations) and plan/elevation footprint requirements. |
 | EP03-07 | Deterministic pricing resolution | implemented | Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price. |
-| EP03-08 | Immutable commercial snapshots | partial | Capture an immutable original cost and margin baseline (plan takeoff/budget cost, option costs, incentives) at agreement and at start release. |
+| EP03-08 | Immutable commercial snapshots | partial | Apply migration 20261010161000_budget_baseline_write_once (pending approval). |
 | EP03-09 | Revision impact and rollout | partial | Revision proposal with affected-home preview (contracted vs released vs unsold) for plan, elevation and catalog changes. |
 | EP03-10 | Guided configuration correction | partial | Return structured violations (rule, source, target) from the preflight instead of a joined string. |
 
@@ -98,11 +98,11 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP04-01 | Acquisition diligence | pending | Design and build a land opportunity entity with diligence items (evidence, owners, due dates), approval steps and versioned acquisition decisions linked to the resulting community/takedowns. |
 | EP04-02 | Entitlement milestones | pending | Model entitlements and jurisdiction conditions per community/phase with due dates, owners and status. |
 | EP04-03 | Takedown obligations | partial | Link takedowns to a land contract with deposit schedule, refundability and extension/penalty terms, preserving signed evidence. |
-| EP04-04 | Horizontal development controls | partial | Make lot delivery (developed) an explicit prerequisite for start packages and home attach, independent of 'assigned', with a permissioned, evidenced exception. |
+| EP04-04 | Horizontal development controls | partial | Apply migration 20261010160000_lot_land_delivery (pending approval). |
 | EP04-05 | Lot lifecycle and bounded inventory | implemented | Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org. |
-| EP04-06 | Concurrent lot allocation | partial | Guard attachProjectToLot and start-package creation against lots with a live reservation owned by another buyer/home. |
-| EP04-07 | Spec aging calculation | partial | Source standing-spec age in listSpecInventory from an actual completion fact (Books completion date where enabled, otherwise a recorded completion/CO date or final schedule milestone actual) instead of projects.end_date. |
-| EP04-08 | Spec disposition workflow | partial | Add an approved per-spec price/incentive change workflow writing asking_price_override_cents with audit. |
+| EP04-06 | Concurrent lot allocation | partial | Approve/apply 20261005121409 and 20261003221905 after reconciling legacy duplicates; cut over to the atomic conversion and delete the legacy multi-step path. |
+| EP04-07 | Spec aging calculation | implemented | Decide how completed spec homes outside Books inventory record a completion date (today they show no age). |
+| EP04-08 | Spec disposition workflow | partial | Extend the single-spec price change to an approval step for large moves and to incentive changes. |
 
 ### EP05: Sales, agreements and closing
 
@@ -139,20 +139,20 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP07-01 | Evidence-backed release gates | partial | Require evidence for manual permit/financing gates: validate evidence_file_id against files.org_id/project_id (or link a permit/financing record) in attestGate and re-check it in assertReleaseGateCompletion. |
 | EP07-02 | Even-flow release planning | partial | Decide and implement division/org throughput targets enforced at release. |
 | EP07-03 | Crew and superintendent capacity | partial | Design crew/superintendent capacity calendars (schema, RLS, RBAC; migration pending approval). |
-| EP07-04 | Resumable artifact steps | partial | Fail (not warn) on resume when a completed instantiation step came from another plan version; record per-step artifact receipts verified by assertReleaseCompletion. |
+| EP07-04 | Resumable artifact steps | partial | Make each instantiation handler and its ledger mark atomic (RPC or idempotency keys). |
 | EP07-05 | Trade notice recovery desk | implemented | Apply migrations 20261003048000 (edited) and 20261010100000 together with this code (pending approval). |
 | EP07-06 | Complete trade look-ahead | partial | Exclude cancelled schedule items (decide on completed) in loadTradeLookahead and read_trade_lookahead_workspace, with tests. |
 | EP07-07 | Delivery idempotency and reconciliation | partial | Snapshot notice content and recipients (with a hash) at enqueue and send from the snapshot. |
 | EP07-08 | Trade acceptance workflow | pending | Design trade response records bound to the issued scope version (accept/decline/reschedule with proposed dates): schema, RLS, RBAC, pending migration. |
 | EP07-09 | Dependency-aware bulk rescheduling | partial | Fix bulkUpdateScheduleItems silently ignoring failed item updates (schedule.ts:930). |
 | EP07-10 | Tokenized job claim protocol | implemented | Full-schema, independent-session claim/heartbeat/reaper race proof. |
-| EP07-11 | Core release ownership | partial | Apply migrations 20261003048000 (edited) and 20261010100000 together with the dd770797 code (pending approval). |
+| EP07-11 | Core release ownership | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval). |
 | EP07-12 | Generated artifact ownership | implemented | Replay schedule/budget/inspection/PO/land guards against the full schema (move their tests onto tests/support/pglite.js). |
 | EP07-13 | Transactional actor authority | partial | Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval). |
 | EP07-14 | Bounded storage copy | implemented | Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit). |
 | EP07-15 | Durable drawing publication | implemented | Run the consumer, SQL chain and real storage together in QA. |
-| EP07-16 | Child worker and orphan recovery | partial | Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval). |
-| EP07-17 | Atomic release finalization | partial | Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval). |
+| EP07-16 | Child worker and orphan recovery | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval). |
+| EP07-17 | Atomic release finalization | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval). |
 | EP07-18 | Starts cutover and rollback | pending | Keep the staged starts migrations from being swept in by db push until the approved cutover. |
 
 ### EP08: Purchasing and supply chain
@@ -164,7 +164,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP08-03 | Bid subresource authorization | partial | Route listBidPackages/getProjectBuyoutSummary through assertBidProjectVisibility; scope or delete listCommunityBidPackages. |
 | EP08-04 | Complete bid intelligence | implemented | Render an explicit error state instead of .catch(() => null) at app/(app)/purchasing/bids/[packageId]/page.tsx:40. |
 | EP08-05 | Rebid and renewal lifecycle | partial | Make rescind_bid_award void/end the minted agreements and restore superseded predecessors transactionally (migration, needs approval). |
-| EP08-06 | PO preview and exception resolution | implemented | Require expectedFingerprint when mode=commit (lib/validation/po-generation.ts:7). |
+| EP08-06 | PO preview and exception resolution | implemented | Decide policy for zero-price manual resolutions. |
 | EP08-07 | Transactional PO issuance | partial | Apply migration 20261010111000_po_generation_commit_rejects_stale_prior_run after 20261003048000 (pending approval). |
 | EP08-08 | Vendor PO acknowledgment | partial | Add an issued-version concept and vendor accept/dispute (quantities, dates, scope) with reason, portal permission, events, audit and email allowlist (migration). |
 | EP08-09 | Variance approval controls | partial | Require cost evidence per org policy and validate file ancestry. |
@@ -176,10 +176,10 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP09-01 | Assigned-home mobile access | partial | Replace per-request listProjects scans with a single-project check; detect truncation in My Houses rollups. |
-| EP09-02 | Offline conflict recovery | partial | Add expected_updated_at/revision to mobile task, punch and daily-log updates returning 409; surface keep-mine/keep-theirs in iOS FieldStore/DailyLogStore. |
+| EP09-01 | Assigned-home mobile access | partial | Replace per-request listProjects scans with a single-project check (lib/mobile/field.ts and sibling requireProject helpers). |
+| EP09-02 | Offline conflict recovery | partial | Apply migration 20261010170000_mobile_idempotency_receipts (pending approval). |
 | EP09-03 | Released field documents | partial | Approve/apply the plan drawing publication migrations and enable planDrawingCopyTransactions in the QA org. |
-| EP09-04 | Inspection failure lifecycle | implemented | Route corrective punch create/link through the lifecycle transaction and the authorized punch service. |
+| EP09-04 | Inspection failure lifecycle | implemented | Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write). |
 | EP09-05 | Punch and close readiness | implemented | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
 | EP09-06 | Cross-home daily records | partial | Add a cross-home review band (logs missing today, new photos) for assigned homes on the super's Home/My Work. |
 | EP09-07 | Supplier and trade communication | partial | Add optional PO linkage on field issues/punch with ancestry validation. |
@@ -270,11 +270,21 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/sales-deals.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/sales/page.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/warranty-operations.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-portfolio.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/design-studio.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-inventory.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-scope.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/purchasing/entity-picker.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/sales/find-a-home-dialog.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/sales/lot-hold-form.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/sales/actions.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-desk-scope.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-house-overview.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/starts/launch-lane.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/invoices/billing-book.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/payables/pay-batch-dialog.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/lots.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/starts.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: scripts/qa/production-readiness.mjs
@@ -285,8 +295,10 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/reports/cash-flow-forecast.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/imports.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/audit.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/plan-instantiation.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261004000030_agreement_catalog_revisions.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-publication-history-db.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/selections.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/starts.ts
@@ -296,24 +308,37 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/po-generation-preview.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/option-catalog.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261004065019_catalog_group_publication.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-package-publication-service.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-group-publication-db.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-publication-intents-db.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/imports.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261003033500_starts_release_lot_plan_scope.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/validation/lots.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/production-reporting.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/budgets.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/starts-gates.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-portfolio.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/land/lot-lifecycle.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/lots.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007210000_books_development_allocation_review.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007200000_books_home_inventory_controls.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/land-foundation.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-inventory.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/reservation-conversion.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/reservation-conversion-db.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/sales/spec-inventory.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/spec-inventory-aging.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007235000_books_inventory_impairment.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/sales-inquiries.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/sales-deals.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/prospects.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: app/(app)/sales/actions.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/prospects.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/sales-deal-file.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/community-sales.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-conversion.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-conversion-db.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/closings.ts
@@ -327,6 +352,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/warranty-operations.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/option-catalog.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/validation/selections.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selection-cutoffs.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-gates.test.js
@@ -336,7 +362,9 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-desk.ts
 - AUDIT-20261009-EP07: source changed since proof: components/starts/launch-lane.tsx
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-pipeline.ts
+- AUDIT-20261009-EP07: source changed since proof: lib/services/plan-instantiation.ts
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-release.test.js
+- AUDIT-20261009-EP07: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003023000_starts_job_claim_leases.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003041000_starts_claim_actor_transitions.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-job-leases-db.test.js
@@ -352,6 +380,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-generated-fences-db.test.js
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-purchasing-fences-db.test.js
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-land-posting-fences-db.test.js
+- AUDIT-20261009-EP07: source changed since proof: tests/starts-drawing-fences-db.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003038000_starts_release_actor_scope.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003046000_starts_notification_delivery_recovery.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-release-actor-db.test.js
@@ -359,6 +388,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003033500_starts_release_lot_plan_scope.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003037000_starts_worker_outbox_fanout_fences.sql
+- AUDIT-20261009-EP08-EP09: source changed since proof: components/purchasing/entity-picker.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/po-generation.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/validation/po-generation.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/po-generation-preview.test.js
@@ -371,9 +401,12 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/mobile-purchasing.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/production-house-overview.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/my-houses.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/mobile/field.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/mobile/daily-logs.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/plan-instantiation.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: supabase/migrations/20261003035000_plan_drawing_publication_transaction.sql
 - AUDIT-20261009-EP08-EP09: source changed since proof: supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/inspections.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/closing-readiness.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/punch-lists.ts
@@ -391,14 +424,17 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007210000_books_development_allocation_review.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007220000_books_home_closing_reversal.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
+- AUDIT-20261009-EP10-EP11: source changed since proof: scripts/books-acceptance/scenarios/home-01.cjs
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/starts-land-posting-fences-db.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/reports/cash-flow-forecast.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/community-portfolio.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/production-house-overview.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/production-reporting.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007200000_books_home_inventory_controls.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty-operations.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty/domain.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: app/(app)/warranty/warranty-desk-client.tsx
+- AUDIT-20261009-EP10-EP11: source changed since proof: app/(app)/warranty/page.tsx
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/warranty-operations.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/warranty-desk-scope.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty/validation.ts
@@ -410,10 +446,14 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/imports.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/warranty-operations.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: docs/mobile-api-v1.openapi.yaml
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-job-leases-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: docs/books-operations.md
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release-actor-db.test.js
+- AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-drawing-fences-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-core-write-fences-db.test.js
+- AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/scenarios/home-01.cjs
+- AUDIT-20261009-EP12-EP14: source changed since proof: tests/spec-inventory-aging.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/community-sales.ts
 
