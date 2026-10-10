@@ -5629,7 +5629,8 @@
       "remainingWork": [
         "Approve and apply 20261003013000_selection_configuration_rules.sql (migration approval).",
         "Replay against a full schema with concurrent author/catalog writers in independent sessions.",
-        "Run editor and inheritance workflows in the QA org, then enable production_configuration_rules there."
+        "Run editor and inheritance workflows in the QA org, then enable production_configuration_rules there.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "lib/services/configuration-rules.ts",
@@ -5756,7 +5757,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -5771,6 +5772,109 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a rule between two available options is saved and audited [NEW]"
+                },
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a rule on a community override is authored against the override and may target a global option [NEW]"
+                },
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "removing a rule deletes only that option's rule and records what was removed [NEW]"
+                },
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a community override inherits the rules on its base option"
+                },
+                {
+                  "file": "tests/configuration-rules-db.test.js",
+                  "name": "a community override inherits its base option's rules and scope"
+                }
+              ],
+              "note": "Service authoring (add/remove) had no test; added 3. Inheritance proven in service check and in the DB."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "archived, unavailable, self-referencing and out-of-scope rules are refused before anything is saved [NEW]"
+                },
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a rule cannot be authored while enforcement is off or by someone who cannot manage the catalog [NEW]"
+                },
+                {
+                  "file": "tests/configuration-rules-db.test.js",
+                  "name": "a rule stays inside its org and can never contradict itself"
+                },
+                {
+                  "file": "tests/configuration-rules-db.test.js",
+                  "name": "a rule that makes a configuration impossible through a chain of rules is refused"
+                },
+                {
+                  "file": "tests/configuration-rules-db.test.js",
+                  "name": "a change that is valid alone but makes an ancestor impossible is refused"
+                },
+                {
+                  "file": "tests/configuration-rules-db.test.js",
+                  "name": "rules only point at options that are live"
+                },
+                {
+                  "file": "tests/configuration-rules-db.test.js",
+                  "name": "an option a rule depends on cannot be archived, disabled, moved or deleted"
+                }
+              ],
+              "note": "Service rejects before write; DB triggers reject contradictory (direct, transitive, via override), non-live and cross-scope rules."
+            }
+          ],
+          "testFiles": [
+            "tests/configuration-rules.test.js",
+            "tests/configuration-rules-db.test.js"
+          ],
+          "passed": 31,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "isolated_sql",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/configuration-rules-db.test.js",
+              "name": "all 8 tests: whole-migration PGlite (isolated_sql)"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -5831,7 +5935,8 @@
         "tests/configuration-rules.test.js",
         "tests/catalog-eligibility.test.js",
         "tests/po-generation-preview.test.js",
-        "tests/agreement-configuration-eligibility.test.js"
+        "tests/agreement-configuration-eligibility.test.js",
+        "tests/selections.test.js"
       ],
       "executionLogEntries": [
         5,
@@ -5950,7 +6055,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -5967,6 +6072,77 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": false,
+              "tests": [
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a home is checked with its proposed change applied to every other selection"
+                },
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "an option the catalog cannot resolve stops the sale"
+                },
+                {
+                  "file": "tests/selections.test.js",
+                  "name": "stops every selection mutation before it writes [NEW] (selection change, confirmation, package, change order)"
+                },
+                {
+                  "file": "tests/agreement-configuration-eligibility.test.js",
+                  "name": "an invalid effective configuration cannot be quoted [NEW] (sales)"
+                },
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "an invalid home configuration blocks PO generation before any writes"
+                }
+              ],
+              "note": "Proven for sales quote, selection change, confirmation, package, change order and PO generation. NOT proven for starts (releaseStartPackage at lib/services/starts.ts:778 and starts-pipeline notify_trades/finalize): tests/starts-* are reserved. Verified in a scratch run (deleted) that with assertProjectConfiguration stubbed to reject, runStartsPipeline leaves package 'releasing', lot 'assigned', notify_trades 'failed', finalize 'pending', outbox last_error = the rule message. Needs a case in tests/starts-release.test.js: buildHarness({purchasing:false,instantiate:succeedingInstantiation()}); stubModule('@/lib/services/configuration-rules',{assertProjectConfiguration:async()=>{throw new Error('Chef kitchen requires Electrical upgrade.')}}); reload pipeline+starts; run pipeline; assert package.status releasing, lots[0].status != started, steps.finalize pending, outbox last_error matches. Also none exercises the interactive releaseStartPackage path."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a newly authored override is never adopted silently; an explicit change uses it"
+                },
+                {
+                  "file": "tests/configuration-rules.test.js",
+                  "name": "a community override inherits the rules on its base option"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "a community override keeps the selection category and resolves the correct option ID"
+                }
+              ],
+              "note": "Stored selection that now resolves to a new override throws 'explicitly update' unless the change names the override."
+            }
+          ],
+          "testFiles": [
+            "tests/configuration-rules.test.js",
+            "tests/selections.test.js",
+            "tests/agreement-configuration-eligibility.test.js",
+            "tests/po-generation-preview.test.js",
+            "tests/catalog-eligibility.test.js"
+          ],
+          "passed": 81,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -6560,7 +6736,9 @@
       "testFiles": [
         "tests/catalog-eligibility.test.js",
         "tests/price-resolution.test.js",
-        "tests/catalog-price-validation.test.js"
+        "tests/catalog-price-validation.test.js",
+        "tests/option-catalog-design-studio.test.js",
+        "tests/agreement-configuration-eligibility.test.js"
       ],
       "executionLogEntries": [
         0,
@@ -6676,7 +6854,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -6692,6 +6870,94 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "the resolved community override's plan price takes priority over its parent price"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "a community override keeps the selection category and resolves the correct option ID"
+                },
+                {
+                  "file": "tests/option-catalog-design-studio.test.js",
+                  "name": "catalog price precedence is plan+community, plan, community option, then base"
+                },
+                {
+                  "file": "tests/agreement-configuration-eligibility.test.js",
+                  "name": "community pricing honors open and inclusive date bounds and fails closed on lookup errors"
+                }
+              ],
+              "note": "tests/price-resolution.test.js covers vendor cost agreements, not sell-price; not used as proof."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "ambiguous override and duplicate price configuration fail instead of picking arbitrary pricing"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "failed home lookup cannot fall back to organization-wide package pricing"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "community-only options cannot be selected from another community or without a community"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "large requested catalogs are chunked without losing items after the first thousand"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "short provider pages preserve every catalog item and plan-specific price"
+                },
+                {
+                  "file": "tests/catalog-eligibility.test.js",
+                  "name": "pricing a requested item does not truncate behind a large unrelated plan catalog"
+                },
+                {
+                  "file": "tests/catalog-price-validation.test.js",
+                  "name": "a catalog price is whole non-negative cents, single or bulk [NEW]"
+                },
+                {
+                  "file": "tests/catalog-price-validation.test.js",
+                  "name": "bulk prices preserve duplicate-cell and database integer checks"
+                }
+              ],
+              "note": "Observation: catalogPriceSchema (single price) has no int32 upper bound (accepts 9007199254740991) unlike the bulk publication schema; DB integer column would still reject explicitly."
+            }
+          ],
+          "testFiles": [
+            "tests/catalog-eligibility.test.js",
+            "tests/option-catalog-design-studio.test.js",
+            "tests/agreement-configuration-eligibility.test.js",
+            "tests/catalog-price-validation.test.js",
+            "tests/price-resolution.test.js"
+          ],
+          "passed": 51,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -7828,7 +8094,9 @@
       "testFiles": [
         "tests/land-foundation.test.js",
         "tests/land-scope.test.js",
-        "tests/land-supply.test.js"
+        "tests/land-supply.test.js",
+        "tests/lots.test.js",
+        "tests/community-sales.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -7933,7 +8201,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -7949,6 +8217,118 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/land-foundation.test.js",
+                  "name": "lot lifecycle requires projects for started and force for leaving terminal work states"
+                },
+                {
+                  "file": "tests/land-foundation.test.js",
+                  "name": "forward imports may skip states while backward corrections are single-step"
+                },
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "attaching a home is a lifecycle move, not a way around one"
+                },
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "detaching a home is the backward half and asks before it reverses work"
+                },
+                {
+                  "file": "tests/lots.test.js",
+                  "name": "a lot cannot be marked started without a home, and can once one is attached [NEW]"
+                },
+                {
+                  "file": "tests/lots.test.js",
+                  "name": "a settled lot goes back to work only with the confirmation and the authority to give it [NEW]"
+                },
+                {
+                  "file": "tests/lots.test.js",
+                  "name": "a home cannot be attached to a settled lot without the same confirmation [NEW]"
+                },
+                {
+                  "file": "tests/lots.test.js",
+                  "name": "detaching a building or settled home asks first; detaching an unstarted one returns the lot to inventory [NEW]"
+                },
+                {
+                  "file": "tests/lots.test.js",
+                  "name": "a lot's status moves one step back at a time [NEW]"
+                }
+              ],
+              "note": "Pure lifecycle plus service-level setLotStatus/attach/detach (previously untested at service tier)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "a 400-lot community across fifteen communities is read whole, not to 5,000"
+                },
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "hitting the ceiling is reported, never silently returned as a total"
+                },
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "the last page is honoured even when the cap is not a multiple of the page"
+                },
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "a division-scoped caller is limited to their own divisions"
+                },
+                {
+                  "file": "tests/land-scope.test.js",
+                  "name": "asking for a division outside scope resolves to nothing, never to everything"
+                },
+                {
+                  "file": "tests/land-supply.test.js",
+                  "name": "truncation is reported from the total, not guessed from the page"
+                },
+                {
+                  "file": "tests/land-supply.test.js",
+                  "name": "status, phase, and search compose into the same clauses for every read"
+                },
+                {
+                  "file": "tests/land-supply.test.js",
+                  "name": "the page window is clamped, because page and size arrive off a query string"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "a community with more lots than the picker shows says so instead of dropping the tail silently"
+                }
+              ],
+              "note": ""
+            }
+          ],
+          "testFiles": [
+            "tests/land-foundation.test.js",
+            "tests/land-scope.test.js",
+            "tests/lots.test.js",
+            "tests/land-supply.test.js",
+            "tests/community-sales.test.js"
+          ],
+          "passed": 81,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -8173,7 +8553,8 @@
         "supabase/migrations/20261007200000_books_home_inventory_controls.sql"
       ],
       "testFiles": [
-        "tests/spec-inventory-aging.test.js"
+        "tests/spec-inventory-aging.test.js",
+        "tests/community-sales.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -8269,7 +8650,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -8283,6 +8664,66 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/spec-inventory-aging.test.js",
+                  "name": "a spec ages from its recorded completion, not from the day it broke ground"
+                },
+                {
+                  "file": "tests/spec-inventory-aging.test.js",
+                  "name": "a home marked completed with no recorded completion date has no age to report"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "a home ages from the day it was recorded complete and never from its scheduled end [NEW]"
+                }
+              ],
+              "note": "Sales spec inventory (listSpecInventoryPage) ages from project_financial_settings.books_inventory_completed_on only; service test feeds projects with end_date 150 days in the past and in the future."
+            },
+            {
+              "index": 1,
+              "proven": false,
+              "tests": [
+                {
+                  "file": "tests/spec-inventory-aging.test.js",
+                  "name": "a home still under construction has no standing-inventory age"
+                },
+                {
+                  "file": "tests/spec-inventory-aging.test.js",
+                  "name": "a completion recorded for a day that has not arrived does not start the clock"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "a home ages from the day it was recorded complete and never from its scheduled end [NEW]"
+                }
+              ],
+              "note": "REAL BUG: lib/services/community-portfolio.ts lines ~382-391 still computes the 'specs_aging' urgency ('N specs 90d+', link /sales) from projects.start_date for lots in status 'started' with no live reservation. Verified with a scratch run (deleted): one under-construction spec started 120 days ago yields urgencies=[{kind:'specs_aging',label:'1 spec 90d+'}]. That is false aging for an unfinished home and contradicts lib/sales/spec-inventory.ts. Should use specInventoryAge / books_inventory_completed_on. No red test left in the tree."
+            }
+          ],
+          "testFiles": [
+            "tests/spec-inventory-aging.test.js",
+            "tests/community-sales.test.js"
+          ],
+          "passed": 35,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -8709,7 +9150,9 @@
         "tests/reservation-creation-preparation.test.js",
         "tests/agreement-creation-db.test.js",
         "tests/agreement-creation-service.test.js",
-        "tests/agreement-ownership-db.test.js"
+        "tests/agreement-ownership-db.test.js",
+        "tests/community-sales.test.js",
+        "tests/agreement-configuration-eligibility.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -8799,7 +9242,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -8818,6 +9261,93 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "a prospect's hold names the buyer and the prospect it came from, and is on the record [NEW]"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "a hold converts to a reservation with one home and the exact deposit"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "the deposit invoice is addressed to the buyer it bills"
+                },
+                {
+                  "file": "tests/reservation-conversion-db.test.js",
+                  "name": "saved review creates no home or invoice; atomic commit preserves original financial owners and exact cents"
+                },
+                {
+                  "file": "tests/agreement-creation-db.test.js",
+                  "name": "agreement, reservation, lot configuration, event, audit and immutable receipt commit once"
+                }
+              ],
+              "note": "prospect -> contact -> hold(prospect_id,buyer) -> reservation(deposit invoice to buyer) -> agreement (buyer_contact_id from reservation, reservation.contract_id set). Transactional versions sit behind unapplied migrations and flags; DB tests use hand-assembled agreement-signing fixtures, not full-schema PGlite."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "an expired hold cannot become a reservation [NEW]"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "a hold that is released, or already carries a deposit or an agreement, cannot be reserved [NEW]"
+                },
+                {
+                  "file": "tests/agreement-creation-db.test.js",
+                  "name": "only a live reservation can create an agreement: a hold, an expired hold or a released reservation cannot [NEW]"
+                },
+                {
+                  "file": "tests/agreement-creation-db.test.js",
+                  "name": "stale ownership, current lot facts, plan ancestry, availability and base pricing reject before commit"
+                },
+                {
+                  "file": "tests/agreement-configuration-eligibility.test.js",
+                  "name": "linked, existing and unverifiable agreements block duplicate creation before repricing"
+                },
+                {
+                  "file": "tests/agreement-ownership-db.test.js",
+                  "name": "only one open purchase agreement owns each organization/home across insert and status changes"
+                }
+              ],
+              "note": "Rejected at both the service (expiry check) and the creation RPC (status must be 'reserved')."
+            }
+          ],
+          "testFiles": [
+            "tests/community-sales.test.js",
+            "tests/reservation-conversion-db.test.js",
+            "tests/agreement-creation-db.test.js",
+            "tests/agreement-configuration-eligibility.test.js",
+            "tests/agreement-ownership-db.test.js",
+            "tests/reservation-conversion.test.js",
+            "tests/reservation-creation-preparation.test.js",
+            "tests/agreement-creation-service.test.js"
+          ],
+          "passed": 88,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -9582,7 +10112,8 @@
       "testFiles": [
         "tests/purchase-agreement-pricing.test.js",
         "tests/closing-readiness.test.js",
-        "tests/closing-evidence-guards-db.test.js"
+        "tests/closing-evidence-guards-db.test.js",
+        "tests/closings.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -9685,7 +10216,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -9701,6 +10232,93 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "purchase agreement composes base, premium, options, and incentives to the cent"
+                },
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "design credits cap at design selections and percent incentives round half-up once"
+                },
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "settlement supports deduction change orders and multiple deposits"
+                },
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "settlement adjustments move the final price and stay on the invoice"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "a deposit counts at what the buyer still has: refunds and deposits applied elsewhere come off [NEW]"
+                },
+                {
+                  "file": "tests/closing-evidence-guards-db.test.js",
+                  "name": "final invoice amount must match valid safe integer settlement cents"
+                }
+              ],
+              "note": "DB guard migration 20261003050000 is applied inside PGlite from the working tree (unapplied in production)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "closing invoice bills the full sale price and never nets deposits out of revenue"
+                },
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "closing invoice unit costs survive the dollar round-trip createInvoice performs"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "an agreement total the pricing snapshot does not support is refused before anything is billed [NEW]"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "an issued invoice that does not total the final price stops settlement before any deposit or cash moves [NEW]"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "the closing invoice bills the full final price, adjustments and approved changes included, as exact cents [NEW]"
+                },
+                {
+                  "file": "tests/closing-evidence-guards-db.test.js",
+                  "name": "recorded file/invoice source identity and invoice total remain intact"
+                }
+              ],
+              "note": ""
+            }
+          ],
+          "testFiles": [
+            "tests/purchase-agreement-pricing.test.js",
+            "tests/closings.test.js",
+            "tests/closing-evidence-guards-db.test.js",
+            "tests/closing-readiness.test.js"
+          ],
+          "passed": 49,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -9757,7 +10375,8 @@
       "remainingWork": [
         "Apply migration 20261010120000_closing_invoice_unique (pending approval).",
         "Approve the Books migrations 20261007180000-220000 that inventory relief and closing reversal depend on.",
-        "Full-schema interruption and multi-session concurrency tests; QA reconciliation in the QA org."
+        "Full-schema interruption and multi-session concurrency tests; QA reconciliation in the QA org.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "lib/services/closings.ts",
@@ -9775,7 +10394,8 @@
         "tests/closing-readiness.test.js",
         "tests/closing-evidence-guards-db.test.js",
         "tests/closings.test.js",
-        "tests/closings-db.test.js"
+        "tests/closings-db.test.js",
+        "tests/community-sales.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -9873,7 +10493,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -9889,6 +10509,137 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "a settlement that loses the race to bill the home stops before any money moves"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "a retry after an interruption resumes the closing invoice it already issued instead of billing again [NEW]"
+                },
+                {
+                  "file": "tests/closings-db.test.js",
+                  "name": "a closing has at most one closing invoice"
+                },
+                {
+                  "file": "tests/closings-db.test.js",
+                  "name": "a retried application does not apply a deposit twice, and no application can pass the deposit's balance [NEW]"
+                },
+                {
+                  "file": "tests/purchase-agreement-pricing.test.js",
+                  "name": "a resumed settlement re-applies nothing it already wrote"
+                },
+                {
+                  "file": "tests/closing-readiness.test.js",
+                  "name": "invoice retry verifies persisted economic evidence, ignores preview time, and fails closed on lookup errors"
+                },
+                {
+                  "file": "tests/closing-readiness.test.js",
+                  "name": "closed homes preserve original settlement despite edited or missing live sources and reject corrupt history"
+                }
+              ],
+              "note": "Proven for interruption/retry and for contention enforced by the unique closing-invoice index (pending migration 20261010120000, applied in PGlite from the tree) in a single session. A genuinely concurrent race is the multi_session requirement below. Observation: apply_customer_deposit_atomic replays by (deposit,target invoice) regardless of amount, so a second call with a different amount silently returns the first application; closing flow never does this (amount derived, pendingSettlementWrites skips applied)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "the closing invoice bills the buyer who signed the agreement, not the project's current client"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "a deposit counts at what the buyer still has: refunds and deposits applied elsewhere come off [NEW]"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "cash is refunded, deposit applications return to the buyer's deposit, and the sale is credited out of revenue [NEW]"
+                },
+                {
+                  "file": "tests/closings.test.js",
+                  "name": "an interrupted reversal resumes with only what is still open [NEW]"
+                },
+                {
+                  "file": "tests/closings-db.test.js",
+                  "name": "a buyer's deposit can only be applied to that buyer's closing invoice [NEW]"
+                },
+                {
+                  "file": "tests/closings-db.test.js",
+                  "name": "a deposit refunded to the buyer cannot also be applied, and an applied deposit cannot also be refunded [NEW]"
+                },
+                {
+                  "file": "tests/community-sales.test.js",
+                  "name": "the deposit invoice is addressed to the buyer it bills"
+                }
+              ],
+              "note": "Gap (no test, design observation): buildSettlement includes every earnest_deposit invoice on the project regardless of its customer; a prior buyer's deposit is only caught later when apply_customer_deposit_atomic rejects (settlement stalls rather than misapplies)."
+            }
+          ],
+          "testFiles": [
+            "tests/closings.test.js",
+            "tests/closings-db.test.js",
+            "tests/purchase-agreement-pricing.test.js",
+            "tests/closing-readiness.test.js",
+            "tests/community-sales.test.js",
+            "tests/closing-evidence-guards-db.test.js"
+          ],
+          "passed": 83,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "full_schema_integration",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/closings-db.test.js",
+              "name": "a closing has at most one closing invoice"
+            },
+            {
+              "file": "tests/closings-db.test.js",
+              "name": "a buyer's deposit can only be applied to that buyer's closing invoice [NEW]"
+            },
+            {
+              "file": "tests/closings-db.test.js",
+              "name": "a retried application does not apply a deposit twice, and no application can pass the deposit's balance [NEW]"
+            },
+            {
+              "file": "tests/closings-db.test.js",
+              "name": "a deposit refunded to the buyer cannot also be applied, and an applied deposit cannot also be refunded [NEW]"
+            },
+            {
+              "file": "tests/closing-evidence-guards-db.test.js",
+              "name": "all 8 tests: closing evidence guards at DB boundary"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "unverified",
@@ -10428,7 +11179,8 @@
       "testFiles": [
         "tests/option-catalog-design-studio.test.js",
         "tests/selection-variance-orders.test.js",
-        "tests/selection-cutoffs.test.js"
+        "tests/selection-cutoffs.test.js",
+        "tests/selections.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -10513,7 +11265,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -10528,6 +11280,101 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/selections.test.js",
+                  "name": "a selection can change up to and including its cutoff day [NEW]"
+                },
+                {
+                  "file": "tests/selections.test.js",
+                  "name": "a passed or locked cutoff refuses the change with the date it passed, in the builder's and the buyer's words [NEW]"
+                },
+                {
+                  "file": "tests/selections.test.js",
+                  "name": "a selection the cutoff sweep locked stays locked even if its group looks open [NEW]"
+                },
+                {
+                  "file": "tests/selections.test.js",
+                  "name": "a manual override that moves the cutoff forward reopens a change the schedule had closed [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "a group's cutoff follows its schedule task, offset from the anchor [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "a manual override keeps its date when the schedule moves [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "a schedule slip past today reopens a group the old date had locked [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "the sweep locks every open group whose cutoff has passed, and its selections [NEW]"
+                },
+                {
+                  "file": "tests/option-catalog-design-studio.test.js",
+                  "name": "cutoff derivation supports offsets, fallback matching, and earliest match"
+                }
+              ],
+              "note": "Enforced through selectProjectOption and confirmSelection (assertSelectionMutable). Known weakness (not criterion): not race-safe at the DB."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "a manual cutoff records who moved it and why, and leaves an event and an audit [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "an override needs the override permission and a real reason, or nothing changes [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "a group that is not on this home is not overridden and nothing is recorded [NEW]"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "reverting records why, and the override it discarded"
+                },
+                {
+                  "file": "tests/selection-cutoffs.test.js",
+                  "name": "a revert needs a reason"
+                }
+              ],
+              "note": "Authority is org-level selections.cutoff.override only (no project/division check) - existing known weakness."
+            }
+          ],
+          "testFiles": [
+            "tests/selections.test.js",
+            "tests/selection-cutoffs.test.js",
+            "tests/option-catalog-design-studio.test.js",
+            "tests/selection-variance-orders.test.js"
+          ],
+          "passed": 61,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -12090,7 +12937,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -12104,6 +12951,66 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/start-trade-notices.test.js",
+                  "name": "start detail includes every notice and bounded company names beyond a database page"
+                },
+                {
+                  "file": "tests/start-trade-notices.test.js",
+                  "name": "notice queue read failures are surfaced instead of an empty delivery panel"
+                },
+                {
+                  "file": "tests/start-trade-notices.test.js",
+                  "name": "coordinator retries only the failed notice, preserving the released home and payload"
+                }
+              ],
+              "note": "Service-tier test with fake client; every notice beyond one page is listed, read failures surface, only failed notices requeue. The coordinator sheet itself (UI) is not rendered by any test."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/start-trade-notices.test.js",
+                  "name": "notice retry checks permission and division before writes"
+                },
+                {
+                  "file": "tests/start-trade-notices.test.js",
+                  "name": "retry refuses foreign organizations, packages, job types and active or completed notices"
+                },
+                {
+                  "file": "tests/start-trade-notices.test.js",
+                  "name": "competing retry and failed update cannot report successful recovery"
+                }
+              ],
+              "note": "Role (permission denied), scope (division/org/package) and CAS (concurrent status change) each refused with no write/event."
+            }
+          ],
+          "testFiles": [
+            "tests/start-trade-notices.test.js"
+          ],
+          "passed": 8,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -12789,7 +13696,8 @@
       "remainingWork": [
         "Full-schema, independent-session claim/heartbeat/reaper race proof.",
         "Verify role grants and recovery semantics in QA.",
-        "Activation is EP07-18 (migration approval and rollout)."
+        "Activation is EP07-18 (migration approval and rollout).",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "supabase/migrations/20261003023000_starts_job_claim_leases.sql",
@@ -12799,7 +13707,9 @@
       ],
       "testFiles": [
         "tests/starts-job-leases-db.test.js",
-        "tests/starts-worker-client-context.test.js"
+        "tests/starts-worker-client-context.test.js",
+        "tests/starts-release-actor-db.test.js",
+        "tests/starts-core-write-fences-db.test.js"
       ],
       "executionLogEntries": [
         22
@@ -12914,7 +13824,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -12929,6 +13839,81 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-job-leases-db.test.js",
+                  "name": "expired claims cannot transition and successive claims have distinct tokens"
+                },
+                {
+                  "file": "tests/starts-job-leases-db.test.js",
+                  "name": "deferral preserves retry budget while retries back off and dead-letter on the third failure"
+                },
+                {
+                  "file": "tests/starts-job-leases-db.test.js",
+                  "name": "recovery is bounded, consumes crash retry budget and leaves legacy workers alone"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "release claim heartbeats stop on membership, permission and division revocation"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "deferral clears only the owned lease and preserves the retry budget"
+                }
+              ],
+              "note": "Real SQL (transition_starts_job_lease) exercised for heartbeat/complete/retry/defer with old token, expired token, wrong org, plus recovery. Schema is the real claim migration over a hand-typed outbox table (isolated SQL, not whole chain)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-job-leases-db.test.js",
+                  "name": "browser roles cannot claim or change worker ownership"
+                },
+                {
+                  "file": "tests/starts-job-leases-db.test.js",
+                  "name": "browser table grants cannot be used to forge starts actors or overwrite claims"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "stale claims and forged browser headers cannot mutate core records"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "direct browser writes to start records are denied even without worker headers"
+                }
+              ],
+              "note": "anon/authenticated cannot call claim/transition/recover or write claim columns; forged worker headers fail."
+            }
+          ],
+          "testFiles": [
+            "tests/starts-job-leases-db.test.js",
+            "tests/starts-release-actor-db.test.js",
+            "tests/starts-core-write-fences-db.test.js",
+            "tests/starts-worker-client-context.test.js"
+          ],
+          "passed": 71,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -12982,7 +13967,8 @@
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval).",
         "Guard against an accidental db push of the staged starts migrations (move them to pending-migrations or annotate the ledger check) until cutover.",
-        "Qualify linked-home acquisition, core cleanup and claim transitions against the full schema; independent-session revocation/cancellation/lease races; QA lifecycle and approved rollout."
+        "Qualify linked-home acquisition, core cleanup and claim transitions against the full schema; independent-session revocation/cancellation/lease races; QA lifecycle and approved rollout.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "supabase/migrations/20261003024000_starts_core_write_fences.sql",
@@ -13114,7 +14100,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -13129,6 +14115,118 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "publication starts the lot and home, releases the package, and records its event, audit and reindex together"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a release whose lot left its home publishes nothing at all"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "queueing a release claims the package, seeds its ledger and job, and is audited"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "lot reassignment to another home invalidates the locked release scope"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "core home, lot, package, step and gate writes stop after actor revocation"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "core revocation during finalization rolls back earlier home writes"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "workers cannot alter the package, home or lot scope that authorized their writes"
+                }
+              ],
+              "note": "Release control and publication tests run on the full migration chain (PGlite, all migrations); the actor/lot/home fence tests use the staged migrations over hand-built partial tables."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "an actor assigned to another division cannot open a lot or give a package a home"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a home cannot be created inside a worker claim or by a browser role"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "an open that fails leaves no orphaned home behind"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a homeless package is given one home however often its release retries"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a retried open finds the committed package and builds no second home"
+                }
+              ],
+              "note": "NEW: division-reach refusal for open_start_package and ensure_start_package_home, worker-claim and browser-role refusal of home creation. Existing tests prove actor permission (start.write), atomic rollback, idempotent retry."
+            }
+          ],
+          "testFiles": [
+            "tests/starts-core-write-fences-db.test.js",
+            "tests/starts-release-actor-db.test.js",
+            "tests/starts-package-lease-rpc-db.test.js"
+          ],
+          "passed": 89,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "full_schema_integration",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/starts-core-write-fences-db.test.js",
+              "name": "queueing a release claims the package, seeds its ledger and job, and is audited"
+            },
+            {
+              "file": "tests/starts-core-write-fences-db.test.js",
+              "name": "publication starts the lot and home, releases the package, and records its event, audit and reindex together"
+            },
+            {
+              "file": "tests/starts-core-write-fences-db.test.js",
+              "name": "an actor assigned to another division cannot open a lot or give a package a home"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -13183,7 +14281,8 @@
       "remainingWork": [
         "Replay schedule/budget/inspection/PO/land guards against the full schema (move their tests onto tests/support/pglite.js).",
         "Prove stale/expired claims with independent sessions.",
-        "QA release artifact reconciliation."
+        "QA release artifact reconciliation.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "supabase/migrations/20261003025000_starts_generated_artifact_fences.sql",
@@ -13195,7 +14294,8 @@
         "tests/starts-generated-fences-db.test.js",
         "tests/starts-purchasing-fences-db.test.js",
         "tests/starts-land-posting-fences-db.test.js",
-        "tests/starts-drawing-fences-db.test.js"
+        "tests/starts-drawing-fences-db.test.js",
+        "tests/starts-core-write-fences-db.test.js"
       ],
       "executionLogEntries": [
         25,
@@ -13317,7 +14417,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -13334,6 +14434,120 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-generated-fences-db.test.js",
+                  "name": "generated roots and child rows must belong to the claimed home"
+                },
+                {
+                  "file": "tests/starts-generated-fences-db.test.js",
+                  "name": "schedule assignment and both dependency endpoints must match the home"
+                },
+                {
+                  "file": "tests/starts-generated-fences-db.test.js",
+                  "name": "on the real schema a claimed release writes its own home's artifacts and no other home's"
+                },
+                {
+                  "file": "tests/starts-purchasing-fences-db.test.js",
+                  "name": "old purchasing ancestry cannot be laundered by changing parent or home"
+                },
+                {
+                  "file": "tests/starts-purchasing-fences-db.test.js",
+                  "name": "worker commit rejects a run for a different home or lot before domain writes"
+                },
+                {
+                  "file": "tests/starts-land-posting-fences-db.test.js",
+                  "name": "stale ownership and wrong lot/date/home/actor cannot post land costs"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "a plan PDF for the wrong home, plan, source or destination is refused"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "drawing records cannot point across homes or hide a crossed ancestry"
+                }
+              ],
+              "note": "Schedule, budget and inspection fences now also proven on the real schema with every migration applied (NEW test); PO, land posting and drawing fences each have their own DB tests (PO/land/generated ones on partial hand-built tables, drawing on the full chain)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-generated-fences-db.test.js",
+                  "name": "expired owners cannot update or delete artifacts and ordinary services remain unaffected"
+                },
+                {
+                  "file": "tests/starts-generated-fences-db.test.js",
+                  "name": "on the real schema a claimed release writes its own home's artifacts and no other home's"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a fresh worker cannot mutate another home or smuggle domain edits during lease acquisition"
+                },
+                {
+                  "file": "tests/starts-purchasing-fences-db.test.js",
+                  "name": "expiry during a transaction rolls back the PO instead of leaving a partial financial artifact"
+                },
+                {
+                  "file": "tests/starts-land-posting-fences-db.test.js",
+                  "name": "expiry after journal posting rolls back the journal and job-cost receipt together"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "a worker that loses its lease mid-transaction leaves nothing behind"
+                }
+              ],
+              "note": "Expired or other-release workers are refused in every domain."
+            }
+          ],
+          "testFiles": [
+            "tests/starts-generated-fences-db.test.js",
+            "tests/starts-purchasing-fences-db.test.js",
+            "tests/starts-land-posting-fences-db.test.js",
+            "tests/starts-drawing-fences-db.test.js",
+            "tests/starts-core-write-fences-db.test.js"
+          ],
+          "passed": 56,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "isolated_sql",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/starts-generated-fences-db.test.js",
+              "name": "on the real schema a claimed release writes its own home's artifacts and no other home's"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -13579,7 +14793,8 @@
       ],
       "testFiles": [
         "tests/files-object-copy.test.js",
-        "tests/plan-instantiation-ledger.test.js"
+        "tests/plan-instantiation-ledger.test.js",
+        "tests/plan-drawing-copy.test.js"
       ],
       "executionLogEntries": [
         32,
@@ -13694,7 +14909,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -13709,6 +14924,67 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/files-object-copy.test.js",
+                  "name": "copy stays in storage, pins the source ETag and preserves private PDF metadata"
+                },
+                {
+                  "file": "tests/files-object-copy.test.js",
+                  "name": "changed size, missing version evidence and oversized sources never copy"
+                },
+                {
+                  "file": "tests/files-object-copy.test.js",
+                  "name": "ordinary copy refuses unverifiable document privacy before storage access"
+                }
+              ],
+              "note": "Asserts the exact S3 command sequence is HeadObject + CopyObject (server-side, with CopySourceIfMatch, private cache control) and no body is read into the application, so memory is bounded structurally. Actual memory/latency is a performance verification (not measured) and the real bucket is qa_storage."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/files-object-copy.test.js",
+                  "name": "source mutation refusal and missing copy completion evidence propagate"
+                },
+                {
+                  "file": "tests/files-object-copy.test.js",
+                  "name": "a changed source ETag is refused before copying a persisted reservation"
+                },
+                {
+                  "file": "tests/plan-drawing-copy.test.js",
+                  "name": "copy crash reuses persisted destination and source ETag on the next worker attempt"
+                }
+              ],
+              "note": "Changed source ETag/size/version or missing completion evidence throws; no success receipt."
+            }
+          ],
+          "testFiles": [
+            "tests/files-object-copy.test.js",
+            "tests/plan-drawing-copy.test.js"
+          ],
+          "passed": 16,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -13760,7 +15036,8 @@
       "implementationNotes": "Reservation/publication RPCs and the flag-gated consumer exist. Since Oct 5 the DB tests were rewritten (3a295dea) to run on every migration applied whole in PGlite, giving single-session full-schema evidence. Migrations remain unapplied in production and the planDrawingCopyTransactions flag is off.",
       "remainingWork": [
         "Run the consumer, SQL chain and real storage together in QA.",
-        "Prove concurrent reservation/publication/review and lost-response scenarios with independent sessions."
+        "Prove concurrent reservation/publication/review and lost-response scenarios with independent sessions.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "lib/services/plan-drawing-copy.ts",
@@ -13889,7 +15166,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -13904,6 +15181,93 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/plan-drawing-copy.test.js",
+                  "name": "reservation failure leaves storage untouched and changed recovery receipts are refused"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "a reservation is durable and the ledger advances only for new work"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "publication creates the file, set, revision and job together and replays a lost response"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "a queue failure rolls back every publication record"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "losing the lease after the job is queued rolls back the whole publication"
+                }
+              ],
+              "note": "Full migration chain in PGlite (single session): reservation precedes storage copy; file, drawing set, revision and processor job commit or roll back together."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/plan-drawing-copy.test.js",
+                  "name": "lost publication response replays and verifies the receipt without copying again"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "a corrupted published receipt is refused instead of publishing again"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "changed source evidence or a malformed reservation cannot open another destination"
+                }
+              ],
+              "note": "Lost reply retries the same receipt with no second copy."
+            }
+          ],
+          "testFiles": [
+            "tests/plan-drawing-copy.test.js",
+            "tests/starts-drawing-fences-db.test.js"
+          ],
+          "passed": 32,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "isolated_sql",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/starts-drawing-fences-db.test.js",
+              "name": "publication creates the file, set, revision and job together and replays a lost response"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -13954,7 +15318,8 @@
       "implementationNotes": "Notice workers have token-claimed ownership and retry rules (dd770797). Abandoned plan-drawing copies are now cleaned up: the starts pipeline sweep claims reservations over a day old with no live release and no file naming the path, marks them abandoned so reservation and publication refuse the path, deletes the object, then clears the manifest after re-checking under the home lock that no file references it (cleanupAbandonedPlanDrawingCopies, migration 20261010141000 pending approval; 66900c27). A stuck reservation no longer blocks disabling the flag once the sweep runs.",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval).",
-        "Full-schema and multi-session proof of drawing-copy cleanup against concurrent publication; QA."
+        "Full-schema and multi-session proof of drawing-copy cleanup against concurrent publication; QA.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "supabase/migrations/20261003037000_starts_worker_outbox_fanout_fences.sql",
@@ -13966,7 +15331,10 @@
       ],
       "testFiles": [
         "tests/starts-drawing-fences-db.test.js",
-        "tests/starts-release.test.js"
+        "tests/starts-release.test.js",
+        "tests/drawings-pipeline-db.test.js",
+        "tests/starts-job-leases-db.test.js",
+        "tests/plan-instantiation-ledger.test.js"
       ],
       "executionLogEntries": [
         36,
@@ -14077,7 +15445,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -14091,6 +15459,108 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/drawings-pipeline-db.test.js",
+                  "name": "an expired lease is recovered and its old token can no longer transition the job"
+                },
+                {
+                  "file": "tests/drawings-pipeline-db.test.js",
+                  "name": "worker writes need a live lease on a revision that still exists"
+                },
+                {
+                  "file": "tests/drawings-pipeline-db.test.js",
+                  "name": "a retried job waits out its backoff before it can be claimed and completed"
+                },
+                {
+                  "file": "tests/starts-job-leases-db.test.js",
+                  "name": "expired claims cannot transition and successive claims have distinct tokens"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "release notices stay within the claimed package, actor and assigned vendors"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "the release job heartbeats while releasing and completes once released, but never swaps its payload"
+                },
+                {
+                  "file": "tests/starts-release.test.js",
+                  "name": "queued trade jobs recheck current permission and source division before delivery"
+                }
+              ],
+              "note": "Drawing processors: real lease SQL on the full chain (drawings-pipeline-db). Notice workers: token-claimed lease/retry rules plus per-notice scope fences."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "an abandoned drawing copy is claimed only once it is old, unclaimed and unreferenced"
+                },
+                {
+                  "file": "tests/starts-drawing-fences-db.test.js",
+                  "name": "clearing an abandoned copy frees the home for a new reservation, unless a file references it"
+                },
+                {
+                  "file": "tests/plan-instantiation-ledger.test.js",
+                  "name": "an abandoned copy loses its object before its manifest, and a failed delete keeps the manifest"
+                }
+              ],
+              "note": "Claim excludes referenced paths, clear refuses a referenced path (SQL, full chain); service sweep deletes only claimed abandoned copies and keeps the manifest on delete failure."
+            }
+          ],
+          "testFiles": [
+            "tests/drawings-pipeline-db.test.js",
+            "tests/starts-job-leases-db.test.js",
+            "tests/starts-drawing-fences-db.test.js",
+            "tests/starts-release.test.js",
+            "tests/plan-instantiation-ledger.test.js"
+          ],
+          "passed": 115,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "full_schema_integration",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/starts-drawing-fences-db.test.js",
+              "name": "an abandoned drawing copy is claimed only once it is old, unclaimed and unreferenced"
+            },
+            {
+              "file": "tests/drawings-pipeline-db.test.js",
+              "name": "an expired lease is recovered and its old token can no longer transition the job"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -14151,7 +15621,8 @@
       "implementationNotes": "Retry, cancel and publication are single SQL transactions. Publication (publish_start_release, 66900c27, migration 20261010100000 edited, pending approval) now proves the step ledger settled, starts the lot, moves the home to delivery, releases the package and writes its audit, start.released event and search reindex jobs together; the claimed start_release job is the durable notification intent and the worker only sends idempotent confirmations afterward. A lot that left its home publishes nothing. The starts worker may now queue reindex jobs for its own lot and schedule items (edit to unapplied 20261003048000, 12c622af; found by LOT-01).",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval).",
-        "Full-schema, multi-session race tests; QA."
+        "Full-schema, multi-session race tests; QA.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "lib/services/starts-pipeline.ts",
@@ -14163,7 +15634,8 @@
         "tests/starts-release.test.js",
         "tests/starts-confirmation-recovery.test.js",
         "tests/starts-confirmation-idempotency.test.js",
-        "tests/starts-core-write-fences-db.test.js"
+        "tests/starts-core-write-fences-db.test.js",
+        "tests/starts-release-actor-db.test.js"
       ],
       "executionLogEntries": [
         17,
@@ -14279,7 +15751,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -14295,6 +15767,108 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "publication starts the lot and home, releases the package, and records its event, audit and reindex together"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a release whose lot left its home publishes nothing at all"
+                },
+                {
+                  "file": "tests/starts-release-actor-db.test.js",
+                  "name": "late actor revocation or claim loss rolls back confirmation intent and its source mutation"
+                },
+                {
+                  "file": "tests/starts-release.test.js",
+                  "name": "a failed publication emits no release event or user notification"
+                },
+                {
+                  "file": "tests/starts-release.test.js",
+                  "name": "lost job completion reuses release event and per-user notification identities"
+                },
+                {
+                  "file": "tests/starts-confirmation-idempotency.test.js",
+                  "name": "confirmation IDs survive retries and separate org, package, channel and recipient"
+                }
+              ],
+              "note": "Package status, lot/home state, audit, start.released event and reindex jobs commit in one SQL transaction (full chain); notification intent is the claimed job and confirmations are idempotent."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "a worker that finished every step cannot publish once the coordinator has cancelled"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "cancel revokes a live worker claim so nothing the worker writes afterwards lands"
+                },
+                {
+                  "file": "tests/starts-core-write-fences-db.test.js",
+                  "name": "retry only requeues a parked release with no attempt still running"
+                },
+                {
+                  "file": "tests/starts-release.test.js",
+                  "name": "coordinator cancellation during instantiation is preserved by the returning worker"
+                }
+              ],
+              "note": "NEW: cancel racing a finished worker publishes nothing (package, lot, home, audit, event all unchanged)."
+            }
+          ],
+          "testFiles": [
+            "tests/starts-core-write-fences-db.test.js",
+            "tests/starts-release-actor-db.test.js",
+            "tests/starts-release.test.js",
+            "tests/starts-confirmation-idempotency.test.js",
+            "tests/starts-confirmation-recovery.test.js"
+          ],
+          "passed": 153,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "full_schema_integration",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/starts-core-write-fences-db.test.js",
+              "name": "publication starts the lot and home, releases the package, and records its event, audit and reindex together"
+            },
+            {
+              "file": "tests/starts-core-write-fences-db.test.js",
+              "name": "a worker that finished every step cannot publish once the coordinator has cancelled"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "unverified",
@@ -14527,7 +16101,8 @@
         "tests/bid-pricing-decisions.test.js",
         "tests/production-bid-access.test.js",
         "tests/bids.test.js",
-        "tests/bid-package-move.test.js"
+        "tests/bid-package-move.test.js",
+        "tests/bid-awards-db.test.js"
       ],
       "executionLogEntries": [
         2
@@ -14642,7 +16217,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -14659,6 +16234,73 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/bids.test.js",
+                  "name": "a buyer opens a community and plan package with no project, headed for the price book"
+                },
+                {
+                  "file": "tests/bids.test.js",
+                  "name": "a price-book package on a community outside the caller's divisions is refused"
+                },
+                {
+                  "file": "tests/bids.test.js",
+                  "name": "a community package in the caller's division is usable without any project"
+                },
+                {
+                  "file": "tests/production-bid-access.test.js",
+                  "name": "both parents must pass, and lookups are organization scoped"
+                }
+              ],
+              "note": "NEW creation test (community+plan, award_target price_agreement, no project/prospect). Reaching the existing bid workbench route/page is not covered by a node test (qa_workflow)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/bid-awards-db.test.js",
+                  "name": "awarding a price-book package mints agreements for the priced cost-coded lines with the reviewed terms"
+                },
+                {
+                  "file": "tests/bids.test.js",
+                  "name": "an award without a reviewed scope and reviewed terms is refused before anything is read"
+                },
+                {
+                  "file": "tests/bids.test.js",
+                  "name": "the reviewed scope and terms travel with the award into the price agreements"
+                }
+              ],
+              "note": "NEW: SQL award RPC mints one effective-dated agreement per priced cost-coded line, supersedes the prior agreement, stores terms in award/agreement notes, is idempotent; service refuses blank reviewed scope/terms and forwards them."
+            }
+          ],
+          "testFiles": [
+            "tests/bids.test.js",
+            "tests/production-bid-access.test.js",
+            "tests/bid-awards-db.test.js",
+            "tests/bid-pricing-decisions.test.js"
+          ],
+          "passed": 33,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -14723,7 +16365,9 @@
         "tests/production-bid-vendors.test.js",
         "tests/purchasing-workspace.test.js",
         "tests/purchasing-page.test.js",
-        "tests/bids-org-desk.test.js"
+        "tests/bids-org-desk.test.js",
+        "tests/production-bid-vendor-picker.test.js",
+        "tests/search-picker.test.js"
       ],
       "executionLogEntries": [
         3,
@@ -14841,7 +16485,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -14859,6 +16503,84 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/production-bid-queue.test.js",
+                  "name": "queue selects only production packages before applying stable pagination"
+                },
+                {
+                  "file": "tests/production-bid-queue.test.js",
+                  "name": "response totals read beyond the default database cap and stay within visible packages"
+                },
+                {
+                  "file": "tests/production-bid-queue.test.js",
+                  "name": "assigned division scope filters both parents without loading org ID rosters"
+                },
+                {
+                  "file": "tests/production-bid-vendors.test.js",
+                  "name": "vendor search pages through the directory with minimal serialized data"
+                },
+                {
+                  "file": "tests/production-bid-vendors.test.js",
+                  "name": "production vendor search checks permission and package scope before directory reads"
+                },
+                {
+                  "file": "tests/purchasing-workspace.test.js",
+                  "name": "vendor lookup is bounded and exposes continuation until the final page"
+                }
+              ],
+              "note": "Server-side scoped search, stable ordering/paging and exact totals proven for the bid queue; vendor pickers are paged with continuation. The vendor picker shows no total count by design."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/production-bid-vendor-picker.test.js",
+                  "name": "a failed vendor lookup offers a retry and keeps the vendors already chosen"
+                },
+                {
+                  "file": "tests/search-picker.test.js",
+                  "name": "a lookup failure shows its reason, retries on request and never clears the chosen value"
+                },
+                {
+                  "file": "tests/production-bid-queue.test.js",
+                  "name": "database failures cannot become empty queues or zero response totals"
+                }
+              ],
+              "note": "NEW render-harness tests for both pickers (retry button re-queries; chosen vendors/value stay)."
+            }
+          ],
+          "testFiles": [
+            "tests/production-bid-queue.test.js",
+            "tests/production-bid-vendors.test.js",
+            "tests/purchasing-workspace.test.js",
+            "tests/production-bid-vendor-picker.test.js",
+            "tests/search-picker.test.js",
+            "tests/purchasing-page.test.js",
+            "tests/bids-org-desk.test.js"
+          ],
+          "passed": 22,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -15223,7 +16945,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -15238,6 +16960,79 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/bid-intelligence.test.js",
+                  "name": "every award is read and amounts are batched under the response cap"
+                },
+                {
+                  "file": "tests/bid-intelligence.test.js",
+                  "name": "awards whose project or community is outside the caller's divisions are excluded before amounts are read"
+                },
+                {
+                  "file": "tests/bid-intelligence.test.js",
+                  "name": "every page counts: the median of 1,000 bids is the mean of the two middle bids"
+                },
+                {
+                  "file": "tests/vendor-bid-stats.test.js",
+                  "name": "counts and growth include every page and leave out cancelled awards"
+                },
+                {
+                  "file": "tests/vendor-bid-stats.test.js",
+                  "name": "activity outside the viewer's divisions is not counted"
+                }
+              ],
+              "note": "Package/cost-code/vendor histories read every page and are division-scoped."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/bid-intelligence.test.js",
+                  "name": "a failed read or a missing referenced amount fails instead of reporting less history"
+                },
+                {
+                  "file": "tests/bid-intelligence.test.js",
+                  "name": "a partial read, an addenda failure or a bid total that is not cents fails the comparison"
+                },
+                {
+                  "file": "tests/vendor-bid-stats.test.js",
+                  "name": "history that cannot be read completely, or does not add up, refuses the whole answer"
+                },
+                {
+                  "file": "tests/vendor-bid-stats.test.js",
+                  "name": "production experience counts each visible, standing award once, not its agreement rows"
+                }
+              ],
+              "note": "Invalid cents / missing reference throw; production award counts dedupe agreement rows."
+            }
+          ],
+          "testFiles": [
+            "tests/bid-intelligence.test.js",
+            "tests/vendor-bid-stats.test.js"
+          ],
+          "passed": 17,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -15581,7 +17376,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -15599,6 +17394,79 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "a preview lists the priced lines, the lines it could not price, and the agreements about to lapse"
+                },
+                {
+                  "file": "tests/purchasing-hardening.test.js",
+                  "name": "generation warns about agreements lapsing inside the lead window"
+                }
+              ],
+              "note": "NEW: dry-run returns purchase-order lines, price exceptions and expiringAgreements (the notes' 'preview does not list expiry' gap is closed at service level; the preview dialog UI is not rendered by any test)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "a changed preview is rejected before a generation run or PO is written"
+                },
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "an interactive commit without a preview fingerprint is refused before anything runs"
+                },
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "manual exception pricing rejects a vendor outside the organization before generation"
+                },
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "a manual price that is negative, fractional or for a malformed vendor is refused before anything is written"
+                },
+                {
+                  "file": "tests/po-generation-preview.test.js",
+                  "name": "a removed selection cannot be marked resolved or create purchase orders"
+                },
+                {
+                  "file": "tests/price-resolution.test.js",
+                  "name": "explicit agreement choice cannot bypass scope, effective date, status or units"
+                }
+              ],
+              "note": "Changed-input commit, missing fingerprint, foreign vendor, invalid manual price and ineligible agreement choice all refuse. Weak spot remains: a zero-price manual resolution is accepted without a note (min(0))."
+            }
+          ],
+          "testFiles": [
+            "tests/po-generation-preview.test.js",
+            "tests/purchasing-hardening.test.js",
+            "tests/price-resolution.test.js",
+            "tests/po-generation-math.test.js",
+            "tests/po-generation.test.js",
+            "tests/purchasing-workspace.test.js"
+          ],
+          "passed": 57,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -16517,7 +18385,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -16532,6 +18400,67 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/variance-analysis.test.js",
+                  "name": "a division report counts every home past the first page and each home's latest budget once"
+                },
+                {
+                  "file": "tests/variance-analysis.test.js",
+                  "name": "the org-wide report reads every aggregate group and takes the budget from division groups only"
+                },
+                {
+                  "file": "tests/variance-analysis.test.js",
+                  "name": "a failed read of any input fails the report instead of shrinking it"
+                }
+              ],
+              "note": "Reads past the 1000-row cap, asserts supporting labels (reason, community, plan, vendor, superintendent), fails on any read error. Scoped vs RPC output parity on populated data is not tested (acceptance data)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/variance-analysis.test.js",
+                  "name": "a division report counts every home past the first page and each home's latest budget once"
+                },
+                {
+                  "file": "tests/variance-analysis.test.js",
+                  "name": "only orders approved inside the range count, up to the end of its last day"
+                },
+                {
+                  "file": "tests/report-date-range.test.js",
+                  "name": "exclusive report end retains the last PostgreSQL microsecond and excludes the following day"
+                }
+              ],
+              "note": "Budget denominator 10,010,000 for 1,001 homes (one latest budget each, home with two orders counted once); end date includes 23:59:59.999999."
+            }
+          ],
+          "testFiles": [
+            "tests/variance-analysis.test.js",
+            "tests/report-date-range.test.js"
+          ],
+          "passed": 8,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -17206,7 +19135,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -17223,6 +19152,74 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/punch-lists.test.js",
+                  "name": "a corrective item from a failed inspection keeps its owner, due date and dispatch time"
+                },
+                {
+                  "file": "tests/punch-lists.test.js",
+                  "name": "an inspection's corrective item is validated, flagged, and leaves an event and an audit"
+                },
+                {
+                  "file": "tests/inspection-obligation-lifecycle-db.test.js",
+                  "name": "failure preserves original evidence through corrective punch work and accepted reinspection"
+                },
+                {
+                  "file": "tests/inspection-obligation-lifecycle-db.test.js",
+                  "name": "failed response still requires its reviewed corrective punch association when the flag is false"
+                }
+              ],
+              "note": "NEW punch-lists test proves the corrective item carries assignee company, due date, dispatch time, creator and inspection origin. Lifecycle SQL (feature-flagged, staged migration) requires corrective association with evidence."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/inspection-obligation-lifecycle-db.test.js",
+                  "name": "failure preserves original evidence through corrective punch work and accepted reinspection"
+                },
+                {
+                  "file": "tests/inspection-obligation-lifecycle-db.test.js",
+                  "name": "rejected passing review can start a linked replacement without erasing the original attempt"
+                },
+                {
+                  "file": "tests/inspection-obligation-lifecycle-db.test.js",
+                  "name": "reinspection rejects corrective association changes instead of substituting other resolved work"
+                }
+              ],
+              "note": "Prior attempt result stays 'fail' with its evidence; reinspection requires the linked corrective work resolved and a newer attempt is accepted independently."
+            }
+          ],
+          "testFiles": [
+            "tests/punch-lists.test.js",
+            "tests/inspection-obligation-lifecycle-db.test.js",
+            "tests/inspection-lifecycle-workbench.test.js",
+            "tests/inspection-completion-handoff.test.js",
+            "tests/inspections.test.js"
+          ],
+          "passed": 57,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -17369,7 +19366,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -17385,6 +19382,73 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/punch-lists.test.js",
+                  "name": "a corrective item from a failed inspection keeps its owner, due date and dispatch time"
+                },
+                {
+                  "file": "tests/punch-lists.test.js",
+                  "name": "with an after photo the closer is recorded as the verifier"
+                },
+                {
+                  "file": "tests/punch-lists.test.js",
+                  "name": "without an after photo it stays open and is not stamped verified"
+                },
+                {
+                  "file": "tests/punch-lists.test.js",
+                  "name": "a member assigned to the project creates an open item, with an event and an audit"
+                }
+              ],
+              "note": "Creator, assignee, due date, dispatch, verifier and evidence are all recorded."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/closing-readiness.test.js",
+                  "name": "reopened gates, revoked agreement, open punch and new final waiver gaps block a previously ready closing"
+                },
+                {
+                  "file": "tests/closing-readiness.test.js",
+                  "name": "a resolved or closed punch item that still needs verification blocks the closing"
+                },
+                {
+                  "file": "tests/closing-readiness.test.js",
+                  "name": "punch read failures and unavailable counts fail closed"
+                }
+              ],
+              "note": "Open or unverified required punch blocks closing readiness; unreadable counts fail closed. Migration 20261010114000 (punch.write grants) is pending in production."
+            }
+          ],
+          "testFiles": [
+            "tests/punch-lists.test.js",
+            "tests/closing-readiness.test.js",
+            "tests/closeout-preparation.test.js",
+            "tests/mobile-workspace-punch.test.js"
+          ],
+          "passed": 44,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -17817,7 +19881,8 @@
         "Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together).",
         "Optionally surface per-company inventory and cash tie-outs on the close screen instead of org-wide totals.",
         "Approve and deploy the pending Books entity migrations (20261007235500, 20261007235800, 20261007235900, 20261008001000 are on the 2026-10-08 pending list).",
-        "QA-org two-company reconciliation and close run; construction-CPA sign-off on entity/intercompany policy."
+        "QA-org two-company reconciliation and close run; construction-CPA sign-off on entity/intercompany policy.",
+        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
       ],
       "sources": [
         "lib/services/books/legal-entities.ts",
@@ -17844,7 +19909,12 @@
       "testFiles": [
         "tests/books-restore-plan.test.js",
         "tests/vendor-1099-report.test.js",
-        "tests/books-acceptance-scenarios.test.js"
+        "tests/books-acceptance-scenarios.test.js",
+        "tests/books-legal-entities-db.test.js",
+        "tests/books-statement-correctness.test.js",
+        "tests/books-historical-aging.test.js",
+        "tests/books-close-control-integrity.test.js",
+        "tests/books-close-review.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -17927,7 +19997,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -17943,6 +20013,104 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/books-legal-entities-db.test.js",
+                  "name": "an entry that crosses companies is balanced for each company by due-from and due-to legs"
+                },
+                {
+                  "file": "tests/books-legal-entities-db.test.js",
+                  "name": "the ledger balances for each company and in total, with what companies owe each other flagged for elimination"
+                },
+                {
+                  "file": "tests/books-statement-correctness.test.js",
+                  "name": "each company's books balance on their own, and consolidation removes what the companies owe each other"
+                },
+                {
+                  "file": "tests/books-historical-aging.test.js",
+                  "name": "a company's receivables and payables are its jobs' documents, company-level ones belong to the primary company, and the companies add up to the group"
+                }
+              ],
+              "note": "NEW (real posting RPC, full migration chain): GL by entity and org; cash account ownership decides the entity; per-company statements and consolidation; per-company AR/AP aging that adds to the group. Inventory (1160/1170) and subledger tie-outs by company are org-level in the verifier and are proven only on the Books acceptance stack (ENTITY-01/CONSOL-01)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/books-legal-entities-db.test.js",
+                  "name": "a later movement the other way settles what is owed before it creates a new balance"
+                },
+                {
+                  "file": "tests/books-legal-entities-db.test.js",
+                  "name": "a reversal keeps each original line's company"
+                },
+                {
+                  "file": "tests/books-legal-entities-db.test.js",
+                  "name": "a project or account that has postings cannot change company"
+                },
+                {
+                  "file": "tests/books-legal-entities-db.test.js",
+                  "name": "each company's position with its affiliate is the affiliate's opposite, which is what the close control reads"
+                },
+                {
+                  "file": "tests/books-close-control-integrity.test.js",
+                  "name": "land, completed homes, warranty reserve, impairment and intercompany each fail the close on their own discrepancy"
+                },
+                {
+                  "file": "tests/books-close-review.test.js",
+                  "name": "a production inventory, warranty, impairment or intercompany discrepancy makes the period unready to close"
+                }
+              ],
+              "note": "NEW: due-from/due-to settle-first netting, exact reversal ownership, frozen ownership after posting, mirrored positions, and an intercompany discrepancy blocks close."
+            }
+          ],
+          "testFiles": [
+            "tests/books-legal-entities-db.test.js",
+            "tests/books-statement-correctness.test.js",
+            "tests/books-historical-aging.test.js",
+            "tests/books-close-control-integrity.test.js",
+            "tests/books-close-review.test.js"
+          ],
+          "passed": 30,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
+        },
+        {
+          "kind": "database_tests",
+          "tier": "full_schema_integration",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [],
+          "tests": [
+            {
+              "file": "tests/books-legal-entities-db.test.js",
+              "name": "an entry that crosses companies is balanced for each company by due-from and due-to legs"
+            }
+          ],
+          "scope": "Whole-migration PGlite, single session."
         }
       ],
       "releaseState": "unverified",
@@ -18949,7 +21117,8 @@
         "tests/books-period-posting-fences.test.js",
         "tests/books-retainage-history.test.js",
         "tests/books-settlement-evidence.test.js",
-        "tests/arc-books.test.js"
+        "tests/arc-books.test.js",
+        "tests/closing-readiness.test.js"
       ],
       "executionLogEntries": [],
       "evidence": [
@@ -19034,7 +21203,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -19054,6 +21223,76 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/books-close-control-integrity.test.js",
+                  "name": "land, completed homes, warranty reserve, impairment and intercompany each fail the close on their own discrepancy"
+                },
+                {
+                  "file": "tests/books-close-control-integrity.test.js",
+                  "name": "either retainage discrepancy prevents close even when other controls pass"
+                },
+                {
+                  "file": "tests/books-close-review.test.js",
+                  "name": "a production inventory, warranty, impairment or intercompany discrepancy makes the period unready to close"
+                },
+                {
+                  "file": "tests/closing-readiness.test.js",
+                  "name": "settlement rechecks readiness before any money write and denied clearance cannot seed another home"
+                }
+              ],
+              "note": "NEW: runLedgerTieOuts -> runBooksCloseChecklist -> closeReviewState chain (verifier/close RPC results stubbed) for land, completed homes, warranty reserve, impairment, intercompany, plus existing retainage and settlement tests. The SQL control functions (books_home_inventory_controls, books_impairment_control) have no node test; CLOSE-01 on the acceptance stack covers them."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/books-close-review.test.js",
+                  "name": "reopening a closed period records who and why, keeps its close digest, and never goes underneath a later close"
+                },
+                {
+                  "file": "tests/books-period-posting-fences.test.js",
+                  "name": "recorded journal calendar cannot be moved or removed; closed original can be reversed in an open later month"
+                },
+                {
+                  "file": "tests/books-close-posting-db.test.js",
+                  "name": "real posting RPC permits close-owned year-end entries and preserves the posting freeze"
+                }
+              ],
+              "note": "NEW reopen service test; correction by reversal leaves the original immutable and in its period. Statement-snapshot retention across reopen/re-close is not tested at node level."
+            }
+          ],
+          "testFiles": [
+            "tests/books-close-control-integrity.test.js",
+            "tests/books-close-review.test.js",
+            "tests/closing-readiness.test.js",
+            "tests/books-period-posting-fences.test.js",
+            "tests/books-close-posting-db.test.js",
+            "tests/books-retainage-history.test.js",
+            "tests/books-settlement-evidence.test.js"
+          ],
+          "passed": 37,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -19369,7 +21608,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -19385,6 +21624,65 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/warranty-service.test.js",
+                  "name": "coverage snapshots clamp calendar month boundaries and remain classifiable"
+                },
+                {
+                  "file": "tests/warranty-enrollment.test.js",
+                  "name": "source dates, invalid calendar dates and unavailable home evidence block all enrollment writes"
+                },
+                {
+                  "file": "tests/warranty-enrollment.test.js",
+                  "name": "corrupt expiry or mismatched enrollment event requires reconciliation"
+                }
+              ],
+              "note": "Month-end clamping, leap day, in/out of warranty at the exact millisecond boundary, unclassified without coverage."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/warranty-operations-db.test.js",
+                  "name": "a home's coverage terms are fixed once enrolled, for every writer"
+                },
+                {
+                  "file": "tests/warranty-enrollment.test.js",
+                  "name": "enrollment preserves original term snapshot and repairs missing event without another coverage"
+                }
+              ],
+              "note": "Trigger freezes terms_snapshot and effective_date (staged migration 20261010120100, applied by the whole-chain PGlite harness); enrollment never rewrites an existing snapshot. Files not editable by this task (warranty-*); no gaps found."
+            }
+          ],
+          "testFiles": [
+            "tests/warranty-service.test.js",
+            "tests/warranty-enrollment.test.js",
+            "tests/warranty-operations-db.test.js",
+            "tests/warranty-program-usage.test.js"
+          ],
+          "passed": 38,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -20546,7 +22844,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261005-EP12-EP14"
           ],
@@ -20590,6 +22888,92 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a house file larger than one page commits every row exactly once"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a house's budget lines and POs are found behind more than one page of other houses' companion rows [NEW]"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "budget and PO companions come only from the same cutover date and onboarding run"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "companions match on the whole house identity, not a shared prefix"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "sample houses refuse companions outside the exact original source, at staging and at commit"
+                },
+                {
+                  "file": "tests/imports.test.js",
+                  "name": "validation finds a reference past the API's row cap instead of rejecting the row"
+                },
+                {
+                  "file": "tests/imports.test.js",
+                  "name": "row pages reach all 10,000 rows of a batch exactly once, and none from another org"
+                }
+              ],
+              "note": ""
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a duplicated companion row stops the cutover before any home is built"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a house whose cutover facts are missing, from another date, or do not foot is flagged at staging and never built [NEW]"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a house is built only when its budget foots to the declared total at commit as well [NEW]"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "the same house twice in one file is flagged on both rows and the batch cannot be committed [NEW]"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a failed companion lookup stops the cutover before any home is built"
+                }
+              ],
+              "note": "REAL BUG (staging UX, home not created): validateOpenWipCompanions (lib/services/imports.ts ~L384-411) appends missing_as_of_date / missing_budget_file / budget_total_mismatch issues with level 'error' AFTER validateRows has set row.status, and never recomputes it. Verified: such rows persist as status 'valid', batch error_count 0, valid_count 1; commit then throws in commitOpenWip and the whole batch is marked failed. Safety holds (no home created) but staging reports the file clean. Tests assert the issue codes and the commit-time refusal, not the (buggy) status."
+            }
+          ],
+          "testFiles": [
+            "tests/imports-open-wip.test.js",
+            "tests/imports.test.js",
+            "tests/onboarding-imports.test.js"
+          ],
+          "passed": 42,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -20714,7 +23098,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261005-EP12-EP14"
           ],
@@ -20757,6 +23141,71 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a sold house becomes an active home with its budget, PO, buyer, agreement and stage-anchored schedule"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "every record of a cut-over home carries the cutover that made it [NEW]"
+                },
+                {
+                  "file": "tests/sample-home-provenance.test.js",
+                  "name": "the six homes of the original sample batch are tagged, keeping their source metadata"
+                },
+                {
+                  "file": "tests/sample-home-provenance.test.js",
+                  "name": "any break in the evidence chain refuses the whole set before one home is written"
+                }
+              ],
+              "note": "Buyer contact + client_id, active agreement with total/signed date, approved budget, completed/in-progress/planned schedule anchored at stage, remaining-value POs; provenance in project.metadata.wip_cutover and imported_open_wip/as_of_date on budget, commitments, agreement snapshot, schedule."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a failure at any step removes the half-built home and leaves the lot unpublished"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a lot taken while the home was being built is not overwritten"
+                },
+                {
+                  "file": "tests/imports-open-wip.test.js",
+                  "name": "a lot that already has an unrelated home must be reconciled first"
+                }
+              ],
+              "note": "Known gap in notes: a failed row can still leave a created buyer contact/vendor company behind."
+            }
+          ],
+          "testFiles": [
+            "tests/imports-open-wip.test.js",
+            "tests/sample-home-provenance.test.js"
+          ],
+          "passed": 20,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -21930,7 +24379,8 @@
       ],
       "testFiles": [
         "tests/starts-pipeline-route.test.js",
-        "tests/cron-auth.test.js"
+        "tests/cron-auth.test.js",
+        "tests/job-runs.test.js"
       ],
       "executionLogEntries": [
         21
@@ -21994,7 +24444,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261005-EP12-EP14"
           ],
@@ -22037,6 +24487,84 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "criterion_tests",
+          "tier": "automated",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "VERIFY-20261010"
+          ],
+          "date": "2026-10-10",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaTests": [
+            {
+              "index": 0,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/starts-pipeline-route.test.js",
+                  "name": "accepted starts requests do not record success until the worker finishes"
+                },
+                {
+                  "file": "tests/starts-pipeline-route.test.js",
+                  "name": "unauthorized starts requests schedule no work or run telemetry"
+                }
+              ],
+              "note": "That test lifts app/api/jobs/starts-pipeline/route.ts via fs.readFileSync + ts.transpileModule + vm (violates docs/testing.md rule 1) but exercises the real GET/POST/after() wiring; file is in the reserved starts-* set so not rewritten. Whether after() survives on Vercel is deployed verification (EP13-05)."
+            },
+            {
+              "index": 1,
+              "proven": true,
+              "tests": [
+                {
+                  "file": "tests/job-runs.test.js",
+                  "name": "a finished job is recorded as a success with the response it returned [NEW]"
+                },
+                {
+                  "file": "tests/job-runs.test.js",
+                  "name": "a partial failure is a failed run that keeps its evidence, not a green one [NEW]"
+                },
+                {
+                  "file": "tests/job-runs.test.js",
+                  "name": "a crash is recorded with its message and still reaches the caller [NEW]"
+                },
+                {
+                  "file": "tests/job-runs.test.js",
+                  "name": "an unauthorized probe is not a run [NEW]"
+                },
+                {
+                  "file": "tests/job-runs.test.js",
+                  "name": "a telemetry outage is logged and cannot change what the job returned [NEW]"
+                },
+                {
+                  "file": "tests/starts-pipeline-route.test.js",
+                  "name": "partial worker failures are recorded as failed runs with queue evidence"
+                },
+                {
+                  "file": "tests/starts-pipeline-route.test.js",
+                  "name": "background crashes are recorded and remain visible to the runtime"
+                },
+                {
+                  "file": "tests/starts-pipeline-route.test.js",
+                  "name": "telemetry persistence failures reach runtime logs without discarding completed worker work"
+                }
+              ],
+              "note": "New tests/job-runs.test.js exercises the public withCronRun export directly."
+            }
+          ],
+          "testFiles": [
+            "tests/starts-pipeline-route.test.js",
+            "tests/job-runs.test.js",
+            "tests/cron-auth.test.js"
+          ],
+          "passed": 16,
+          "failed": 0,
+          "scope": "Each criterion mapped to passing tests through public exports or the whole-migration database harness; network blocked."
         }
       ],
       "releaseState": "unverified",
@@ -27211,6 +29739,198 @@
       "files": [],
       "sourceHashes": {},
       "notes": "Recorded acceptance_run evidence (partial, current, no tier) on EP14-01, EP14-07, EP13-01; EP14-01 pending -> partial; LOT-01 harness set to exists, re-run pending. LOT-01 core 9/9; desktop sweep over 8 roles. Defects D1-D15 mapped: 14 fixed (D1 EP06-03; D2 EP01-01/EP06-02; D3 EP08-06; D4 EP10-02; D5 EP07-17; D6 EP13-01; D7 EP06-05; D9 EP03-05 service only, no UI; D10 EP05-10; D11 EP05-09; D12 EP01-01; D13 EP03-05; D14, D15 EP14-07) and D8 open (EP08-09). Open from the fix: placeholder contract on spec homes and reviewed reservation conversion (EP10-02, EP05-02), unrepaired existing homes (EP10-02), two structural options in one category refused (EP06-05). LOT-01 not re-run since the fixes; sweep desktop-only by owner decision. No item set to verified or accepted; migration 20261010200000 is pending approval and 20261003048000 is edited (unapplied)."
+    },
+    {
+      "id": "VERIFY-20261010",
+      "date": "2026-10-10",
+      "scope": "Criterion-by-criterion automated verification of implemented first-builder items (network guard, PGlite).",
+      "command": [],
+      "counts": {},
+      "files": [
+        "tests/configuration-rules.test.js",
+        "tests/configuration-rules-db.test.js",
+        "tests/selections.test.js",
+        "tests/agreement-configuration-eligibility.test.js",
+        "tests/po-generation-preview.test.js",
+        "tests/catalog-eligibility.test.js",
+        "tests/option-catalog-design-studio.test.js",
+        "tests/catalog-price-validation.test.js",
+        "tests/price-resolution.test.js",
+        "tests/land-foundation.test.js",
+        "tests/land-scope.test.js",
+        "tests/lots.test.js",
+        "tests/land-supply.test.js",
+        "tests/community-sales.test.js",
+        "tests/spec-inventory-aging.test.js",
+        "tests/reservation-conversion-db.test.js",
+        "tests/agreement-creation-db.test.js",
+        "tests/agreement-ownership-db.test.js",
+        "tests/reservation-conversion.test.js",
+        "tests/reservation-creation-preparation.test.js",
+        "tests/agreement-creation-service.test.js",
+        "tests/purchase-agreement-pricing.test.js",
+        "tests/closings.test.js",
+        "tests/closing-evidence-guards-db.test.js",
+        "tests/closing-readiness.test.js",
+        "tests/closings-db.test.js",
+        "tests/selection-cutoffs.test.js",
+        "tests/selection-variance-orders.test.js",
+        "tests/imports-open-wip.test.js",
+        "tests/imports.test.js",
+        "tests/onboarding-imports.test.js",
+        "tests/sample-home-provenance.test.js",
+        "tests/starts-pipeline-route.test.js",
+        "tests/job-runs.test.js",
+        "tests/cron-auth.test.js",
+        "tests/start-trade-notices.test.js",
+        "tests/starts-job-leases-db.test.js",
+        "tests/starts-release-actor-db.test.js",
+        "tests/starts-core-write-fences-db.test.js",
+        "tests/starts-worker-client-context.test.js",
+        "tests/starts-package-lease-rpc-db.test.js",
+        "tests/starts-generated-fences-db.test.js",
+        "tests/starts-purchasing-fences-db.test.js",
+        "tests/starts-land-posting-fences-db.test.js",
+        "tests/starts-drawing-fences-db.test.js",
+        "tests/files-object-copy.test.js",
+        "tests/plan-drawing-copy.test.js",
+        "tests/drawings-pipeline-db.test.js",
+        "tests/starts-release.test.js",
+        "tests/plan-instantiation-ledger.test.js",
+        "tests/starts-confirmation-idempotency.test.js",
+        "tests/starts-confirmation-recovery.test.js",
+        "tests/bids.test.js",
+        "tests/production-bid-access.test.js",
+        "tests/bid-awards-db.test.js",
+        "tests/bid-pricing-decisions.test.js",
+        "tests/production-bid-queue.test.js",
+        "tests/production-bid-vendors.test.js",
+        "tests/purchasing-workspace.test.js",
+        "tests/production-bid-vendor-picker.test.js",
+        "tests/search-picker.test.js",
+        "tests/purchasing-page.test.js",
+        "tests/bids-org-desk.test.js",
+        "tests/bid-intelligence.test.js",
+        "tests/vendor-bid-stats.test.js",
+        "tests/purchasing-hardening.test.js",
+        "tests/po-generation-math.test.js",
+        "tests/po-generation.test.js",
+        "tests/variance-analysis.test.js",
+        "tests/report-date-range.test.js",
+        "tests/punch-lists.test.js",
+        "tests/inspection-obligation-lifecycle-db.test.js",
+        "tests/inspection-lifecycle-workbench.test.js",
+        "tests/inspection-completion-handoff.test.js",
+        "tests/inspections.test.js",
+        "tests/closeout-preparation.test.js",
+        "tests/mobile-workspace-punch.test.js",
+        "tests/books-legal-entities-db.test.js",
+        "tests/books-statement-correctness.test.js",
+        "tests/books-historical-aging.test.js",
+        "tests/books-close-control-integrity.test.js",
+        "tests/books-close-review.test.js",
+        "tests/books-period-posting-fences.test.js",
+        "tests/books-close-posting-db.test.js",
+        "tests/books-retainage-history.test.js",
+        "tests/books-settlement-evidence.test.js",
+        "tests/warranty-service.test.js",
+        "tests/warranty-enrollment.test.js",
+        "tests/warranty-operations-db.test.js",
+        "tests/warranty-program-usage.test.js"
+      ],
+      "sourceHashes": {
+        "tests/configuration-rules.test.js": "197131ac62106b955bf23dbc4a134f8d760ff231120aadf4daa555ad9e8a117e",
+        "tests/configuration-rules-db.test.js": "71714f4ce5f2d992824a8b37e18bc8b47a26fef4834fe304dc547afd18f6b827",
+        "tests/selections.test.js": "870f34d9ea66d2a835a73878995906420f1366fff897e694f0c601020d031837",
+        "tests/agreement-configuration-eligibility.test.js": "12fe0075c7726a007bed004fd362cc0d731ca31fdfda07cfe5d138feef2cbc1f",
+        "tests/po-generation-preview.test.js": "ced780f5d297f819f5bed3b315fbd5b71b323116129cd039d776c0569bd8ecff",
+        "tests/catalog-eligibility.test.js": "2bdb39d93c8882e2fe3f077fdfea50b6009db8cfed88008d710c07fc24625631",
+        "tests/option-catalog-design-studio.test.js": "95ce6ce795eabfbf0442d0660c079a0da74d5aa7303cd14fb94831d42f639fd5",
+        "tests/catalog-price-validation.test.js": "0c323ec2c80e6e0795cc5b8e002c2f3e093e105635e43eb2138681daefa25d54",
+        "tests/price-resolution.test.js": "1f0e616184c8f771a2169bcf2ef537fa1ff934a4e9700113bed36ddcca7e9a33",
+        "tests/land-foundation.test.js": "57e6a60179f5d79bba562729422389f93b0adbbcda6c1cc6cc9d66d9c43f432e",
+        "tests/land-scope.test.js": "f0aecddb796b9ef0042863cb1d02191c3a8d78bebd3fd4e5605323cd1499e215",
+        "tests/lots.test.js": "c7cb4dcc30958911491bde1d5dc7386895fa676d7a75e793b542fcee6721a692",
+        "tests/land-supply.test.js": "38799d08007170c4c8955844ea7bd6600d58392aa616aeb75f5a5c0339872278",
+        "tests/community-sales.test.js": "f6026cd013b776bb661338c2670ac7e5ce786fc4e1d3e026f2d304008ba01a54",
+        "tests/spec-inventory-aging.test.js": "f0b202d1c7fec3b233c35294a1a3ec8c7c149bf5b83ccfa4edfdab5ec2d18a10",
+        "tests/reservation-conversion-db.test.js": "48983506d7710217aff55a7fcc43ad226eb83debe701a376ecd66a9e5369f429",
+        "tests/agreement-creation-db.test.js": "98b6b17168c30a7878d1033329ad3d0bc23ee1a4fa002a9e27aa85bf476003c4",
+        "tests/agreement-ownership-db.test.js": "71f00438eab6aac2835a48ae293d9a263bd14cf7c8bf0839489399ef59938a29",
+        "tests/reservation-conversion.test.js": "d675be2ced910ae72380e1f16c5944741e7ca387e19d7af509253ed2ed0f8064",
+        "tests/reservation-creation-preparation.test.js": "349ae2246094eac7278c6f6cb512dd302da61e41b3d81f8e14d8f28ef627fb59",
+        "tests/agreement-creation-service.test.js": "2ae41ac553e230a29c82f1e38b5b0ec6384fc0242fa9e5b5fdafa6f6759548cd",
+        "tests/purchase-agreement-pricing.test.js": "e97a54dde6de9b1a7c93b84b28d3794fcbf5fe62903b1b6bf5c76b042c0acde6",
+        "tests/closings.test.js": "90a6ec803faa9e0036564dc0b2a50d932f7ec8232461a4eadc56fdd7342e6a1a",
+        "tests/closing-evidence-guards-db.test.js": "b40f907503ecd795e84a67ccf7a2b29815847a895d344fcca1b68872ea41600a",
+        "tests/closing-readiness.test.js": "d81d9fe99e4d1f693c68e20855eaa44ed8f85f1e2a19bafa690acecaab31c68e",
+        "tests/closings-db.test.js": "7ea829960c585bb5258e102361fe5bc3c16e021e9e33f2c4eded4743d2578d22",
+        "tests/selection-cutoffs.test.js": "5bb3411035fd18f29b49c1b93cfdca499e4a68e9a0b1069528a5d56ea638c439",
+        "tests/selection-variance-orders.test.js": "518b02341a804a057742df0e26cdf4ce024cf7be05536cf653200f5fa41860c6",
+        "tests/imports-open-wip.test.js": "78e3928f41dcdd2f21eeb3da76f985bf27b4d891b358f3d3a891ca08fa899341",
+        "tests/imports.test.js": "042e292d39abe8977962b4c566c88842fd3466aec8c8687e544887d5aa62b71a",
+        "tests/onboarding-imports.test.js": "63692dbc1de0cbf94f3d74acb9fb1b859d1d3f4bab11ad035a580326299cd26d",
+        "tests/sample-home-provenance.test.js": "a7bc9da657719859f8decd5f5ee6f7d3ca6ab8a537aec4219d3c6e6b02294482",
+        "tests/starts-pipeline-route.test.js": "03415e8a97aba52c18771b405e2dd536b2d049c9ebcfd44271211ff1cbe76e2c",
+        "tests/job-runs.test.js": "d4c4dfeb8ecec010c46684df0313e6dad26aae7c546865ea3aaf6b5b65321474",
+        "tests/cron-auth.test.js": "099be634b070cc8ee24ded6846ed827ff8b0480697b9d01b4cb6c9416efd19a5",
+        "tests/start-trade-notices.test.js": "67047e6a36ab2b6a1e7217d5aa6f853b5a0983558f66834922617e68a378f4d5",
+        "tests/starts-job-leases-db.test.js": "d1c385e0ec4578ef688d156e3e4081141f959ff6a72d9137406dcf0a114ceb83",
+        "tests/starts-release-actor-db.test.js": "34d29997e7385584671c1aa384638fb24b452342895ecf2cd1846ab31de73e9a",
+        "tests/starts-core-write-fences-db.test.js": "b2e6fbc0a39b0fcf9bc4e9655e23a74886bc8b5142ce59d2eaa81a414f160df3",
+        "tests/starts-worker-client-context.test.js": "960868dd04c228bdd64da5e06b4fd6e2d53fa8d18ff5ec98ab9766b257b3fa50",
+        "tests/starts-package-lease-rpc-db.test.js": "6395b647ee7170be22b036127d5ca0904428a3a41527e2cfedfa3de566059938",
+        "tests/starts-generated-fences-db.test.js": "33506961de53a8962e8211ab297dad918b81e736b23568ed9b4b3c3a923c4c26",
+        "tests/starts-purchasing-fences-db.test.js": "0e98a9cf37e7f2bb274f00acdf3dfac9ec09fdf98d2135dfa26a667ae8f0adca",
+        "tests/starts-land-posting-fences-db.test.js": "f9e6f40bfa1f753e50f684295c83cd08c421e78c54fe665faab628fa6111a9d2",
+        "tests/starts-drawing-fences-db.test.js": "341bf777324f417c6e83fdc384b9276d0d37c1d1fc3d5bf01bf7b452f1801ff1",
+        "tests/files-object-copy.test.js": "e5017d91507ad2d87617b37b1edb9a567f4b644a0cbcf4039d1b9e38e5e7c06a",
+        "tests/plan-drawing-copy.test.js": "f38829df739e405de9c5663074e1a79fbd55e888c9f27f435347e199eabdafd4",
+        "tests/drawings-pipeline-db.test.js": "e24c2017e92d8809f1cc1f22e4f842cec88b7323a50a62b9930575093e954478",
+        "tests/starts-release.test.js": "84d946f5b9258db374c61920feedb010ba159222b6999d7003185abfa72d3cbe",
+        "tests/plan-instantiation-ledger.test.js": "ed7305ceb611765cdbb1b6b29fee275e07ce79f11187acc608bb09fbf18ff157",
+        "tests/starts-confirmation-idempotency.test.js": "b783b6f579dc94ca44c3878ca4bf93cee23bb292898328b9acee3510c295056a",
+        "tests/starts-confirmation-recovery.test.js": "6f0010c0121b5392a13d51abe8f262dbf797a7dd796ba701bfdf5543577f8cf0",
+        "tests/bids.test.js": "095a4973ae334df340cb3aae1ea5ac83a1525d2534f3f5e54b820d3d647d14af",
+        "tests/production-bid-access.test.js": "a9868d80ae80efa71f459ca6f7b635aa69c613a0031e7b33524406f928f749db",
+        "tests/bid-awards-db.test.js": "142de9cbd9401f68c2922d0e2bd3f6e2a2fa70ea8910786c6c6d9fdcd12cb351",
+        "tests/bid-pricing-decisions.test.js": "08d761652b0c8c620148db929e58c9382cdd8f0bafd264fbeccf0b8fdab65016",
+        "tests/production-bid-queue.test.js": "f2d63e8da0134b3f67030470f42010d91e163e717fb60d4c1c4f0e0ec4b93e17",
+        "tests/production-bid-vendors.test.js": "927c6478cb436d1f6b58c0b77bfea84aee75641ea9d1e9f8ea297dc063890ccb",
+        "tests/purchasing-workspace.test.js": "3a72ef1e375d2e26f54d3e13777b060d2ba7df2f8b164c950055f9e7746953a9",
+        "tests/production-bid-vendor-picker.test.js": "ea9469cdfa39448720402a794945309e46a78c0bbf87c065f5825bc55ecc571e",
+        "tests/search-picker.test.js": "b4cba067734528d7c87d9b7217d99046ce93f55d8eec7a67705cdc15f7dc8ae2",
+        "tests/purchasing-page.test.js": "81bb939d76c86f33ce6471669937cb87d1edbe0f1a3cb5e5474c97f6101a9692",
+        "tests/bids-org-desk.test.js": "ae2cc3da2a2cb847a1b828292f849b4ae58fa455ff1944ea4c3af7724dcc0a9f",
+        "tests/bid-intelligence.test.js": "7004ba47f7cb1ce64d741a28cd98c792fa54b35337aafb7ecbcf4731810b5c74",
+        "tests/vendor-bid-stats.test.js": "c6944eacfe8acab82a85b8508305a9f7a5d82b73693a2183afeea0a3863c22c0",
+        "tests/purchasing-hardening.test.js": "526e96a12a1be8e9e8e46859ffa8c3276f202233dfb7ebe875f4250bd2ff7f19",
+        "tests/po-generation-math.test.js": "4cb8ec0cb5a9f885371f565a2db340528aa525e2149e99a9da5be988f37dc67f",
+        "tests/po-generation.test.js": "b984fd4ead96f9d823c47e41f0c22d3181c3c7630d565dd4811505ce516255b7",
+        "tests/variance-analysis.test.js": "43aa47656a35c40417d40aa56318455b06cc69fff36647996230b9e7dab541e4",
+        "tests/report-date-range.test.js": "2d066b0e112265f9f195baea94921677cefe0d2f935b2067e4faad76a9c9f32c",
+        "tests/punch-lists.test.js": "344622aa0f0c3bd6c03f7f43d4ae43da7c64280ba49a529c977532658520d662",
+        "tests/inspection-obligation-lifecycle-db.test.js": "9bd4e18b2b16752523d349ac9206b5d0067d361d833ecab2b5f602d7692e92ff",
+        "tests/inspection-lifecycle-workbench.test.js": "095628ec9ca4d97fe73178713e3d3eacb6c1ea724740cace6687e272f0457b37",
+        "tests/inspection-completion-handoff.test.js": "e3806314e97efa30351452fbaefdbd2d03be7ca233bf0733524e4d157c28546b",
+        "tests/inspections.test.js": "4fbd982c98851b4c581c78f1148b0e293884f44ebe622ee6cfa46f57bd60f540",
+        "tests/closeout-preparation.test.js": "70600e37cef03e001a74dcac252a86b8f9326f6462ac409ed7e5d8ac0a535d67",
+        "tests/mobile-workspace-punch.test.js": "ba83bf0a3d8548ec09e38968adc4be75a08983c9b92f5de84f159d0f063fac94",
+        "tests/books-legal-entities-db.test.js": "cf2d01545cf5d80fc0bdcdb6f738574d67e29d07006eb77adff2a3d25a541b28",
+        "tests/books-statement-correctness.test.js": "38e8c65839ed17f44690bf72e605badb8a74a97ad436a5ebc3d44fb0932a7b8e",
+        "tests/books-historical-aging.test.js": "4ee5693fcb2fd61989ae84b9913b2d82a3bb1085371811d7bfdd4d02f6943f50",
+        "tests/books-close-control-integrity.test.js": "d0442f75f269ec1fa7605f8e2bbc7ef7e07e71c48f58579bc3339b2d0f36c1f6",
+        "tests/books-close-review.test.js": "ec7f8930f3b209bf3c3af778685435a64e58e8e1bc78b0135ce17ab31b3701fd",
+        "tests/books-period-posting-fences.test.js": "67a8f2c424cd2442079b88990c603f69c2cadf3dd34d4a4d8f8037950fe1f38e",
+        "tests/books-close-posting-db.test.js": "77b6a1b1240150900e42ccb6a5e4fe093662755e40343d64f342542349f07a09",
+        "tests/books-retainage-history.test.js": "93d1e3689ea030c81554cca48828d2846223e88078c06e46f7fb4c0b01196073",
+        "tests/books-settlement-evidence.test.js": "1a8217321275743ac84b814b7742e03c29a3e959e4b6506202833eab97e07b61",
+        "tests/warranty-service.test.js": "4e7ed3ddea0dcacd042950e41891d632f6d45a8bef83dc73df8f20afa1fda991",
+        "tests/warranty-enrollment.test.js": "36d632b891ab6de613d7576c3928af73fc18a8e6dd039cfd54564d1e6239736f",
+        "tests/warranty-operations-db.test.js": "6ba9ddfa213c46ff663c9eeb70d9c6d072564ffe756b1715887a07431bd84124",
+        "tests/warranty-program-usage.test.js": "8bb09af88726d1660e97020d39f195bea93e7248cf8ab5b5579a020a705a8e66"
+      },
+      "notes": "Recorded from scratchpad verify/V1.json and V2.json."
     }
   ],
   "deferredBacklog": [
