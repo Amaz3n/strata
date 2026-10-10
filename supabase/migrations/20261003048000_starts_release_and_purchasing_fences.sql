@@ -1275,16 +1275,20 @@ begin
     and start_job_lease_expires_at>clock_timestamp() for update;
   if not found then return false; end if;
   v_pkg:=public.lock_starts_claim_transition_scope(v_job,p_action);
+  -- Only a package this claim owns, or one no worker owns, may be parked after
+  -- the final failure: a release that fails before it can take the package
+  -- lease (revoked actor, unreleased plan) must still surface as needing
+  -- attention instead of sitting in `releasing` with no job behind it. This
+  -- system recovery step remains available after actor revocation.
+  if p_action='retry' and v_job.job_type='start_release' and v_job.retry_count+1>=3 and v_pkg.status='releasing'
+    and (v_pkg.metadata->>'release_lease_token' is null or v_pkg.metadata->>'release_lease_token'=p_token::text) then
+    perform set_config('request.headers','{}',true);
+    update public.start_packages set status='attention' where org_id=p_org_id and id=v_pkg.id and status='releasing'
+      and (metadata->>'release_lease_token' is null or metadata->>'release_lease_token'=p_token::text);
+    perform set_config('request.headers',coalesce(v_headers,''),true);
+  end if;
   if p_action<>'heartbeat' and v_job.job_type='start_release'
     and v_pkg.metadata->>'release_lease_token'=p_token::text then
-    -- Only the still-owned package may be parked after the final failure.
-    -- This system recovery step remains available after actor revocation.
-    if p_action='retry' and v_job.retry_count+1>=3 and v_pkg.status='releasing' then
-      perform set_config('request.headers','{}',true);
-      update public.start_packages set status='attention' where org_id=p_org_id and id=v_pkg.id
-        and status='releasing' and metadata->>'release_lease_token'=p_token::text;
-      perform set_config('request.headers',coalesce(v_headers,''),true);
-    end if;
     -- Clear before giving up the claim; later cleanup cannot prove ownership.
     if not public.transition_starts_package_lease(p_org_id,p_id,p_token,'clear') then
       raise exception 'Starts package cleanup lost ownership' using errcode='40001';
@@ -1400,6 +1404,8 @@ begin
         update public.start_packages set status=case when v_job.retry_count+1>=3 and status='releasing' then 'attention' else status end,
           metadata=metadata||jsonb_build_object('release_lease_token',null,'release_lease_at',null)
           where id=v_pkg.id and org_id=v_job.org_id;
+      elsif found and v_pkg.metadata->>'release_lease_token' is null and v_job.retry_count+1>=3 and v_pkg.status='releasing' then
+        update public.start_packages set status='attention' where id=v_pkg.id and org_id=v_job.org_id;
       end if;
     end if;
     update public.outbox set status=case when retry_count+1>=3 then 'failed' else 'pending' end,

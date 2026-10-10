@@ -23,6 +23,12 @@ function loadStarts() {
   return require("@/lib/services/starts")
 }
 
+/** Make one claim-protocol RPC fail while `when(args)` holds, the way an unreachable database would. */
+function failRpc(harness, name, when, message) {
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (fn, args) => fn === name && when(args) ? { data: null, error: { message } } : rpc(fn, args)
+}
+
 function requeue(store, { runAt = new Date(Date.now() - 1000).toISOString() } = {}) {
   for (const job of store.outbox) {
     if (job.status === "failed" || job.status === "completed") continue
@@ -221,7 +227,7 @@ test("two workers racing the same package still build the house once", async () 
 
   const past = new Date(Date.now() - 60_000).toISOString()
   harness.store.outbox.push({
-    id: "job-2", org_id: harness.store.orgs[0].id, job_type: "start_release", status: "pending",
+    id: 2, org_id: harness.store.orgs[0].id, job_type: "start_release", status: "pending",
     payload: { start_package_id: PACKAGE, actor_id: ACTOR }, retry_count: 0,
     run_at: past, updated_at: past, dedupe_key: "start_release:duplicate",
   })
@@ -239,7 +245,7 @@ test("two workers racing the same package still build the house once", async () 
   }
   assert.equal(harness.calls.purchaseOrders.length, 1, "PO generation must not commit twice")
   assert.equal(harness.store.start_packages[0].status, "released")
-  const deferred = harness.store.outbox.find((job) => job.id === "job-2")
+  const deferred = harness.store.outbox.find((job) => job.id === 2)
   assert.equal(deferred.status, "pending", "the second worker backs off instead of racing")
   assert.equal(deferred.retry_count, 0)
 })
@@ -370,14 +376,8 @@ test("a failed project finalization cannot publish a released package and retry 
 
 test("failed final publication resumes from the completed ledger without repeating financial transfer", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-  const from = harness.supabase.from.bind(harness.supabase)
   let fail = true
-  harness.supabase.from = (table) => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => fail && table === "start_packages" && query.action === "update" && query.payload?.status === "released"
-      ? { data: null, error: { message: "Publication unavailable" } } : run()
-    return query
-  }
+  failRpc(harness, "publish_start_release", () => fail, "Publication unavailable")
   const pipeline = loadPipeline()
   await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })
   assert.equal(harness.store.start_packages[0].status, "releasing")
@@ -414,14 +414,8 @@ test("worker heartbeat executes its lazy outbox update during a long release ste
 
 test("failed job completion is reported as failure and resumes without releasing twice", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-  const from = harness.supabase.from.bind(harness.supabase)
   let fail = true
-  harness.supabase.from = (table) => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => fail && table === "outbox" && query.action === "update" && query.payload?.status === "completed"
-      ? { data: null, error: { message: "Completion unavailable" } } : run()
-    return query
-  }
+  failRpc(harness, "transition_starts_job_lease", (args) => fail && args.p_action === "complete", "Completion unavailable")
   const pipeline = loadPipeline()
   const first = await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })
   assert.equal(first.processed, 0)
@@ -440,13 +434,7 @@ test("failed job completion is reported as failure and resumes without releasing
 
 test("failed retry persistence surfaces to the caller and leaves the job reclaimable", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: async () => { throw new Error("Artifact unavailable") } })
-  const from = harness.supabase.from.bind(harness.supabase)
-  harness.supabase.from = (table) => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => table === "outbox" && query.action === "update" && query.payload?.last_error
-      ? { data: null, error: { message: "Retry persistence unavailable" } } : run()
-    return query
-  }
+  failRpc(harness, "transition_starts_job_lease", (args) => args.p_action === "retry", "Retry persistence unavailable")
   await assert.rejects(loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 }), /Retry persistence unavailable/)
   assert.equal(harness.store.outbox[0].status, "processing")
   assert.equal(harness.store.start_packages[0].status, "releasing")
@@ -479,13 +467,7 @@ test("remaining queue read failures cannot report an empty healthy queue", async
 
 test("exhausted completion-write failures preserve an already released house", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-  const from = harness.supabase.from.bind(harness.supabase)
-  harness.supabase.from = (table) => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => table === "outbox" && query.action === "update" && query.payload?.status === "completed"
-      ? { data: null, error: { message: "Completion unavailable" } } : run()
-    return query
-  }
+  failRpc(harness, "transition_starts_job_lease", (args) => args.p_action === "complete", "Completion unavailable")
   const pipeline = loadPipeline()
   for (let attempt = 0; attempt < 3; attempt += 1) {
     requeue(harness.store)
@@ -938,13 +920,7 @@ test("passed automatic gates are re-derived from current evidence before publica
 
 test("a failed publication emits no release event or user notification", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-  const from = harness.supabase.from.bind(harness.supabase)
-  harness.supabase.from = table => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => table === "start_packages" && query.action === "update" && query.payload?.status === "released"
-      ? { data: null, error: { message: "Publication rejected" } } : run()
-    return query
-  }
+  failRpc(harness, "publish_start_release", () => true, "Publication rejected")
   const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
   assert.equal(summary.failed, 1)
   assert.equal(harness.calls.events.filter(event => event.eventType === "start.released").length, 0)
@@ -1020,14 +996,8 @@ test("confirmation audience read failures remain retryable after publication", a
 
 test("lost job completion reuses release event and per-user notification identities", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
-  const from = harness.supabase.from.bind(harness.supabase)
   let fail = true
-  harness.supabase.from = table => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => fail && table === "outbox" && query.action === "update" && query.payload?.status === "completed"
-      ? { data: null, error: { message: "Lost completion write" } } : run()
-    return query
-  }
+  failRpc(harness, "transition_starts_job_lease", (args) => fail && args.p_action === "complete", "Lost completion write")
   const pipeline = loadPipeline()
   assert.equal((await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5000 })).failed, 1)
   assert.equal(harness.calls.events.filter(event => event.eventType === "start.released").length, 1)

@@ -194,3 +194,19 @@ test("gate refresh checks automatic, inapplicable and restored manual writes", a
     assert.equal(harness.store.start_packages[0].status, "open")
   }
 })
+
+test("the yard lists every lot still waiting for a package, past the first page of lots", async () => {
+  const tables = releasingFixture({ purchasing: false })
+  const community = { name: "Cypress Run", settings: {} }
+  tables.lots = Array.from({ length: 1_100 }, (_, index) => ({
+    id: `lot-${String(index).padStart(4, "0")}`, org_id: ORG, community_id: "community-1", project_id: null,
+    status: "developed", lot_number: String(index).padStart(4, "0"), block: null, community,
+    plan: null, elevation: null, project: null,
+    // The first 600 lots already have a package; only the rest are waiting.
+    packages: index < 600 ? [{ id: `pkg-${index}`, status: "open" }] : [],
+  }))
+  buildHarness({ tables })
+
+  const candidates = await loadStarts().listStartPackageCandidates()
+  assert.equal(candidates.length, 500)
+})

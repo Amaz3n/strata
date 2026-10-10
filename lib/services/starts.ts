@@ -5,6 +5,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
 import { RELEASE_PRODUCED_GATE_KEYS, canAttestFinalApproval, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
@@ -13,7 +14,6 @@ import { requireOrgContext } from "@/lib/services/context"
 import { getReleaseSlotTarget } from "@/lib/services/even-flow"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
-import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requirePermission } from "@/lib/services/permissions"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createProject } from "@/lib/services/projects"
@@ -131,6 +131,27 @@ export interface StartTradeNoticeDTO {
 
 type Relation = Record<string, unknown>
 
+/**
+ * Start packages, their gates and step ledger, and starts jobs are fenced from
+ * the browser role (20261003048000): only a server action that has already
+ * checked the caller may change them. Every write below therefore goes through
+ * the service client, and only after `requireOrgContext` → `requirePermission`
+ * → division access (`loadPackageRow` / `assertStartCommunityAccess`) has run
+ * for the package it touches. Reads stay on the caller's session so RLS still
+ * scopes what they can see. Release controls that race a worker (queue, retry,
+ * cancel) go through RPCs that re-check the actor inside the transaction.
+ */
+function startsWriter() {
+  return createServiceSupabaseClient()
+}
+
+const queueReleaseResultSchema = z.discriminatedUnion("queued", [
+  z.object({ queued: z.literal(true) }),
+  z.object({ queued: z.literal(false), target_week: z.string(), target: z.number(), already_targeted: z.number() }),
+])
+
+const cancelReleaseResultSchema = z.object({ preserved: z.array(z.string()), reset: z.array(z.string()) })
+
 const DEFAULT_GATE_DEFINITIONS = [
   { key: "permit", label: "Permit approved", check_kind: "manual", auto_source: null, applies_when: "always", sort_order: 10 },
   { key: "plot_plan", label: "Plot/site plan on file", check_kind: "auto", auto_source: "plot_plan_file", applies_when: "always", sort_order: 20 },
@@ -185,6 +206,13 @@ function targetCycleDays(settings: unknown): { days: number; configured: boolean
   return { days: DEFAULT_TARGET_CYCLE_DAYS, configured: false }
 }
 
+const SALES_CHUNK = 200
+/**
+ * Lots the yard reads to find the ones still waiting for a package. Past this
+ * the desk refuses instead of counting a sample, like the package counters.
+ */
+const CANDIDATE_LOT_CAP = 5_000
+
 const EMPTY_SALE: StartSaleDTO = { isSold: false, buyerName: null, closingDate: null }
 
 /**
@@ -196,17 +224,25 @@ const EMPTY_SALE: StartSaleDTO = { isSold: false, buyerName: null, closingDate: 
 async function loadSalesByProject(supabase: SupabaseClient, orgId: string, projectIds: Array<string | null>) {
   const unique = Array.from(new Set(projectIds.filter((id): id is string => Boolean(id))))
   if (!unique.length) return new Map<string, StartSaleDTO>()
-  const [contracts, closings] = await Promise.all([
+  // Chunked so a community-wide yard never builds an unbounded `in (...)` URL.
+  const chunks = Array.from({ length: Math.ceil(unique.length / SALES_CHUNK) }, (_, index) => unique.slice(index * SALES_CHUNK, (index + 1) * SALES_CHUNK))
+  const results = await Promise.all(chunks.map((ids) => Promise.all([
     supabase.from("contracts").select("project_id").eq("org_id", orgId)
-      .eq("contract_type", "purchase_agreement").eq("status", "active").in("project_id", unique),
+      .eq("contract_type", "purchase_agreement").eq("status", "active").in("project_id", ids),
     supabase.from("closings").select("project_id,scheduled_date").eq("org_id", orgId)
-      .in("project_id", unique).neq("status", "cancelled").not("scheduled_date", "is", null),
-  ])
-  if (contracts.error) throw new Error(`Failed to load purchase agreements: ${contracts.error.message}`)
-  if (closings.error) throw new Error(`Failed to load closings: ${closings.error.message}`)
-  const sold = new Set((contracts.data ?? []).flatMap((row) => row.project_id ? [row.project_id as string] : []))
+      .in("project_id", ids).neq("status", "cancelled").not("scheduled_date", "is", null),
+  ])))
+  const contractRows: Array<{ project_id: string | null }> = []
+  const closingRows: Array<{ project_id: string; scheduled_date: string }> = []
+  for (const [contracts, closings] of results) {
+    if (contracts.error) throw new Error(`Failed to load purchase agreements: ${contracts.error.message}`)
+    if (closings.error) throw new Error(`Failed to load closings: ${closings.error.message}`)
+    contractRows.push(...(contracts.data ?? []))
+    closingRows.push(...(closings.data ?? []))
+  }
+  const sold = new Set(contractRows.flatMap((row) => row.project_id ? [row.project_id] : []))
   const closingDates = new Map<string, string>()
-  for (const row of closings.data ?? []) {
+  for (const row of closingRows) {
     const current = closingDates.get(row.project_id)
     // Earliest scheduled closing wins — it is the one that constrains the start.
     if (!current || row.scheduled_date < current) closingDates.set(row.project_id, row.scheduled_date)
@@ -382,7 +418,9 @@ async function recomputePackageStatus(supabase: SupabaseClient, orgId: string, p
   }), { isFinanced: pkg.is_financed, purchasingEnabled })
   const nextStatus = readiness.ready ? "ready" : "open"
   if (nextStatus !== pkg.status) {
-    await supabase.from("start_packages").update({ status: nextStatus }).eq("org_id", orgId).eq("id", packageId)
+    const { error } = await startsWriter().from("start_packages").update({ status: nextStatus })
+      .eq("org_id", orgId).eq("id", packageId).in("status", ["open", "ready"])
+    if (error) throw new Error(`Failed to update start package readiness: ${error.message}`)
     if (nextStatus === "ready") await notifyPermissionHolders(supabase, orgId, "start.release", {
       type: "start_package_ready", title: "Start package ready", message: "A start package has cleared its readiness gates.", entityId: packageId,
     })
@@ -517,12 +555,13 @@ export async function refreshAutoGates(packageId: string, orgId?: string): Promi
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   const purchasingEnabled = await loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id)
   const rows = await loadGateRows(context.supabase, context.orgId, packageId)
+  const writer = startsWriter()
   await Promise.all(rows.map(async (row) => {
     const definition = relation(row.definition)
     if (!definition) return
     const updateStatus = async (patch: { status: GateStatus; passed_via: "auto" | null }) => {
-      const { data, error } = await context.supabase.from("start_package_gates").update(patch)
-        .eq("org_id", context.orgId).eq("id", row.id).select("id")
+      const { data, error } = await writer.from("start_package_gates").update(patch)
+        .eq("org_id", context.orgId).eq("start_package_id", packageId).eq("id", row.id).select("id")
       if (error || data?.length !== 1) throw new Error(`Failed to refresh the ${String(definition.key)} gate: ${error?.message ?? "Gate no longer exists"}`)
     }
     const applicable = isGateApplicable({ appliesWhen: definition.applies_when as GateAppliesWhen }, { isFinanced: pkg.is_financed, purchasingEnabled })
@@ -577,7 +616,8 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
     if (projectScopeError) throw new Error(`Failed to scope start project: ${projectScopeError.message}`)
     if (lotLinkError) throw new Error(`Failed to link start project: ${lotLinkError.message}`)
   }
-  const { data: pkg, error: insertError } = await context.supabase.from("start_packages").insert({
+  const writer = startsWriter()
+  const { data: pkg, error: insertError } = await writer.from("start_packages").insert({
     org_id: context.orgId, lot_id: lot.id, community_id: lot.community_id, project_id: projectId,
     is_financed: parsed.isFinanced, target_week: parsed.targetWeek ?? null,
   }).select("*").single()
@@ -585,7 +625,7 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   const { data: definitions, error: definitionsError } = await context.supabase.from("start_gate_definitions").select("id")
     .eq("org_id", context.orgId).eq("is_active", true)
   if (definitionsError) throw new Error(`Failed to load start gates: ${definitionsError.message}`)
-  const { error: gatesError } = await context.supabase.from("start_package_gates").insert((definitions ?? []).map((definition) => ({
+  const { error: gatesError } = await writer.from("start_package_gates").insert((definitions ?? []).map((definition) => ({
     org_id: context.orgId, start_package_id: pkg.id, gate_definition_id: definition.id,
   })))
   if (gatesError) throw new Error(`Failed to initialize start gates: ${gatesError.message}`)
@@ -609,8 +649,10 @@ export async function updateStartPackage(id: string, input: { targetWeek?: strin
     ...(parsed.isFinanced !== undefined ? { is_financed: parsed.isFinanced } : {}),
     ...(parsed.notes !== undefined ? { notes: parsed.notes } : {}),
   }
-  const { data, error } = await context.supabase.from("start_packages").update(patch).eq("org_id", context.orgId).eq("id", id).select("*").single()
+  const { data, error } = await startsWriter().from("start_packages").update(patch)
+    .eq("org_id", context.orgId).eq("id", id).in("status", ["open", "ready"]).select("*").maybeSingle()
   if (error) throw new Error(`Failed to update start package: ${error.message}`)
+  if (!data) throw new Error("Only open or ready packages can be edited.")
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start_package.updated", entityType: "start_package", entityId: id, payload: patch })
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: id, before, after: data })
   await refreshAutoGates(id, context.orgId)
@@ -630,8 +672,8 @@ async function mutateGate(
   const { data: gate, error: gateError } = await context.supabase.from("start_package_gates").select("*,definition:start_gate_definitions!inner(*)")
     .eq("org_id", context.orgId).eq("start_package_id", packageId).eq("id", gateId).maybeSingle()
   if (gateError || !gate) throw new Error("Start gate not found")
-  const { data, error } = await context.supabase.from("start_package_gates").update(patch)
-    .eq("org_id", context.orgId).eq("id", gateId).select("*").single()
+  const { data, error } = await startsWriter().from("start_package_gates").update(patch)
+    .eq("org_id", context.orgId).eq("start_package_id", packageId).eq("id", gateId).select("*").single()
   if (error) throw new Error(`Failed to update start gate: ${error.message}`)
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "start_gate", entityId: gateId, payload: { start_package_id: packageId } }),
@@ -714,7 +756,7 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
     const { error: lotUpdateError } = await context.supabase.from("lots").update({ project_id: project.id, status: "assigned" })
       .eq("org_id", context.orgId).eq("id", pkg.lot_id)
     if (lotUpdateError) throw new Error(`Failed to link start project: ${lotUpdateError.message}`)
-    const { error: packageUpdateError } = await context.supabase.from("start_packages").update({ project_id: project.id })
+    const { error: packageUpdateError } = await startsWriter().from("start_packages").update({ project_id: project.id })
       .eq("org_id", context.orgId).eq("id", packageId)
     if (packageUpdateError) throw new Error(`Failed to link start package: ${packageUpdateError.message}`)
     pkg = { ...pkg, project_id: project.id }
@@ -722,73 +764,21 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
 
   await assertProjectConfiguration(context.orgId, pkg.project_id)
   const target = await getReleaseSlotTarget(context.orgId, pkg.community_id, targetWeek)
-  const now = new Date().toISOString()
-
-  // Claim the package BEFORE counting the week. The old order read the slot,
-  // counted the week, and only then flipped the status — so two coordinators
-  // releasing at the same moment each measured a week that did not yet contain
-  // the other's house and both sailed past the target. Claiming first makes the
-  // count include this release, and makes a second worker on the same package
-  // fail loudly instead of running the orchestration twice.
-  const { data: claimed, error: claimError } = await context.supabase.from("start_packages").update({
-    status: "releasing", scheduled_start_date: parsed.scheduledStartDate, target_week: targetWeek,
-    released_by: context.userId,
-    metadata: { ...(pkg.metadata ?? {}), release_requested_at: now, release_lease_token: null, release_lease_at: null },
-  }).eq("org_id", context.orgId).eq("id", packageId).eq("status", "ready").select("id")
-  if (claimError) throw new Error(`Failed to queue start release: ${claimError.message}`)
-  if (!(claimed ?? []).length) throw new Error("This start package is already being released.")
-
-  async function abandonClaim() {
-    await context.supabase.from("start_packages").update({ status: "ready" })
-      .eq("org_id", context.orgId).eq("id", packageId).eq("status", "releasing")
-  }
-
-  const { count: weekTotal, error: countError } = await context.supabase.from("start_packages")
-    .select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
-    .eq("community_id", pkg.community_id).eq("target_week", targetWeek).in("status", ["releasing", "released"])
-  if (countError) {
-    await abandonClaim()
-    throw new Error(`Failed to check the week's start target: ${countError.message}`)
-  }
-  const alreadyTargeted = Math.max(0, (weekTotal ?? 1) - 1)
-  const overSlot = (weekTotal ?? 0) > target
-  if (overSlot && !parsed.confirmOverSlot) {
-    await abandonClaim()
-    return { requiresConfirm: true, slot: { targetWeek, target, alreadyTargeted } }
-  }
-
-  const stepKeys = ["project", "budget", "schedule", "checklists", "drawings", "pos", "notify_trades", "finalize"]
-  const { data: existingSteps, error: existingStepsError } = await context.supabase.from("start_release_steps")
-    .select("step_key,status").eq("org_id", context.orgId).eq("start_package_id", packageId)
-  if (existingStepsError) {
-    await abandonClaim()
-    throw new Error(`Failed to load release steps: ${existingStepsError.message}`)
-  }
-  // A cancelled release keeps whatever it already committed, so re-releasing
-  // resumes from there rather than re-running instantiation over work that is
-  // already on the house.
-  const settled = new Set((existingSteps ?? []).filter((step) => ["completed", "skipped"].includes(step.status)).map((step) => step.step_key))
-  const { error: stepError } = await context.supabase.from("start_release_steps").upsert(stepKeys
-    .filter((stepKey) => !settled.has(stepKey))
-    .map((stepKey) => ({
-      org_id: context.orgId, start_package_id: packageId, step_key: stepKey,
-      status: stepKey === "project" ? "completed" : "pending",
-      completed_at: stepKey === "project" ? now : null, started_at: null, error: null,
-    })), { onConflict: "start_package_id,step_key" })
-  if (stepError) {
-    await abandonClaim()
-    throw new Error(`Failed to initialize release steps: ${stepError.message}`)
-  }
-  const queued = await enqueueOutboxJob({
-    orgId: context.orgId, jobType: "start_release",
-    payload: { start_package_id: packageId, actor_id: context.userId },
-    dedupeByPayloadKeys: ["start_package_id"], runAt: now,
+  // One transaction claims the package, counts the week WITH this house in it
+  // (serialized against every other release into that week), seeds the step
+  // ledger and queues the job — or, over the slot without confirmation, changes
+  // nothing. Settled steps from a cancelled release are kept, so a re-release
+  // resumes rather than re-running instantiation over work already on the house.
+  const { data, error } = await startsWriter().rpc("queue_start_release", {
+    p_org_id: context.orgId, p_package_id: packageId, p_actor_id: context.userId,
+    p_scheduled_start_date: parsed.scheduledStartDate, p_target_week: targetWeek,
+    p_slot_target: target, p_confirm_over_slot: parsed.confirmOverSlot === true,
   })
-  if (!queued.enqueued && queued.reason === "error") {
-    await abandonClaim()
-    throw new Error("Failed to enqueue start release.")
+  if (error) throw new Error(`Failed to queue start release: ${error.message}`)
+  const queued = queueReleaseResultSchema.parse(data)
+  if (!queued.queued) {
+    return { requiresConfirm: true, slot: { targetWeek: queued.target_week, target: queued.target, alreadyTargeted: queued.already_targeted } }
   }
-  if (overSlot) await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.released_over_slot", entityType: "start_package", entityId: packageId, payload: { target_week: targetWeek, target, already_targeted: alreadyTargeted } })
   void triggerStartsPipeline()
   return { released: true }
 }
@@ -824,23 +814,20 @@ export async function releaseStarts(
   return result
 }
 
+/**
+ * Requeue a release parked in `attention`. The RPC refuses while any attempt is
+ * still queued or claimed, and re-checks the coordinator's authority in the
+ * same transaction that flips the package and requeues the job.
+ */
 export async function retryRelease(packageId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "attention") throw new Error("Only releases needing attention can be retried.")
-  // A worker that died mid-release still holds the lease on the row; a retry is
-  // an explicit human decision that the previous attempt is over.
-  const { error: retryError } = await context.supabase.from("start_packages").update({
-    status: "releasing", released_by: context.userId,
-    metadata: { ...(pkg.metadata ?? {}), release_lease_token: null, release_lease_at: null },
-  }).eq("org_id", context.orgId).eq("id", packageId)
-  if (retryError) throw new Error(`Failed to requeue the release: ${retryError.message}`)
-  const dedupeKey = `start_release:start_package_id:${packageId}`
-  const { data: job } = await context.supabase.from("outbox").select("id").eq("org_id", context.orgId).eq("dedupe_key", dedupeKey).maybeSingle()
-  if (job) await context.supabase.from("outbox").update({ status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString(), payload: { start_package_id: packageId, actor_id: context.userId } }).eq("id", job.id)
-  else await enqueueOutboxJob({ orgId: context.orgId, jobType: "start_release", payload: { start_package_id: packageId, actor_id: context.userId }, dedupeByPayloadKeys: ["start_package_id"] })
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.release_retried", entityType: "start_package", entityId: packageId })
+  const { error } = await startsWriter().rpc("retry_start_release", {
+    p_org_id: context.orgId, p_package_id: packageId, p_actor_id: context.userId,
+  })
+  if (error) throw new Error(`Failed to requeue the release: ${error.message}`)
   void triggerStartsPipeline()
 }
 
@@ -864,31 +851,14 @@ export async function cancelRelease(packageId: string, orgId?: string): Promise<
   await requirePermission("start.release", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (!["releasing", "attention"].includes(pkg.status)) throw new Error("This release is not cancellable.")
-  const { data: steps, error: stepsError } = await context.supabase.from("start_release_steps")
-    .select("step_key,status").eq("org_id", context.orgId).eq("start_package_id", packageId)
-  if (stepsError) throw new Error(`Failed to load release steps: ${stepsError.message}`)
-  const preserved = (steps ?? []).filter((step) => ["completed", "skipped"].includes(step.status)).map((step) => step.step_key)
-  const reset = (steps ?? []).filter((step) => !["completed", "skipped"].includes(step.status)).map((step) => step.step_key)
-  const [packageResult, stepResult, outboxResult] = await Promise.all([
-    context.supabase.from("start_packages").update({
-      status: "ready",
-      metadata: { ...(pkg.metadata ?? {}), release_lease_token: null, release_lease_at: null },
-    }).eq("org_id", context.orgId).eq("id", packageId),
-    reset.length
-      ? context.supabase.from("start_release_steps").update({ status: "pending", error: null, started_at: null, completed_at: null })
-        .eq("org_id", context.orgId).eq("start_package_id", packageId).in("step_key", reset)
-      : Promise.resolve({ error: null }),
-    context.supabase.from("outbox").update({ status: "failed", last_error: "Release cancelled by coordinator" })
-      .eq("org_id", context.orgId).eq("dedupe_key", `start_release:start_package_id:${packageId}`).in("status", ["pending", "processing"]),
-  ])
-  if (packageResult.error) throw new Error(`Failed to cancel the release: ${packageResult.error.message}`)
-  if (stepResult.error) throw new Error(`Failed to reset release steps: ${stepResult.error.message}`)
-  if (outboxResult.error) throw new Error(`Failed to stop the queued release: ${outboxResult.error.message}`)
-  await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.release_cancelled", entityType: "start_package", entityId: packageId, payload: { preserved, reset } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: packageId, before: pkg, after: { status: "ready", release_cancelled: true, preserved_steps: preserved } }),
-  ])
-  return { preserved, reset }
+  // Package, steps and the claimed job change together, and the claim is
+  // revoked in that same transaction: a worker preempted mid-step is refused by
+  // the release fences on its next write instead of landing on a ready package.
+  const { data, error } = await startsWriter().rpc("cancel_start_release", {
+    p_org_id: context.orgId, p_package_id: packageId, p_actor_id: context.userId,
+  })
+  if (error) throw new Error(`Failed to cancel the release: ${error.message}`)
+  return cancelReleaseResultSchema.parse(data)
 }
 
 export async function cancelStartPackage(id: string, { reason }: { reason: string }, orgId?: string) {
@@ -897,8 +867,12 @@ export async function cancelStartPackage(id: string, { reason }: { reason: strin
   const pkg = await loadPackageRow(context.supabase, context.orgId, id)
   if (["releasing", "released"].includes(pkg.status)) throw new Error("A releasing or released start package cannot be cancelled.")
   if (reason.trim().length < 10) throw new Error("Cancellation reason must be at least 10 characters.")
-  const { error } = await context.supabase.from("start_packages").update({ status: "cancelled", metadata: { ...(pkg.metadata ?? {}), cancellation_reason: reason } }).eq("org_id", context.orgId).eq("id", id)
+  const { data: cancelled, error } = await startsWriter().from("start_packages")
+    .update({ status: "cancelled", metadata: { ...(pkg.metadata ?? {}), cancellation_reason: reason } })
+    .eq("org_id", context.orgId).eq("id", id).in("status", ["open", "ready", "attention", "cancelled"]).select("*").maybeSingle()
   if (error) throw new Error(`Failed to cancel start package: ${error.message}`)
+  if (!cancelled) throw new Error("A releasing or released start package cannot be cancelled.")
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: id, before: pkg, after: cancelled })
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start_package.cancelled", entityType: "start_package", entityId: id, payload: { reason } })
 }
 
@@ -1107,8 +1081,9 @@ export async function retryStartTradeNotice(packageId: string, noticeId: string,
   if (readError || !before) throw new Error("Trade notice not found")
   if (before.status !== "failed") throw new Error("Only failed trade notices can be retried")
   const payload = { ...relation(before.payload), actor_id: context.userId }
-  const { data: updated, error } = await context.supabase.from("outbox").update({
+  const { data: updated, error } = await startsWriter().from("outbox").update({
     status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString(), payload,
+    start_claim_token: null, start_job_lease_expires_at: null,
   }).eq("org_id", context.orgId).eq("id", noticeId).eq("job_type", "start_release_trade_notice")
     .eq("payload->>start_package_id", packageId).eq("status", "failed").select("id")
   if (error || updated?.length !== 1) throw new Error(`Unable to retry trade delivery: ${error?.message ?? "Notice state changed; refresh and try again"}`)
@@ -1198,21 +1173,24 @@ export async function listStartPackageCandidates(
   ) {
     return []
   }
-  let query = context.supabase.from("lots").select(`
-    id,lot_number,block,status,community_id,project_id,community:communities!inner(name,settings),
-    plan:house_plans(code,name),elevation:house_plan_elevations(code),
-    project:projects(client:contacts(full_name)),
-    packages:start_packages!start_packages_lot_id_fkey(id,status)
-  `).eq("org_id", context.orgId).in("status", ["developed", "assigned"])
-  if (filters.communityId) query = query.eq("community_id", filters.communityId)
-  if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
-  else if (divisionAccess.assignedOnly) {
-    if (divisionAccess.divisionIds.length === 0) return []
-    query = query.in("division_id", divisionAccess.divisionIds)
-  }
-  const { data, error } = await query.order("lot_number").limit(500)
-  if (error) throw new Error(`Failed to load start-package lots: ${error.message}`)
-  const available = (data ?? []).filter((lot) => !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled"))
+  if (!filters.divisionId && divisionAccess.assignedOnly && divisionAccess.divisionIds.length === 0) return []
+  // Every lot in scope, not a first page: lots that already have a package are
+  // filtered out below, so a fixed page silently dropped waiting lots — and the
+  // sold-but-unpackaged counter the desk derives from them.
+  const lots = await readAllRows((from, to) => {
+    let query = context.supabase.from("lots").select(`
+      id,lot_number,block,status,community_id,project_id,community:communities!inner(name,settings),
+      plan:house_plans(code,name),elevation:house_plan_elevations(code),
+      project:projects(client:contacts(full_name)),
+      packages:start_packages!start_packages_lot_id_fkey(id,status)
+    `).eq("org_id", context.orgId).in("status", ["developed", "assigned"])
+    if (filters.communityId) query = query.eq("community_id", filters.communityId)
+    if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
+    else if (divisionAccess.assignedOnly) query = query.in("division_id", divisionAccess.divisionIds)
+    return query.order("lot_number").order("id").range(from, to)
+  }, { cap: CANDIDATE_LOT_CAP + 1, label: "Failed to load start-package lots" })
+  if (lots.truncated) throw new Error(`More than ${CANDIDATE_LOT_CAP} lots are waiting in scope; narrow the desk by community.`)
+  const available = lots.rows.filter((lot) => !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled"))
   const salesByProject = await loadSalesByProject(context.supabase, context.orgId, available.map((lot) => lot.project_id))
   return available.map((lot) => {
     const community = relation(lot.community)

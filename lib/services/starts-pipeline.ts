@@ -4,9 +4,8 @@ import { loadPurchasingEnabledByCommunity } from "@/lib/services/purchasing-read
 import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { transferLandAtStartForService } from "@/lib/services/books/inventory"
 
-import { randomUUID } from "node:crypto"
-
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
 import { normalizeProductTier } from "@/lib/product-tier"
 import { instantiatePlanForProject, type PlanInstantiationStep } from "@/lib/services/plan-instantiation"
@@ -20,7 +19,7 @@ import { ensureReleaseSlotsForActiveCommunities } from "@/lib/services/even-flow
 import { assertReleaseGateCompletion, assertStartCommunityAccess, syncReleaseProducedGates } from "@/lib/services/starts"
 import { requirePermission } from "@/lib/services/permissions"
 import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { createServiceSupabaseClient, createStartsWorkerSupabaseClient } from "@/lib/supabase/server"
 import { runWithServiceSupabaseClient } from "@/lib/supabase/service-client-context"
 import { sendScheduleChangeDigestJob, sendTradeLookahead } from "@/lib/services/trade-lookahead"
 
@@ -28,19 +27,21 @@ export const START_PIPELINE_JOB_TYPES = ["start_release", "trade_schedule_change
 const RELEASE_STEPS = ["project", "budget", "schedule", "checklists", "drawings", "pos", "notify_trades", "finalize"] as const
 const MAX_JOB_RETRIES = 3
 const HEARTBEAT_SECONDS = 45
-const STALE_PROCESSING_MINUTES = 3
+/** How long a pre-token (legacy `claim_jobs`) claim may sit silent before it is drained. */
+const LEGACY_STALE_PROCESSING_MINUTES = 3
 /** How long a worker's claim on a release survives without a heartbeat. */
 const LEASE_STALE_MINUTES = 5
-/** How long a deferred release waits for the current worker to finish. */
-const LEASE_RETRY_SECONDS = 60
 
-interface ClaimedJob {
-  job_id: number
-  org_id: string
-  job_type: typeof START_PIPELINE_JOB_TYPES[number]
-  payload: Record<string, unknown>
-  retry_count: number
-}
+/** A row from `claim_starts_jobs`: the claim token is the job's ownership. */
+const claimedJobSchema = z.object({
+  job_id: z.number().int().positive(),
+  org_id: z.string(),
+  job_type: z.enum(START_PIPELINE_JOB_TYPES),
+  payload: z.record(z.string(), z.unknown()),
+  retry_count: z.number().int().nonnegative(),
+  claim_token: z.string().uuid(),
+})
+type ClaimedJob = z.infer<typeof claimedJobSchema>
 
 export interface StartsPipelineSummary {
   processed: number
@@ -53,11 +54,18 @@ function requiredString(value: unknown, label: string) {
   return value
 }
 
-async function resetStaleProcessingJobs(supabase: SupabaseClient) {
-  const cutoff = new Date(Date.now() - STALE_PROCESSING_MINUTES * 60_000).toISOString()
-  const { error } = await supabase.from("outbox").update({ status: "pending" })
-    .in("job_type", [...START_PIPELINE_JOB_TYPES]).eq("status", "processing").lt("updated_at", cutoff)
-  if (error) console.warn("[starts-pipeline] Failed to reclaim stale jobs:", error.message)
+/**
+ * Cutover drain. Jobs claimed by the pre-token worker carry no claim token, so
+ * the token reaper (`recover_starts_job_leases`) never sees them; once quiet
+ * they go back to the queue to be claimed under a token. Retire with
+ * `claim_jobs` once production holds no tokenless starts claims.
+ */
+async function drainLegacyProcessingJobs(service: SupabaseClient) {
+  const cutoff = new Date(Date.now() - LEGACY_STALE_PROCESSING_MINUTES * 60_000).toISOString()
+  const { error } = await service.from("outbox").update({ status: "pending" })
+    .in("job_type", [...START_PIPELINE_JOB_TYPES]).eq("status", "processing")
+    .is("start_claim_token", null).lt("updated_at", cutoff)
+  if (error) throw new Error(`Failed to drain legacy starts claims: ${error.message}`)
 }
 
 async function backgroundContext(supabase: SupabaseClient, job: ClaimedJob) {
@@ -78,74 +86,18 @@ function asRecord(value: unknown): Record<string, unknown> {
 /**
  * Only one worker may walk a package's step ledger at a time.
  *
- * `claim_jobs` plus the stale-processing reclaim plus an out-of-band
- * `triggerStartsPipeline` alongside the five-minute cron can all hand the same
- * release to two workers. PO generation fingerprints its inputs so the money
- * path survives that; schedule instantiation, checklist seeding and the step
- * ledger do not — two workers would build the house twice.
- *
- * The lease is a conditional status transition: we CAS on the token we observed,
- * so a worker that took it between our read and our write wins and we back off.
- * A lease with no heartbeat for `LEASE_STALE_MINUTES` is takeable, which is how
- * a worker killed mid-release stops blocking its own retry.
+ * The package lease is held in the name of the job's claim token and moved only
+ * by `transition_starts_package_lease`, which checks the claim is current, the
+ * actor still may release, and any previous holder has gone stale. Every write
+ * this worker makes carries the claim in its request headers, so the release
+ * fences re-check the same facts inside each transaction.
  */
-function leaseState(metadata: unknown, token: string) {
-  const record = asRecord(metadata)
-  const held = typeof record.release_lease_token === "string" ? record.release_lease_token : null
-  const heldAt = typeof record.release_lease_at === "string" ? Date.parse(record.release_lease_at) : Number.NaN
-  const expired = !Number.isFinite(heldAt) || Date.now() - heldAt > LEASE_STALE_MINUTES * 60_000
-  return { held, takeable: held === null || held === token || expired }
-}
-
-async function acquireReleaseLease(
-  supabase: SupabaseClient,
-  orgId: string,
-  packageId: string,
-  metadata: unknown,
-  token: string,
-) {
-  const { held, takeable } = leaseState(metadata, token)
-  if (!takeable) return false
-  const next = { ...asRecord(metadata), release_lease_token: token, release_lease_at: new Date().toISOString() }
-  const base = supabase.from("start_packages").update({ metadata: next })
-    .eq("org_id", orgId).eq("id", packageId).eq("status", "releasing")
-  const { data, error } = await (held === null
-    ? base.is("metadata->>release_lease_token", null)
-    : base.eq("metadata->>release_lease_token", held)).select("id")
-  if (error) throw new Error(`Failed to lease the start release: ${error.message}`)
-  return (data ?? []).length > 0
-}
-
-async function writeReleaseLease(
-  supabase: SupabaseClient,
-  orgId: string,
-  packageId: string,
-  token: string,
-  hold: boolean,
-) {
-  const { data, error } = await supabase.from("start_packages").select("metadata")
-    .eq("org_id", orgId).eq("id", packageId).maybeSingle()
-  if (error) throw new Error(`Failed to read release lease: ${error.message}`)
-  if (!data) return
-  const metadata = asRecord(data.metadata)
-  if (metadata.release_lease_token !== token) return
-  if (hold) {
-    const renewedAt = typeof metadata.release_lease_at === "string" ? Date.parse(metadata.release_lease_at) : Number.NaN
-    if (!Number.isFinite(renewedAt) || Date.now() - renewedAt >= LEASE_STALE_MINUTES * 60_000) {
-      throw new ReleaseLeaseLostError("Expired package lease cannot be renewed")
-    }
-  }
-  const next = {
-    ...asRecord(data.metadata),
-    release_lease_token: hold ? token : null,
-    release_lease_at: hold ? new Date().toISOString() : null,
-  }
-  let query = supabase.from("start_packages").update({ metadata: next })
-    .eq("org_id", orgId).eq("id", packageId).eq("metadata->>release_lease_token", token)
-  if (hold) query = query.eq("metadata->>release_lease_at", String(metadata.release_lease_at))
-  const { data: updated, error: updateError } = await query.select("id")
-  if (updateError) throw new Error(`Failed to write release lease: ${updateError.message}`)
-  if (hold && updated?.length !== 1) throw new ReleaseLeaseLostError("Package lease changed during renewal")
+async function transitionPackageLease(supabase: SupabaseClient, job: ClaimedJob, action: "acquire" | "heartbeat") {
+  const { data, error } = await supabase.rpc("transition_starts_package_lease", {
+    p_org_id: job.org_id, p_job_id: job.job_id, p_token: job.claim_token, p_action: action,
+  })
+  if (error) throw new Error(`Failed to ${action} the start release lease: ${error.message}`)
+  return data === true
 }
 
 async function updateStep(
@@ -249,16 +201,19 @@ type ReleaseOutcome = "completed" | "deferred"
 
 class ReleaseLeaseLostError extends Error {}
 
-async function assertReleaseLease(supabase: SupabaseClient, job: ClaimedJob, packageId: string, token: string) {
+async function assertReleaseLease(supabase: SupabaseClient, job: ClaimedJob, packageId: string) {
+  const token = job.claim_token
   const [{ data: pkg, error: packageError }, { data: queuedJob, error: jobError }] = await Promise.all([
     supabase.from("start_packages").select("status,metadata").eq("org_id", job.org_id).eq("id", packageId).maybeSingle(),
-    supabase.from("outbox").select("status").eq("org_id", job.org_id).eq("id", job.job_id).maybeSingle(),
+    supabase.from("outbox").select("status,start_claim_token,start_job_lease_expires_at").eq("org_id", job.org_id).eq("id", job.job_id).maybeSingle(),
   ])
   if (packageError || jobError) throw new ReleaseLeaseLostError(`Failed to verify release ownership: ${packageError?.message ?? jobError?.message}`)
   const metadata = asRecord(pkg?.metadata)
   const renewedAt = typeof metadata.release_lease_at === "string" ? Date.parse(metadata.release_lease_at) : Number.NaN
   if (pkg?.status !== "releasing" || metadata.release_lease_token !== token || !Number.isFinite(renewedAt)
-    || Date.now() - renewedAt >= LEASE_STALE_MINUTES * 60_000 || queuedJob?.status !== "processing") {
+    || Date.now() - renewedAt >= LEASE_STALE_MINUTES * 60_000 || queuedJob?.status !== "processing"
+    || queuedJob.start_claim_token !== token || typeof queuedJob.start_job_lease_expires_at !== "string"
+    || Date.parse(queuedJob.start_job_lease_expires_at) <= Date.now()) {
     throw new ReleaseLeaseLostError("Release ownership changed or expired; this worker must stop")
   }
 }
@@ -294,7 +249,7 @@ async function assertReleaseCompletion(
   }
 }
 
-async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseToken: string): Promise<ReleaseOutcome> {
+async function executeRelease(supabase: SupabaseClient, job: ClaimedJob): Promise<ReleaseOutcome> {
   const packageId = requiredString(job.payload.start_package_id, "start_package_id")
   const { data: pkg, error: packageError } = await supabase.from("start_packages").select(`
     *, lot:lots!inner(house_plan_version_id,house_plan_elevation_id,swing,status,division_id)
@@ -310,7 +265,7 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
   if (!lot?.house_plan_version_id) throw new Error("Lot has no pinned plan version")
   const access = await assertStartCommunityAccess(supabase, job.org_id, pkg.community_id)
   if (access.assignedOnly && (!lot.division_id || !access.divisionIds.includes(lot.division_id))) throw new Error("Release lot is outside your division access")
-  if (!await acquireReleaseLease(supabase, job.org_id, packageId, pkg.metadata, leaseToken)) return "deferred"
+  if (!await transitionPackageLease(supabase, job, "acquire")) return "deferred"
 
   const { data: version } = await supabase.from("house_plan_versions").select("status")
     .eq("org_id", job.org_id).eq("id", lot.house_plan_version_id).maybeSingle()
@@ -331,7 +286,7 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
     const current = byStep.get(step)
     if (current?.status === "completed" || (step === "pos" && !usePurchasing && current?.status === "skipped"
       && asRecord(current.detail).purchasing_enabled === false)) continue
-    await assertReleaseLease(supabase, job, packageId, leaseToken)
+    await assertReleaseLease(supabase, job, packageId)
     await updateStep(supabase, job.org_id, packageId, step, {
       status: "running", attempt: Number(current?.attempt ?? 0) + 1,
       started_at: new Date().toISOString(), completed_at: null, error: null,
@@ -380,7 +335,7 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
         }))
         let queued = 0
         for (let offset = 0; offset < companyIds.length; offset += 20) {
-          await assertReleaseLease(supabase, job, packageId, leaseToken)
+          await assertReleaseLease(supabase, job, packageId)
           const results = await Promise.all(companyIds.slice(offset, offset + 20).map((companyId) => queuedCompanies.has(companyId)
             ? Promise.resolve({ enqueued: false as const, reason: "duplicate" as const }) : enqueueOutboxJob({
             orgId: job.org_id, jobType: "start_release_trade_notice",
@@ -394,7 +349,7 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
       } else if (step === "finalize") {
         await assertProjectConfiguration(job.org_id, pkg.project_id)
         await transferLandAtStartForService(job.org_id, pkg.lot_id, pkg.scheduled_start_date, requiredString(job.payload.actor_id, "actor_id"))
-        await assertReleaseLease(supabase, job, packageId, leaseToken)
+        await assertReleaseLease(supabase, job, packageId)
         // Every one of these is checked. The old version built a four-write
         // Promise.all and destructured two of them, so the project update and
         // the gate write could both fail with the error thrown away while the
@@ -409,14 +364,14 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
         // Derived from what actually landed rather than force-passed: a skipped
         // PO step must not leave an audit trail asserting a PO set exists.
         const producedGates = await syncReleaseProducedGates(supabase, job.org_id, packageId, { projectId: pkg.project_id, lotId: pkg.lot_id })
-        await assertReleaseLease(supabase, job, packageId, leaseToken)
+        await assertReleaseLease(supabase, job, packageId)
         detail = { project_id: pkg.project_id, actual_start_date: pkg.scheduled_start_date, gates: producedGates }
       }
-      await assertReleaseLease(supabase, job, packageId, leaseToken)
+      await assertReleaseLease(supabase, job, packageId)
       await updateStep(supabase, job.org_id, packageId, step, { status: "completed", completed_at: new Date().toISOString(), error: null, detail })
     } catch (error) {
       if (error instanceof ReleaseLeaseLostError) throw error
-      await assertReleaseLease(supabase, job, packageId, leaseToken)
+      await assertReleaseLease(supabase, job, packageId)
       const message = error instanceof Error ? error.message : String(error)
       await updateStep(supabase, job.org_id, packageId, step, { status: "failed", completed_at: new Date().toISOString(), error: message })
       throw error
@@ -425,17 +380,18 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
   // Publish only after the artifacts and durable step ledger have succeeded.
   // A failed final write leaves a releasing package that can resume without
   // treating a partial project/lot update as an already completed release.
-  await assertReleaseLease(supabase, job, packageId, leaseToken)
+  await assertReleaseLease(supabase, job, packageId)
   await assertReleaseCompletion(supabase, job.org_id, packageId, pkg.project_id, pkg.lot_id, pkg.scheduled_start_date, usePurchasing)
   await assertReleaseGateCompletion(supabase, job.org_id, packageId, {
     projectId: pkg.project_id, lotId: pkg.lot_id, communityId: pkg.community_id, startDate: pkg.scheduled_start_date, purchasingEnabled: usePurchasing,
   })
-  await assertReleaseLease(supabase, job, packageId, leaseToken)
-  const { data: published, error: publishError } = await supabase.from("start_packages")
-    .update({ status: "released", released_at: new Date().toISOString(), released_by: requiredString(job.payload.actor_id, "actor_id"), actual_start_date: pkg.scheduled_start_date })
-    .eq("org_id", job.org_id).eq("id", packageId).eq("status", "releasing")
-    .eq("metadata->>release_lease_token", leaseToken).select("id")
-  if (publishError || published?.length !== 1) throw new Error(`Failed to publish start release: ${publishError?.message ?? "Release lease or package state changed"}`)
+  await assertReleaseLease(supabase, job, packageId)
+  // The package turns released and its audit record lands in one transaction,
+  // under the claim, after the actor's authority is re-checked.
+  const { error: publishError } = await supabase.rpc("publish_start_release", {
+    p_org_id: job.org_id, p_job_id: job.job_id, p_token: job.claim_token,
+  })
+  if (publishError) throw new Error(`Failed to publish start release: ${publishError.message}`)
   await confirmReleasedPackage(supabase, job, { ...pkg, actual_start_date: pkg.scheduled_start_date, released_by: requiredString(job.payload.actor_id, "actor_id") })
   return "completed"
 }
@@ -464,26 +420,38 @@ async function processReleaseTradeNotice(supabase: SupabaseClient, job: ClaimedJ
   return "completed"
 }
 
-async function transitionJob(supabase: SupabaseClient, job: ClaimedJob, patch: Record<string, unknown>) {
-  const { data, error } = await supabase.from("outbox").update(patch)
-    .eq("org_id", job.org_id).eq("id", job.job_id).eq("status", "processing")
-    .select("id")
-  if (error || data?.length !== 1) throw new Error(`Failed to persist starts job ${patch.status}: ${error?.message ?? "Job is no longer processing"}`)
+type ClaimTransition = "heartbeat" | "defer" | "complete" | "retry"
+
+/**
+ * Every change to a claimed job goes through `transition_starts_job_lease`,
+ * which acts only for the current, unexpired claim token. `false` means this
+ * worker no longer owns the job (the reaper reclaimed it, or a coordinator
+ * cancelled the release) and must not report an outcome for it.
+ */
+async function transitionClaim(service: SupabaseClient, job: ClaimedJob, action: ClaimTransition, failure?: string) {
+  const { data, error } = await service.rpc("transition_starts_job_lease", {
+    p_org_id: job.org_id, p_id: job.job_id, p_token: job.claim_token, p_action: action, p_error: failure ?? null,
+  })
+  if (error) throw new Error(`Failed to persist starts job ${action}: ${error.message}`)
+  return data === true
 }
 
-async function markTerminalFailure(supabase: SupabaseClient, job: ClaimedJob, message: string, leaseToken: string) {
+/**
+ * The final retry parks the package in the claim transition itself, and only
+ * when this claim held its lease or nobody did. Reporting follows what the
+ * transition actually did: a house another worker holds, or one already
+ * released, raises no failure.
+ */
+async function reportTerminalFailure(service: SupabaseClient, job: ClaimedJob, message: string) {
   if (job.job_type !== "start_release") return
   const packageId = typeof job.payload.start_package_id === "string" ? job.payload.start_package_id : null
   if (!packageId) return
-  const { data: parked, error: parkError } = await supabase.from("start_packages").update({ status: "attention" })
-    .eq("org_id", job.org_id).eq("id", packageId).eq("status", "releasing")
-    .or(`metadata->>release_lease_token.is.null,metadata->>release_lease_token.eq.${leaseToken}`).select("id")
-  if (parkError) throw new Error(`Failed to flag unsuccessful start release: ${parkError.message}`)
-  // A completion-write failure can exhaust retries after the house was released.
-  // Preserve that release and do not emit a false house-release failure event.
-  if (!parked?.length) return
+  const { data: pkg, error } = await service.from("start_packages").select("status")
+    .eq("org_id", job.org_id).eq("id", packageId).maybeSingle()
+  if (error) throw new Error(`Failed to read the unsuccessful start release: ${error.message}`)
+  if (pkg?.status !== "attention") return
   await recordEvent({ orgId: job.org_id, actorId: typeof job.payload.actor_id === "string" ? job.payload.actor_id : null, eventType: "start.release_failed", entityType: "start_package", entityId: packageId, payload: { error: message } })
-  const { data: recipients } = await supabase.from("memberships").select("user_id,role:roles!inner(permissions:role_permissions!inner(permission_key))")
+  const { data: recipients } = await service.from("memberships").select("user_id,role:roles!inner(permissions:role_permissions!inner(permission_key))")
     .eq("org_id", job.org_id).eq("status", "active").eq("role.permissions.permission_key", "start.release")
   const notifications = new NotificationService()
   await Promise.allSettled(Array.from(new Set((recipients ?? []).map((row) => row.user_id))).map((userId) => notifications.createAndQueue({
@@ -492,80 +460,71 @@ async function markTerminalFailure(supabase: SupabaseClient, job: ClaimedJob, me
   })))
 }
 
-async function processJob(supabase: SupabaseClient, job: ClaimedJob) {
-  const leaseToken = randomUUID()
-  const packageId = typeof job.payload.start_package_id === "string" ? job.payload.start_package_id : null
+/**
+ * A release runs on a client that carries its claim (`x-starts-job-id` /
+ * `x-starts-claim-token`), so every package, ledger, home, lot, artifact and
+ * child-job write is fenced to this claim, this package's lease and the
+ * actor's current authority. Trade notices write nothing the release fences
+ * own; their ownership is the claim token on their own job.
+ */
+async function processJob(service: SupabaseClient, job: ClaimedJob) {
+  const supabase = job.job_type === "start_release" ? createStartsWorkerSupabaseClient(job.job_id, job.claim_token) : service
   const heartbeat = setInterval(() => {
-    // PostgREST builders are lazy: voiding a builder does not send a request.
     void (async () => {
-      const { error } = await supabase.from("outbox").update({ updated_at: new Date().toISOString() })
-        .eq("org_id", job.org_id).eq("id", job.job_id).eq("status", "processing")
-      if (error) throw new Error(error.message)
-    })().catch((error) => console.warn("[starts-pipeline] Failed to renew job heartbeat:", error))
-    if (job.job_type === "start_release" && packageId) {
-      void writeReleaseLease(supabase, job.org_id, packageId, leaseToken, true)
-        .catch((error) => console.warn("[starts-pipeline] Failed to renew package lease:", error))
-    }
+      if (!await transitionClaim(service, job, "heartbeat")) return
+      if (job.job_type === "start_release") await transitionPackageLease(service, job, "heartbeat")
+    })().catch((error) => console.warn("[starts-pipeline] Failed to renew starts claim:", error))
   }, HEARTBEAT_SECONDS * 1000)
   try {
     const context = await backgroundContext(supabase, job)
     const outcome = await runWithServiceSupabaseClient(supabase, () => runWithServiceOrgContext(context, async (): Promise<ReleaseOutcome> => {
       await requirePermission(job.job_type === "start_release" ? "start.release" : "start.write", context)
-      if (job.job_type === "start_release") return await executeRelease(supabase, job, leaseToken)
+      if (job.job_type === "start_release") return await executeRelease(supabase, job)
       if (job.job_type === "start_release_trade_notice") return await processReleaseTradeNotice(supabase, job)
       await processScheduleChangeNotice(supabase, job)
       return "completed"
     }))
-    if (outcome === "deferred") {
-      // Another worker holds this package. That is not a failure and must not
-      // burn a retry — come back once its lease has had time to finish or go stale.
-      await transitionJob(supabase, job, {
-        status: "pending", run_at: new Date(Date.now() + LEASE_RETRY_SECONDS * 1000).toISOString(),
-      })
-      return true
-    }
-    await transitionJob(supabase, job, { status: "completed", last_error: null })
-    return true
+    // Another worker holds the package: not a failure, and it must not burn a
+    // retry — the claim comes back once that lease has finished or gone stale.
+    const owned = await transitionClaim(service, job, outcome === "deferred" ? "defer" : "complete")
+    if (!owned) console.warn("[starts-pipeline] Starts claim was lost before its outcome was recorded:", job.job_id)
+    return owned
   } catch (error) {
     if (error instanceof ReleaseLeaseLostError) {
       console.warn("[starts-pipeline] Stopping worker after release ownership loss:", job.job_id, error.message)
       return false
     }
+    // A lost completion write lands here too: the retry re-enters a released
+    // package, which only re-runs its idempotent confirmation.
     const message = error instanceof Error ? error.message : String(error)
-    const retryCount = job.retry_count + 1
-    const retry = retryCount < MAX_JOB_RETRIES
-    await transitionJob(supabase, job, {
-      status: retry ? "pending" : "failed", retry_count: retryCount, last_error: message,
-      run_at: retry ? new Date(Date.now() + Math.pow(2, retryCount) * 60_000).toISOString() : undefined,
-    })
-    if (!retry) await markTerminalFailure(supabase, job, message, leaseToken)
+    if (await transitionClaim(service, job, "retry", message) && job.retry_count + 1 >= MAX_JOB_RETRIES) {
+      await reportTerminalFailure(service, job, message)
+    }
     return false
   } finally {
     clearInterval(heartbeat)
-    if (job.job_type === "start_release" && packageId) {
-      await writeReleaseLease(supabase, job.org_id, packageId, leaseToken, false)
-        .catch((error) => console.warn("[starts-pipeline] Failed to clear package lease:", error))
-    }
   }
 }
 
 export async function runStartsPipeline(options: { deadlineMs?: number } = {}): Promise<StartsPipelineSummary> {
-  const supabase = createServiceSupabaseClient()
+  const service = createServiceSupabaseClient()
   const deadline = options.deadlineMs ?? Date.now() + 240_000
   const summary = { processed: 0, failed: 0, remaining: 0 }
-  await resetStaleProcessingJobs(supabase)
+  await drainLegacyProcessingJobs(service)
+  const { error: recoverError } = await service.rpc("recover_starts_job_leases", { p_limit: 500 })
+  if (recoverError) throw new Error(`Failed to recover expired starts claims: ${recoverError.message}`)
   while (Date.now() < deadline) {
-    const { data, error } = await supabase.rpc("claim_jobs", { job_types: [...START_PIPELINE_JOB_TYPES], limit_value: 2 })
+    const { data, error } = await service.rpc("claim_starts_jobs", { p_limit: 2 })
     if (error) throw new Error(`Failed to claim starts jobs: ${error.message}`)
-    const jobs = (data ?? []) as ClaimedJob[]
+    const jobs = z.array(claimedJobSchema).parse(data ?? [])
     if (!jobs.length) break
     for (const job of jobs) {
-      if (await processJob(supabase, job)) summary.processed += 1
+      if (await processJob(service, job)) summary.processed += 1
       else summary.failed += 1
       if (Date.now() >= deadline) break
     }
   }
-  const { count, error: countError } = await supabase.from("outbox").select("id", { count: "exact", head: true })
+  const { count, error: countError } = await service.from("outbox").select("id", { count: "exact", head: true })
     .in("job_type", [...START_PIPELINE_JOB_TYPES]).eq("status", "pending").lte("run_at", new Date().toISOString())
   if (countError || count === null) throw new Error(`Failed to count remaining starts jobs: ${countError?.message ?? "Count unavailable"}`)
   summary.remaining = count
