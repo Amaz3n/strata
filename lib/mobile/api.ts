@@ -6,6 +6,8 @@ export class MobileAPIError extends Error {
     readonly code: string,
     message: string,
     readonly details?: Record<string, string>,
+    /** On a 409 stale write: the record as it stands now, so the app can resolve. */
+    readonly current?: unknown,
   ) {
     super(message)
     this.name = "MobileAPIError"
@@ -58,6 +60,7 @@ export function mobileErrorResponse(error: unknown, requestId: string) {
         code: normalized.code,
         message: normalized.message,
         ...(normalized.details ? { details: normalized.details } : {}),
+        ...(normalized.current !== undefined ? { current: normalized.current } : {}),
       },
       request_id: requestId,
     },

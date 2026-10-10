@@ -17,7 +17,7 @@ stubModule("lib/storage/files-storage.ts", {
   },
 })
 
-const { uploadMobileDailyLogPhoto } = freshRequire("lib/mobile/daily-logs.ts")
+const { updateMobileDailyLog, uploadMobileDailyLogPhoto } = freshRequire("lib/mobile/daily-logs.ts")
 
 const PROJECT = id(1)
 const OTHER_PROJECT = id(2)
@@ -89,5 +89,53 @@ describe("retrying a daily-log photo upload", () => {
       )
       assert.deepEqual(service.writes(), [])
     }
+  })
+})
+
+describe("editing a daily log from a queued offline change", () => {
+  const SAVED = "2026-10-09T10:00:00.123456+00:00"
+
+  function editHarness() {
+    const service = createServiceHarness({
+      permissions: ["project.read", "daily_log.read", "daily_log.write"],
+      tables: {
+        projects: [project(PROJECT)],
+        daily_logs: [
+          { id: LOG, org_id: ORG, project_id: PROJECT, log_date: "2026-10-09", summary: "Framing", weather: null, updated_at: SAVED },
+        ],
+      },
+    })
+    service.context = mobileContext(service)
+    return service
+  }
+
+  const edit = (service, input) => service.run(() => updateMobileDailyLog(service.context, PROJECT, LOG, input))
+
+  test("an edit made against the current revision is saved, even when the app trimmed the timestamp to milliseconds", async () => {
+    const service = editHarness()
+
+    const log = await edit(service, { summary: "Framing done", expected_revision: "2026-10-09T10:00:00.123Z" })
+
+    assert.equal(log.summary, "Framing done")
+  })
+
+  test("an edit made against an older revision is refused with the log as it now stands", async () => {
+    const service = editHarness()
+
+    await assert.rejects(edit(service, { summary: "Stale", expected_revision: "2026-10-09T09:00:00.000Z" }), (error) => {
+      assert.equal(error.status, 409)
+      assert.equal(error.code, "stale_revision")
+      assert.equal(error.current.summary, "Framing")
+      return true
+    })
+    assert.deepEqual(service.writes("daily_logs"), [])
+  })
+
+  test("an edit that names no revision still saves", async () => {
+    const service = editHarness()
+
+    const log = await edit(service, { summary: "Older app build" })
+
+    assert.equal(log.summary, "Older app build")
   })
 })

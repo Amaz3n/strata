@@ -3,6 +3,7 @@ import { z } from "zod"
 import { MobileAPIError } from "@/lib/mobile/api"
 import type { MobileOrgContext } from "@/lib/mobile/auth"
 import type { MobilePunchItemDTO, MobileTaskDTO } from "@/lib/mobile/contracts"
+import { revisionMatches, staleRevisionError } from "@/lib/mobile/revision"
 import { listProjects } from "@/lib/services/projects"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -15,6 +16,10 @@ async function requireProject(context: MobileOrgContext, projectId: string) {
   if (!project) throw new MobileAPIError(404, "project_not_found", "Project not found.")
   return project
 }
+
+const TASK_SELECT =
+  "id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at, " +
+        "task_assignments(user:app_users!task_assignments_user_id_fkey(full_name, email), contact:contacts!task_assignments_contact_id_fkey(full_name))"
 
 function mapTask(row: any): MobileTaskDTO {
   const assignees: string[] = []
@@ -43,10 +48,7 @@ export async function listMobileTasks(context: MobileOrgContext, projectId: stri
   await requireProject(context, projectId)
   const { data, error } = await context.serviceSupabase
     .from("tasks")
-    .select(
-      "id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at, " +
-        "task_assignments(user:app_users!task_assignments_user_id_fkey(full_name, email), contact:contacts!task_assignments_contact_id_fkey(full_name))",
-    )
+    .select(TASK_SELECT)
     .eq("org_id", context.orgId)
     .eq("project_id", projectId)
     .order("status", { ascending: true })
@@ -57,7 +59,24 @@ export async function listMobileTasks(context: MobileOrgContext, projectId: stri
   return (data ?? []).map(mapTask)
 }
 
-const taskUpdateSchema = z.object({ status: z.enum(TASK_STATUSES) })
+const taskUpdateSchema = z.object({
+  status: z.enum(TASK_STATUSES),
+  // The task's `updated_at` as the app last read it. Optional so builds that
+  // predate it keep working; when present, a stale write is refused with 409.
+  expected_revision: z.string().max(100).optional(),
+})
+
+async function readTaskRow(context: MobileOrgContext, projectId: string, taskId: string) {
+  const { data, error } = await context.serviceSupabase
+    .from("tasks")
+    .select(TASK_SELECT)
+    .eq("org_id", context.orgId)
+    .eq("project_id", projectId)
+    .eq("id", taskId)
+    .maybeSingle()
+  if (error) throw new MobileAPIError(500, "task_update_failed", "The task could not be updated.")
+  return data
+}
 
 export async function updateMobileTaskStatus(
   context: MobileOrgContext,
@@ -72,19 +91,30 @@ export async function updateMobileTaskStatus(
   const update: Record<string, unknown> = { status: parsed.data.status }
   update.completed_at = parsed.data.status === "done" ? new Date().toISOString() : null
 
-  const { data, error } = await context.serviceSupabase
+  // With an expected revision the write is compare-and-swap on the stored
+  // `updated_at`, so a change landing between the check and the write loses.
+  let guard: string | null = null
+  if (parsed.data.expected_revision) {
+    const current = await readTaskRow(context, projectId, taskId)
+    if (!current) throw new MobileAPIError(404, "task_not_found", "Task not found.")
+    if (!revisionMatches(parsed.data.expected_revision, current.updated_at)) throw staleRevisionError("task", mapTask(current))
+    guard = current.updated_at
+  }
+
+  let query = context.serviceSupabase
     .from("tasks")
     .update(update)
     .eq("org_id", context.orgId)
     .eq("project_id", projectId)
     .eq("id", taskId)
-    .select(
-      "id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at, " +
-        "task_assignments(user:app_users!task_assignments_user_id_fkey(full_name, email), contact:contacts!task_assignments_contact_id_fkey(full_name))",
-    )
-    .maybeSingle()
+  if (guard) query = query.eq("updated_at", guard)
+  const { data, error } = await query.select(TASK_SELECT).maybeSingle()
   if (error) throw new MobileAPIError(500, "task_update_failed", "The task could not be updated.")
-  if (!data) throw new MobileAPIError(404, "task_not_found", "Task not found.")
+  if (!data) {
+    const current = guard ? await readTaskRow(context, projectId, taskId) : null
+    if (current) throw staleRevisionError("task", mapTask(current))
+    throw new MobileAPIError(404, "task_not_found", "Task not found.")
+  }
 
   await Promise.all([
     recordAudit({ orgId: context.orgId, actorId: context.user.id, action: "update", entityType: "task", entityId: taskId, after: { status: parsed.data.status } }),
@@ -92,6 +122,8 @@ export async function updateMobileTaskStatus(
   ])
   return mapTask(data)
 }
+
+const PUNCH_SELECT = "id, project_id, title, description, status, due_date, severity, location, resolved_at, updated_at"
 
 function mapPunch(row: any): MobilePunchItemDTO {
   return {
@@ -104,6 +136,7 @@ function mapPunch(row: any): MobilePunchItemDTO {
     location: row.location ?? null,
     due_date: row.due_date ?? null,
     resolved_at: row.resolved_at ?? null,
+    updated_at: row.updated_at ?? null,
   }
 }
 
@@ -111,7 +144,7 @@ export async function listMobilePunchItems(context: MobileOrgContext, projectId:
   await requireProject(context, projectId)
   const { data, error } = await context.serviceSupabase
     .from("punch_items")
-    .select("id, project_id, title, description, status, due_date, severity, location, resolved_at")
+    .select(PUNCH_SELECT)
     .eq("org_id", context.orgId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false })
@@ -120,7 +153,11 @@ export async function listMobilePunchItems(context: MobileOrgContext, projectId:
   return (data ?? []).map(mapPunch)
 }
 
-const punchUpdateSchema = z.object({ status: z.enum(PUNCH_STATUSES) })
+const punchUpdateSchema = z.object({
+  status: z.enum(PUNCH_STATUSES),
+  // The punch item's `updated_at` as the app last read it; see taskUpdateSchema.
+  expected_revision: z.string().max(100).optional(),
+})
 
 export async function updateMobilePunchStatus(
   context: MobileOrgContext,
@@ -131,6 +168,19 @@ export async function updateMobilePunchStatus(
   await requireProject(context, projectId)
   const parsed = punchUpdateSchema.safeParse(input)
   if (!parsed.success) throw new MobileAPIError(422, "invalid_punch_item", "A valid status is required.")
+
+  if (parsed.data.expected_revision) {
+    const { data: current, error } = await context.serviceSupabase
+      .from("punch_items")
+      .select(PUNCH_SELECT)
+      .eq("org_id", context.orgId)
+      .eq("project_id", projectId)
+      .eq("id", punchItemId)
+      .maybeSingle()
+    if (error) throw new MobileAPIError(500, "punch_update_failed", "The punch item could not be updated.")
+    if (!current) throw new MobileAPIError(404, "punch_item_not_found", "Punch item not found.")
+    if (!revisionMatches(parsed.data.expected_revision, current.updated_at)) throw staleRevisionError("punch item", mapPunch(current))
+  }
 
   // Use the web's canonical lifecycle so verification stamps, rejected work,
   // audit history and dispatch behavior remain consistent across devices.

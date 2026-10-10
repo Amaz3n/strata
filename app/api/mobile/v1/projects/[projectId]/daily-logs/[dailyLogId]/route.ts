@@ -1,5 +1,6 @@
 import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
 import { requireMobileOrg } from "@/lib/mobile/auth"
+import { idempotentResponse, runIdempotent } from "@/lib/mobile/idempotency"
 import { deleteMobileDailyLog, updateMobileDailyLog } from "@/lib/mobile/daily-logs"
 
 
@@ -8,7 +9,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
   try {
     const context = await requireMobileOrg(request)
     const { projectId, dailyLogId } = await params
-    return mobileDataResponse(await updateMobileDailyLog(context, projectId, dailyLogId, await request.json().catch(() => null)), requestId)
+    const body = await request.json().catch(() => null)
+    return idempotentResponse(await runIdempotent(context, request, body, () => updateMobileDailyLog(context, projectId, dailyLogId, body)), requestId)
   } catch (error) {
     return mobileErrorResponse(error, requestId)
   }

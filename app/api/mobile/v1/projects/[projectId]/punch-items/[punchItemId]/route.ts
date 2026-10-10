@@ -1,5 +1,6 @@
-import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
+import { mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
 import { requireMobileOrg } from "@/lib/mobile/auth"
+import { idempotentResponse, runIdempotent } from "@/lib/mobile/idempotency"
 import { updateMobilePunchStatus } from "@/lib/mobile/field"
 
 
@@ -12,7 +13,7 @@ export async function PATCH(
     const context = await requireMobileOrg(request)
     const { projectId, punchItemId } = await params
     const body = await request.json().catch(() => null)
-    return mobileDataResponse(await updateMobilePunchStatus(context, projectId, punchItemId, body), requestId)
+    return idempotentResponse(await runIdempotent(context, request, body, () => updateMobilePunchStatus(context, projectId, punchItemId, body)), requestId)
   } catch (error) {
     return mobileErrorResponse(error, requestId)
   }

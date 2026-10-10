@@ -323,6 +323,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/OrganizationHeader"
         - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -349,8 +350,25 @@ paths:
         - $ref: "#/components/parameters/OrganizationHeader"
         - $ref: "#/components/parameters/ProjectId"
         - $ref: "#/components/parameters/DailyLogId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                summary: { type: string }
+                weather: { type: string }
+                mentioned_user_ids: { type: array, items: { type: string, format: uuid } }
+                expected_revision:
+                  type: string
+                  description: >
+                    The record's `updated_at` exactly as the app last received
+                    it. Optional; when sent, a record that has changed since is
+                    refused with 409 `stale_revision` and nothing is written.
       responses:
         "200": { description: Updated daily log }
+        "409": { $ref: "#/components/responses/StaleRevision" }
     delete:
       summary: Delete a daily log
       parameters:
@@ -366,6 +384,7 @@ paths:
         - $ref: "#/components/parameters/OrganizationHeader"
         - $ref: "#/components/parameters/ProjectId"
         - $ref: "#/components/parameters/DailyLogId"
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "201": { description: Comment created }
   /projects/{projectId}/daily-logs/{dailyLogId}/photos:
@@ -450,6 +469,7 @@ paths:
         - $ref: "#/components/parameters/OrganizationHeader"
         - $ref: "#/components/parameters/ProjectId"
         - { name: taskId, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -459,8 +479,15 @@ paths:
               required: [status]
               properties:
                 status: { type: string, enum: [todo, in_progress, blocked, done] }
+                expected_revision:
+                  type: string
+                  description: >
+                    The record's `updated_at` exactly as the app last received
+                    it. Optional; when sent, a record that has changed since is
+                    refused with 409 `stale_revision` and nothing is written.
       responses:
         "200": { description: Updated task }
+        "409": { $ref: "#/components/responses/StaleRevision" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Task not found }
@@ -589,6 +616,7 @@ paths:
         - $ref: "#/components/parameters/OrganizationHeader"
         - $ref: "#/components/parameters/ProjectId"
         - { name: punchItemId, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -598,8 +626,15 @@ paths:
               required: [status]
               properties:
                 status: { type: string, enum: [open, in_progress, ready_for_review, closed] }
+                expected_revision:
+                  type: string
+                  description: >
+                    The record's `updated_at` exactly as the app last received
+                    it. Optional; when sent, a record that has changed since is
+                    refused with 409 `stale_revision` and nothing is written.
       responses:
-        "200": { description: Updated punch item }
+        "200": { description: Updated punch item (includes `updated_at`, the revision to send back) }
+        "409": { $ref: "#/components/responses/StaleRevision" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Punch item not found }
@@ -921,6 +956,21 @@ components:
       in: header
       required: true
       schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        A client-generated key (at most 200 characters) that is stable across
+        retries of one queued mutation. The first request with a key is applied
+        and its result stored for 30 days. A replay with the same key and the
+        same body returns that stored result without applying it again, with an
+        `Idempotent-Replay: true` response header. The same key with a different
+        method, path or body is a 409 `idempotency_key_reuse`; the same key
+        while the first request is still running is a 409
+        `idempotency_in_progress` (retry shortly). Failed requests are not
+        stored, so a retry after an error runs again. Sent by the offline queue.
+      schema: { type: string, maxLength: 200 }
     ProjectId:
       name: projectId
       in: path
@@ -937,6 +987,16 @@ components:
       required: true
       schema: { type: string, format: uuid }
   responses:
+    StaleRevision:
+      description: >
+        `expected_revision` no longer matches the record (`stale_revision`), or
+        the Idempotency-Key conflicts (`idempotency_key_reuse`,
+        `idempotency_in_progress`). A `stale_revision` error carries the
+        record as it stands now in `error.current`, so the app can show the
+        difference and let the user re-apply or discard the queued change.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     BadRequest:
       description: Invalid request
       content:
@@ -1050,4 +1110,6 @@ components:
             details:
               type: object
               additionalProperties: { type: string }
+            current:
+              description: On a 409 `stale_revision`, the record as it stands now (same shape as the endpoint's success response).
         request_id: { type: string }

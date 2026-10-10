@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { MobileAPIError, mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
 import { requireMobileOrg } from "@/lib/mobile/auth"
+import { idempotentResponse, runIdempotent } from "@/lib/mobile/idempotency"
 import { loadWorkspaceModule, createWorkspaceRecord } from "@/lib/mobile/workspace"
 export async function GET(request: Request, { params }: { params: Promise<{ module: string }> }) {
   const requestId = mobileRequestId(request)
@@ -18,8 +19,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ mod
   try {
     const context = await requireMobileOrg(request), { module } = await params
     const input = z.object({ project_id: z.string().uuid().optional(), values: z.record(z.string().max(10000)) }).parse(await request.json())
-    await createWorkspaceRecord(context, module, input.project_id, input.values)
-    return mobileDataResponse({ saved: true }, requestId, { status: 201 })
+    const result = await runIdempotent(context, request, input, async () => {
+      await createWorkspaceRecord(context, module, input.project_id, input.values)
+      return { saved: true }
+    })
+    return idempotentResponse(result, requestId, 201)
   } catch (error) {
     if (error instanceof z.ZodError) return mobileErrorResponse(new MobileAPIError(422, "invalid_input", error.issues[0]?.message ?? "Check the entered values."), requestId)
     return mobileErrorResponse(error, requestId)
