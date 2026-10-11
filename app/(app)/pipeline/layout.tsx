@@ -8,18 +8,24 @@ import { PipelineShell } from "@/components/pipeline/pipeline-shell";
 import { getBusinessProfile } from "@/lib/services/business-profile";
 import { getOrgProductTier } from "@/lib/services/context";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
+import { shouldShowCustomBuildNavigation } from "@/lib/product-tier";
+import { orgHasActiveNonProductionProjects } from "@/lib/services/production-desk-scope";
 import { listPipelineDeals } from "@/lib/services/precon-deals";
 
 async function PipelineDeals() {
   await connection();
-  const [productTier, profile, data, permissions] = await Promise.all([
+  const [productTier, hasActiveNonProductionProjects, profile, data, permissions] = await Promise.all([
     getOrgProductTier(),
+    orgHasActiveNonProductionProjects(),
     getBusinessProfile(),
     listPipelineDeals(),
     getCurrentUserPermissions(),
   ]);
-  // Production builders sell lots from the Sales desk, which owns those deals.
-  if (productTier === "production" && profile.kind !== "trade") redirect("/sales");
+  // Production builders sell lots from the Sales desk, which owns those deals —
+  // unless the org also runs custom work, which still sells through the pipeline.
+  if (!shouldShowCustomBuildNavigation(productTier, hasActiveNonProductionProjects) && profile.kind !== "trade") {
+    redirect("/sales");
+  }
   const granted = permissions?.permissions ?? [];
   return (
     <PipelineList

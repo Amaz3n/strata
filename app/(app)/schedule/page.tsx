@@ -1,5 +1,5 @@
 import { connection } from "next/server"
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { ScheduleSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import Link from "next/link"
 import {
@@ -951,7 +951,7 @@ async function SchedulePageContent({
 
 export default function SchedulePage(props: Parameters<typeof SchedulePageContent>[0]) {
   return (
-    <Suspense fallback={<PageLayout title="Schedule" fullBleed><PageLoadingSkeleton /></PageLayout>}>
+    <Suspense fallback={<PageLayout title="Schedule" fullBleed><ScheduleSkeleton /></PageLayout>}>
       <SchedulePageContent {...props} />
     </Suspense>
   )

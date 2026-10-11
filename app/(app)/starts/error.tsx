@@ -1,7 +1,15 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function StartsError({ reset }: { error: Error; reset: () => void }) {
-  return <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center"><p className="text-sm font-medium">The Starts desk could not be loaded.</p><p className="text-xs text-muted-foreground">Try again. If this is a new environment, confirm the Workstream 05 migrations are applied.</p><Button onClick={reset} size="sm" variant="outline">Try again</Button></div>
+export default function StartsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  return (
+    <DeskErrorState
+      error={error}
+      reset={reset}
+      subject="The Starts desk"
+      backHref="/"
+      backLabel="Back to home"
+    />
+  )
 }

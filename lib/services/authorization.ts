@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { isPlatformAdminId } from "@/lib/auth/platform"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
+import { permissionDeniedDigest } from "@/lib/permission-denied"
 
 export type { AuthorizationReasonCode }
 
@@ -39,6 +40,7 @@ export class AuthorizationError extends Error {
   reasonCode: AuthorizationReasonCode
   permission: string
   scopesEvaluated: string[]
+  digest: string
 
   constructor(decision: AuthorizationDecision) {
     super(`Missing permission: ${decision.permission}`)
@@ -46,6 +48,8 @@ export class AuthorizationError extends Error {
     this.reasonCode = decision.reasonCode
     this.permission = decision.permission
     this.scopesEvaluated = decision.scopesEvaluated
+    // Survives Next's production redaction so error boundaries can name the permission.
+    this.digest = permissionDeniedDigest(decision.permission.split(" or "))
   }
 }
 

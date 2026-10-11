@@ -1,5 +1,5 @@
 import { connection } from "next/server"
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { StartsSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { LaunchLane } from "@/components/starts/launch-lane"
@@ -31,7 +31,7 @@ async function StartsPageContent({
 
 export default function StartsPage(props: Parameters<typeof StartsPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLayout title="Starts" fullBleed><PageLoadingSkeleton /></PageLayout>}>
+    <Suspense fallback={<PageLayout title="Starts" fullBleed><StartsSkeleton /></PageLayout>}>
       <StartsPageContent {...props} />
     </Suspense>
   )

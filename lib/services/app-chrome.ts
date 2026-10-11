@@ -13,7 +13,7 @@ import { getCurrentPlatformAccess, type PlatformAccessState } from "@/lib/servic
 import { getPlatformSessionState, type PlatformSessionState } from "@/lib/services/platform-session"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
-import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
+import { orgHasActiveNonProductionProjects, orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 import { listProjectNavigationItemsWithClient } from "@/lib/services/projects"
 import { getAuthContext } from "@/lib/auth/context"
 import { getCurrentUserProfile } from "@/lib/services/users"
@@ -31,6 +31,7 @@ export interface AppChromeContext {
   ambientContext: AmbientDeskContext
   projects: ProjectNavigationItem[]
   hasProductionProjects: boolean
+  hasActiveNonProductionProjects: boolean
   hasPriceAgreements: boolean
   booksEnabled: boolean
 }
@@ -94,6 +95,7 @@ const SIGNED_OUT_CHROME: AppChromeContext = {
   ambientContext: EMPTY_AMBIENT,
   projects: [],
   hasProductionProjects: false,
+  hasActiveNonProductionProjects: false,
   hasPriceAgreements: false,
   booksEnabled: false,
 }
@@ -114,6 +116,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     context,
     ambientContext,
     hasProductionProjects,
+    hasActiveNonProductionProjects,
     hasPriceAgreements,
     booksEnabled,
     businessProfile,
@@ -128,6 +131,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     requireOrgContext().catch(() => null),
     getAmbientDeskContext().catch(() => EMPTY_AMBIENT),
     orgHasProductionProjects().catch(() => false),
+    orgHasActiveNonProductionProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
     isBooksWorkspaceEnabled().catch(() => false),
     getBusinessProfile(),
@@ -152,6 +156,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     ambientContext,
     projects,
     hasProductionProjects,
+    hasActiveNonProductionProjects,
     hasPriceAgreements,
     booksEnabled,
   }

@@ -2,6 +2,7 @@
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { z } from "zod"
+import { PAYABLE_SELECTION_CAP } from "@/lib/financials/payables-book"
 import { recordExtractionCorrection } from "@/lib/services/vendor-extraction-memory"
 import { revalidatePath } from "next/cache"
 
@@ -59,7 +60,7 @@ export async function selectMatchingPayableIdsAction(input: { tab?: string; sear
     const projectIds = parsed.projectId ? [parsed.projectId] : (await resolveProductionDeskScope({ communityId: parsed.communityId })).projectIds
     const data = await loadOrgPayablesDesk(projectIds, { ...parsed, projectScope: Boolean(parsed.projectId), selectionOnly: true })
     const ids = data.selectionIds ?? []
-    return { success: true as const, data: { ids: [...new Set(ids)], cap: 500, runCap: 200 } }
+    return { success: true as const, data: { ids: [...new Set(ids)], total: data.pagination.total, cap: PAYABLE_SELECTION_CAP, runCap: 200 } }
   } catch (error) { return actionError(error) }
 }
 

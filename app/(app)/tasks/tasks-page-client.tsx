@@ -17,6 +17,8 @@ import { unwrapAction } from "@/lib/action-result"
 
 interface TasksPageClientProps {
   initialTasks: Task[]
+  /** Older tasks exist beyond the newest ones listed. */
+  tasksTruncated: boolean
   projects: Array<{ id: string; name: string }>
   assignableResources: AssignableResource[]
   approvals: MyWorkApproval[]
@@ -55,6 +57,7 @@ function ApprovalsBand({ approvals }: { approvals: MyWorkApproval[] }) {
 
 export function TasksPageClient({
   initialTasks,
+  tasksTruncated,
   projects,
   assignableResources,
   approvals,
@@ -64,6 +67,11 @@ export function TasksPageClient({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ApprovalsBand approvals={approvals} />
+      {tasksTruncated ? (
+        <p className="border-b px-4 py-2 text-[11px] text-muted-foreground">
+          Showing your {initialTasks.length} newest tasks. Older tasks are not listed here.
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1">
         <TasksTab
           initialTaskId={initialTaskId}

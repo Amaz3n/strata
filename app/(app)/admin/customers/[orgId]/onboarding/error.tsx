@@ -1,7 +1,16 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function ErrorPage({ reset }: { error: Error; reset: () => void }) {
-  return <div className="m-6 border p-6"><h2 className="text-base font-semibold">Unable to load onboarding</h2><p className="mt-1 text-sm text-muted-foreground">The organization or onboarding evidence could not be loaded.</p><Button className="mt-4" size="sm" variant="outline" onClick={reset}>Try again</Button></div>
+export default function OnboardingError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  return (
+    <DeskErrorState
+      error={error}
+      reset={reset}
+      subject="Onboarding"
+      backHref="/admin"
+      backLabel="Back to admin"
+      hint="The organization or onboarding evidence could not be loaded."
+    />
+  )
 }

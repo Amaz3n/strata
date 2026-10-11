@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { connection } from "next/server"
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { ReportsSkeleton } from "@/components/layout/desk-skeletons"
 import { PageLayout } from "@/components/layout/page-layout"
 import { ReportLibrary } from "@/components/reports/report-library"
 import { catalogFor, resolveOrgReportScope } from "@/lib/services/report-catalog"
@@ -14,4 +14,4 @@ async function ReportsPageContent() {
   const reports = catalogFor(resolution).flatMap(g => g.reports.map(r => ({ slug: r.slug, title: r.title, summary: reportSummary(r, resolution.context.posture), group: r.group, href: `/reports/${r.slug}` })))
   return <PageLayout title="Reports" fullBleed><ReportLibrary reports={reports} saved={saved} runs={runs} /></PageLayout>
 }
-export default function ReportsPage() { return <Suspense fallback={<PageLayout title="Reports" fullBleed><PageLoadingSkeleton /></PageLayout>}><ReportsPageContent /></Suspense> }
+export default function ReportsPage() { return <Suspense fallback={<PageLayout title="Reports" fullBleed><ReportsSkeleton /></PageLayout>}><ReportsPageContent /></Suspense> }

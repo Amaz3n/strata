@@ -105,7 +105,6 @@ const GRANDFATHERED = [
   "components/schedule/budget-summary-panel.tsx",
   "components/schedule/change-order-impact-badge.tsx",
   "components/schedule/draw-milestone-overlay.tsx",
-  "components/schedule/gantt-chart.tsx",
   "components/schedule/lookahead-view.tsx",
   "components/schedule/mobile-item-sheet.tsx",
   "components/schedule/mobile-lookahead-view.tsx",
@@ -117,12 +116,10 @@ const GRANDFATHERED = [
   "components/settings/settings-window.tsx",
   "components/submittals/submittal-detail-sheet.tsx",
   "components/submittals/submittals-client.tsx",
-  "components/tasks/tasks-tab.tsx",
   "components/team/member-form-panel.tsx",
   "components/team/team-table.tsx",
   "components/ui/project-avatar.tsx",
   "components/ui/toast.tsx",
-  "components/warranty/warranty-client.tsx",
 ]
 
 module.exports = {

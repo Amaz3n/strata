@@ -1070,15 +1070,16 @@ export async function listSuperintendentCandidates(
     roleIds.length
       ? context.supabase.from("role_permissions").select("role_id").in("role_id", roleIds).eq("permission_key", FIELD_ROLE_PERMISSION)
       : Promise.resolve({ data: [], error: null }),
-    context.supabase.from("projects").select("superintendent_id")
+    readAllRows((from, to) => context.supabase.from("projects").select("id,superintendent_id")
       .eq("org_id", context.orgId).eq("property_type", "production").eq("phase", "delivery")
-      .eq("status", "active").not("superintendent_id", "is", null).limit(5000),
+      .eq("status", "active").not("superintendent_id", "is", null).order("id").range(from, to),
+      { cap: 50_000, label: "Failed to count assigned houses" }),
   ])
   if (grants.error) throw new Error(`Failed to load field roles: ${grants.error.message}`)
-  if (houses.error) throw new Error(`Failed to count assigned houses: ${houses.error.message}`)
+  if (houses.truncated) throw new Error("Too many active houses to count superintendent load")
   const fieldRoles = new Set((grants.data ?? []).map((row) => row.role_id))
   const load = new Map<string, number>()
-  for (const row of houses.data ?? []) {
+  for (const row of houses.rows) {
     if (!row.superintendent_id) continue
     load.set(row.superintendent_id, (load.get(row.superintendent_id) ?? 0) + 1)
   }

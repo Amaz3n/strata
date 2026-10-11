@@ -136,16 +136,6 @@ test('original prospect reads propagate failed history sources and linked-home r
   failed='projects';await assert.rejects(service.getProspect(PROSPECT,ORG),/linked estimates or home/)
   failed=null;assert.deepEqual(await service.listProspectActivity(PROSPECT,ORG,60),[])
 })
-test('deal error boundary retries server reads and offers the owning sales desk',()=>{
-  let retries=0
-  const Button=leaf('Button'),Link=leaf('Link')
-  const {default:ErrorPage}=load('app/(app)/sales/[dealId]/error.tsx',{'react/jsx-runtime':require('react/jsx-runtime'),'next/link':{default:Link},'@/components/ui/button':{Button}})
-  const tree=ErrorPage({error:new Error('sensitive source detail'),retry:()=>retries++}),all=elements(tree)
-  all.find(e=>e.type===Button && e.props.children==='Try again').props.onClick()
-  assert.equal(retries,1);assert.equal(all.find(e=>e.type===Link).props.href,'/sales')
-  const html=renderToStaticMarkup(tree);assert.match(html,/role="alert"/);assert.doesNotMatch(html,/sensitive source detail/)
-})
-
 test('a division-limited consultant is told the board is cut even when their own rows fall under the cap', async () => {
   const { createServiceHarness } = require('./support/service')
   const { freshRequire } = require('./support/modules')

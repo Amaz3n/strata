@@ -1,11 +1,11 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { TasksSkeleton } from "@/components/layout/desk-skeletons"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { loadMyApprovals } from "@/lib/services/my-work"
 
 import {
-  listMyTasksAction,
+  listMyTasksPage,
   listOrgAssignableResourcesAction,
   listTaskProjectsAction,
 } from "./actions"
@@ -18,8 +18,12 @@ interface TasksPageProps {
 async function TasksPageContent({ searchParams }: TasksPageProps) {
   await connection()
   const { project, task } = await searchParams
-  const [tasks, projects, resources, approvalsData] = await Promise.all([
-    listMyTasksAction(),
+  // Deliberately not on the ambient community/division lens. This is the
+  // personal worklist (assigned, created, mentioned): narrowing it by a header
+  // scope would hide obligations the user owns, and tasks with no project
+  // cannot be placed in a community at all. The project filter is the lens here.
+  const [{ tasks, truncated }, projects, resources, approvalsData] = await Promise.all([
+    listMyTasksPage(),
     listTaskProjectsAction(),
     listOrgAssignableResourcesAction(),
     loadMyApprovals(),
@@ -30,6 +34,7 @@ async function TasksPageContent({ searchParams }: TasksPageProps) {
       <TasksPageClient
         initialTaskId={tasks.some(item => item.id === task) ? task : undefined}
         initialTasks={tasks}
+        tasksTruncated={truncated}
         projects={projects}
         assignableResources={resources}
         approvals={approvalsData.approvals}
@@ -41,7 +46,7 @@ async function TasksPageContent({ searchParams }: TasksPageProps) {
 
 export default function TasksPage(props: Parameters<typeof TasksPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLayout title="Tasks" fullBleed><PageLoadingSkeleton /></PageLayout>}>
+    <Suspense fallback={<PageLayout title="Tasks" fullBleed><TasksSkeleton /></PageLayout>}>
       <TasksPageContent {...props} />
     </Suspense>
   )

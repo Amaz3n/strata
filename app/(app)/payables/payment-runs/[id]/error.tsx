@@ -1,11 +1,16 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function PaymentRunError({ reset }: { error: Error; reset: () => void }) {
-  return <div className="mx-auto flex min-h-64 max-w-2xl flex-col items-center justify-center gap-3 p-6 text-center" role="alert">
-    <p className="text-sm font-medium">This payment run could not be loaded.</p>
-    <p className="text-xs text-muted-foreground">No approval or payment action was taken. Try loading the frozen evidence again.</p>
-    <Button variant="outline" size="sm" onClick={reset}>Try again</Button>
-  </div>
+export default function PaymentRunError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  return (
+    <DeskErrorState
+      error={error}
+      reset={reset}
+      subject="This payment run"
+      backHref="/payables"
+      backLabel="Back to payables"
+      hint="No approval or payment action was taken. Try loading the frozen evidence again."
+    />
+  )
 }

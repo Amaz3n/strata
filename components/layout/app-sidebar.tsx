@@ -181,13 +181,13 @@ function buildWorkspaceGroups(
       isActive: pathname.startsWith("/payables"),
       requiredAny: ["bill.read", "payment.read"],
     },
-    ...(productTier === "production" ? [] : [{
+    ...(showPipelineNavigation ? [{
       title: "Bids",
       url: "/bids",
       icon: Gavel,
       isActive: pathname.startsWith("/bids"),
       requiredAny: ["bid.read", "bid.write"],
-    }]),
+    }] : []),
     {
       title: "Schedule",
       url: "/schedule",

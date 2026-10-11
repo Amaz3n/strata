@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { AlertTriangle, ArrowRight, Check, Loader2 } from "@/components/icons"
@@ -81,21 +81,28 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   const [noticePage, setNoticePage] = useState(1)
   const [failedNoticesOnly, setFailedNoticesOnly] = useState(false)
 
+  // The package the sheet is showing now. A response for any other package
+  // (the user opened a different one, or a permalink swapped it) is stale.
+  const selectedPackageId = useRef<string | null>(packageId)
+
   async function load(id: string) {
     setLoading(true)
     try {
       const data = unwrapAction(await getStartPackageAction(id))
+      if (selectedPackageId.current !== id) return
       setPkg(data.pkg)
       setSuperintendents(data.superintendents)
     } catch (error) {
+      if (selectedPackageId.current !== id) return
       toast.error("Unable to load this start package", { description: error instanceof Error ? error.message : undefined })
       onOpenChange(false)
     } finally {
-      setLoading(false)
+      if (selectedPackageId.current === id) setLoading(false)
     }
   }
 
   useEffect(() => {
+    selectedPackageId.current = packageId
     setDismissedWarning(false)
     setConfirmationReason("")
     setNoticePage(1)

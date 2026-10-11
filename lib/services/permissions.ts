@@ -5,6 +5,7 @@ import type { OrgServiceContext } from "@/lib/services/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
+  AuthorizationError,
   authorize,
   getEffectiveOrgPermissions,
   listAllPermissionKeys,
@@ -129,7 +130,8 @@ export async function requireAnyPermission(permissionsToCheck: string[], ctx?: P
     // This is a gate, so the refusal belongs in the audit trail. Re-deciding the
     // first candidate costs nothing (the membership lookups it needs are already
     // request-cached) and records why the caller was turned away.
-    await decide(permissionsToCheck[0], ctx, true)
+    const decision = await decide(permissionsToCheck[0], ctx, true)
+    throw new AuthorizationError({ ...decision, permission: permissionsToCheck.join(" or ") })
   }
 
   throw new Error(`Missing permission: ${permissionsToCheck.join(" or ")}`)

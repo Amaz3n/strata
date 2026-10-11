@@ -109,7 +109,9 @@ import {
 import {
   PAYABLE_BAND_LABELS,
   PAYABLE_BANDS,
+  PAYABLE_SELECTION_CAP,
   type PayableSort,
+  matchingSelectionSummary,
   parsePayablesBookQuery,
 } from "@/lib/financials/payables-book";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from "lucide-react";
@@ -1357,7 +1359,7 @@ export function PayablesDesk({
                       ...parsePayablesBookQuery(
                         Object.fromEntries(urlSearchParams),
                       ),
-                      search,
+                      search: data.query.search,
                       projectId: project?.id,
                       communityId: project
                         ? undefined
@@ -1368,16 +1370,17 @@ export function PayablesDesk({
                       return;
                     }
                     setSelectedIds(new Set(result.data.ids));
-                    toast.success(
-                      `${result.data.ids.length} matching payables selected`,
-                      {
-                        description: `Selection cap ${result.data.cap}; Arc Pay runs hold ${result.data.runCap} bills each.`,
-                      },
+                    const summary = matchingSelectionSummary(
+                      result.data.ids.length,
+                      result.data.total,
                     );
+                    toast.success(summary.message, {
+                      description: `Selection cap ${result.data.cap}; Arc Pay runs hold ${result.data.runCap} bills each.`,
+                    });
                   })
                 }
               >
-                Select all matching filter · max 500
+                Select all matching filter · max {PAYABLE_SELECTION_CAP}
               </DropdownMenuItem>
               {!project && data.inboundBillsEmail ? (
                 <DropdownMenuItem

@@ -22,22 +22,22 @@ import {
   toDateString,
 } from "./types"
 
-// Matching raw hex for status-based group coloring
-const STATUS_HEX: Record<string, string> = {
-  planned: "#94a3b8",
-  in_progress: "#3b82f6",
-  at_risk: "#f59e0b",
-  blocked: "#ef4444",
-  completed: "#10b981",
-  cancelled: "#9ca3af",
+// Status-based group coloring, as design tokens so it follows the theme
+const STATUS_GROUP_COLORS: Record<string, string> = {
+  planned: "var(--muted-foreground)",
+  in_progress: "var(--chart-1)",
+  at_risk: "var(--warning)",
+  blocked: "var(--destructive)",
+  completed: "var(--success)",
+  cancelled: "var(--muted-foreground)",
 }
 
 // Group dot color depends on the groupBy mode so colors stay meaningful
 function getGroupColor(groupKey: string, groupBy: GroupByOption): string {
-  if (groupBy === "phase") return PHASE_COLORS[groupKey] || "#64748b"
-  if (groupBy === "status") return STATUS_HEX[groupKey] || "#64748b"
+  if (groupBy === "phase") return PHASE_COLORS[groupKey] || "var(--muted-foreground)"
+  if (groupBy === "status") return STATUS_GROUP_COLORS[groupKey] || "var(--muted-foreground)"
   // trade / assignee / none — keep neutral, no arbitrary color mapping
-  return "#94a3b8"
+  return "var(--muted-foreground)"
 }
 import { useSchedule } from "./schedule-context"
 import { Badge } from "@/components/ui/badge"
@@ -168,7 +168,7 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalP
               ? "opacity-70"
               : "opacity-0",
         )}
-        style={{ backgroundColor: isSelected ? "var(--primary)" : "#f97316" }}
+        style={{ backgroundColor: isSelected ? "var(--primary)" : "var(--warning)" }}
       />
 
       {/* Drag handle — reveals on hover, flush-left */}
@@ -209,7 +209,7 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalP
         {/* Flag items with no start date: they render a sidebar row but no timeline bar, so they'd otherwise silently "disappear" from the chart. */}
         {!item.start_date && (
           <span
-            className="flex-shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-600 dark:text-amber-400"
+            className="flex-shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-warning"
             title="This item has no start date, so it won't appear on the timeline. Click to add dates."
           >
             No dates
@@ -1363,7 +1363,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                     >
                       <polygon
                         points="0 0, 8 3, 0 6"
-                        className="fill-orange-500/70"
+                        className="fill-warning/70"
                       />
                     </marker>
                   </defs>
@@ -1427,7 +1427,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                         strokeLinejoin="round"
                         className={cn(
                           line.isCritical
-                            ? "gantt-dep-critical stroke-[1.75] stroke-orange-500/80"
+                            ? "gantt-dep-critical stroke-[1.75] stroke-warning/80"
                             : "stroke-[1.25] stroke-muted-foreground/30"
                         )}
                         markerEnd={line.isCritical ? "url(#arrowhead-critical)" : "url(#arrowhead)"}
@@ -1493,7 +1493,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                   const isMilestone = item.item_type === "milestone"
                   const isSelected = selectedItem?.id === item.id
                   const isDragging = dragState?.itemId === item.id
-                  const barColor = (item.color && (item.color.startsWith("#") || item.color.startsWith("rgb") || item.color.startsWith("hsl"))) ? item.color : PHASE_COLORS[item.phase || ""] || "#3b82f6"
+                  const barColor = (item.color && (item.color.startsWith("#") || item.color.startsWith("rgb") || item.color.startsWith("hsl"))) ? item.color : PHASE_COLORS[item.phase || ""] || "var(--chart-1)"
                   const progress = item.progress || 0
                   
                   const top = rowIndex * GANTT_ROW_HEIGHT + GANTT_BAR_PADDING

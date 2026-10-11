@@ -40,16 +40,16 @@ const statusLabels: Record<string, string> = {
 
 const statusStyles: Record<string, string> = {
   open: "bg-warning/20 text-warning border-warning/40",
-  in_progress: "bg-blue-500/15 text-blue-600 border-blue-500/30",
+  in_progress: "bg-chart-1/15 text-chart-1 border-chart-1/30",
   resolved: "bg-success/20 text-success border-success/30",
   closed: "bg-muted text-muted-foreground border-muted",
 }
 
 const statusDot: Record<string, string> = {
-  open: "bg-amber-500",
-  in_progress: "bg-blue-500",
-  resolved: "bg-emerald-500",
-  closed: "bg-zinc-400",
+  open: "bg-warning",
+  in_progress: "bg-chart-1",
+  resolved: "bg-success",
+  closed: "bg-muted-foreground",
 }
 
 const priorityLabels: Record<string, string> = {
@@ -557,7 +557,7 @@ function WarrantyClientContent({
                                 className={cn(
                                   "shrink-0 text-[10px]",
                                   item.status !== "resolved" && item.status !== "closed" && isDateExpired(item.scheduled_date)
-                                    ? "font-medium text-rose-600 dark:text-rose-400"
+                                    ? "font-medium text-destructive"
                                     : "text-muted-foreground",
                                 )}
                               >

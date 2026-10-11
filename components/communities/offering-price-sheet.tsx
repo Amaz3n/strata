@@ -50,6 +50,9 @@ export interface OfferingPlanRow {
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 
+/** Elevations sent per request; the dialog reports progress between slices. */
+const REPRICE_SLICE = 50
+
 function shortMoney(cents: number) {
   const dollars = Math.round(cents / 100)
   return dollars >= 1_000_000 ? `$${(dollars / 1_000_000).toFixed(2)}M` : `$${Math.round(dollars / 1000)}k`
@@ -156,6 +159,7 @@ export function OfferingPriceSheet({
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const [repriceProgress, setRepriceProgress] = useState<{ done: number; total: number } | null>(null)
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({})
   /** Which row is in edit; the sheet is a document until you point at a number. */
   const [editing, setEditing] = useState<string | null>(null)
@@ -238,26 +242,41 @@ export function OfferingPriceSheet({
   function applyBatch() {
     if (!batch || !Number(batch.value) || batchTargets.length === 0) return
     startTransition(async () => {
+      let repriced = 0
+      let conflicts = 0
+      let attempted = 0
       try {
-        const result = unwrapAction(
-          await bulkRepriceCommunityPlansAction(communityId, {
-            communityId,
-            availabilityIds: batchTargets.map((row) => row.availabilityId),
-            mode: batch.mode,
-            value: batch.mode === "percent" ? Number(batch.value) : Math.round(Number(batch.value) * 100),
-            basisCents: Object.fromEntries(batchTargets.map((row) => [row.availabilityId, row.basePriceCents])),
-          }),
-        )
-        toast.success(`${result.repriced} ${result.repriced === 1 ? "plan" : "plans"} repriced`)
-        if (result.conflicts.length > 0) {
-          toast.error(`${result.conflicts.length} ${result.conflicts.length === 1 ? "plan" : "plans"} changed since you opened the sheet`, {
+        // Sent in slices so the dialog can say how far along it is. Targets come
+        // from the price each row showed, so a retry of a slice lands on the same price.
+        for (let start = 0; start < batchTargets.length; start += REPRICE_SLICE) {
+          setRepriceProgress({ done: attempted, total: batchTargets.length })
+          const slice = batchTargets.slice(start, start + REPRICE_SLICE)
+          const result = unwrapAction(
+            await bulkRepriceCommunityPlansAction(communityId, {
+              communityId,
+              availabilityIds: slice.map((row) => row.availabilityId),
+              mode: batch.mode,
+              value: batch.mode === "percent" ? Number(batch.value) : Math.round(Number(batch.value) * 100),
+              basisCents: Object.fromEntries(slice.map((row) => [row.availabilityId, row.basePriceCents])),
+            }),
+          )
+          repriced += result.repriced
+          conflicts += result.conflicts.length
+          attempted += slice.length
+        }
+        toast.success(`${repriced} ${repriced === 1 ? "plan" : "plans"} repriced`)
+        if (conflicts > 0) {
+          toast.error(`${conflicts} ${conflicts === 1 ? "plan" : "plans"} changed since you opened the sheet`, {
             description: "Their prices were left as they are. Review them and reprice again.",
           })
         }
         setBatch(null)
         router.refresh()
       } catch (error) {
-        toast.error("Unable to reprice", { description: (error as Error).message })
+        if (repriced > 0) router.refresh()
+        toast.error(`Repricing stopped after ${attempted} of ${batchTargets.length}`, { description: (error as Error).message })
+      } finally {
+        setRepriceProgress(null)
       }
     })
   }
@@ -633,7 +652,9 @@ export function OfferingPriceSheet({
               disabled={!Number(batch?.value) || batchTargets.length === 0 || isPending}
               onClick={applyBatch}
             >
-              {isPending
+              {repriceProgress
+                ? `Repricing ${repriceProgress.done} of ${repriceProgress.total}…`
+                : isPending
                 ? "Repricing…"
                 : `Reprice ${batchTargets.length} ${batchTargets.length === 1 ? "elevation" : "elevations"}`}
             </Button>

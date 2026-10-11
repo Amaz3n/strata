@@ -63,3 +63,20 @@ test("confirming over-target starts resends only the houses the server held back
   assert.deepEqual(releaseTargetIds(["a", "b", "c"], ["b"], true), ["b"])
   assert.deepEqual(releaseTargetIds(["a", "b", "c"], ["b"], false), ["a", "b", "c"])
 })
+
+test("a changed filter rebases the selection so hidden homes cannot rejoin it", () => {
+  const { rebaseSelection } = freshRequire("lib/starts/release-selection.ts")
+  const narrowed = rebaseSelection([{ id: "a" }], new Set(["a", "b"]))
+
+  assert.deepEqual([...narrowed], ["a"])
+  assert.deepEqual([...rebaseSelection([{ id: "a" }, { id: "b" }], narrowed)], ["a"])
+})
+
+test("a long release goes out in batches, and a run leaves only unreleased homes selected", () => {
+  const { releaseBatches, selectionAfterRelease } = freshRequire("lib/starts/release-selection.ts")
+  const ids = Array.from({ length: 25 }, (_, index) => `h${index}`)
+
+  assert.deepEqual(releaseBatches(ids).map((batch) => batch.length), [10, 10, 5])
+  assert.deepEqual(releaseBatches([]), [])
+  assert.deepEqual(selectionAfterRelease(["a", "b", "c"], ["a", "c"]), ["b"])
+})

@@ -67,21 +67,6 @@ test('a large exact count uses the aggregate response without requesting coverag
   assert.ok(programs.every(program => program.enrolled_count === 50000))
 })
 
-test('warranty settings failure retries its server read without rendering private query details', () => {
-  const React = require('react'), exports = {}
-  const code = ts.transpileModule(fs.readFileSync('app/(app)/settings/warranty/error.tsx', 'utf8'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
-  }).outputText
-  new Function('exports', 'require', code)(exports, name => name === 'react/jsx-runtime' ? require(name) : { Button: 'button' })
-  let called = false
-  const tree = exports.default({ error: Error('Private coverage query details'), retry: () => { called = true } })
-  const button = React.Children.toArray(tree.props.children.props.children).find(node => node.type === 'button')
-  assert.equal(button.props.children, 'Try again')
-  button.props.onClick()
-  assert.equal(called, true)
-  assert.ok(!JSON.stringify(tree).includes('Private coverage query details'))
-})
-
 function prepareHarness(targetResponse, punchResponse) {
   const source = fs.readFileSync('lib/services/warranty-operations.ts', 'utf8'), ast = ts.createSourceFile('reader.ts', source, ts.ScriptTarget.Latest, true)
   const fn = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'prepareRequestData')

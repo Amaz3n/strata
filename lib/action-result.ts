@@ -1,4 +1,5 @@
 import { ZodError } from "zod"
+import { parsePermissionDenied, permissionLabel } from "@/lib/permission-denied"
 
 /**
  * Standard server-action result envelope. Actions must return this instead of throwing:
@@ -25,7 +26,12 @@ export function actionError(error: unknown, fallback = "Something went wrong. Pl
   code?: string
 } {
   if (isAuthorizationError(error)) {
-    return { success: false, error: "You don't have permission to do that." }
+    const keys = parsePermissionDenied(error as { digest?: string })
+    if (!keys) return { success: false, error: "You don't have permission to do that." }
+    return {
+      success: false,
+      error: `Missing permission: ${keys.map(permissionLabel).join(" or ")}. An org admin can grant it in Settings → Team.`,
+    }
   }
   if (error instanceof ZodError) {
     const issue = error.issues[0]

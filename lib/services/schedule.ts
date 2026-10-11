@@ -113,16 +113,21 @@ async function loadDependencies(
 ) {
   if (projectIds?.length === 0) return {};
   const rows: Array<{ item_id: string; depends_on_item_id: string }> = [];
-  for (let from = 0; ; from += 1000) {
-    let query = supabase
-      .from("schedule_dependencies")
-      .select("item_id, depends_on_item_id, dependency_type, lag_days")
-      .eq("org_id", orgId);
-    if (projectIds) query = query.in("project_id", projectIds);
-    const { data, error } = await query.order("id").range(from, from + 999);
-    if (error) throw new Error(`Failed to load schedule dependencies: ${error.message}`);
-    rows.push(...(data ?? []));
-    if ((data?.length ?? 0) < 1000) break;
+  const scopes: Array<string[] | undefined> = projectIds
+    ? Array.from({ length: Math.ceil(projectIds.length / 100) }, (_, index) => projectIds.slice(index * 100, (index + 1) * 100))
+    : [undefined];
+  for (const scope of scopes) {
+    for (let from = 0; ; from += 1000) {
+      let query = supabase
+        .from("schedule_dependencies")
+        .select("item_id, depends_on_item_id, dependency_type, lag_days")
+        .eq("org_id", orgId);
+      if (scope) query = query.in("project_id", scope);
+      const { data, error } = await query.order("id").range(from, from + 999);
+      if (error) throw new Error(`Failed to load schedule dependencies: ${error.message}`);
+      rows.push(...(data ?? []));
+      if ((data?.length ?? 0) < 1000) break;
+    }
   }
 
   return rows.reduce<Record<string, string[]>>((acc, dep) => {
@@ -136,18 +141,24 @@ async function loadDependencyDetails(
   supabase: SupabaseClient,
   orgId: string,
 ): Promise<ScheduleDependency[]> {
-  const { data, error } = await supabase
-    .from("schedule_dependencies")
-    .select(
-      "id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days",
-    )
-    .eq("org_id", orgId);
-
-  if (error) {
-    throw new Error(`Failed to load dependency details: ${error.message}`);
+  const data: Array<{ id: string; org_id: string; project_id: string; item_id: string; depends_on_item_id: string; dependency_type: ScheduleDependency["dependency_type"] | null; lag_days: number | null }> = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await supabase
+      .from("schedule_dependencies")
+      .select(
+        "id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days",
+      )
+      .eq("org_id", orgId)
+      .order("id")
+      .range(from, from + 999);
+    if (page.error) {
+      throw new Error(`Failed to load dependency details: ${page.error.message}`);
+    }
+    data.push(...(page.data ?? []));
+    if ((page.data?.length ?? 0) < 1000) break;
   }
 
-  return (data ?? []).map((dep) => ({
+  return data.map((dep) => ({
     id: dep.id,
     org_id: dep.org_id,
     project_id: dep.project_id,
@@ -185,27 +196,34 @@ export async function listScheduleItemsWithClient(
   if (projectIds?.length === 0) return [];
   const dependencyMap = options.includeDependencies === false ? {} : await loadDependencies(supabase, orgId, projectIds);
   const rows: any[] = [];
-  for (let from = 0; ; from += 1000) {
-    let query = supabase
-      .from("schedule_items")
-      .select(`
+  // An `in (...)` list longer than ~200 ids overflows the request URL, so a
+  // large portfolio is read one slice of projects at a time.
+  const scopes: Array<string[] | undefined> = projectIds
+    ? Array.from({ length: Math.ceil(projectIds.length / 100) }, (_, index) => projectIds.slice(index * 100, (index + 1) * 100))
+    : [undefined];
+  for (const scope of scopes) {
+    for (let from = 0; ; from += 1000) {
+      let query = supabase
+        .from("schedule_items")
+        .select(`
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
     `)
-      .eq("org_id", orgId);
-    if (projectIds) query = query.in("project_id", projectIds);
-    if (options.excludeCancelled) query = query.neq("status", "cancelled");
-    const { data, error } = await query
-      .order("sort_order", { ascending: true })
-      .order("start_date", { ascending: true, nullsFirst: false })
-      .order("id", { ascending: true })
-      .range(from, from + 999);
-    if (error) throw new Error(`Failed to list schedule items: ${error.message}`);
-    rows.push(...(data ?? []));
-    if ((data?.length ?? 0) < 1000) break;
+        .eq("org_id", orgId);
+      if (scope) query = query.in("project_id", scope);
+      if (options.excludeCancelled) query = query.neq("status", "cancelled");
+      const { data, error } = await query
+        .order("sort_order", { ascending: true })
+        .order("start_date", { ascending: true, nullsFirst: false })
+        .order("id", { ascending: true })
+        .range(from, from + 999);
+      if (error) throw new Error(`Failed to list schedule items: ${error.message}`);
+      rows.push(...(data ?? []));
+      if ((data?.length ?? 0) < 1000) break;
+    }
   }
 
   return rows.map((row) => mapScheduleItem(row, dependencyMap));

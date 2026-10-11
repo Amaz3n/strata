@@ -26,12 +26,7 @@ const path = require("node:path")
 // ---------------------------------------------------------------------------
 
 function catalogPermissionKeys() {
-  const source = fs.readFileSync(path.join(__dirname, "..", "lib", "services", "team.ts"), "utf8")
-  const keys = new Set()
-  for (const match of source.matchAll(/\{\s*key:\s*"([^"]+)"/g)) {
-    keys.add(match[1])
-  }
-  return keys
+  return new Set(require("../lib/permission-catalog.ts").TEAM_PERMISSION_OPTIONS.map((option) => option.key))
 }
 
 test("every gated permission exists in the RBAC catalog", () => {

@@ -1,6 +1,6 @@
 "use client"
 
-import { releaseTargetIds, selectionOnScreen } from "@/lib/starts/release-selection"
+import { rebaseSelection, releaseBatches, releaseTargetIds, selectionAfterRelease, selectionOnScreen } from "@/lib/starts/release-selection"
 import {
   DndContext, DragOverlay, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent,
@@ -91,6 +91,12 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
   const [focus, setFocus] = useState<Focus>("all")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sheetId, setSheetId] = useState<string | null>(initialPackageId ?? null)
+  // A permalink navigation changes the prop without remounting the lane.
+  const [seenPackageId, setSeenPackageId] = useState(initialPackageId)
+  if (seenPackageId !== initialPackageId) {
+    setSeenPackageId(initialPackageId)
+    setSheetId(initialPackageId ?? null)
+  }
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [slotEditor, setSlotEditor] = useState<{ communityId: string; communityName: string; weekStart: string } | null>(null)
   const [slotTarget, setSlotTarget] = useState("")
@@ -101,6 +107,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
   const [releaseOpen, setReleaseOpen] = useState(false)
   const [releaseDate, setReleaseDate] = useState("")
   const [overSlotIds, setOverSlotIds] = useState<string[]>([])
+  const [releaseProgress, setReleaseProgress] = useState<{ done: number; total: number } | null>(null)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor))
 
@@ -124,6 +131,11 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     () => selectionOnScreen(visible, selected),
     [visible, selected],
   )
+  function changeFocus(next: Focus) {
+    setFocus(next)
+    setSelected((current) => rebaseSelection(desk.packages.filter((pkg) => matchesFocus(pkg, next)), current))
+  }
+
   function refresh() {
     setSelected(new Set())
     router.refresh()
@@ -200,25 +212,40 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     const ids = releaseTargetIds(selectedPackages.map((pkg) => pkg.id), overSlotIds, confirmOverSlot)
     if (!ids.length || !releaseDate) return
     startTransition(async () => {
+      const released: string[] = []
+      const needsConfirm: string[] = []
+      let processed = 0
       try {
-        const result = unwrapAction(await releaseStartsAction(ids, { scheduledStartDate: releaseDate, confirmOverSlot }))
-        if (result.released.length) {
-          toast.success(`${result.released.length} ${result.released.length === 1 ? "home" : "homes"} released — orchestration is running`)
+        for (const batch of releaseBatches(ids)) {
+          setReleaseProgress({ done: processed, total: ids.length })
+          const result = unwrapAction(await releaseStartsAction(batch, { scheduledStartDate: releaseDate, confirmOverSlot }))
+          processed += batch.length
+          for (const id of result.released) released.push(id)
+          for (const entry of result.needsConfirm) needsConfirm.push(entry.id)
+          for (const failure of result.failed) {
+            const pkg = desk.packages.find((candidate) => candidate.id === failure.id)
+            toast.error(`Unable to release ${pkg?.lotLabel ?? "a home"}`, { description: failure.error })
+          }
         }
-        for (const failure of result.failed) {
-          const pkg = desk.packages.find((candidate) => candidate.id === failure.id)
-          toast.error(`Unable to release ${pkg?.lotLabel ?? "a home"}`, { description: failure.error })
+        if (released.length) {
+          toast.success(`${released.length} ${released.length === 1 ? "home" : "homes"} released — orchestration is running`)
         }
-        if (result.needsConfirm.length) {
-          setOverSlotIds(result.needsConfirm.map((entry) => entry.id))
-          if (result.released.length) router.refresh()
+        // Released homes leave the selection; failed and held-back ones stay, so a retry resends only them.
+        setSelected((current) => new Set(selectionAfterRelease([...current], released)))
+        if (needsConfirm.length) {
+          setOverSlotIds(needsConfirm)
+          if (released.length) router.refresh()
           return
         }
         setReleaseOpen(false)
         setOverSlotIds([])
-        refresh()
+        router.refresh()
       } catch (error) {
-        toast.error("Unable to release", { description: error instanceof Error ? error.message : undefined })
+        setSelected((current) => new Set(selectionAfterRelease([...current], released)))
+        if (released.length) router.refresh()
+        toast.error(`Release stopped after ${processed} of ${ids.length} homes`, { description: error instanceof Error ? error.message : undefined })
+      } finally {
+        setReleaseProgress(null)
       }
     })
   }
@@ -319,7 +346,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
                 key={counter.key}
                 type="button"
                 aria-pressed={active}
-                onClick={() => setFocus(active && counter.key !== "all" ? "all" : counter.key)}
+                onClick={() => changeFocus(active && counter.key !== "all" ? "all" : counter.key)}
                 className={cn(
                   "px-2 py-1 text-xs transition-colors",
                   active ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
@@ -345,7 +372,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
           {desk.counters.soldAtRisk > 0 ? (
             <button
               type="button"
-              onClick={() => setFocus("at_risk")}
+              onClick={() => changeFocus("at_risk")}
               className="flex items-center gap-1.5 font-medium text-destructive hover:underline"
             >
               <AlertTriangle className="h-3.5 w-3.5" />
@@ -628,11 +655,11 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
             <Button variant="outline" onClick={() => { setReleaseOpen(false); setOverSlotIds([]) }}>Cancel</Button>
             {overSlotIds.length ? (
               <Button variant="destructive" disabled={pending || !releaseDate} onClick={() => submitRelease(true)}>
-                {pending ? "Releasing…" : "Release over target"}
+                {releaseProgress ? `Releasing ${releaseProgress.done} of ${releaseProgress.total}…` : pending ? "Releasing…" : "Release over target"}
               </Button>
             ) : (
               <Button disabled={pending || !releaseDate} onClick={() => submitRelease(false)}>
-                {pending ? "Releasing…" : "Release"}
+                {releaseProgress ? `Releasing ${releaseProgress.done} of ${releaseProgress.total}…` : pending ? "Releasing…" : "Release"}
               </Button>
             )}
           </DialogFooter>

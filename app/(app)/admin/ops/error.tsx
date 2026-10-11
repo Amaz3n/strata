@@ -1,14 +1,15 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function OpsError({ reset }: { error: Error; reset: () => void }) {
+export default function OpsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
-    <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center">
-      <p className="text-sm font-medium">Ops health could not be loaded.</p>
-      <Button variant="outline" size="sm" onClick={reset}>
-        Try again
-      </Button>
-    </div>
+    <DeskErrorState
+      error={error}
+      reset={reset}
+      subject="Ops health"
+      backHref="/"
+      backLabel="Back to home"
+    />
   )
 }

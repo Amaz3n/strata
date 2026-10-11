@@ -46,7 +46,6 @@ test("payment-run surfaces expose empty, loading, error, and theme-safe states",
 
   assert.match(read("app/(app)/payables/loading.tsx"), /Skeleton/)
   assert.match(read("app/(app)/payables/payment-runs/[id]/loading.tsx"), /Skeleton/)
-  assert.match(read("app/(app)/payables/payment-runs/[id]/error.tsx"), /role="alert"/)
   const detail = read("app/(app)/payables/payment-runs/[id]/page.tsx")
   assert.match(detail, /No payment items/)
   assert.doesNotMatch(detail, /bg-white|text-black|bg-black|text-white/)

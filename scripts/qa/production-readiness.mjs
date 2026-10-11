@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, statSync } from "node:fs"
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -108,6 +108,54 @@ for (const run of checklist.auditRuns) {
     }
   }
 }
+// Surface inventory: every page.tsx under app/ must have exactly one assessed entry. Mirrors the
+// route enumeration in scripts/books-acceptance/journeys/sweep.ts (a TypeScript Playwright module
+// that cannot be imported here), widened from app/(app) to the token portals and public pages.
+const appDir = resolve(root, "app")
+const pageFiles = (directory) => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+  const location = resolve(directory, entry.name)
+  if (entry.isDirectory()) return pageFiles(location)
+  return entry.name === "page.tsx" ? [relative(root, location)] : []
+}).sort()
+const routeOf = (page) => "/" + page.replace(/^app\//, "").replace(/\/page\.tsx$/, "").split("/").filter((segment) => !/^\(.*\)$/.test(segment)).join("/")
+const surfaceOf = (page) => page.startsWith("app/(app)/") ? "builder_authenticated"
+  : page.startsWith("app/(auth)/") ? "auth"
+  : /^app\/(p|s|r|b|d|e|f|i|t|proposal)\//.test(page) ? "external_portal"
+  : "public"
+const inventory = checklist.surfaceInventory
+const diskPages = pageFiles(appDir)
+const inventoried = new Set(inventory.pages.map((entry) => entry.path))
+const missingPages = diskPages.filter((page) => !inventoried.has(page))
+const gonePages = inventory.pages.filter((entry) => !diskPages.includes(entry.path)).map((entry) => entry.path)
+const addMissing = process.argv.includes("--surfaces") && process.argv.includes("--write")
+if (addMissing) {
+  for (const page of missingPages) {
+    inventory.pages.push({ path: page, route: routeOf(page), surface: surfaceOf(page), audience: "unassessed", productionExposure: "unassessed", candidateWorkstreams: ["EP01"], checklistId: "EP01-08", checklistIds: ["EP01-08"], assessment: "not_audited" })
+  }
+  inventory.pages.sort((a, b) => (a.path < b.path ? -1 : 1))
+  writeFileSync(path, JSON.stringify(checklist, null, 2) + "\n")
+}
+if (!addMissing) for (const page of missingPages) errors.push(`surfaceInventory: ${page} has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.`)
+for (const page of gonePages) errors.push(`surfaceInventory: ${page} no longer exists. Remove its entry.`)
+const exposureValues = new Set(Object.keys(inventory.exposureValues ?? {}))
+for (const entry of inventory.pages) {
+  if (!diskPages.includes(entry.path)) continue
+  if (entry.assessment === "not_audited") { errors.push(`surfaceInventory: ${entry.route} is not assessed.`); continue }
+  if (!exposureValues.has(entry.productionExposure)) errors.push(`surfaceInventory: ${entry.route} has unknown exposure ${entry.productionExposure}.`)
+  if (!entry.checklistIds?.length || entry.checklistIds.some((id) => !ids.has(id))) errors.push(`surfaceInventory: ${entry.route} maps to an unknown checklist ID.`)
+  if (entry.assessment === "excluded") {
+    const evidence = /^([^:\s]+):(\d+)/.exec(entry.exposureEvidence ?? "")
+    const lines = evidence && existsSync(resolve(root, evidence[1])) ? readFileSync(resolve(root, evidence[1]), "utf8").split("\n").length : 0
+    if (!evidence || Number(evidence[2]) > lines) errors.push(`surfaceInventory: ${entry.route} is excluded without file:line evidence.`)
+  }
+}
+if (process.argv.includes("--surfaces")) {
+  const tally = {}
+  for (const entry of inventory.pages) tally[`${entry.assessment}/${entry.productionExposure}`] = (tally[`${entry.assessment}/${entry.productionExposure}`] ?? 0) + 1
+  console.log(`${diskPages.length} pages on disk, ${inventory.pages.length} inventoried, ${missingPages.length} ${addMissing ? "added" : "missing"}, ${gonePages.length} gone`)
+  console.log(JSON.stringify(tally, null, 2))
+}
+
 const mandatory = checklist.items.filter((item) => item.mandatory)
 const weight = mandatory.reduce((total, item) => total + item.weight, 0)
 const pct = (predicate) => Number((100 * mandatory.filter(predicate).reduce((total, item) => total + item.weight, 0) / weight).toFixed(1))
@@ -185,7 +233,7 @@ if (process.argv.includes("--markdown")) {
     }
     lines.push("")
   }
-  lines.push("## Scope and acceptance limits", "", `${checklist.surfaceInventory.pages.length} candidate authenticated/portal pages are inventoried. This is an exposure inventory awaiting role/posture/module qualification, not a claim that every candidate page belongs in production.`, "", "Sizing and operating assumptions are frozen engineering targets awaiting launch-owner approval under EP14-11. QA access, chosen-system sandbox credentials, migration/activation approval, independent security review and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.", "", checklist.goalMetadataUpdate.limitation, "")
+  lines.push("## Scope and acceptance limits", "", `${checklist.surfaceInventory.pages.length} pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.`, "", "Sizing and operating assumptions are frozen engineering targets awaiting launch-owner approval under EP14-11. QA access, chosen-system sandbox credentials, migration/activation approval, independent security review and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.", "", checklist.goalMetadataUpdate.limitation, "")
   if (errors.length || warnings.length) lines.push("## Tracking issues", "", ...[...errors, ...warnings].map((issue) => `- ${issue}`), "")
   console.log(lines.join("\n"))
 }

@@ -4031,11 +4031,10 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "The inventory lost its generator and test on Oct 6, so it can no longer be refreshed and has drifted from the route tree. No per-surface assessments were written back. The new app-sweep journey enumerates every app/(app) page and could serve as the regenerating source.",
+      "implementationNotes": "The surface inventory is regenerable again: `node scripts/qa/production-readiness.mjs --surfaces` enumerates every page.tsx under app/ (mirroring the app-sweep route enumeration, widened to portals, auth and public pages) and `--surfaces --write` adds new routes as not_audited. All 248 pages are assessed in surfaceInventory.pages with audience, productionExposure, checklistIds and, for excluded routes, file:line exposureEvidence (140 exposed, 16 public, 44 legacy redirects, 21 residential/commercial-only, 4 commercial-only, 2 residential-only, 3 trade-profile-only, 18 staff-only). `--check` now fails on a page with no entry, an entry with no page, an unassessed entry, an unknown checklist ID, or an exclusion without evidence. Mobile /api/mobile/v1 and phone layouts are one deferred entry (surfaceInventory.deferred) by owner scope decision. Module-hidden project tabs remain reachable by direct URL (routes are not posture-gated); exclusion here means no production navigation entry.",
       "remainingWork": [
-        "Regenerate the surface inventory from the route tree (reuse the app-sweep route enumeration) and add the ~33 new pages.",
-        "Add mobile /api/mobile/v1 endpoints, trade portals and buyer portals with checklist IDs.",
-        "Assess every surface for production role/posture/module exposure and write results back; mark commercial-only/legacy routes excluded with evidence."
+        "Owner review of the low-confidence classifications: /estimates and /e/[token] (residential-only), /emails/preview and /dither-lab (staff-only, no guard), /proposal/[token] (exposed).",
+        "Run the qa_workflow tier (role-by-role navigation walk of the exposed pages) and add a test for the inventory reconciliation so the automated tier is satisfied."
       ],
       "sources": [
         "docs/enterprise-production/production-detail-page-audit.md",
@@ -33781,7 +33780,7 @@
     "status": "not_sent"
   },
   "surfaceInventory": {
-    "scope": "All authenticated builder pages plus candidate p/s/portal pages. Some routes are commercial-only, legacy redirects or not production-exposed; qualification must mark exclusion with evidence rather than build them. API/mobile routes are reviewed within corresponding role/workflow items.",
+    "scope": "Every page.tsx under app/: builder pages (app/(app)), authentication, public pages and token portals (p, s, r, b, d, e, f, i, t, proposal). Generated and reconciled by `node scripts/qa/production-readiness.mjs --surfaces`; `--check` fails when a page has no entry, an entry has no page, or an entry is not assessed. Mobile (/api/mobile/v1 and phone layouts) is deferred, not listed per endpoint.",
     "navigationSources": [
       "components/layout/app-sidebar.tsx",
       "components/layout/project-nav-items.ts",
@@ -33794,2354 +33793,4181 @@
         "path": "app/(app)/admin/analytics/page.tsx",
         "route": "/admin/analytics",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP13"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP13-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/analytics/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/audit/page.tsx",
         "route": "/admin/audit",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
           "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-06",
+          "EP02-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/audit/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/customers/[orgId]/onboarding/import/[importer]/page.tsx",
         "route": "/admin/customers/[orgId]/onboarding/import/[importer]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP12"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP12-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/customers/[orgId]/onboarding/import/[importer]/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/customers/[orgId]/onboarding/page.tsx",
         "route": "/admin/customers/[orgId]/onboarding",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP12"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP12-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/customers/[orgId]/onboarding/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/customers/page.tsx",
         "route": "/admin/customers",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP12"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP12-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/customers/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/features/page.tsx",
         "route": "/admin/features",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP13"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP13-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/features/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/ops/ai/page.tsx",
         "route": "/admin/ops/ai",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP13"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP13-05"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/ops/ai/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/ops/drawings/page.tsx",
         "route": "/admin/ops/drawings",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP09"
+          "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-15"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/ops/drawings/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/ops/page.tsx",
         "route": "/admin/ops",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP13"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP13-05"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/ops/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/ops/payment-launch/page.tsx",
         "route": "/admin/ops/payment-launch",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP14"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP14-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/ops/payment-launch/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/page.tsx",
         "route": "/admin",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-08"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the platform console.",
+        "exposureEvidence": "app/(app)/admin/page.tsx:8"
       },
       {
         "path": "app/(app)/admin/payment-fees/page.tsx",
         "route": "/admin/payment-fees",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP14"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP14-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/payment-fees/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/subscription-plans/page.tsx",
         "route": "/admin/subscription-plans",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP14"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP14-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/subscription-plans/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/support/page.tsx",
         "route": "/admin/support",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-08"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/support/page.tsx:1"
       },
       {
         "path": "app/(app)/admin/users/page.tsx",
         "route": "/admin/users",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/admin/users/page.tsx:1"
       },
       {
         "path": "app/(app)/bids/page.tsx",
         "route": "/bids",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Org bids desk is shown only with custom-build navigation; production reaches bidding through Purchasing.",
+        "exposureEvidence": "components/layout/app-sidebar.tsx:184-186"
       },
       {
         "path": "app/(app)/billing/deposits/page.tsx",
         "route": "/billing/deposits",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-09"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Deposit reconciliation; gated on Books adjust."
       },
       {
         "path": "app/(app)/billing/page.tsx",
         "route": "/billing",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP10",
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01",
+          "EP05-09"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Org billing desk."
       },
       {
         "path": "app/(app)/billing/receive-payment/page.tsx",
         "route": "/billing/receive-payment",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Receive payment against open receivables."
       },
       {
         "path": "app/(app)/books/accountant/page.tsx",
         "route": "/books/accountant",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Books exports.",
+        "exposureEvidence": "app/(app)/books/accountant/page.tsx:6"
       },
       {
         "path": "app/(app)/books/assets/page.tsx",
         "route": "/books/assets",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/banking/[accountId]/reconcile/page.tsx",
         "route": "/books/banking/[accountId]/reconcile",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/banking/page.tsx",
         "route": "/books/banking",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/chart/page.tsx",
         "route": "/books/chart",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Settings > Accounting > Chart of accounts.",
+        "exposureEvidence": "app/(app)/books/chart/page.tsx:6"
       },
       {
         "path": "app/(app)/books/close/[periodId]/page.tsx",
         "route": "/books/close/[periodId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08",
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/close/page.tsx",
         "route": "/books/close",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08",
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
+      },
+      {
+        "path": "app/(app)/books/cost-allocations/page.tsx",
+        "route": "/books/cost-allocations",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP10"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/cutover/page.tsx",
         "route": "/books/cutover",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Settings > Accounting > Setup.",
+        "exposureEvidence": "app/(app)/books/cutover/page.tsx:6"
+      },
+      {
+        "path": "app/(app)/books/entities/page.tsx",
+        "route": "/books/entities",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP10"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/exports/page.tsx",
         "route": "/books/exports",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08",
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
+      },
+      {
+        "path": "app/(app)/books/inventory/page.tsx",
+        "route": "/books/inventory",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP10"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/ledger/page.tsx",
         "route": "/books/ledger",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/opening-balances/page.tsx",
         "route": "/books/opening-balances",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Settings > Accounting > Opening balances.",
+        "exposureEvidence": "app/(app)/books/opening-balances/page.tsx:6"
       },
       {
         "path": "app/(app)/books/overhead/page.tsx",
         "route": "/books/overhead",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/page.tsx",
         "route": "/books",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Books has no overview; redirects to the first available destination.",
+        "exposureEvidence": "app/(app)/books/page.tsx:12"
+      },
+      {
+        "path": "app/(app)/books/revenue-policies/page.tsx",
+        "route": "/books/revenue-policies",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP10"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/statements/page.tsx",
         "route": "/books/statements",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-05"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Reports statements collection.",
+        "exposureEvidence": "app/(app)/books/statements/page.tsx:5"
       },
       {
         "path": "app/(app)/books/taxes/page.tsx",
         "route": "/books/taxes",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08",
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Arc Books workspace; production must ship with Books."
       },
       {
         "path": "app/(app)/books/transactions/page.tsx",
         "route": "/books/transactions",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Books banking.",
+        "exposureEvidence": "app/(app)/books/transactions/page.tsx:8"
       },
       {
         "path": "app/(app)/communities/[id]/land/page.tsx",
         "route": "/communities/[id]/land",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP04"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP04-01",
+          "EP04-02",
+          "EP04-03",
+          "EP04-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Community workspace; production nav Sell group."
       },
       {
         "path": "app/(app)/communities/[id]/offering/page.tsx",
         "route": "/communities/[id]/offering",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP04"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Community workspace; production nav Sell group."
       },
       {
         "path": "app/(app)/communities/[id]/page.tsx",
         "route": "/communities/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP04"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP04-05",
+          "EP04-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Community workspace; production nav Sell group."
       },
       {
         "path": "app/(app)/communities/[id]/settings/page.tsx",
         "route": "/communities/[id]/settings",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP04",
+          "EP01",
           "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-04",
+          "EP02-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Community workspace; production nav Sell group."
       },
       {
         "path": "app/(app)/communities/page.tsx",
         "route": "/communities",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP04"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP04-05",
+          "EP04-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Community workspace; production nav Sell group."
       },
       {
         "path": "app/(app)/companies/[id]/page.tsx",
         "route": "/companies/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the Directory party.",
+        "exposureEvidence": "app/(app)/companies/[id]/page.tsx:31"
       },
       {
         "path": "app/(app)/companies/page.tsx",
         "route": "/companies",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Directory (companies).",
+        "exposureEvidence": "app/(app)/companies/page.tsx:7"
       },
       {
         "path": "app/(app)/contacts/[id]/page.tsx",
         "route": "/contacts/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the Directory party.",
+        "exposureEvidence": "app/(app)/contacts/[id]/page.tsx:20"
       },
       {
         "path": "app/(app)/contacts/page.tsx",
         "route": "/contacts",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Directory (contacts).",
+        "exposureEvidence": "app/(app)/contacts/page.tsx:5"
       },
       {
         "path": "app/(app)/crm/page.tsx",
         "route": "/crm",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the pipeline, which production orgs replace with Sales.",
+        "exposureEvidence": "app/(app)/crm/page.tsx:5"
       },
       {
         "path": "app/(app)/crm/prospects/page.tsx",
         "route": "/crm/prospects",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the pipeline.",
+        "exposureEvidence": "app/(app)/crm/prospects/page.tsx:5"
+      },
+      {
+        "path": "app/(app)/design-studio/catalog/history/page.tsx",
+        "route": "/design-studio/catalog/history",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP03"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP03-09"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Design Studio desk; production nav Sell group."
       },
       {
         "path": "app/(app)/design-studio/catalog/page.tsx",
         "route": "/design-studio/catalog",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP06"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-01",
+          "EP03-09"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Design Studio desk; production nav Sell group."
       },
       {
         "path": "app/(app)/design-studio/page.tsx",
         "route": "/design-studio",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP06"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-01",
+          "EP03-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Design Studio desk; production nav Sell group."
       },
       {
         "path": "app/(app)/design-studio/rules/page.tsx",
         "route": "/design-studio/rules",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP06"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-02",
+          "EP03-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Design Studio desk; production nav Sell group."
       },
       {
         "path": "app/(app)/design-studio/sheet/[projectId]/page.tsx",
         "route": "/design-studio/sheet/[projectId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP06"
+          "EP06",
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP06-01",
+          "EP03-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Design Studio desk; production nav Sell group."
       },
       {
         "path": "app/(app)/directory/[id]/access/page.tsx",
         "route": "/directory/[id]/access",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/activity/page.tsx",
         "route": "/directory/[id]/activity",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/commitments/page.tsx",
         "route": "/directory/[id]/commitments",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/communications/page.tsx",
         "route": "/directory/[id]/communications",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/compliance/page.tsx",
         "route": "/directory/[id]/compliance",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/contacts/page.tsx",
         "route": "/directory/[id]/contacts",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/page.tsx",
         "route": "/directory/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08",
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02",
+          "EP02-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/prequalification/page.tsx",
         "route": "/directory/[id]/prequalification",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/[id]/transactions/page.tsx",
         "route": "/directory/[id]/transactions",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/directory/page.tsx",
         "route": "/directory",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08",
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02",
+          "EP02-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Directory party workspace (company or contact)."
       },
       {
         "path": "app/(app)/documents/page.tsx",
         "route": "/documents",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Org documents desk."
       },
       {
         "path": "app/(app)/drawings/sets/[setId]/page.tsx",
         "route": "/drawings/sets/[setId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the project drawings workbench.",
+        "exposureEvidence": "app/(app)/drawings/sets/[setId]/page.tsx:20"
       },
       {
         "path": "app/(app)/drawings/sheets/[sheetId]/page.tsx",
         "route": "/drawings/sheets/[sheetId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the project drawings workbench.",
+        "exposureEvidence": "app/(app)/drawings/sheets/[sheetId]/page.tsx:20"
       },
       {
         "path": "app/(app)/emails/preview/page.tsx",
         "route": "/emails/preview",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-05"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Email template preview tool with no navigation entry or permission guard. Low confidence: confirm it should be reachable by customer roles.",
+        "exposureEvidence": "app/(app)/emails/preview/page.tsx:1"
       },
       {
         "path": "app/(app)/estimates/page.tsx",
         "route": "/estimates",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "residential-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Estimates are reached only from dashboard, search or notification deep-links; no production nav entry. Low confidence.",
+        "exposureEvidence": "app/(app)/estimates/page.tsx:11 (desk-rule note: not in workspace nav)"
       },
       {
         "path": "app/(app)/invoices/page.tsx",
         "route": "/invoices",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Billing.",
+        "exposureEvidence": "app/(app)/invoices/page.tsx:17"
       },
       {
         "path": "app/(app)/my-houses/page.tsx",
         "route": "/my-houses",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Home, the personal cross-project scope.",
+        "exposureEvidence": "app/(app)/my-houses/page.tsx:8"
       },
       {
         "path": "app/(app)/my-work/page.tsx",
         "route": "/my-work",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Tasks.",
+        "exposureEvidence": "app/(app)/my-work/page.tsx:7"
       },
       {
         "path": "app/(app)/page.tsx",
         "route": "/",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-01",
+          "EP01-02",
+          "EP01-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Home: control tower, or the posture desk for production orgs."
       },
       {
         "path": "app/(app)/payables/page.tsx",
         "route": "/payables",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
+          "EP02",
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-05",
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Payables desk."
       },
       {
         "path": "app/(app)/payables/payment-runs/[id]/page.tsx",
         "route": "/payables/payment-runs/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP08"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Payment run detail; separation of duties."
       },
       {
         "path": "app/(app)/payables/payment-runs/page.tsx",
         "route": "/payables/payment-runs",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP08"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-05"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Payables.",
+        "exposureEvidence": "app/(app)/payables/payment-runs/page.tsx:8"
       },
       {
         "path": "app/(app)/payables/reconciliation/page.tsx",
         "route": "/payables/reconciliation",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Payment reconciliation; gated on payment.reconcile."
       },
       {
         "path": "app/(app)/payables/waivers/page.tsx",
         "route": "/payables/waivers",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Incoming lien-waiver register."
       },
       {
         "path": "app/(app)/payments/page.tsx",
         "route": "/payments",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
+          "EP10"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Billing.",
+        "exposureEvidence": "app/(app)/payments/page.tsx:8"
+      },
+      {
+        "path": "app/(app)/pipeline/[dealId]/files/page.tsx",
+        "route": "/pipeline/[dealId]/files",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP05",
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01",
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
+      },
+      {
+        "path": "app/(app)/pipeline/[dealId]/page.tsx",
+        "route": "/pipeline/[dealId]",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP05",
+          "EP01"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-01",
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
+      },
+      {
+        "path": "app/(app)/pipeline/[dealId]/plans/page.tsx",
+        "route": "/pipeline/[dealId]/plans",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP05",
+          "EP01"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-01",
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
+      },
+      {
+        "path": "app/(app)/pipeline/[dealId]/quotes/[packageId]/page.tsx",
+        "route": "/pipeline/[dealId]/quotes/[packageId]",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP05",
+          "EP01"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-01",
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
         "path": "app/(app)/pipeline/page.tsx",
         "route": "/pipeline",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
-        "candidateWorkstreams": [
-          "EP05"
-        ],
-        "checklistId": "EP01-08",
-        "assessment": "not_audited"
-      },
-      {
-        "path": "app/(app)/pipeline/prospects/[prospectId]/[section]/page.tsx",
-        "route": "/pipeline/prospects/[prospectId]/[section]",
-        "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
-        "candidateWorkstreams": [
-          "EP05"
-        ],
-        "checklistId": "EP01-08",
-        "assessment": "not_audited"
-      },
-      {
-        "path": "app/(app)/pipeline/prospects/[prospectId]/bids/[packageId]/page.tsx",
-        "route": "/pipeline/prospects/[prospectId]/bids/[packageId]",
-        "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP05",
-          "EP08"
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
-      },
-      {
-        "path": "app/(app)/pipeline/prospects/[prospectId]/bids/page.tsx",
-        "route": "/pipeline/prospects/[prospectId]/bids",
-        "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
-        "candidateWorkstreams": [
-          "EP05",
-          "EP08"
+        "checklistIds": [
+          "EP05-01",
+          "EP01-01"
         ],
-        "checklistId": "EP01-08",
-        "assessment": "not_audited"
-      },
-      {
-        "path": "app/(app)/pipeline/prospects/[prospectId]/page.tsx",
-        "route": "/pipeline/prospects/[prospectId]",
-        "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
-        "candidateWorkstreams": [
-          "EP05"
-        ],
-        "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "assessment": "excluded",
+        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
         "path": "app/(app)/plans/[id]/page.tsx",
         "route": "/plans/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "House plans; production nav Sell group."
       },
       {
         "path": "app/(app)/plans/page.tsx",
         "route": "/plans",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "House plans; production nav Sell group."
       },
       {
         "path": "app/(app)/platform/bugs/page.tsx",
         "route": "/platform/bugs",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP13"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP13-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/platform/bugs/page.tsx:1"
       },
       {
         "path": "app/(app)/platform/page.tsx",
         "route": "/platform",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "platform-staff",
+        "productionExposure": "staff-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-08"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc platform-staff console; guarded by platform permissions, not reachable by customer roles.",
+        "exposureEvidence": "app/(app)/platform/page.tsx:1"
       },
       {
         "path": "app/(app)/projects/[id]/bids/[packageId]/page.tsx",
         "route": "/projects/[id]/bids/[packageId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Project bids tab is hidden for production; production bids run from Purchasing.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:333-334 (moduleKey \"bids\")"
       },
       {
         "path": "app/(app)/projects/[id]/bids/page.tsx",
         "route": "/projects/[id]/bids",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Project bids tab is hidden for production; production bids run from Purchasing.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:333-334 (moduleKey \"bids\")"
       },
       {
         "path": "app/(app)/projects/[id]/budget/page.tsx",
         "route": "/projects/[id]/budget",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Financials > Budget.",
+        "exposureEvidence": "app/(app)/projects/[id]/budget/page.tsx:10"
       },
       {
         "path": "app/(app)/projects/[id]/change-orders/page.tsx",
         "route": "/projects/[id]/change-orders",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP10",
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04",
+          "EP05-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/closeout/page.tsx",
         "route": "/projects/[id]/closeout",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/closing/page.tsx",
         "route": "/projects/[id]/closing",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-09",
+          "EP05-10"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Production-only closing workbench (postures: production)."
       },
       {
         "path": "app/(app)/projects/[id]/commitments/page.tsx",
         "route": "/projects/[id]/commitments",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Financials > Budget.",
+        "exposureEvidence": "app/(app)/projects/[id]/commitments/page.tsx:10"
       },
       {
         "path": "app/(app)/projects/[id]/correspondence/page.tsx",
         "route": "/projects/[id]/correspondence",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/cost-inbox/page.tsx",
         "route": "/projects/[id]/cost-inbox",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Financials > Cost Inbox.",
+        "exposureEvidence": "app/(app)/projects/[id]/cost-inbox/page.tsx:10"
       },
       {
         "path": "app/(app)/projects/[id]/daily-logs/page.tsx",
         "route": "/projects/[id]/daily-logs",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/decisions/page.tsx",
         "route": "/projects/[id]/decisions",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP06"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP06-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Decisions module is hidden for production; buyer approvals run through Selections.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:453-454 (moduleKey \"decisions\")"
       },
       {
         "path": "app/(app)/projects/[id]/documents/page.tsx",
         "route": "/projects/[id]/documents",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/drawings/model/page.tsx",
         "route": "/projects/[id]/drawings/model",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the drawings workbench 3D view.",
+        "exposureEvidence": "app/(app)/projects/[id]/drawings/model/page.tsx:18"
       },
       {
         "path": "app/(app)/projects/[id]/drawings/page.tsx",
         "route": "/projects/[id]/drawings",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP09"
+          "EP09",
+          "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03",
+          "EP07-15"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/drawings/sets/[setId]/page.tsx",
         "route": "/projects/[id]/drawings/sets/[setId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the drawings workbench.",
+        "exposureEvidence": "app/(app)/projects/[id]/drawings/sets/[setId]/page.tsx:12"
       },
       {
         "path": "app/(app)/projects/[id]/expenses/page.tsx",
         "route": "/projects/[id]/expenses",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/financials/billing/new/page.tsx",
         "route": "/projects/[id]/financials/billing/new",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the composer over the billing book.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/billing/new/page.tsx:19"
       },
       {
         "path": "app/(app)/projects/[id]/financials/billing/page.tsx",
         "route": "/projects/[id]/financials/billing",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP10",
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01",
+          "EP05-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Billing book."
       },
       {
         "path": "app/(app)/projects/[id]/financials/budget/page.tsx",
         "route": "/projects/[id]/financials/budget",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP10",
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04",
+          "EP08-09"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/financials/close/page.tsx",
         "route": "/projects/[id]/financials/close",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the billing period.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/close/page.tsx:16"
       },
       {
         "path": "app/(app)/projects/[id]/financials/cost-inbox/page.tsx",
         "route": "/projects/[id]/financials/cost-inbox",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/financials/cost-plus/page.tsx",
         "route": "/projects/[id]/financials/cost-plus",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP10"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Cost Inbox.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/cost-plus/page.tsx:9"
       },
       {
         "path": "app/(app)/projects/[id]/financials/inventory/page.tsx",
         "route": "/projects/[id]/financials/inventory",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Owned-inventory capitalization; gated on Books adjust."
       },
       {
         "path": "app/(app)/projects/[id]/financials/page.tsx",
         "route": "/projects/[id]/financials",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the project's billing landing.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/page.tsx:27"
       },
       {
         "path": "app/(app)/projects/[id]/financials/payables/page.tsx",
         "route": "/projects/[id]/financials/payables",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08",
-          "EP10"
+          "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11",
+          "EP02-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/financials/payables/waivers/page.tsx",
         "route": "/projects/[id]/financials/payables/waivers",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP08",
-          "EP10"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project incoming waiver register."
       },
       {
         "path": "app/(app)/projects/[id]/financials/receivables/page.tsx",
         "route": "/projects/[id]/financials/receivables",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the billing book.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/receivables/page.tsx:17"
       },
       {
         "path": "app/(app)/projects/[id]/financials/review/page.tsx",
         "route": "/projects/[id]/financials/review",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP10"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Cost Inbox.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/review/page.tsx:10"
       },
       {
         "path": "app/(app)/projects/[id]/financials/tm-tickets/page.tsx",
         "route": "/projects/[id]/financials/tm-tickets",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Time-and-materials tickets; appears only when the billing model is T&M, redirects otherwise."
       },
       {
         "path": "app/(app)/projects/[id]/financials/trust-center/page.tsx",
         "route": "/projects/[id]/financials/trust-center",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-08"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the reconciliation report.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/trust-center/page.tsx:11"
       },
       {
         "path": "app/(app)/projects/[id]/financials/waivers/page.tsx",
         "route": "/projects/[id]/financials/waivers",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP10"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Payables waivers.",
+        "exposureEvidence": "app/(app)/projects/[id]/financials/waivers/page.tsx:14"
       },
       {
         "path": "app/(app)/projects/[id]/inspections/page.tsx",
         "route": "/projects/[id]/inspections",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Inspections module includes production posture."
       },
       {
         "path": "app/(app)/projects/[id]/invoices/page.tsx",
         "route": "/projects/[id]/invoices",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the billing book.",
+        "exposureEvidence": "app/(app)/projects/[id]/invoices/page.tsx:30"
       },
       {
         "path": "app/(app)/projects/[id]/meetings/page.tsx",
         "route": "/projects/[id]/meetings",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Meeting minutes module defaults to the commercial posture only.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:413-414 (moduleKey \"meetings\"); lib/project-modules.ts:16"
       },
       {
         "path": "app/(app)/projects/[id]/page.tsx",
         "route": "/projects/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Home overview workbench; lot context for production posture."
       },
       {
         "path": "app/(app)/projects/[id]/payables/page.tsx",
         "route": "/projects/[id]/payables",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Financials > Payables.",
+        "exposureEvidence": "app/(app)/projects/[id]/payables/page.tsx:10"
       },
       {
         "path": "app/(app)/projects/[id]/photos/page.tsx",
         "route": "/projects/[id]/photos",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/proposals/page.tsx",
         "route": "/projects/[id]/proposals",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to project Signatures.",
+        "exposureEvidence": "app/(app)/projects/[id]/proposals/page.tsx:10"
       },
       {
         "path": "app/(app)/projects/[id]/punch/page.tsx",
         "route": "/projects/[id]/punch",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/reports/[slug]/page.tsx",
         "route": "/projects/[id]/reports/[slug]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project reports."
       },
       {
         "path": "app/(app)/projects/[id]/reports/forecast-history/page.tsx",
         "route": "/projects/[id]/reports/forecast-history",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Cash/cost forecast history report."
       },
       {
         "path": "app/(app)/projects/[id]/reports/page.tsx",
         "route": "/projects/[id]/reports",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project reports."
       },
       {
         "path": "app/(app)/projects/[id]/rfis/page.tsx",
         "route": "/projects/[id]/rfis",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "RFIs module is hidden for production projects unless a module override enables it.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:397-398 (moduleKey \"rfis\")"
       },
       {
         "path": "app/(app)/projects/[id]/safety/page.tsx",
         "route": "/projects/[id]/safety",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Safety module includes production posture."
       },
       {
         "path": "app/(app)/projects/[id]/schedule/page.tsx",
         "route": "/projects/[id]/schedule",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP07"
+          "EP07",
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-03",
+          "EP01-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/selections/page.tsx",
         "route": "/projects/[id]/selections",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP06"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP06-01",
+          "EP06-02",
+          "EP06-03",
+          "EP06-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Production-only selections workbench (postures: production)."
       },
       {
         "path": "app/(app)/projects/[id]/signatures/page.tsx",
         "route": "/projects/[id]/signatures",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/[id]/specs/page.tsx",
         "route": "/projects/[id]/specs",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Specifications module defaults to the commercial posture only.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:325-329 (moduleKey \"specs\"); lib/project-modules.ts:15"
       },
       {
         "path": "app/(app)/projects/[id]/submittals/page.tsx",
         "route": "/projects/[id]/submittals",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03",
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Submittals module is hidden for production projects unless a module override enables it.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:405-406 (moduleKey \"submittals\")"
       },
       {
         "path": "app/(app)/projects/[id]/tasks/page.tsx",
         "route": "/projects/[id]/tasks",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP09"
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-02"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Tasks filtered to the project.",
+        "exposureEvidence": "app/(app)/projects/[id]/tasks/page.tsx:13"
       },
       {
         "path": "app/(app)/projects/[id]/time/certified-payroll/page.tsx",
         "route": "/projects/[id]/time/certified-payroll",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Certified payroll sits under the Time module, hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:382-383 (moduleKey \"time\")"
       },
       {
         "path": "app/(app)/projects/[id]/time/page.tsx",
         "route": "/projects/[id]/time",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Time module is hidden for production projects unless a module override enables it.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:382-383 (moduleKey \"time\")"
+      },
+      {
+        "path": "app/(app)/projects/[id]/time/payroll/page.tsx",
+        "route": "/projects/[id]/time/payroll",
+        "surface": "builder_authenticated",
+        "audience": "home workbench",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Payroll sits under the Time module, hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:382-383 (moduleKey \"time\")"
       },
       {
         "path": "app/(app)/projects/[id]/transmittals/page.tsx",
         "route": "/projects/[id]/transmittals",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Transmittals module defaults to the commercial posture only.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:421-422 (moduleKey \"transmittals\"); lib/project-modules.ts:17"
       },
       {
         "path": "app/(app)/projects/[id]/warranty/page.tsx",
         "route": "/projects/[id]/warranty",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "home workbench",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP11"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP11-02",
+          "EP11-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench tab."
       },
       {
         "path": "app/(app)/projects/page.tsx",
         "route": "/projects",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP01",
+          "EP13"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-06",
+          "EP01-02",
+          "EP13-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Homes list; paged with a visible cap."
       },
       {
         "path": "app/(app)/proposals/new/page.tsx",
         "route": "/proposals/new",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Signatures.",
+        "exposureEvidence": "app/(app)/proposals/new/page.tsx:7"
       },
       {
         "path": "app/(app)/proposals/page.tsx",
         "route": "/proposals",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Signatures.",
+        "exposureEvidence": "app/(app)/proposals/page.tsx:7"
       },
       {
         "path": "app/(app)/prospects/page.tsx",
         "route": "/prospects",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the pipeline.",
+        "exposureEvidence": "app/(app)/prospects/page.tsx:9"
       },
       {
         "path": "app/(app)/purchasing/bids/[packageId]/page.tsx",
         "route": "/purchasing/bids/[packageId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-01",
+          "EP08-03",
+          "EP08-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Production bid workbench entry."
       },
       {
         "path": "app/(app)/purchasing/page.tsx",
         "route": "/purchasing",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-01",
+          "EP08-06",
+          "EP08-12"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Purchasing desk; production nav."
       },
       {
         "path": "app/(app)/reports/[slug]/page.tsx",
         "route": "/reports/[slug]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP10",
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-05",
+          "EP08-12"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Org report run."
       },
       {
         "path": "app/(app)/reports/page.tsx",
         "route": "/reports",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP10",
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-05",
+          "EP08-12"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Org report catalog; posture-aware wording."
       },
       {
         "path": "app/(app)/safety/page.tsx",
         "route": "/safety",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "commercial-only",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-04"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Org safety desk is added to the sidebar for the commercial tier only; production uses the per-home Safety tab.",
+        "exposureEvidence": "components/layout/app-sidebar.tsx:229-236"
       },
       {
         "path": "app/(app)/sales/[dealId]/page.tsx",
         "route": "/sales/[dealId]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP05"
+          "EP05",
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01",
+          "EP05-02",
+          "EP01-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Sales desk; ambient community scope."
       },
       {
         "path": "app/(app)/sales/page.tsx",
         "route": "/sales",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP05"
+          "EP05",
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-01",
+          "EP05-02",
+          "EP01-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Sales desk; ambient community scope."
       },
       {
         "path": "app/(app)/schedule/page.tsx",
         "route": "/schedule",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP07"
+          "EP07",
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-03",
+          "EP01-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Org schedule desk."
       },
       {
         "path": "app/(app)/schedule/trades/page.tsx",
         "route": "/schedule/trades",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-06",
+          "EP07-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade look-ahead."
       },
       {
         "path": "app/(app)/settings/accounting/calendar/page.tsx",
         "route": "/settings/accounting/calendar",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/accounting/chart-of-accounts/page.tsx",
         "route": "/settings/accounting/chart-of-accounts",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/accounting/opening-balances/page.tsx",
         "route": "/settings/accounting/opening-balances",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/accounting/setup/page.tsx",
         "route": "/settings/accounting/setup",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/accounting/taxes/page.tsx",
         "route": "/settings/accounting/taxes",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/cost-coding/page.tsx",
         "route": "/settings/cost-coding",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/divisions/page.tsx",
         "route": "/settings/divisions",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-01",
+          "EP02-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/imports/[importer]/page.tsx",
         "route": "/settings/imports/[importer]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP12",
-          "EP02"
+          "EP12"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP12-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/imports/page.tsx",
         "route": "/settings/imports",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP12",
-          "EP02"
+          "EP12"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP12-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/integrations/page.tsx",
         "route": "/settings/integrations",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
-          "EP12",
-          "EP02"
+          "EP12"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP12-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Settings > Integrations.",
+        "exposureEvidence": "app/(app)/settings/integrations/page.tsx:7"
       },
       {
         "path": "app/(app)/settings/page.tsx",
         "route": "/settings",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-01",
+          "EP02-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/starts/page.tsx",
         "route": "/settings/starts",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP07",
-          "EP02"
+          "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Start gate definitions; linked from the start package sheet."
       },
       {
         "path": "app/(app)/settings/takeoff/page.tsx",
         "route": "/settings/takeoff",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/templates/page.tsx",
         "route": "/settings/templates",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP02"
+          "EP09",
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-04",
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/settings/warranty/page.tsx",
         "route": "/settings/warranty",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP11",
-          "EP02"
+          "EP11"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP11-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Settings surface."
       },
       {
         "path": "app/(app)/signatures/page.tsx",
         "route": "/signatures",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Org signatures desk; replaces the old proposals list."
       },
       {
         "path": "app/(app)/starts/[id]/page.tsx",
         "route": "/starts/[id]",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to the Starts desk with the start selected.",
+        "exposureEvidence": "app/(app)/starts/[id]/page.tsx:12"
       },
       {
         "path": "app/(app)/starts/page.tsx",
         "route": "/starts",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-01",
+          "EP07-02",
+          "EP07-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Starts desk; production nav Build group."
       },
       {
         "path": "app/(app)/tasks/page.tsx",
         "route": "/tasks",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP09"
+          "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-02",
+          "EP01-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Personal cross-project task scope."
       },
       {
         "path": "app/(app)/team/page.tsx",
         "route": "/team",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "settings",
+        "productionExposure": "legacy-redirect",
         "candidateWorkstreams": [
           "EP02"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP02-03"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Redirects to Settings > Team.",
+        "exposureEvidence": "app/(app)/team/page.tsx:7"
       },
       {
         "path": "app/(app)/trade/connections/page.tsx",
         "route": "/trade/connections",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "trade-profile-only",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc Trade business-profile surface, not part of the builder posture.",
+        "exposureEvidence": "components/layout/trade-nav-items.ts:35-43"
       },
       {
         "path": "app/(app)/trade/crew/page.tsx",
         "route": "/trade/crew",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "trade-profile-only",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc Trade business-profile surface, not part of the builder posture.",
+        "exposureEvidence": "components/layout/trade-nav-items.ts:35-43"
       },
       {
         "path": "app/(app)/trade/setup/page.tsx",
         "route": "/trade/setup",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "trade-profile-only",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Arc Trade business-profile surface, not part of the builder posture.",
+        "exposureEvidence": "components/layout/trade-nav-items.ts:35-43"
       },
       {
         "path": "app/(app)/unauthorized/page.tsx",
         "route": "/unauthorized",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Permission-refusal landing page."
       },
       {
         "path": "app/(app)/warranty/accounting/page.tsx",
         "route": "/warranty/accounting",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP11"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP11-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Warranty accounting reconciliation; gated on Books adjust."
       },
       {
         "path": "app/(app)/warranty/page.tsx",
         "route": "/warranty",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP11"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP11-02",
+          "EP11-03",
+          "EP11-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Warranty desk; production nav Build group."
       },
       {
         "path": "app/(app)/whats-new/page.tsx",
         "route": "/whats-new",
         "surface": "builder_authenticated",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "org desk",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Release notes, linked from the user menu."
+      },
+      {
+        "path": "app/(auth)/auth/accept-invite/page.tsx",
+        "route": "/auth/accept-invite",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/callback/page.tsx",
+        "route": "/auth/callback",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/confirm/error/page.tsx",
+        "route": "/auth/confirm/error",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/forgot-password/page.tsx",
+        "route": "/auth/forgot-password",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/mfa/enroll/page.tsx",
+        "route": "/auth/mfa/enroll",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/mfa/page.tsx",
+        "route": "/auth/mfa",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/reset/page.tsx",
+        "route": "/auth/reset",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/signin/page.tsx",
+        "route": "/auth/signin",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/signup/page.tsx",
+        "route": "/auth/signup",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/(auth)/auth/verify/page.tsx",
+        "route": "/auth/verify",
+        "surface": "auth",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Authentication flow shared by every role and posture."
+      },
+      {
+        "path": "app/access/page.tsx",
+        "route": "/access",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP02"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP02-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Token-free router for external accounts; sends people to their workspace."
+      },
+      {
+        "path": "app/b/[token]/page.tsx",
+        "route": "/b/[token]",
+        "surface": "external_portal",
+        "audience": "trade portal",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP08"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP08-01",
+          "EP08-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Bid portal for vendor bid submission, used by Purchasing bid packages."
+      },
+      {
+        "path": "app/d/[token]/page.tsx",
+        "route": "/d/[token]",
+        "surface": "external_portal",
+        "audience": "external link",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP05"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Document signing portal."
+      },
+      {
+        "path": "app/dither-lab/page.tsx",
+        "route": "/dither-lab",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "staff-only",
+        "candidateWorkstreams": [
+          "EP01"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP01-05"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Animation design lab with no navigation entry or product use.",
+        "exposureEvidence": "app/dither-lab/page.tsx:1"
+      },
+      {
+        "path": "app/e/[token]/page.tsx",
+        "route": "/e/[token]",
+        "surface": "external_portal",
+        "audience": "external link",
+        "productionExposure": "residential-only",
+        "candidateWorkstreams": [
+          "EP05"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-01"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Estimate portal for custom-build estimates; production sells through agreements. Low confidence.",
+        "exposureEvidence": "app/e/[token]/page.tsx:6 (loadEstimateByToken)"
+      },
+      {
+        "path": "app/esign-terms/page.tsx",
+        "route": "/esign-terms",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP05"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "E-signature disclosure shown during signing."
+      },
+      {
+        "path": "app/f/[token]/page.tsx",
+        "route": "/f/[token]",
+        "surface": "external_portal",
+        "audience": "external link",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "File share link."
+      },
+      {
+        "path": "app/help/[...slug]/page.tsx",
+        "route": "/help/[...slug]",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP01"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP01-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Help centre."
+      },
+      {
+        "path": "app/help/page.tsx",
+        "route": "/help",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP01"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP01-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Help centre."
+      },
+      {
+        "path": "app/i/[token]/page.tsx",
+        "route": "/i/[token]",
+        "surface": "external_portal",
+        "audience": "external link",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP10",
+          "EP05"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-01",
+          "EP05-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Public invoice and payment page."
       },
       {
         "path": "app/p/[token]/about/page.tsx",
         "route": "/p/[token]/about",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/actions/page.tsx",
         "route": "/p/[token]/actions",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP06"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP06-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/change-orders/[id]/page.tsx",
         "route": "/p/[token]/change-orders/[id]",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/decisions/page.tsx",
         "route": "/p/[token]/decisions",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP06"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP06-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/documents/page.tsx",
         "route": "/p/[token]/documents",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/invoices/[id]/page.tsx",
         "route": "/p/[token]/invoices/[id]",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/invoices/page.tsx",
         "route": "/p/[token]/invoices",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP05"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/model/page.tsx",
         "route": "/p/[token]/model",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP03"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP03-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/page.tsx",
         "route": "/p/[token]",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
+          "EP05",
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP05-02",
+          "EP01-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/pay-applications/[id]/page.tsx",
         "route": "/p/[token]/pay-applications/[id]",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; nav entry shows only when the project has a posted pay application (portal-nav-items.ts:208-212)."
       },
       {
         "path": "app/p/[token]/pay-applications/page.tsx",
         "route": "/p/[token]/pay-applications",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP10"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; nav entry shows only when the project has a posted pay application (portal-nav-items.ts:208-212)."
       },
       {
         "path": "app/p/[token]/photos/page.tsx",
         "route": "/p/[token]/photos",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/punch-list/page.tsx",
         "route": "/p/[token]/punch-list",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/roadmap/page.tsx",
         "route": "/p/[token]/roadmap",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP01-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/selections/page.tsx",
         "route": "/p/[token]/selections",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP06"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP06-02",
+          "EP06-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
       },
       {
         "path": "app/p/[token]/warranty/page.tsx",
         "route": "/p/[token]/warranty",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP11"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP11-01",
+          "EP11-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
+      },
+      {
+        "path": "app/p/[token]/warranty/visits/[visitId]/page.tsx",
+        "route": "/p/[token]/warranty/visits/[visitId]",
+        "surface": "external_portal",
+        "audience": "buyer portal",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP11"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP11-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Buyer/owner portal; token-gated and not posture-gated."
+      },
+      {
+        "path": "app/privacy/page.tsx",
+        "route": "/privacy",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP14"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP14-10"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Legal page."
+      },
+      {
+        "path": "app/proposal/[token]/page.tsx",
+        "route": "/proposal/[token]",
+        "surface": "external_portal",
+        "audience": "external link",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP05"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP05-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Proposal view and acceptance page. Moderate confidence."
+      },
+      {
+        "path": "app/r/[token]/drawings/page.tsx",
+        "route": "/r/[token]/drawings",
+        "surface": "external_portal",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Design-reviewer portal for RFIs, submittals and drawings; its source modules are hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:397-406 (moduleKeys \"rfis\", \"submittals\")"
+      },
+      {
+        "path": "app/r/[token]/page.tsx",
+        "route": "/r/[token]",
+        "surface": "external_portal",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Design-reviewer portal for RFIs, submittals and drawings; its source modules are hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:397-406 (moduleKeys \"rfis\", \"submittals\")"
+      },
+      {
+        "path": "app/r/[token]/rfis/page.tsx",
+        "route": "/r/[token]/rfis",
+        "surface": "external_portal",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Design-reviewer portal for RFIs, submittals and drawings; its source modules are hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:397-406 (moduleKeys \"rfis\", \"submittals\")"
+      },
+      {
+        "path": "app/r/[token]/submittals/page.tsx",
+        "route": "/r/[token]/submittals",
+        "surface": "external_portal",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Design-reviewer portal for RFIs, submittals and drawings; its source modules are hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:397-406 (moduleKeys \"rfis\", \"submittals\")"
       },
       {
         "path": "app/s/[token]/bills/page.tsx",
         "route": "/s/[token]/bills",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/commitments/page.tsx",
         "route": "/s/[token]/commitments",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-07"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/compliance/page.tsx",
         "route": "/s/[token]/compliance",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/daily-logs/page.tsx",
         "route": "/s/[token]/daily-logs",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/documents/page.tsx",
         "route": "/s/[token]/documents",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/expenses/page.tsx",
         "route": "/s/[token]/expenses",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP10"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/page.tsx",
         "route": "/s/[token]",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP07"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP07-08",
+          "EP07-10"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/payments/page.tsx",
         "route": "/s/[token]/payments",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/prequalification/page.tsx",
         "route": "/s/[token]/prequalification",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-02"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/punch/page.tsx",
         "route": "/s/[token]/punch",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-05"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/purchase-orders/page.tsx",
         "route": "/s/[token]/purchase-orders",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-08"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/rfis/page.tsx",
         "route": "/s/[token]/rfis",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Trade RFIs reflect the RFIs module, hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:397-398 (moduleKey \"rfis\")"
       },
       {
         "path": "app/s/[token]/rfqs/page.tsx",
         "route": "/s/[token]/rfqs",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/submit-invoice/page.tsx",
         "route": "/s/[token]/submit-invoice",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/submittals/page.tsx",
         "route": "/s/[token]/submittals",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
-          "EP01"
+          "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-07"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Trade submittals reflect the Submittals module, hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:405-406 (moduleKey \"submittals\")"
       },
       {
         "path": "app/s/[token]/subtier-waivers/page.tsx",
         "route": "/s/[token]/subtier-waivers",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/time/page.tsx",
         "route": "/s/[token]/time",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "residential-commercial-only",
         "candidateWorkstreams": [
           "EP09"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP09-06"
+        ],
+        "assessment": "excluded",
+        "assessmentNote": "Trade time reflects the Time module, hidden for production projects.",
+        "exposureEvidence": "components/layout/project-nav-items.ts:382-383 (moduleKey \"time\")"
       },
       {
         "path": "app/s/[token]/waivers/[billId]/page.tsx",
         "route": "/s/[token]/waivers/[billId]",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
-          "EP01"
+          "EP08"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP08-11"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
         "path": "app/s/[token]/warranty/page.tsx",
         "route": "/s/[token]/warranty",
         "surface": "external_portal",
-        "productionExposure": "requires_role_posture_and_module_review",
+        "audience": "trade portal",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP11"
         ],
         "checklistId": "EP01-08",
-        "assessment": "not_audited"
+        "checklistIds": [
+          "EP11-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
+      },
+      {
+        "path": "app/t/[token]/page.tsx",
+        "route": "/t/[token]",
+        "surface": "external_portal",
+        "audience": "external link",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP10"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP10-04"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "T&M ticket signature page; used only when a project bills T&M."
+      },
+      {
+        "path": "app/terms/page.tsx",
+        "route": "/terms",
+        "surface": "public",
+        "audience": "public",
+        "productionExposure": "public",
+        "candidateWorkstreams": [
+          "EP14"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP14-10"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Legal page."
+      }
+    ],
+    "exposureValues": {
+      "yes": "Reachable by production roles in the shipped navigation or by token.",
+      "public": "Authentication or public page, reachable by everyone.",
+      "commercial-only": "Module or desk defaults to the commercial posture only; a per-project module override can still enable it.",
+      "residential-commercial-only": "Hidden for production projects and orgs; custom-build and commercial postures only.",
+      "residential-only": "Custom-build surface with no production entry point.",
+      "trade-profile-only": "Arc Trade business profile, not a builder posture.",
+      "legacy-redirect": "Pure redirect to another surface; the destination is inventoried separately.",
+      "staff-only": "Arc platform staff or internal tooling, not a customer role surface."
+    },
+    "assessmentValues": {
+      "exposed": "Reachable by production roles and mapped to checklist IDs.",
+      "excluded": "Not part of the production surface; exposureEvidence names the file and line.",
+      "not_audited": "Newly discovered route awaiting assessment; --check fails until it is classified."
+    },
+    "deferred": [
+      {
+        "id": "mobile-api",
+        "surface": "/api/mobile/v1/* and phone layouts",
+        "reason": "Mobile web and the iOS API are out of scope for production readiness (owner decision 2026-10-11); reviewed as one deferred entry, not per endpoint.",
+        "checklistIds": [
+          "EP09-01",
+          "EP09-02",
+          "EP09-08",
+          "EP14-07"
+        ]
       }
     ]
   },

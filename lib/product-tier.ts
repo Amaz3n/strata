@@ -54,6 +54,18 @@ export function shouldShowProductionOrgNavigation(
   return orgTier === "production" || hasProductionProjects
 }
 
+/**
+ * Custom-build surfaces (Pipeline, Bids) belong to every org that runs
+ * non-production work. A production-tier org that also has an active custom home
+ * or commercial job keeps them: the project is the unit of posture, not the tier.
+ */
+export function shouldShowCustomBuildNavigation(
+  orgTier: ProductTier,
+  hasActiveNonProductionProjects: boolean,
+): boolean {
+  return orgTier !== "production" || hasActiveNonProductionProjects
+}
+
 export function isProductionProjectPosture(posture: ProjectPosture): boolean {
   return posture === "production"
 }

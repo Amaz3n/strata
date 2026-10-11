@@ -120,6 +120,9 @@ async function loadVendorData(
 
 async function DirectoryData({ searchParams }: DirectoryPageProps) {
   await connection()
+  // Deliberately not on the ambient community/division lens: a party is an
+  // org-level record (a supplier serves every community), so scoping the
+  // directory by a header lens would hide vendors and buyers the org owns.
   const [context, resolved] = await Promise.all([requireOrgContext(), searchParams]);
   const { orgId, productTier } = context;
 

@@ -1,5 +1,5 @@
 import { connection } from "next/server"
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { DesignStudioSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { RunwayBoard } from "@/components/design-studio/runway-board"
@@ -44,7 +44,7 @@ export default function DesignStudioPage(props: Parameters<typeof DesignStudioPa
     <Suspense
       fallback={
         <PageLayout title="Design Studio" fullBleed>
-          <PageLoadingSkeleton />
+          <DesignStudioSkeleton />
         </PageLayout>
       }
     >

@@ -2,7 +2,7 @@ import { connection } from "next/server"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { QueuePagination } from "@/components/layout/queue-pagination"
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { PurchasingSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { PurchasingClient } from "@/components/purchasing/purchasing-client"
@@ -79,7 +79,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
 
 export default function PurchasingPage(props: Parameters<typeof PurchasingPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLayout title="Purchasing" fullBleed><PageLoadingSkeleton /></PageLayout>}>
+    <Suspense fallback={<PageLayout title="Purchasing" fullBleed><PurchasingSkeleton /></PageLayout>}>
       <PurchasingPageContent {...props} />
     </Suspense>
   )

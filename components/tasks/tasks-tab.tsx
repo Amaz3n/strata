@@ -124,35 +124,35 @@ const NO_PROJECT = "none"
 
 const STATUS_CONFIG: Record<TaskStatus, { label: string; color: string; bgColor: string }> = {
   todo: { label: "To Do", color: "text-muted-foreground", bgColor: "bg-muted" },
-  in_progress: { label: "In Progress", color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/10" },
+  in_progress: { label: "In Progress", color: "text-chart-1", bgColor: "bg-chart-1/10" },
   blocked: { label: "Blocked", color: "text-destructive", bgColor: "bg-destructive/10" },
-  done: { label: "Done", color: "text-emerald-600 dark:text-emerald-400", bgColor: "bg-emerald-500/10" },
+  done: { label: "Done", color: "text-success", bgColor: "bg-success/10" },
 }
 
 const PRIORITY_CONFIG: Record<TaskPriority, { label: string; color: string; bgColor: string; dotColor: string }> = {
-  low: { label: "Low", color: "text-muted-foreground", bgColor: "bg-muted", dotColor: "bg-slate-400" },
+  low: { label: "Low", color: "text-muted-foreground", bgColor: "bg-muted", dotColor: "bg-muted-foreground/60" },
   normal: { label: "Normal", color: "text-primary", bgColor: "bg-primary/10", dotColor: "bg-primary" },
-  high: { label: "High", color: "text-amber-600 dark:text-amber-400", bgColor: "bg-amber-500/10", dotColor: "bg-amber-500" },
+  high: { label: "High", color: "text-warning", bgColor: "bg-warning/10", dotColor: "bg-warning" },
   urgent: { label: "Urgent", color: "text-destructive", bgColor: "bg-destructive/10", dotColor: "bg-destructive" },
 }
 
 const TRADE_CONFIG: Record<TaskTrade, { label: string; color: string }> = {
-  general: { label: "General", color: "bg-slate-500" },
-  demolition: { label: "Demolition", color: "bg-gray-600" },
-  concrete: { label: "Concrete", color: "bg-stone-500" },
-  framing: { label: "Framing", color: "bg-amber-600" },
-  roofing: { label: "Roofing", color: "bg-red-600" },
-  electrical: { label: "Electrical", color: "bg-yellow-500" },
-  plumbing: { label: "Plumbing", color: "bg-blue-600" },
-  hvac: { label: "HVAC", color: "bg-cyan-500" },
-  insulation: { label: "Insulation", color: "bg-pink-500" },
-  drywall: { label: "Drywall", color: "bg-gray-400" },
-  painting: { label: "Painting", color: "bg-purple-500" },
-  flooring: { label: "Flooring", color: "bg-orange-600" },
-  cabinets: { label: "Cabinets", color: "bg-amber-700" },
-  tile: { label: "Tile", color: "bg-teal-500" },
-  landscaping: { label: "Landscaping", color: "bg-green-600" },
-  other: { label: "Other", color: "bg-slate-400" },
+  general: { label: "General", color: "bg-muted-foreground" },
+  demolition: { label: "Demolition", color: "bg-foreground/60" },
+  concrete: { label: "Concrete", color: "bg-foreground/40" },
+  framing: { label: "Framing", color: "bg-chart-3" },
+  roofing: { label: "Roofing", color: "bg-destructive" },
+  electrical: { label: "Electrical", color: "bg-warning" },
+  plumbing: { label: "Plumbing", color: "bg-chart-1" },
+  hvac: { label: "HVAC", color: "bg-chart-2" },
+  insulation: { label: "Insulation", color: "bg-chart-5/60" },
+  drywall: { label: "Drywall", color: "bg-muted-foreground/60" },
+  painting: { label: "Painting", color: "bg-chart-5" },
+  flooring: { label: "Flooring", color: "bg-chart-3/70" },
+  cabinets: { label: "Cabinets", color: "bg-chart-3/50" },
+  tile: { label: "Tile", color: "bg-chart-2/60" },
+  landscaping: { label: "Landscaping", color: "bg-success" },
+  other: { label: "Other", color: "bg-muted-foreground/60" },
 }
 
 const STATUS_ORDER: TaskStatus[] = ["todo", "in_progress", "blocked", "done"]
@@ -217,11 +217,11 @@ function getChecklistProgress(checklist?: TaskChecklistItem[]): { completed: num
 // Linear-style status glyph: empty ring for to-do, a half-filled pie for in
 // progress, a slashed circle for blocked, and a green check when done.
 function StatusCircle({ status, className }: { status: TaskStatus; className?: string }) {
-  if (status === "done") return <CheckCircle2 className={cn("size-4 text-emerald-600 dark:text-emerald-400", className)} />
+  if (status === "done") return <CheckCircle2 className={cn("size-4 text-success", className)} />
   if (status === "blocked") return <Ban className={cn("size-4 text-destructive", className)} />
 
   const fraction = status === "in_progress" ? 0.5 : 0
-  const color = status === "in_progress" ? "text-blue-500" : "text-muted-foreground"
+  const color = status === "in_progress" ? "text-chart-1" : "text-muted-foreground"
   const pieR = 2.5
   const circ = 2 * Math.PI * pieR
   return (
@@ -706,7 +706,7 @@ export function TasksTab({
                                   dateInfo.isOverdue
                                     ? "text-destructive"
                                     : dateInfo.isPriority
-                                      ? "text-amber-600 dark:text-amber-400"
+                                      ? "text-warning"
                                       : "text-muted-foreground",
                                 )}
                                 title={isReminder ? "Reminder" : "Due date"}
@@ -1603,7 +1603,7 @@ function TaskDetailDialog({ open, onOpenChange, task, team: initialTeam, project
                 <p>Created {format(parseISO(task.created_at), "MMM d, yyyy 'at' h:mm a")}</p>
                 <p>Updated {format(parseISO(task.updated_at), "MMM d, yyyy 'at' h:mm a")}</p>
                 {task.completed_at && (
-                  <p className="text-emerald-600 dark:text-emerald-400">
+                  <p className="text-success">
                     Completed {format(parseISO(task.completed_at), "MMM d, yyyy 'at' h:mm a")}
                   </p>
                 )}

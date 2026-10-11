@@ -11,6 +11,19 @@ import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { slotSchema } from "@/lib/validation/starts"
+import { readAllRows, type RangeReader } from "@/lib/land/paging"
+
+/**
+ * PostgREST caps every response at its configured max_rows, so a bare `.limit()`
+ * above that silently returns a prefix. Reports read every row or refuse.
+ */
+const REPORT_ROW_CAP = 50_000
+
+async function readReportRows<Row>(read: RangeReader<Row>, label: string): Promise<Row[]> {
+  const { rows, truncated } = await readAllRows(read, { cap: REPORT_ROW_CAP, label })
+  if (truncated) throw new Error(`${label}: more than ${REPORT_ROW_CAP} rows; narrow the range`)
+  return rows
+}
 
 function settingsNumber(settings: unknown, key: string, fallback: number, max: number) {
   if (!settings || typeof settings !== "object") return fallback
@@ -186,10 +199,10 @@ export async function getCycleTimeReport(
     return []
   }
   let query = context.supabase.from("start_packages").select(`
-    actual_start_date,community_id,project_id,
+    id,actual_start_date,community_id,project_id,
     lot:lots(house_plan_id,plan:house_plans(id,name,code)),community:communities!inner(name,division_id),
     project:projects(end_date,status,superintendent_id,superintendent:app_users!projects_superintendent_id_fkey(full_name))
-  `).eq("org_id", context.orgId).eq("status", "released").not("actual_start_date", "is", null).limit(10_000)
+  `).eq("org_id", context.orgId).eq("status", "released").not("actual_start_date", "is", null)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.divisionId) query = query.eq("community.division_id", opts.divisionId)
   else if (divisionAccess.assignedOnly) {
@@ -198,8 +211,8 @@ export async function getCycleTimeReport(
   }
   if (opts.from) query = query.gte("actual_start_date", opts.from)
   if (opts.to) query = query.lte("actual_start_date", opts.to)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to load cycle-time report: ${error.message}`)
+  const ordered = query.order("id")
+  const data = await readReportRows((from, to) => ordered.range(from, to), "Failed to load cycle-time report")
   type CycleGroup = { label: string; completed: Array<{ start: string; days: number }>; inProgress: number }
   const groups = new Map<string, CycleGroup>()
   for (const row of data ?? []) {
@@ -259,9 +272,9 @@ export async function getEvenFlowAdherence(
   if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
     return []
   }
-  let slotsQuery = context.supabase.from("community_release_slots").select("community_id,week_start,target_starts")
+  let slotsQuery = context.supabase.from("community_release_slots").select("id,community_id,week_start,target_starts")
     .eq("org_id", context.orgId).gte("week_start", opts.from).lte("week_start", opts.to)
-  let startsQuery = context.supabase.from("start_packages").select("community_id,target_week")
+  let startsQuery = context.supabase.from("start_packages").select("id,community_id,target_week")
     .eq("org_id", context.orgId).eq("status", "released").gte("target_week", opts.from).lte("target_week", opts.to)
   if (opts.communityId) { slotsQuery = slotsQuery.eq("community_id", opts.communityId); startsQuery = startsQuery.eq("community_id", opts.communityId) }
   const scopedDivisionIds = opts.divisionId
@@ -278,24 +291,27 @@ export async function getEvenFlowAdherence(
     slotsQuery = slotsQuery.in("community_id", ids)
     startsQuery = startsQuery.in("community_id", ids)
   }
-  const [slots, starts] = await Promise.all([slotsQuery, startsQuery])
-  if (slots.error || starts.error) throw new Error("Failed to load even-flow adherence")
+  const orderedSlots = slotsQuery.order("id")
+  const orderedStarts = startsQuery.order("id")
+  const [slotRows, startRows] = await Promise.all([
+    readReportRows((from, to) => orderedSlots.range(from, to), "Failed to load even-flow slots"),
+    readReportRows((from, to) => orderedStarts.range(from, to), "Failed to load even-flow starts"),
+  ])
   // The closing half of even-flow is what a builder actually paces against, and
   // it used to be hardcoded `null` / `0`. Both halves are read from the closings
   // ledger here; `scheduled_date` is the plan, `actual_date` on a closed row is
   // what happened.
-  const communityIds = Array.from(new Set((slots.data ?? []).map((slot) => slot.community_id as string)))
+  const communityIds = Array.from(new Set(slotRows.map((slot) => slot.community_id as string)))
   const windowEnd = addWeeks(opts.to, 1)
   const closings = communityIds.length
-    ? await context.supabase.from("closings").select("community_id,scheduled_date,actual_date,status")
+    ? await readReportRows((from, to) => context.supabase.from("closings").select("id,community_id,scheduled_date,actual_date,status")
       .eq("org_id", context.orgId).in("community_id", communityIds).neq("status", "cancelled")
       .or(`and(scheduled_date.gte.${opts.from},scheduled_date.lt.${windowEnd}),and(actual_date.gte.${opts.from},actual_date.lt.${windowEnd})`)
-      .limit(10_000)
-    : { data: [], error: null }
-  if (closings.error) throw new Error(`Failed to load closings: ${closings.error.message}`)
+      .order("id").range(from, to), "Failed to load closings")
+    : []
   const planned = new Map<string, number>()
   const actual = new Map<string, number>()
-  for (const closing of closings.data ?? []) {
+  for (const closing of closings) {
     if (closing.scheduled_date) {
       const key = `${closing.community_id}:${mondayOfIsoWeek(closing.scheduled_date)}`
       planned.set(key, (planned.get(key) ?? 0) + 1)
@@ -306,9 +322,9 @@ export async function getEvenFlowAdherence(
     }
   }
   const currentWeek = mondayOfIsoWeek(new Date())
-  return (slots.data ?? []).map((slot) => {
+  return slotRows.map((slot) => {
     const plannedStarts = Number(slot.target_starts)
-    const actualStarts = (starts.data ?? []).filter((start) => start.community_id === slot.community_id && start.target_week === slot.week_start).length
+    const actualStarts = startRows.filter((start) => start.community_id === slot.community_id && start.target_week === slot.week_start).length
     const key = `${slot.community_id}:${slot.week_start}`
     return {
       weekStart: slot.week_start, communityId: slot.community_id, plannedStarts, actualStarts,
@@ -360,20 +376,20 @@ export async function getMissedStarts(
   const communityIds = (communities ?? []).map((community) => community.id)
   if (!communityIds.length) return empty
   const [slots, released] = await Promise.all([
-    context.supabase.from("community_release_slots").select("community_id,week_start,target_starts")
-      .eq("org_id", context.orgId).in("community_id", communityIds).gte("week_start", from).lte("week_start", to),
-    context.supabase.from("start_packages").select("community_id,target_week")
+    readReportRows((rangeFrom, rangeTo) => context.supabase.from("community_release_slots").select("id,community_id,week_start,target_starts")
+      .eq("org_id", context.orgId).in("community_id", communityIds).gte("week_start", from).lte("week_start", to)
+      .order("id").range(rangeFrom, rangeTo), "Failed to load release slots"),
+    readReportRows((rangeFrom, rangeTo) => context.supabase.from("start_packages").select("id,community_id,target_week")
       .eq("org_id", context.orgId).in("community_id", communityIds).in("status", ["releasing", "released"])
-      .gte("target_week", from).lte("target_week", to).limit(10_000),
+      .gte("target_week", from).lte("target_week", to)
+      .order("id").range(rangeFrom, rangeTo), "Failed to load released starts"),
   ])
-  if (slots.error) throw new Error(`Failed to load release slots: ${slots.error.message}`)
-  if (released.error) throw new Error(`Failed to load released starts: ${released.error.message}`)
   const filled = new Map<string, number>()
-  for (const row of released.data ?? []) {
+  for (const row of released) {
     const key = `${row.community_id}:${row.target_week}`
     filled.set(key, (filled.get(key) ?? 0) + 1)
   }
-  const missed = (slots.data ?? []).reduce(
+  const missed = slots.reduce(
     (sum, slot) => sum + Math.max(0, Number(slot.target_starts) - (filled.get(`${slot.community_id}:${slot.week_start}`) ?? 0)),
     0,
   )

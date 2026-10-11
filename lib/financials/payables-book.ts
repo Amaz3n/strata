@@ -47,3 +47,16 @@ export function parsePayablesBookQuery(input: Record<string, unknown>) {
     ) as Record<PayableBandKey, number>,
   };
 }
+
+/** The most payables one "select all matching" reaches. */
+export const PAYABLE_SELECTION_CAP = 500;
+
+/** What a select-all-matching toast says; when the filter holds more than the cap it names both numbers. */
+export function matchingSelectionSummary(selected: number, matching: number): { truncated: boolean; message: string } {
+  const truncated = matching > selected;
+  const noun = (count: number) => `${count} payable${count === 1 ? "" : "s"}`;
+  return {
+    truncated,
+    message: truncated ? `First ${selected} of ${matching} matching payables selected` : `${noun(selected)} selected`,
+  };
+}

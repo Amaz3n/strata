@@ -33,7 +33,7 @@ export const WILDCARD_PERMISSION = "*"
  * Entity type → the permission that governs reading it.
  *
  * Every key here exists in the RBAC catalog (`TEAM_PERMISSION_OPTIONS` in
- * `lib/services/team.ts`, seeded by the catalog-as-code migration). A type
+ * `lib/permission-catalog.ts`, seeded by the catalog-as-code migration). A type
  * absent from this map is ungated on purpose, not by oversight.
  */
 export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> = {

@@ -284,34 +284,65 @@ async function fetchTaskById(
 }
 
 /** Every task the current user created or is assigned to, across projects and personal. */
-export async function listMyTasksAction(): Promise<Task[]> {
+/** The personal worklist shows the newest tasks up to this many, and says so when older ones are left out. */
+const MY_TASKS_CAP = 500
+/** An `id.in (...)` list longer than this overflows the request URL. */
+const ASSIGNED_ID_CHUNK = 100
+
+export async function listMyTasksPage(): Promise<{ tasks: Task[]; truncated: boolean }> {
       const { supabase, orgId, userId } = await requireOrgContext()
 
-      const { data: myAssignments, error: assignmentsError } = await supabase
-        .from("task_assignments")
-        .select("task_id")
-        .eq("org_id", orgId)
-        .eq("user_id", userId)
+      const assignedIds: string[] = []
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from("task_assignments")
+          .select("id, task_id")
+          .eq("org_id", orgId)
+          .eq("user_id", userId)
+          .order("id")
+          .range(from, from + 999)
+        if (error) throw new Error(`Failed to load task assignments: ${error.message}`)
+        for (const row of data ?? []) assignedIds.push(row.task_id as string)
+        if ((data?.length ?? 0) < 1000) break
+      }
+      const uniqueAssignedIds = [...new Set(assignedIds)]
 
-      if (assignmentsError) throw new Error(`Failed to load task assignments: ${assignmentsError.message}`)
-
-      const assignedIds = [...new Set((myAssignments ?? []).map((row: any) => row.task_id as string))]
-
-      let orClause = `created_by.eq.${userId},metadata->mentioned_user_ids.cs.["${userId}"]`
-      if (assignedIds.length > 0) orClause += `,id.in.(${assignedIds.join(",")})`
-
-      const { data, error } = await supabase
+      const ownedOrMentioned = supabase
         .from("tasks")
-        .select(TASK_SELECT)
+        .select(TASK_SELECT, { count: "exact" })
         .eq("org_id", orgId)
-        .or(orClause)
+        .or(`created_by.eq.${userId},metadata->mentioned_user_ids.cs.["${userId}"]`)
         .order("created_at", { ascending: false })
-
-      if (error) {
-        throw new Error(`Failed to list tasks: ${error.message}`)
+        .order("id")
+        .range(0, MY_TASKS_CAP - 1)
+      const assignedChunks = Array.from({ length: Math.ceil(uniqueAssignedIds.length / ASSIGNED_ID_CHUNK) }, (_, index) =>
+        supabase
+          .from("tasks")
+          .select(TASK_SELECT)
+          .eq("org_id", orgId)
+          .in("id", uniqueAssignedIds.slice(index * ASSIGNED_ID_CHUNK, (index + 1) * ASSIGNED_ID_CHUNK))
+          .order("created_at", { ascending: false })
+          .order("id")
+          .range(0, MY_TASKS_CAP - 1),
+      )
+      const [owned, ...assigned] = await Promise.all([ownedOrMentioned, ...assignedChunks])
+      for (const result of [owned, ...assigned]) {
+        if (result.error) throw new Error(`Failed to list tasks: ${result.error.message}`)
       }
 
-      return (data ?? []).map(mapFullTask)
+      const byId = new Map<string, Parameters<typeof mapFullTask>[0]>()
+      for (const result of [owned, ...assigned]) {
+        for (const row of result.data ?? []) byId.set(row.id, row)
+      }
+      const merged = [...byId.values()].sort((a, b) =>
+        a.created_at === b.created_at ? (a.id < b.id ? -1 : 1) : a.created_at < b.created_at ? 1 : -1,
+      )
+      const truncated = (owned.count ?? 0) > MY_TASKS_CAP || assigned.some((result) => (result.data?.length ?? 0) >= MY_TASKS_CAP) || merged.length > MY_TASKS_CAP
+      return { tasks: merged.slice(0, MY_TASKS_CAP).map(mapFullTask), truncated }
+}
+
+export async function listMyTasksAction(): Promise<Task[]> {
+      return (await listMyTasksPage()).tasks
 }
 
 async function applyAssignment(

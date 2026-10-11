@@ -227,6 +227,7 @@ export function BillingBook({
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [bulkBusy, setBulkBusy] = useState<"send" | "remind" | "void" | "delete" | null>(null)
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
   const [bulkConfirm, setBulkConfirm] = useState<"send" | "remind" | "void" | "delete" | null>(null)
   const [rowBusyId, setRowBusyId] = useState<string | null>(null)
   const [plannedBusyKey, setPlannedBusyKey] = useState<string | null>(null)
@@ -591,9 +592,11 @@ export function BillingBook({
     if (targets.length === 0) return
     setBulkBusy(key)
     let done = 0
+    let attempted = 0
     const failures: string[] = []
     const failedIds = new Set<string>()
     for (const invoice of targets) {
+      setBulkProgress({ done: attempted, total: targets.length })
       try {
         await act(invoice)
         done += 1
@@ -601,7 +604,9 @@ export function BillingBook({
         failures.push(invoice.invoice_number ?? invoice.id)
         failedIds.add(invoice.id)
       }
+      attempted += 1
     }
+    setBulkProgress(null)
     setBulkBusy(null)
     if (done > 0) toast.success(`${verb} ${done} invoice${done === 1 ? "" : "s"}`)
     if (failures.length > 0) toast.error(`${failures.length} could not be ${verb.toLowerCase()}`, { description: failures.join(", ") })
@@ -1186,6 +1191,7 @@ export function BillingBook({
           totalCents={selectedInvoices.reduce((sum, invoice) => sum + balanceCentsOf(invoice), 0)}
           actions={bulk}
           busy={bulkBusy}
+          progress={bulkProgress}
           onDeselectAll={() => setSelectedIds([])}
           onSend={() => setBulkConfirm("send")}
           onRemind={() => setBulkConfirm("remind")}
