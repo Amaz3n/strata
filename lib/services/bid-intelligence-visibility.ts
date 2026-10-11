@@ -27,8 +27,11 @@ export async function visibleBidPackageIds(ids: string[], context: Context, acce
     const { data, error } = await context.supabase.from("bid_packages").select("id,project_id,community_id,house_plan_id")
       .eq("org_id", context.orgId).in("id", chunk)
     if (error) throw new Error(`Unable to resolve bid history packages: ${error.message}`)
-    if (data?.length !== chunk.length) throw new Error("Bid history references missing packages")
-    packages.push(...data)
+    // The division wall hides another division's packages from a division-limited
+    // member, so for them an unreadable package is simply not theirs. For an
+    // organization-wide reader every referenced package must exist.
+    if (!access.assignedOnly && data?.length !== chunk.length) throw new Error("Bid history references missing packages")
+    packages.push(...(data ?? []))
   }
   const [projects, communities, plans] = await Promise.all([
     visibleBidParentIds("projects", packages.flatMap((row) => row.project_id ? [row.project_id] : []), context, access),

@@ -2086,7 +2086,7 @@
       }
     },
     "production-bids-reach-the-price-book": {
-      "derivation": "EP08-01 #0 and #1. A buyer holds bid.write, so she creates packages for a community, a plan or both; each is award_target price_agreement with no project or prospect (bid_packages_parent_context allows exactly one parent), and createBidPackage records an event and an audit row. Exactly one context is allowed, unknown community or plan ids are not found, the sales consultant has no bid permission, and a buyer limited to division B cannot create in division A's community but may use an organisation-wide plan with her own community. Award: the criterion is that production awards create price agreements with reviewed terms, so reviewed scope and terms are required, a vendor with no compliance record needs a recorded exception, the wrong role and a buyer outside the division are refused and a refusal writes nothing. The framing item (1650 sf, 9,000,000 cents) prices at round(9000000/1650)=5455 cents per sf; the slab (no unit, 4,500,000) is a lump sum; the alternate is not accepted so it creates nothing. Agreements are scoped to the package's community and plan, active, sourced from the award, and carry the reviewed scope and terms in their notes. A second award for the same vendor, cost code, community and plan ends the first agreement the same day and links it forward. A buyer outside the buyer's divisions is refused as 'community not found': the division wall (EP02-04) hides another division's community from a division-limited member, so the refusal names nothing they cannot see.",
+      "derivation": "EP08-01 #0 and #1. A buyer holds bid.write, so she creates packages for a community, a plan or both; each is award_target price_agreement with no project or prospect (bid_packages_parent_context allows exactly one parent), and createBidPackage records an event and an audit row. Exactly one context is allowed, unknown community or plan ids are not found, the sales consultant has no bid permission, and a buyer limited to division B cannot create in division A's community but may use an organisation-wide plan with her own community. Award: the criterion is that production awards create price agreements with reviewed terms, so reviewed scope and terms are required, a vendor with no compliance record needs a recorded exception, the wrong role and a buyer outside the division are refused and a refusal writes nothing. The framing item (1650 sf, 9,000,000 cents) prices at round(9000000/1650)=5455 cents per sf; the slab (no unit, 4,500,000) is a lump sum; the alternate is not accepted so it creates nothing. Agreements are scoped to the package's community and plan, active, sourced from the award, and carry the reviewed scope and terms in their notes. A second award for the same vendor, cost code, community and plan ends the first agreement the same day and links it forward. A buyer outside the buyer's divisions is refused as 'community not found': the division wall (EP02-04) hides another division's community from a division-limited member, so the refusal names nothing they cannot see. Records in another division are hidden by the division wall (EP02-04), so a division-limited member is refused as 'not found' before any division check runs, and nothing is written.",
       "inputs": {},
       "expected": {
         "packages": {
@@ -2144,7 +2144,7 @@
           "blankTerms": "refused: terms not reviewed",
           "unresolvedWarnings": "refused: pre-award warnings",
           "salesConsultant": "refused: missing permission",
-          "buyerOutsideDivision": "refused: community not found",
+          "buyerOutsideDivision": "refused: bid package not found",
           "agreementsWritten": 0
         },
         "agreements": [
@@ -4078,7 +4078,7 @@
       }
     },
     "trade-notice-recovery-desk": {
-      "derivation": "Proves EP07-05 #0 and EP07-05 #1. The starts coordinator's desk (getStartPackage) must list every trade notice of the released house with its true state, retry count and error, and retryStartTradeNotice requeues only a notice that is 'failed': it sets it to pending with the retry count cleared and the requeuing coordinator as actor, audited and evented once. Completed, pending and processing notices, an unknown id, another house's notice, a role without start.release, a coordinator of another builder and a coordinator without division reach are refused and change nothing. Two coordinators retrying one failed notice at the same moment produce exactly one requeue (the loser sees the changed state). After the worker runs the requeued notices the queue and the desk show the same truthful result (completed, or retried with an explicit error).",
+      "derivation": "Proves EP07-05 #0 and EP07-05 #1. The starts coordinator's desk (getStartPackage) must list every trade notice of the released house with its true state, retry count and error, and retryStartTradeNotice requeues only a notice that is 'failed': it sets it to pending with the retry count cleared and the requeuing coordinator as actor, audited and evented once. Completed, pending and processing notices, an unknown id, another house's notice, a role without start.release, a coordinator of another builder and a coordinator without division reach are refused and change nothing. Two coordinators retrying one failed notice at the same moment produce exactly one requeue (the loser sees the changed state). After the worker runs the requeued notices the queue and the desk show the same truthful result (completed, or retried with an explicit error). Records in another division are hidden by the division wall (EP02-04), so a division-limited member is refused as 'not found' before any division check runs, and nothing is written.",
       "inputs": {
         "notices": "two failed (retry 3 with an error), one completed, one pending, one processing, plus a failed notice that belongs to another house"
       },
@@ -4140,7 +4140,7 @@
           "purchasingManager": "refused: needs start.release",
           "salesConsultant": "refused: needs start.release",
           "coordinatorOfAnotherBuilder": "refused: not found",
-          "coordinatorWithoutDivisionReach": "refused: outside division",
+          "coordinatorWithoutDivisionReach": "refused: not found",
           "noRowChanged": true
         },
         "afterWorker": {

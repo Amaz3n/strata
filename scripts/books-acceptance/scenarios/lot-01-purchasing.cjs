@@ -16,7 +16,7 @@ const reason = (message) => {
     [/Choose one project, prospect, or community\/plan context/, "refused: one context only"], [/Community not found/, "refused: community not found"],
     [/House plan not found/, "refused: house plan not found"], [/Review the subcontract terms|reviewed_terms/, "refused: terms not reviewed"],
     [/Resolve pre-award warnings/, "refused: pre-award warnings"], [/already been awarded/, "refused: already awarded"],
-    [/Production bid package not found/, "refused: not a production package"],
+    [/Production bid package not found/, "refused: not a production package"], [/^Bid package not found/, "refused: bid package not found"],
   ]
   for (const [pattern, text] of patterns) if (pattern.test(message)) return text
   return message
