@@ -271,7 +271,10 @@ test("a terminal failure parks the package in attention and retryRelease resumes
   const failed = stepsByKey(harness.store)
   assert.equal(failed.get("drawings").status, "failed")
   assert.equal(failed.get("checklists").status, "completed", "work before the failure is kept")
-  assert.ok(harness.calls.events.some((event) => event.eventType === "start.release_failed"))
+  const failure = harness.store.events.find((event) => event.event_type === "start.release_failed")
+  assert.ok(failure, "the park records its failure event")
+  assert.ok(harness.calls.notifications.some((note) => note.type === "start_release_failed" && note.eventId === failure.id),
+    "the notice queued with the park reaches the people who can release")
 
   alwaysFail = false
   await loadStarts().retryRelease(PACKAGE)
@@ -454,7 +457,7 @@ test("exhausted completion-write failures preserve an already released house", a
   assert.equal(harness.store.start_packages[0].status, "released")
   assert.equal(harness.store.projects[0].phase, "delivery")
   assert.equal(harness.calls.landTransfers.length, 1)
-  assert.equal(harness.calls.events.filter(event => event.eventType === "start.release_failed").length, 0)
+  assert.equal((harness.store.events ?? []).filter(event => event.event_type === "start.release_failed").length, 0)
 })
 
 test("release trade notices include companies beyond the first 500 assignments", async () => {
@@ -701,7 +704,7 @@ test("a terminal authorization failure cannot park a package held by a different
   assert.equal(harness.store.outbox[0].status, "failed")
   assert.equal(harness.store.start_packages[0].status, "releasing")
   assert.equal(harness.store.start_packages[0].metadata.release_lease_token, "other-owner")
-  assert.equal(harness.calls.events.filter(event => event.eventType === "start.release_failed").length, 0)
+  assert.equal((harness.store.events ?? []).filter(event => event.event_type === "start.release_failed").length, 0)
 })
 
 test("mandatory skipped steps resume their work instead of being accepted as complete", async () => {

@@ -5,6 +5,7 @@ require("../../scripts/register-ts-node-test")
 const { randomUUID } = require("node:crypto")
 
 const { createFakeSupabase } = require("./fake-supabase")
+const { canAttestFinalApproval, isGateApplicable, startPackageReadiness } = require("@/lib/starts/gate-logic")
 
 const ORG = "00000000-0000-4000-8000-000000000001"
 const ACTOR = "00000000-0000-4000-8000-000000000002"
@@ -175,7 +176,7 @@ function releasingFixture({ purchasing = false, packageStatus = "releasing", met
 // stand-ins only carry the state transitions the orchestrator relies on.
 // ---------------------------------------------------------------------------
 
-const STARTS_JOB_TYPES = ["start_release", "trade_schedule_change_notice", "start_release_trade_notice"]
+const STARTS_JOB_TYPES = ["start_release", "trade_schedule_change_notice", "start_release_trade_notice", "start_package_notice"]
 const CLAIM_MS = 3 * 60_000
 const PACKAGE_LEASE_MS = 5 * 60_000
 const iso = (ms = Date.now()) => new Date(ms).toISOString()
@@ -201,6 +202,33 @@ function leaseFresh(pkg) {
 
 function clearLease(pkg) {
   pkg.metadata = { ...(pkg.metadata ?? {}), release_lease_token: null, release_lease_at: null }
+}
+
+function enqueue(store, row) {
+  const id = (store.outbox ??= []).reduce((max, job) => Math.max(max, Number(job.id)), 0) + 1
+  store.outbox.push({ id, status: "pending", retry_count: 0, run_at: iso(), updated_at: iso(), ...row })
+  return id
+}
+
+/** What the SQL writes beside every package change: its audit and its event. */
+function record(store, { orgId, actorId, entityType, entityId, source, eventType, payload, before = {}, after = {} }) {
+  ;(store.audit_log ??= []).push({ org_id: orgId, actor_user_id: actorId, action: "update", entity_type: entityType, entity_id: entityId, before_data: before, after_data: after, source })
+  const id = randomUUID()
+  ;(store.events ??= []).push({ id, org_id: orgId, event_type: eventType, entity_type: entityType, entity_id: entityId, payload: { ...payload, actor_id: actorId } })
+  return id
+}
+
+function queueNotice(store, pkg, kind, eventId, message = null) {
+  enqueue(store, { org_id: pkg.org_id, job_type: "start_package_notice", payload: { start_package_id: pkg.id, kind, event_id: eventId, message } })
+}
+
+/** `record_start_release_failure`: the park's audit, event and notice, written with it. */
+function recordReleaseFailure(store, job, pkg, error) {
+  const eventId = record(store, {
+    orgId: pkg.org_id, actorId: job.payload.actor_id ?? null, entityType: "start_package", entityId: pkg.id, source: "starts.release_failed",
+    eventType: "start.release_failed", payload: { error, job_id: String(job.id) }, before: { status: "releasing" }, after: { status: "attention" },
+  })
+  queueNotice(store, pkg, "release_failed", eventId, error)
 }
 
 function releaseJobs(store, orgId, packageId) {
@@ -233,6 +261,7 @@ const claimProtocol = {
     const held = pkg?.metadata?.release_lease_token ?? null
     if (action === "retry" && pkg && job.retry_count + 1 >= 3 && pkg.status === "releasing" && (held === null || held === token)) {
       pkg.status = "attention"
+      recordReleaseFailure(store, job, pkg, failure)
     }
     if (action !== "heartbeat" && pkg && held === token) clearLease(pkg)
     const released = { updated_at: iso(), start_claim_token: null, start_job_lease_expires_at: null }
@@ -271,10 +300,12 @@ const claimProtocol = {
     for (const job of store.outbox ?? []) {
       if (job.status !== "processing" || !job.start_claim_token || job.start_job_lease_expires_at > iso()) continue
       const pkg = claimPackage(store, job)
-      if (pkg?.metadata?.release_lease_token === job.start_claim_token) {
-        if (job.retry_count + 1 >= 3 && pkg.status === "releasing") pkg.status = "attention"
-        clearLease(pkg)
+      const held = pkg?.metadata?.release_lease_token ?? null
+      if (pkg && (held === job.start_claim_token || held === null) && job.retry_count + 1 >= 3 && pkg.status === "releasing") {
+        pkg.status = "attention"
+        recordReleaseFailure(store, job, pkg, "Starts worker lease expired")
       }
+      if (pkg && held === job.start_claim_token) clearLease(pkg)
       Object.assign(job, {
         status: job.retry_count + 1 >= 3 ? "failed" : "pending", retry_count: job.retry_count + 1,
         last_error: "Starts worker lease expired", run_at: iso(), start_claim_token: null, start_job_lease_expires_at: null,
@@ -381,8 +412,134 @@ const claimProtocol = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// The desk's package and gate mutations (20261011060000_starts_desk_mutations).
+// Actor and division re-checks are proven against the full schema in
+// tests/starts-core-write-fences-db.test.js; these carry the state, readiness
+// and records the services rely on.
+// ---------------------------------------------------------------------------
+
+function deskPackage(store, args) {
+  return store.start_packages.find((row) => row.org_id === args.p_org_id && row.id === args.p_package_id) ?? null
+}
+
+function packageGates(store, pkg) {
+  return (store.start_package_gates ?? []).filter((gate) => gate.org_id === pkg.org_id && gate.start_package_id === pkg.id)
+    .map((gate) => ({ gate, definition: (store.start_gate_definitions ?? []).find((row) => row.id === gate.gate_definition_id) }))
+}
+
+function readinessInput(store, pkg) {
+  return packageGates(store, pkg).map(({ gate, definition }) => ({ key: definition.key, appliesWhen: definition.applies_when, status: gate.status }))
+}
+
+function settleReadiness(store, pkg, actorId, purchasingEnabled) {
+  if (!["open", "ready"].includes(pkg.status)) return pkg.status
+  const { ready } = startPackageReadiness(readinessInput(store, pkg), { isFinanced: pkg.is_financed, purchasingEnabled })
+  const next = ready ? "ready" : "open"
+  if (next === pkg.status) return next
+  const before = pkg.status
+  pkg.status = next
+  const eventId = record(store, {
+    orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.readiness_changed",
+    eventType: next === "ready" ? "start_package.ready" : "start_package.not_ready", payload: { status: next }, before: { status: before }, after: { status: next },
+  })
+  if (next === "ready") queueNotice(store, pkg, "ready", eventId)
+  return next
+}
+
+const deskProtocol = {
+  update_start_package({ p_actor_id: actorId, p_patch: patch, p_purchasing_enabled: purchasingEnabled, ...args }, store) {
+    const pkg = deskPackage(store, args)
+    if (!pkg) return refused("Start package not found")
+    if (!["open", "ready"].includes(pkg.status)) return refused("Only open or ready packages can be edited.")
+    const before = { ...pkg }
+    Object.assign(pkg, patch)
+    for (const { gate, definition } of packageGates(store, pkg)) {
+      const applies = isGateApplicable({ appliesWhen: definition.applies_when }, { isFinanced: pkg.is_financed, purchasingEnabled })
+      if (!applies && gate.status !== "not_applicable") Object.assign(gate, { status: "not_applicable", passed_via: null })
+      if (applies && gate.status === "not_applicable") Object.assign(gate, { status: "pending", passed_via: null })
+    }
+    record(store, { orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.package_updated", eventType: "start_package.updated", payload: patch, before, after: { ...pkg } })
+    return ok({ status: settleReadiness(store, pkg, actorId, purchasingEnabled) })
+  },
+
+  mutate_start_gate({ p_gate_id: gateId, p_actor_id: actorId, p_action: action, p_input: input, p_purchasing_enabled: purchasingEnabled, ...args }, store) {
+    const pkg = deskPackage(store, args)
+    if (!pkg) return refused("Start package not found")
+    if (!["open", "ready"].includes(pkg.status)) return refused("Gates cannot change after release begins.")
+    const found = packageGates(store, pkg).find(({ gate }) => gate.id === gateId)
+    if (!found) return refused("Start gate not found")
+    const { gate, definition } = found
+    const before = { ...gate }
+    const at = iso()
+    if (action === "attest") {
+      if (definition.check_kind !== "manual") return refused("Only manual gates can be attested.")
+      if (definition.key === "final_approval" && !canAttestFinalApproval(readinessInput(store, pkg), { isFinanced: pkg.is_financed, purchasingEnabled })) {
+        return refused("Clear every other readiness gate before final approval.")
+      }
+      Object.assign(gate, { status: "passed", passed_via: "attested", attested_by: actorId, attested_at: at, evidence_file_id: input.evidence_file_id ?? null, notes: input.notes ?? null, waived_reason: null })
+    } else if (action === "waive") {
+      Object.assign(gate, { status: "waived", passed_via: "waived", attested_by: actorId, attested_at: at, waived_reason: input.reason })
+    } else {
+      Object.assign(gate, { status: "pending", passed_via: null, attested_by: null, attested_at: null, waived_reason: null })
+    }
+    const verb = { attest: "attested", waive: "waived", reopen: "reopened" }[action]
+    const eventId = record(store, { orgId: pkg.org_id, actorId, entityType: "start_gate", entityId: gateId, source: `starts.gate_${verb}`, eventType: `start_gate.${verb}`, payload: { start_package_id: pkg.id }, before, after: { ...gate } })
+    if (action === "waive") queueNotice(store, pkg, "gate_waived", eventId, input.reason)
+    return ok({ status: settleReadiness(store, pkg, actorId, purchasingEnabled) })
+  },
+
+  refresh_start_package_gates({ p_actor_id: actorId, p_purchasing_enabled: purchasingEnabled, p_evidence: evidence, ...args }, store) {
+    const pkg = deskPackage(store, args)
+    if (!pkg) return refused("Start package not found")
+    if (!["open", "ready"].includes(pkg.status)) return ok({ status: pkg.status, changed: 0 })
+    const changes = []
+    for (const { gate, definition } of packageGates(store, pkg)) {
+      let next
+      if (!isGateApplicable({ appliesWhen: definition.applies_when }, { isFinanced: pkg.is_financed, purchasingEnabled })) next = { status: "not_applicable", passed_via: null }
+      else if (gate.status === "waived" || definition.check_kind !== "auto") {
+        if (gate.status !== "not_applicable") continue
+        next = { status: "pending", passed_via: null }
+      } else {
+        if (typeof evidence[gate.id] !== "boolean") return refused(`Readiness evidence is missing for the ${definition.key} gate; refresh again.`)
+        next = evidence[gate.id] ? { status: "passed", passed_via: "auto" } : { status: "pending", passed_via: null }
+      }
+      if (gate.status !== next.status || (gate.passed_via ?? null) !== next.passed_via) {
+        changes.push({ gate_id: gate.id, key: definition.key, from: gate.status, to: next.status })
+        Object.assign(gate, next)
+      }
+    }
+    if (changes.length) record(store, { orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.gates_refreshed", eventType: "start_gate.refreshed", payload: { gates: changes }, after: { gates: changes } })
+    return ok({ status: settleReadiness(store, pkg, actorId, purchasingEnabled), changed: changes.length })
+  },
+
+  cancel_start_package({ p_actor_id: actorId, p_reason: reason, ...args }, store) {
+    const pkg = deskPackage(store, args)
+    if (!pkg) return refused("Start package not found")
+    if (["releasing", "released"].includes(pkg.status)) return refused("A releasing or released start package cannot be cancelled.")
+    const before = { ...pkg }
+    Object.assign(pkg, { status: "cancelled", metadata: { ...(pkg.metadata ?? {}), cancellation_reason: reason.trim() } })
+    record(store, { orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.package_cancelled", eventType: "start_package.cancelled", payload: { reason: reason.trim() }, before, after: { ...pkg } })
+    return ok({ status: "cancelled" })
+  },
+
+  retry_start_trade_notice({ p_notice_id: noticeId, p_actor_id: actorId, ...args }, store) {
+    const pkg = deskPackage(store, args)
+    if (!pkg) return refused("Start package not found")
+    if (pkg.status !== "released") return refused("Only released houses can retry trade delivery")
+    const notice = (store.outbox ?? []).find((row) => row.org_id === pkg.org_id && String(row.id) === String(noticeId)
+      && row.job_type === "start_release_trade_notice" && row.payload?.start_package_id === pkg.id)
+    if (!notice) return refused("Trade notice not found")
+    if (notice.status !== "failed") return refused("Only failed trade notices can be retried")
+    const before = { ...notice }
+    Object.assign(notice, { status: "pending", retry_count: 0, last_error: null, run_at: iso(), payload: { ...notice.payload, actor_id: actorId }, start_claim_token: null, start_job_lease_expires_at: null })
+    record(store, { orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.trade_notice_retried", eventType: "start.trade_notice_retried", payload: { notice_id: String(noticeId), company_id: notice.payload.company_id }, before, after: { status: "pending" } })
+    return ok({ notice_id: String(noticeId), status: "pending" })
+  },
+}
+
 function buildHarness(options = {}) {
-  const supabase = createFakeSupabase(options.tables ?? releasingFixture(options), claimProtocol)
+  const supabase = createFakeSupabase(options.tables ?? releasingFixture(options), { ...claimProtocol, ...deskProtocol })
   const context = { supabase, orgId: ORG, userId: ACTOR, productTier: "production" }
   const calls = installStubs({ supabase, context, ...options })
   return { supabase, context, calls, store: supabase.store }

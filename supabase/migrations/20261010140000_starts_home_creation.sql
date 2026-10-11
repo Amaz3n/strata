@@ -20,13 +20,15 @@
 -- start.release (and project.manage when a home is created) with division
 -- reach over the community, lot and home, in the transaction that writes.
 
--- The actor check gains the two permissions the desk's create paths need.
+-- The actor check covers any registered permission: the desk's create paths
+-- need start.write and project.manage, and a manual gate names its own
+-- attestation permission.
 create or replace function public.assert_starts_actor_permission(p_job public.outbox,p_package public.start_packages,p_permission text)
 returns void language plpgsql security definer set search_path=public,pg_catalog as $$
 declare v_actor uuid; v_members uuid[]; v_roles uuid[]; v_base text[]; v_grants text[]; v_denies text[]; v_effective text[];
  v_assigned boolean; v_division uuid; v_lot_community uuid; v_lot_project uuid; v_divisions uuid[];
 begin
- if p_permission not in ('start.release','start.read','start.write','project.manage') or p_permission is null then raise exception 'Invalid starts permission scope' using errcode='42501'; end if;
+ if p_permission is null or p_permission!~'^[a-z][a-z_]*\.[a-z][a-z_.]*$' then raise exception 'Invalid starts permission scope' using errcode='42501'; end if;
  if p_job.org_id is distinct from p_package.org_id or p_job.job_type<>'start_release' then raise exception 'Starts actor scope mismatch' using errcode='42501'; end if;
  v_actor:=(p_job.payload->>'actor_id')::uuid;
  if v_actor is null then raise exception 'Starts actor missing' using errcode='42501'; end if;

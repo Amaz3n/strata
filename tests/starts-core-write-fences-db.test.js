@@ -415,3 +415,256 @@ test("a home cannot be created inside a worker claim or by a browser role", asyn
   )
   assert.equal(await y.count("select count(*)::int as n from projects where org_id = $1", [y.orgId]), 0)
 })
+
+// ---------------------------------------------------------------------------
+// The desk's package and gate mutations, and a release's terminal failure.
+// Each re-checks the actor under the package lock and commits its state with
+// its audit, event, reindex and notification intent — or commits nothing.
+// ---------------------------------------------------------------------------
+
+/** Make one insert fail mid-transaction, after the state it records has changed. */
+async function failInsert(db, table, when) {
+  await db.exec(`
+    create or replace function pg_temp.injected_failure() returns trigger language plpgsql as $$
+    begin raise exception 'injected failure'; end $$;
+    create trigger injected_failure before insert on ${table} for each row when (${when})
+      execute function pg_temp.injected_failure();
+  `)
+}
+
+async function gated(t, options = {}) {
+  const h = await desk(t, { status: "open", ...options })
+  const definition = (row) => full.insert(h.db, "start_gate_definitions", {
+    org_id: h.orgId, label: row.key, check_kind: "manual", applies_when: "always", sort_order: 10, ...row,
+  })
+  const gate = async (row, status = "pending") => full.insert(h.db, "start_package_gates", {
+    org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: (await definition(row)).id, status,
+  })
+  h.gates = {
+    permit: await gate({ key: "permit" }),
+    financing: await gate({ key: "financing", applies_when: "financed_only" }, "not_applicable"),
+    plot: await gate({ key: "plot_plan", check_kind: "auto", auto_source: "plot_plan_file" }),
+    approval: await gate({ key: "final_approval" }),
+  }
+  const scope = { p_org_id: h.orgId, p_package_id: h.pkg.id }
+  h.mutate = (gate, action, input = {}, actor = h.actorId) => full.rpc(h.db, "mutate_start_gate", {
+    ...scope, p_gate_id: gate.id, p_actor_id: actor, p_action: action, p_input: input, p_purchasing_enabled: false,
+  })
+  h.refresh = (evidence, actor = h.actorId) => full.rpc(h.db, "refresh_start_package_gates", {
+    ...scope, p_actor_id: actor, p_purchasing_enabled: false, p_evidence: evidence,
+  })
+  h.update = (patch, actor = h.actorId) => full.rpc(h.db, "update_start_package", {
+    ...scope, p_actor_id: actor, p_patch: patch, p_purchasing_enabled: false,
+  })
+  h.cancelPackage = (reason = "Buyer walked away from the lot", actor = h.actorId) => full.rpc(h.db, "cancel_start_package", {
+    ...scope, p_actor_id: actor, p_reason: reason,
+  })
+  h.status = async () => (await h.row("select status from start_packages where id = $1")).status
+  h.gateStatus = async (gate) => (await h.row("select status from start_package_gates where id = $1", [gate.id])).status
+  h.count = async (sql, params = []) => (await h.db.query(sql, params)).rows[0].n
+  h.events = (type) => h.count("select count(*)::int as n from events where event_type = $1", [type])
+  return h
+}
+
+test("clearing the last gate makes the package ready with its event and notice in the same commit", async (t) => {
+  const h = await gated(t)
+  await assert.rejects(h.mutate(h.gates.approval, "attest"), /Clear every other readiness gate/)
+  await h.mutate(h.gates.permit, "attest", { notes: "County permit 24-118" })
+  assert.deepEqual(await h.refresh({ [h.gates.plot.id]: true }), { status: "open", changed: 1 })
+  assert.equal(await h.status(), "open")
+
+  assert.deepEqual(await h.mutate(h.gates.approval, "attest"), { status: "ready" })
+  const ready = await h.row("select id from events where event_type = 'start_package.ready' and entity_id = $1")
+  const notice = await h.row("select payload from outbox where job_type = 'start_package_notice'", [])
+  assert.deepEqual(notice.payload, { start_package_id: h.pkg.id, kind: "ready", event_id: ready.id, message: null })
+  assert.equal((await h.audit("starts.readiness_changed")).n, 1)
+  assert.equal(await h.count("select count(*)::int as n from audit_log where entity_type = 'start_gate' and source = 'starts.gate_attested'"), 2)
+
+  await h.mutate(h.gates.permit, "reopen")
+  assert.equal(await h.status(), "open")
+  assert.equal(await h.events("start_package.not_ready"), 1)
+})
+
+test("a gate change that fails after it is written leaves no gate, readiness, audit or notice behind", async (t) => {
+  const h = await gated(t)
+  await h.mutate(h.gates.permit, "attest")
+  await h.refresh({ [h.gates.plot.id]: true })
+  await failInsert(h.db, "outbox", "new.job_type = 'start_package_notice'")
+
+  await assert.rejects(h.mutate(h.gates.approval, "attest"), /injected failure/)
+  assert.equal(await h.gateStatus(h.gates.approval), "pending")
+  assert.equal(await h.status(), "open")
+  assert.equal(await h.count("select count(*)::int as n from audit_log where entity_id = $1", [h.gates.approval.id]), 0)
+  assert.equal(await h.events("start_gate.attested"), 1, "only the permit's attestation committed")
+  assert.equal(await h.events("start_package.ready"), 0)
+
+  await assert.rejects(h.mutate(h.gates.permit, "waive", { reason: "Permit is issued at the counter on start day" }), /injected failure/)
+  assert.equal(await h.gateStatus(h.gates.permit), "passed")
+  assert.equal(await h.events("start_gate.waived"), 0)
+})
+
+test("gate and package edits re-check the actor's authority inside the transaction", async (t) => {
+  const viewer = await gated(t, { role: "org_viewer" })
+  await assert.rejects(viewer.mutate(viewer.gates.permit, "attest"), /start\.write permission/)
+  await assert.rejects(viewer.update({ notes: "x" }), /start\.write permission/)
+  await assert.rejects(viewer.cancelPackage(), /start\.write permission/)
+
+  const h = await gated(t)
+  const definition = await full.insert(h.db, "start_gate_definitions", {
+    org_id: h.orgId, key: "survey", label: "Survey", check_kind: "manual", applies_when: "always", sort_order: 20,
+    requires_attestation_permission: "org.admin",
+  })
+  const survey = await full.insert(h.db, "start_package_gates", { org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: definition.id })
+  await assert.rejects(h.mutate(survey, "attest"), /org\.admin permission/)
+
+  const division = await full.insert(h.db, "divisions", { org_id: h.orgId, name: "South" })
+  const mine = await full.insert(h.db, "divisions", { org_id: h.orgId, name: "North" })
+  await h.db.query("update communities set division_id = $1 where id = $2", [division.id, h.community.id])
+  await h.db.query("update memberships set division_scope = 'assigned' where org_id = $1 and user_id = $2", [h.orgId, h.actorId])
+  await h.db.query("insert into membership_divisions (membership_id, division_id) select id, $1 from memberships where org_id = $2 and user_id = $3", [mine.id, h.orgId, h.actorId])
+  await assert.rejects(h.mutate(h.gates.permit, "attest"), /outside actor division access/)
+  await assert.rejects(h.refresh({ [h.gates.plot.id]: true }), /outside actor division access/)
+  await assert.rejects(h.update({ notes: "Moved to the north phase" }), /outside actor division access/)
+
+  for (const gate of [h.gates.permit, h.gates.plot, survey]) assert.equal(await h.gateStatus(gate), "pending")
+  assert.equal(await h.count("select count(*)::int as n from audit_log where org_id = $1", [h.orgId]), 0)
+
+  await full.setRequestHeaders(h.db, { "x-starts-job-id": "1", "x-starts-claim-token": full.uuid() })
+  await assert.rejects(h.cancelPackage(), /inside a worker claim/)
+  await full.setRequestHeaders(h.db, {})
+  await assert.rejects(
+    full.rpc(h.db, "cancel_start_package", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: h.actorId, p_reason: "Buyer walked away" },
+      { role: "authenticated", userId: h.actorId }),
+    /permission denied/,
+  )
+})
+
+test("a refresh records only evidence it was given, and never touches a package already releasing", async (t) => {
+  const h = await gated(t)
+  await assert.rejects(h.refresh({}), /evidence is missing for the plot_plan gate/)
+  assert.equal(await h.gateStatus(h.gates.plot), "pending")
+
+  assert.deepEqual(await h.refresh({ [h.gates.plot.id]: false }), { status: "open", changed: 0 })
+  assert.equal(await h.events("start_gate.refreshed"), 0, "a refresh that changes nothing records nothing")
+  await h.refresh({ [h.gates.plot.id]: true })
+  assert.equal((await h.audit("starts.gates_refreshed")).n, 1)
+  assert.equal(await h.events("start_gate.refreshed"), 1)
+
+  await h.db.query("update start_packages set status = 'releasing' where id = $1", [h.pkg.id])
+  assert.deepEqual(await h.refresh({ [h.gates.plot.id]: false }), { status: "releasing", changed: 0 })
+  assert.equal(await h.gateStatus(h.gates.plot), "passed")
+  await assert.rejects(h.mutate(h.gates.permit, "attest"), /cannot change after release begins/)
+  await assert.rejects(h.update({ notes: "x" }), /Only open or ready/)
+})
+
+test("financing a package re-decides which gates apply in the edit that changes it", async (t) => {
+  const h = await gated(t)
+  await h.mutate(h.gates.permit, "attest")
+  await h.refresh({ [h.gates.plot.id]: true })
+  await h.mutate(h.gates.approval, "attest")
+  assert.equal(await h.status(), "ready")
+
+  assert.deepEqual(await h.update({ is_financed: true, notes: "Construction loan" }), { status: "open" })
+  assert.equal(await h.gateStatus(h.gates.financing), "pending")
+  const pkg = await h.row("select is_financed, notes from start_packages where id = $1")
+  assert.deepEqual(pkg, { is_financed: true, notes: "Construction loan" })
+  assert.equal((await h.audit("starts.package_updated")).n, 1)
+  assert.equal(await h.events("start_package.updated"), 1)
+
+  await failInsert(h.db, "events", "new.event_type = 'start_package.updated'")
+  await assert.rejects(h.update({ is_financed: false }), /injected failure/)
+  assert.equal((await h.row("select is_financed from start_packages where id = $1")).is_financed, true)
+  assert.equal(await h.gateStatus(h.gates.financing), "pending")
+  assert.equal((await h.audit("starts.package_updated")).n, 1)
+  await assert.rejects(h.update({ status: "released" }), /Invalid start package update/)
+})
+
+test("cancelling a package commits with its audit and event, or not at all", async (t) => {
+  const h = await gated(t)
+  await failInsert(h.db, "audit_log", "new.source = 'starts.package_cancelled'")
+  await assert.rejects(h.cancelPackage(), /injected failure/)
+  assert.equal(await h.status(), "open")
+  assert.equal(await h.events("start_package.cancelled"), 0)
+
+  await h.db.exec("drop trigger injected_failure on audit_log")
+  await assert.rejects(h.cancelPackage("too short"), /at least 10 characters/)
+  await h.cancelPackage()
+  assert.equal(await h.status(), "cancelled")
+  assert.equal((await h.row("select metadata->>'cancellation_reason' as reason from start_packages where id = $1")).reason, "Buyer walked away from the lot")
+  assert.equal(await h.events("start_package.cancelled"), 1)
+  assert.deepEqual(await h.reindexed(), ["start_package"])
+
+  const releasing = await desk(t)
+  await releasing.queue()
+  await assert.rejects(
+    full.rpc(releasing.db, "cancel_start_package", { p_org_id: releasing.orgId, p_package_id: releasing.pkg.id, p_actor_id: releasing.actorId, p_reason: "Buyer walked away from the lot" }),
+    /releasing or released/,
+  )
+})
+
+test("a failed trade notice is requeued under the coordinator with its audit and event, once", async (t) => {
+  const h = await desk(t, { status: "released" })
+  const notice = await full.insert(h.db, "outbox", {
+    org_id: h.orgId, job_type: "start_release_trade_notice", status: "failed", retry_count: 3, last_error: "Mail unavailable",
+    payload: { start_package_id: h.pkg.id, company_id: full.uuid(), actor_id: full.uuid() },
+  })
+  const retry = () => full.rpc(h.db, "retry_start_trade_notice", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_notice_id: notice.id, p_actor_id: h.actorId })
+
+  await failInsert(h.db, "events", "new.event_type = 'start.trade_notice_retried'")
+  await assert.rejects(retry(), /injected failure/)
+  assert.equal((await h.row("select status from outbox where id = $1", [notice.id])).status, "failed")
+  assert.equal((await h.audit("starts.trade_notice_retried")).n, 0)
+
+  await h.db.exec("drop trigger injected_failure on events")
+  await retry()
+  const requeued = await h.row("select status, retry_count, payload->>'actor_id' as actor from outbox where id = $1", [notice.id])
+  assert.deepEqual(requeued, { status: "pending", retry_count: 0, actor: h.actorId })
+  const audit = await h.row("select before_data->>'id' as notice from audit_log where source = 'starts.trade_notice_retried'", [])
+  assert.equal(audit.notice, String(notice.id), "the audit names the notice it requeued")
+  await assert.rejects(retry(), /Only failed trade notices/)
+})
+
+test("a release's final failure parks it with its event, audit and notice, or does not park it at all", async (t) => {
+  const h = await desk(t)
+  await h.queue()
+  await h.db.query("update outbox set retry_count = 2 where payload->>'start_package_id' = $1", [h.pkg.id])
+  const job = await h.claim()
+  const fail = () => full.rpc(h.db, "transition_starts_job_lease", {
+    p_org_id: h.orgId, p_id: job.job_id, p_token: job.claim_token, p_action: "retry", p_error: "Plan set is missing",
+  })
+
+  await failInsert(h.db, "outbox", "new.job_type = 'start_package_notice'")
+  await assert.rejects(fail(), /injected failure/)
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "releasing")
+  assert.equal((await h.row("select status from outbox where id = $1", [job.job_id])).status, "processing")
+  assert.equal((await h.audit("starts.release_failed")).n, 0)
+
+  await h.db.exec("drop trigger injected_failure on outbox")
+  assert.equal(await fail(), true)
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "attention")
+  const event = await h.row("select id, payload->>'error' as error from events where event_type = 'start.release_failed' and entity_id = $1")
+  assert.equal(event.error, "Plan set is missing")
+  const notice = await h.row("select payload from outbox where job_type = 'start_package_notice'", [])
+  assert.deepEqual(notice.payload, { start_package_id: h.pkg.id, kind: "release_failed", event_id: event.id, message: "Plan set is missing" })
+  assert.equal((await h.audit("starts.release_failed")).n, 1)
+})
+
+test("the lease reaper records the failure of a release it parks, and nothing for one it only requeues", async (t) => {
+  const h = await desk(t)
+  await h.queue()
+  const job = await h.claim()
+  const expire = () => h.db.query("update outbox set start_job_lease_expires_at = now() - interval '1 second' where id = $1", [job.job_id])
+  await expire()
+  await full.rpc(h.db, "recover_starts_job_leases", { p_limit: 10 })
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "releasing")
+  assert.equal((await h.audit("starts.release_failed")).n, 0)
+
+  await h.db.query("update outbox set retry_count = 2 where id = $1", [job.job_id])
+  const [again] = await full.rpc(h.db, "claim_starts_jobs", { p_limit: 1 })
+  assert.equal(again.job_id, job.job_id)
+  await expire()
+  await full.rpc(h.db, "recover_starts_job_leases", { p_limit: 10 })
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "attention")
+  assert.equal((await h.audit("starts.release_failed")).n, 1)
+  assert.equal((await h.row("select count(*)::int as n from outbox where job_type = 'start_package_notice'", [])).n, 1)
+})

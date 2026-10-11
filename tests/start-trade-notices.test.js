@@ -36,7 +36,7 @@ test("coordinator retries only the failed notice, preserving the released home a
   assert.equal(notice.payload.preserved, true)
   assert.equal(h.store.start_packages[0].status, "released")
   assert.equal(h.calls.instantiate.length, 0)
-  assert.equal(h.calls.events[0].eventType, "start.trade_notice_retried")
+  assert.equal(h.store.events[0].event_type, "start.trade_notice_retried")
 })
 test("notice retry checks permission and division before writes", async () => {
   for (const options of [{ denied: true }, { outsideDivision: true }]) {
@@ -51,27 +51,10 @@ test("retry refuses foreign organizations, packages, job types and active or com
     const h = setup(); Object.assign(h.store.outbox[0], patch)
     await assert.rejects(h.service.retryStartTradeNotice(PACKAGE, "1"), /not found|Only failed/)
     assert.ok(!h.reads.some(read => read.action === "update"))
+    assert.equal(h.store.events, undefined, "a refused retry records nothing")
   }
   const h = setup(); h.store.start_packages[0].status = "attention"
   await assert.rejects(h.service.retryStartTradeNotice(PACKAGE, "1"), /Only released/)
-})
-test("competing retry and failed update cannot report successful recovery", async () => {
-  for (const concurrent of [true, false]) {
-    const h = setup(), from = h.supabase.from.bind(h.supabase)
-    h.supabase.from = table => {
-      const q = from(table), run = q.run.bind(q)
-      q.run = () => {
-        if (table === "outbox" && q.action === "update") {
-          if (concurrent) h.store.outbox[0].status = "pending"
-          else return { data: null, error: { message: "offline" } }
-        }
-        return run()
-      }
-      return q
-    }
-    await assert.rejects(h.service.retryStartTradeNotice(PACKAGE, "1"), /state changed|offline/)
-    assert.equal(h.calls.events.length, 0)
-  }
 })
 test("start detail includes every notice and bounded company names beyond a database page", async () => {
   const h = setup({ count: 1001 })

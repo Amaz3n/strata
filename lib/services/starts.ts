@@ -8,7 +8,7 @@ import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
-import { RELEASE_PRODUCED_GATE_KEYS, canAttestFinalApproval, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
+import { RELEASE_PRODUCED_GATE_KEYS, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -138,13 +138,13 @@ type Relation = Record<string, unknown>
 
 /**
  * Start packages, their gates and step ledger, and starts jobs are fenced from
- * the browser role (20261003048000): only a server action that has already
- * checked the caller may change them. Every write below therefore goes through
- * the service client, and only after `requireOrgContext` → `requirePermission`
- * → division access (`loadPackageRow` / `assertStartCommunityAccess`) has run
- * for the package it touches. Reads stay on the caller's session so RLS still
- * scopes what they can see. Release controls that race a worker (queue, retry,
- * cancel) go through RPCs that re-check the actor inside the transaction.
+ * the browser role (20261003048000), so every write below goes through the
+ * service client — and every one is an RPC that locks the package, re-checks
+ * the actor's permission and division reach over the community, lot and home,
+ * and writes the change with its audit, event, reindex and notification intent
+ * in one transaction (20261010100000, 20261010140000, 20261011060000). The
+ * service checks first so a refusal reads well; the transaction is what holds.
+ * Reads stay on the caller's session so RLS still scopes what they can see.
  */
 function startsWriter() {
   return createServiceSupabaseClient()
@@ -156,6 +156,9 @@ const queueReleaseResultSchema = z.discriminatedUnion("queued", [
 ])
 
 const cancelReleaseResultSchema = z.object({ preserved: z.array(z.string()), reset: z.array(z.string()) })
+
+const START_PACKAGE_STATUSES = ["open", "ready", "releasing", "released", "attention", "cancelled"] as const
+const packageStatusResultSchema = z.object({ status: z.enum(START_PACKAGE_STATUSES) })
 
 const startHomeResultSchema = z.object({ project_id: z.string().uuid() })
 const openPackageResultSchema = startHomeResultSchema.extend({ start_package_id: z.string().uuid() })
@@ -441,48 +444,6 @@ export async function assertReleaseGateCompletion(
   }
 }
 
-async function recomputePackageStatus(supabase: SupabaseClient, orgId: string, packageId: string) {
-  const pkg = await loadPackageRow(supabase, orgId, packageId)
-  if (!["open", "ready"].includes(pkg.status)) return pkg.status as StartPackageStatus
-  const rows = await loadGateRows(supabase, orgId, packageId)
-  const purchasingEnabled = await loadPurchasingEnabled(supabase, orgId, pkg.community_id)
-  const readiness = startPackageReadiness(rows.map((row) => {
-    const definition = relation(row.definition)
-    return { key: String(definition?.key), appliesWhen: definition?.applies_when as GateAppliesWhen, status: row.status as GateStatus }
-  }), { isFinanced: pkg.is_financed, purchasingEnabled })
-  const nextStatus = readiness.ready ? "ready" : "open"
-  if (nextStatus !== pkg.status) {
-    const { error } = await startsWriter().from("start_packages").update({ status: nextStatus })
-      .eq("org_id", orgId).eq("id", packageId).in("status", ["open", "ready"])
-    if (error) throw new Error(`Failed to update start package readiness: ${error.message}`)
-    if (nextStatus === "ready") await notifyPermissionHolders(supabase, orgId, "start.release", {
-      type: "start_package_ready", title: "Start package ready", message: "A start package has cleared its readiness gates.", entityId: packageId,
-    })
-  }
-  return nextStatus
-}
-
-async function notifyPermissionHolders(
-  supabase: SupabaseClient,
-  orgId: string,
-  permission: string,
-  input: { type: "start_package_ready" | "start_release_failed" | "start_gate_waived"; title: string; message: string; entityId: string },
-) {
-  const { data: memberships } = await supabase.from("memberships")
-    .select("user_id, role_id").eq("org_id", orgId).eq("status", "active")
-  const roleIds = Array.from(new Set((memberships ?? []).map((row) => row.role_id)))
-  if (!roleIds.length) return
-  const { data: grants } = await supabase.from("role_permissions").select("role_id")
-    .in("role_id", roleIds).eq("permission_key", permission)
-  const allowed = new Set((grants ?? []).map((row) => row.role_id))
-  const userIds = Array.from(new Set((memberships ?? []).filter((row) => allowed.has(row.role_id)).map((row) => row.user_id)))
-  const notifications = new NotificationService()
-  await Promise.allSettled(userIds.map((userId) => notifications.createAndQueue({
-    orgId, userId, type: input.type, title: input.title, message: input.message,
-    entityType: "start_package", entityId: input.entityId,
-  })))
-}
-
 async function deriveAutoGate(
   supabase: SupabaseClient,
   orgId: string,
@@ -593,34 +554,42 @@ export async function syncReleaseProducedGates(
   return produced
 }
 
+/**
+ * Readiness is decided in the transaction that records it, from the gates as
+ * they stand under the package lock. A package that turns ready queues its
+ * notice in that transaction; the starts worker sends it.
+ */
+function settleReadiness(previous: unknown, data: unknown) {
+  const { status } = packageStatusResultSchema.parse(data)
+  if (status === "ready" && previous !== "ready") void triggerStartsPipeline()
+  return status
+}
+
 export async function refreshAutoGates(packageId: string, orgId?: string): Promise<StartGateDTO[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
-  const purchasingEnabled = await loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id)
-  const rows = await loadGateRows(context.supabase, context.orgId, packageId)
-  const writer = startsWriter()
+  const [purchasingEnabled, rows] = await Promise.all([
+    loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id),
+    loadGateRows(context.supabase, context.orgId, packageId),
+  ])
+  // Once a release begins its gates belong to the release.
+  if (!["open", "ready"].includes(pkg.status)) return rows.map((row) => mapGate(row))
+  // Evidence is read here; applicability, the verdicts and the readiness they
+  // prove are written by SQL, which refuses a gate whose evidence is missing.
+  const evidence: Record<string, boolean> = {}
   await Promise.all(rows.map(async (row) => {
     const definition = relation(row.definition)
-    if (!definition) return
-    const updateStatus = async (patch: { status: GateStatus; passed_via: "auto" | null }) => {
-      const { data, error } = await writer.from("start_package_gates").update(patch)
-        .eq("org_id", context.orgId).eq("start_package_id", packageId).eq("id", row.id).select("id")
-      if (error || data?.length !== 1) throw new Error(`Failed to refresh the ${String(definition.key)} gate: ${error?.message ?? "Gate no longer exists"}`)
-    }
-    const applicable = isGateApplicable({ appliesWhen: definition.applies_when as GateAppliesWhen }, { isFinanced: pkg.is_financed, purchasingEnabled })
-    if (!applicable) {
-      await updateStatus({ status: "not_applicable", passed_via: null })
-      return
-    }
-    if (row.status === "waived" || definition.check_kind !== "auto") {
-      if (row.status === "not_applicable") await updateStatus({ status: "pending", passed_via: null })
-      return
-    }
-    const passed = await deriveAutoGate(context.supabase, context.orgId, pkg, String(definition.auto_source))
-    await updateStatus({ status: passed ? "passed" : "pending", passed_via: passed ? "auto" : null })
+    if (!definition || definition.check_kind !== "auto" || row.status === "waived") return
+    if (!isGateApplicable({ appliesWhen: definition.applies_when as GateAppliesWhen }, { isFinanced: pkg.is_financed, purchasingEnabled })) return
+    evidence[String(row.id)] = await deriveAutoGate(context.supabase, context.orgId, pkg, String(definition.auto_source))
   }))
-  await recomputePackageStatus(context.supabase, context.orgId, packageId)
+  const { data, error } = await startsWriter().rpc("refresh_start_package_gates", {
+    p_org_id: context.orgId, p_package_id: packageId, p_actor_id: context.userId,
+    p_purchasing_enabled: purchasingEnabled, p_evidence: evidence,
+  })
+  if (error) throw new Error(`Failed to refresh start gates: ${error.message}`)
+  settleReadiness(pkg.status, data)
   return (await loadGateRows(context.supabase, context.orgId, packageId)).map((row) => mapGate(row))
 }
 
@@ -670,86 +639,55 @@ export async function updateStartPackage(id: string, input: { targetWeek?: strin
     ...(parsed.isFinanced !== undefined ? { is_financed: parsed.isFinanced } : {}),
     ...(parsed.notes !== undefined ? { notes: parsed.notes } : {}),
   }
-  const { data, error } = await startsWriter().from("start_packages").update(patch)
-    .eq("org_id", context.orgId).eq("id", id).in("status", ["open", "ready"]).select("*").maybeSingle()
+  const { data, error } = await startsWriter().rpc("update_start_package", {
+    p_org_id: context.orgId, p_package_id: id, p_actor_id: context.userId, p_patch: patch,
+    p_purchasing_enabled: await loadPurchasingEnabled(context.supabase, context.orgId, before.community_id),
+  })
   if (error) throw new Error(`Failed to update start package: ${error.message}`)
-  if (!data) throw new Error("Only open or ready packages can be edited.")
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start_package.updated", entityType: "start_package", entityId: id, payload: patch })
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: id, before, after: data })
+  settleReadiness(before.status, data)
   await refreshAutoGates(id, context.orgId)
   return getStartPackage(id, context.orgId)
 }
 
 async function mutateGate(
+  context: OrgServiceContext,
   packageId: string,
   gateId: string,
-  patch: Relation,
-  eventType: string,
-  orgId?: string,
+  action: "attest" | "waive" | "reopen",
+  input: Record<string, string | null>,
 ) {
-  const context = await requireOrgContext(orgId)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (!["open", "ready"].includes(pkg.status)) throw new Error("Gates cannot change after release begins.")
-  const { data: gate, error: gateError } = await context.supabase.from("start_package_gates").select("*,definition:start_gate_definitions!inner(*)")
-    .eq("org_id", context.orgId).eq("start_package_id", packageId).eq("id", gateId).maybeSingle()
-  if (gateError || !gate) throw new Error("Start gate not found")
-  const { data, error } = await startsWriter().from("start_package_gates").update(patch)
-    .eq("org_id", context.orgId).eq("start_package_id", packageId).eq("id", gateId).select("*").single()
-  if (error) throw new Error(`Failed to update start gate: ${error.message}`)
-  await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "start_gate", entityId: gateId, payload: { start_package_id: packageId } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_gate", entityId: gateId, before: gate, after: data }),
-  ])
-  await recomputePackageStatus(context.supabase, context.orgId, packageId)
+  const { data, error } = await startsWriter().rpc("mutate_start_gate", {
+    p_org_id: context.orgId, p_package_id: packageId, p_gate_id: gateId, p_actor_id: context.userId, p_action: action, p_input: input,
+    p_purchasing_enabled: await loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id),
+  })
+  if (error) throw new Error(error.message)
+  settleReadiness(pkg.status, data)
+  // A waiver queues its notice in the same transaction.
+  if (action === "waive") void triggerStartsPipeline()
   return getStartPackage(packageId, context.orgId)
 }
 
+/** The gate's own attestation permission and the final-approval order are enforced in SQL. */
 export async function attestGate(packageId: string, gateId: string, input: { evidenceFileId?: string; notes?: string }, orgId?: string) {
   const parsed = gateAttestSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
-  const rows = await loadGateRows(context.supabase, context.orgId, packageId)
-  const row = rows.find((candidate) => candidate.id === gateId)
-  const definition = relation(row?.definition)
-  if (!row || !definition || definition.check_kind !== "manual") throw new Error("Only manual gates can be attested.")
-  const requiredPermission = text(definition.requires_attestation_permission)
-  if (requiredPermission) await requirePermission(requiredPermission, context)
-  if (definition.key === "final_approval") {
-    const purchasingEnabled = await loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id)
-    const allowed = canAttestFinalApproval(rows.map((gate) => {
-      const def = relation(gate.definition)
-      return { key: String(def?.key), appliesWhen: def?.applies_when as GateAppliesWhen, status: gate.status as GateStatus }
-    }), { isFinanced: pkg.is_financed, purchasingEnabled })
-    if (!allowed) throw new Error("Clear every other readiness gate before final approval.")
-  }
-  return mutateGate(packageId, gateId, {
-    status: "passed", passed_via: "attested", attested_by: context.userId,
-    attested_at: new Date().toISOString(), evidence_file_id: parsed.evidenceFileId ?? null, notes: parsed.notes ?? null,
-    waived_reason: null,
-  }, "start_gate.attested", context.orgId)
+  return mutateGate(context, packageId, gateId, "attest", { evidence_file_id: parsed.evidenceFileId ?? null, notes: parsed.notes ?? null })
 }
 
 export async function waiveGate(packageId: string, gateId: string, input: { reason: string }, orgId?: string) {
   const parsed = gateWaiveSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
-  const result = await mutateGate(packageId, gateId, {
-    status: "waived", passed_via: "waived", attested_by: context.userId,
-    attested_at: new Date().toISOString(), waived_reason: parsed.reason,
-  }, "start_gate.waived", context.orgId)
-  await notifyPermissionHolders(context.supabase, context.orgId, "start.release", {
-    type: "start_gate_waived", title: "Start gate waived", message: parsed.reason, entityId: packageId,
-  })
-  return result
+  return mutateGate(context, packageId, gateId, "waive", { reason: parsed.reason })
 }
 
 export async function reopenGate(packageId: string, gateId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  return mutateGate(packageId, gateId, {
-    status: "pending", passed_via: null, attested_by: null, attested_at: null, waived_reason: null,
-  }, "start_gate.reopened", context.orgId)
+  return mutateGate(context, packageId, gateId, "reopen", {})
 }
 
 export async function releaseStart(packageId: string, input: { scheduledStartDate: string; confirmOverSlot?: boolean }, orgId?: string): Promise<{ released: true } | { requiresConfirm: true; slot: { targetWeek: string; target: number; alreadyTargeted: number } }> {
@@ -880,13 +818,10 @@ export async function cancelStartPackage(id: string, { reason }: { reason: strin
   const pkg = await loadPackageRow(context.supabase, context.orgId, id)
   if (["releasing", "released"].includes(pkg.status)) throw new Error("A releasing or released start package cannot be cancelled.")
   if (reason.trim().length < 10) throw new Error("Cancellation reason must be at least 10 characters.")
-  const { data: cancelled, error } = await startsWriter().from("start_packages")
-    .update({ status: "cancelled", metadata: { ...(pkg.metadata ?? {}), cancellation_reason: reason } })
-    .eq("org_id", context.orgId).eq("id", id).in("status", ["open", "ready", "attention", "cancelled"]).select("*").maybeSingle()
+  const { error } = await startsWriter().rpc("cancel_start_package", {
+    p_org_id: context.orgId, p_package_id: id, p_actor_id: context.userId, p_reason: reason,
+  })
   if (error) throw new Error(`Failed to cancel start package: ${error.message}`)
-  if (!cancelled) throw new Error("A releasing or released start package cannot be cancelled.")
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: id, before: pkg, after: cancelled })
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start_package.cancelled", entityType: "start_package", entityId: id, payload: { reason } })
 }
 
 export async function setProjectSuperintendent(projectId: string, userId: string | null, orgId?: string) {
@@ -1088,20 +1023,12 @@ export async function retryStartTradeNotice(packageId: string, noticeId: string,
   await requirePermission("start.write", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "released") throw new Error("Only released houses can retry trade delivery")
-  const { data: before, error: readError } = await context.supabase.from("outbox").select("id,status,payload,retry_count,last_error")
-    .eq("org_id", context.orgId).eq("id", noticeId).eq("job_type", "start_release_trade_notice")
-    .eq("payload->>start_package_id", packageId).maybeSingle()
-  if (readError || !before) throw new Error("Trade notice not found")
-  if (before.status !== "failed") throw new Error("Only failed trade notices can be retried")
-  const payload = { ...relation(before.payload), actor_id: context.userId }
-  const { data: updated, error } = await startsWriter().from("outbox").update({
-    status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString(), payload,
-    start_claim_token: null, start_job_lease_expires_at: null,
-  }).eq("org_id", context.orgId).eq("id", noticeId).eq("job_type", "start_release_trade_notice")
-    .eq("payload->>start_package_id", packageId).eq("status", "failed").select("id")
-  if (error || updated?.length !== 1) throw new Error(`Unable to retry trade delivery: ${error?.message ?? "Notice state changed; refresh and try again"}`)
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_trade_notice", entityId: packageId, before: { ...before, notice_id: noticeId }, after: { status: "pending", actor_id: context.userId, start_package_id: packageId, notice_id: noticeId } })
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.trade_notice_retried", entityType: "start_package", entityId: packageId, payload: { notice_id: noticeId, company_id: relation(before.payload)?.company_id } })
+  // The notice is requeued under the coordinator, audited and announced in one
+  // transaction that refuses unless it is still this house's failed notice.
+  const { error } = await startsWriter().rpc("retry_start_trade_notice", {
+    p_org_id: context.orgId, p_package_id: packageId, p_notice_id: noticeId, p_actor_id: context.userId,
+  })
+  if (error) throw new Error(`Unable to retry trade delivery: ${error.message}`)
   void triggerStartsPipeline()
 }
 

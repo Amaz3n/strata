@@ -20,7 +20,7 @@ begin
   return query with picked as (
     select o.id from public.outbox o
     where o.status='pending' and o.run_at<=clock_timestamp()
-      and o.job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice')
+      and o.job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice')
     order by o.priority desc,o.created_at,o.id limit p_limit for update skip locked
   ), changed as (update public.outbox o set status='processing',updated_at=clock_timestamp(),
       start_claim_token=gen_random_uuid(),start_job_lease_expires_at=clock_timestamp()+interval '3 minutes'
@@ -36,7 +36,7 @@ declare v_job public.outbox%rowtype;
 begin
   if p_action is null or p_action not in ('heartbeat','defer','complete','retry') then raise exception 'Invalid starts lease transition'; end if;
   select * into v_job from public.outbox where id=p_id and org_id=p_org_id
-    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice')
+    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice')
     and status='processing' and start_claim_token=p_token
     and start_job_lease_expires_at>clock_timestamp() for update;
   if not found then return false; end if;
@@ -63,7 +63,7 @@ declare v_count integer:=0; v_job public.outbox%rowtype;
 begin
   if p_limit is null or p_limit<1 or p_limit>500 then raise exception 'Invalid starts recovery limit'; end if;
   for v_job in select * from public.outbox where status='processing' and start_claim_token is not null
-    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice')
+    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice')
     and coalesce(start_job_lease_expires_at,updated_at+interval '3 minutes')<=clock_timestamp()
     order by start_job_lease_expires_at nulls first,id limit p_limit for update skip locked
   loop
@@ -82,8 +82,8 @@ create function public.guard_starts_job_browser_writes() returns trigger
 language plpgsql set search_path=public,pg_catalog as $$
 begin
   if current_user in ('anon','authenticated') and (
-    (tg_op<>'DELETE' and (new.job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice') or new.start_claim_token is not null))
-    or (tg_op<>'INSERT' and (old.job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice') or old.start_claim_token is not null))
+    (tg_op<>'DELETE' and (new.job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice') or new.start_claim_token is not null))
+    or (tg_op<>'INSERT' and (old.job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice') or old.start_claim_token is not null))
   ) then raise exception 'Starts jobs must be changed through authorized server actions' using errcode='42501'; end if;
   if tg_op='DELETE' then return old; end if;
   return new;
@@ -1250,6 +1250,50 @@ end $$;
 revoke all on function public.transition_starts_package_lease(uuid,bigint,uuid,text) from public,anon,authenticated;
 grant execute on function public.transition_starts_package_lease(uuid,bigint,uuid,text) to service_role;
 
+-- A start package's notification intent. The job carries the event it
+-- announces; the starts worker turns it into one notification per recipient,
+-- each with a stable identity derived from that event, so a replayed job never
+-- double-sends. It is written in the transaction that changes the package, so
+-- a committed change always has its notice queued and a rolled-back one never
+-- does.
+create function public.queue_start_package_notice(p_package public.start_packages,p_kind text,p_event_id uuid,p_message text)
+returns void language plpgsql set search_path=public,pg_catalog as $$
+begin
+  if p_kind is null or p_kind not in ('ready','gate_waived','release_failed') or p_event_id is null then
+    raise exception 'Invalid start package notice'; end if;
+  insert into public.outbox(org_id,job_type,payload,run_at)
+    values(p_package.org_id,'start_package_notice',jsonb_build_object('start_package_id',p_package.id,'kind',p_kind,
+      'event_id',p_event_id,'message',left(p_message,2000)),clock_timestamp());
+end $$;
+revoke all on function public.queue_start_package_notice(public.start_packages,text,uuid,text) from public,anon,authenticated;
+grant execute on function public.queue_start_package_notice(public.start_packages,text,uuid,text) to service_role;
+
+-- A release's final failure, recorded by whichever transaction parks the
+-- package in attention (the worker's last retry or the lease reaper): its
+-- audit, its `start.release_failed` event, the package reindex and the notice
+-- to the people who can release it all commit with the park, or none do.
+create function public.record_start_release_failure(p_job public.outbox,p_package public.start_packages,p_error text)
+returns void language plpgsql set search_path=public,pg_catalog as $$
+declare v_event uuid:=gen_random_uuid(); v_actor uuid; v_error text:=left(coalesce(nullif(btrim(p_error),''),'Start release failed'),2000);
+begin
+  if p_job.org_id is distinct from p_package.org_id or p_job.job_type<>'start_release'
+    or p_job.payload->>'start_package_id' is distinct from p_package.id::text then
+    raise exception 'Start release failure scope mismatch' using errcode='42501'; end if;
+  v_actor:=case when coalesce(p_job.payload->>'actor_id','')~*'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    then (p_job.payload->>'actor_id')::uuid end;
+  insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,before_data,after_data,source)
+    values(p_package.org_id,v_actor,'update','start_package',p_package.id,jsonb_build_object('status',p_package.status),
+      jsonb_build_object('status','attention','job_id',p_job.id::text,'error',v_error),'starts.release_failed');
+  insert into public.events(id,org_id,event_type,entity_type,entity_id,payload,channel)
+    values(v_event,p_package.org_id,'start.release_failed','start_package',p_package.id,
+      jsonb_build_object('error',v_error,'job_id',p_job.id::text,'actor_id',v_actor),'activity');
+  insert into public.outbox(org_id,job_type,payload)
+    values(p_package.org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',p_package.id));
+  perform public.queue_start_package_notice(p_package,'release_failed',v_event,v_error);
+end $$;
+revoke all on function public.record_start_release_failure(public.outbox,public.start_packages,text) from public,anon,authenticated;
+grant execute on function public.record_start_release_failure(public.outbox,public.start_packages,text) to service_role;
+
 create function public.lock_starts_claim_transition_scope(p_job public.outbox,p_action text)
 returns public.start_packages language plpgsql set search_path=public,pg_catalog as $$
 declare v_pkg public.start_packages%rowtype;
@@ -1278,7 +1322,7 @@ declare v_job public.outbox%rowtype; v_pkg public.start_packages%rowtype; v_head
 begin
   if p_action is null or p_action not in ('heartbeat','defer','complete','retry') then raise exception 'Invalid starts lease transition'; end if;
   select * into v_job from public.outbox where id=p_id and org_id=p_org_id
-    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice')
+    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice')
     and status='processing' and start_claim_token=p_token
     and start_job_lease_expires_at>clock_timestamp() for update;
   if not found then return false; end if;
@@ -1293,6 +1337,7 @@ begin
     perform set_config('request.headers','{}',true);
     update public.start_packages set status='attention' where org_id=p_org_id and id=v_pkg.id and status='releasing'
       and (metadata->>'release_lease_token' is null or metadata->>'release_lease_token'=p_token::text);
+    if found then perform public.record_start_release_failure(v_job,v_pkg,p_error); end if;
     perform set_config('request.headers',coalesce(v_headers,''),true);
   end if;
   if p_action<>'heartbeat' and v_job.job_type='start_release'
@@ -1409,7 +1454,7 @@ begin
   if v_headers->>'x-starts-job-id' is not null or v_headers->>'x-starts-claim-token' is not null then raise exception 'Starts recovery requires an unscoped service client' using errcode='42501'; end if;
   if p_limit is null or p_limit<1 or p_limit>500 then raise exception 'Invalid starts recovery limit'; end if;
   for v_job in select * from public.outbox where status='processing' and start_claim_token is not null
-    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice')
+    and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice')
     and coalesce(start_job_lease_expires_at,updated_at+interval '3 minutes')<=clock_timestamp()
     order by start_job_lease_expires_at nulls first,id limit p_limit for update skip locked
   loop
@@ -1420,8 +1465,11 @@ begin
         update public.start_packages set status=case when v_job.retry_count+1>=3 and status='releasing' then 'attention' else status end,
           metadata=metadata||jsonb_build_object('release_lease_token',null,'release_lease_at',null)
           where id=v_pkg.id and org_id=v_job.org_id;
+        if v_job.retry_count+1>=3 and v_pkg.status='releasing' then
+          perform public.record_start_release_failure(v_job,v_pkg,'Starts worker lease expired'); end if;
       elsif found and v_pkg.metadata->>'release_lease_token' is null and v_job.retry_count+1>=3 and v_pkg.status='releasing' then
         update public.start_packages set status='attention' where id=v_pkg.id and org_id=v_job.org_id;
+        perform public.record_start_release_failure(v_job,v_pkg,'Starts worker lease expired');
       end if;
     end if;
     update public.outbox set status=case when retry_count+1>=3 then 'failed' else 'pending' end,

@@ -229,7 +229,7 @@ test('notice claim bookkeeping retains its independent permission path',async t=
 test('terminal retry parks only the still-owned releasing package after actor revocation',async t=>{
  const h=await setup(t);await h.control("update outbox set retry_count=2;update memberships set status='inactive'")
  assert.equal(await h.claimTransition('retry'),true)
- const pkg=(await h.db.query('select status,metadata from start_packages')).rows[0],job=(await h.db.query('select status,retry_count from outbox')).rows[0]
+ const pkg=(await h.db.query('select status,metadata from start_packages')).rows[0],job=(await h.db.query("select status,retry_count from outbox where job_type='start_release'")).rows[0]
  assert.equal(pkg.status,'attention');assert.equal(pkg.metadata.release_lease_token,null)
  assert.equal(job.status,'failed');assert.equal(job.retry_count,3)
 })
@@ -238,7 +238,7 @@ test('terminal recovery parks its own releasing home',async t=>{
  await h.db.query("select set_config('request.headers','{}',false)")
  assert.equal((await h.db.query('select recover_starts_job_leases() n')).rows[0].n,1)
  assert.equal((await h.db.query('select status from start_packages')).rows[0].status,'attention')
- assert.equal((await h.db.query('select status from outbox')).rows[0].status,'failed')
+ assert.equal((await h.db.query("select status from outbox where job_type='start_release'")).rows[0].status,'failed')
 })
 test('terminal retry never parks another package owner',async t=>{
  const h=await setup(t);await h.control(`update outbox set retry_count=2;update start_packages set metadata=metadata||jsonb_build_object('release_lease_token','${OTHER}')`)

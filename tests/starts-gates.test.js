@@ -215,25 +215,6 @@ test("missing selection or exception counts cannot prove readiness", async () =>
   }
 })
 
-test("gate refresh checks automatic, inapplicable and restored manual writes", async () => {
-  for (const mode of ["auto", "inapplicable", "manual"]) {
-    const tables = gateFixture({ purchasing: mode !== "inapplicable" })
-    const key = mode === "auto" ? "plan_pinned" : mode === "inapplicable" ? "price_book" : "final_approval"
-    const target = tables.start_package_gates.find(row => row.definition.key === key)
-    if (mode === "manual") target.status = "not_applicable"
-    const harness = buildHarness({ tables, instantiate: async () => ({ success: true }) })
-    const from = harness.supabase.from.bind(harness.supabase)
-    harness.supabase.from = table => {
-      const query = from(table), run = query.run.bind(query)
-      query.run = () => table === "start_package_gates" && query.action === "update" && query.filters.every(filter => filter(target))
-        ? { data: [], error: null } : run()
-      return query
-    }
-    await assert.rejects(loadStarts().refreshAutoGates(PACKAGE), /Gate no longer exists/, mode)
-    assert.equal(harness.store.start_packages[0].status, "open")
-  }
-})
-
 test("the yard lists every lot still waiting for a package, past the first page of lots", async () => {
   const tables = releasingFixture({ purchasing: false })
   const community = { name: "Cypress Run", settings: {} }

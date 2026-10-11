@@ -10,7 +10,6 @@ import { z } from "zod"
 import { normalizeProductTier } from "@/lib/product-tier"
 import { cleanupAbandonedPlanDrawingCopies, instantiatePlanForProject, type PlanInstantiationStep } from "@/lib/services/plan-instantiation"
 import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context"
-import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { readAllRows } from "@/lib/land/paging"
@@ -23,9 +22,8 @@ import { createServiceSupabaseClient, createStartsWorkerSupabaseClient } from "@
 import { runWithServiceSupabaseClient } from "@/lib/supabase/service-client-context"
 import { sendScheduleChangeDigestJob, sendTradeLookahead } from "@/lib/services/trade-lookahead"
 
-export const START_PIPELINE_JOB_TYPES = ["start_release", "trade_schedule_change_notice", "start_release_trade_notice"] as const
+export const START_PIPELINE_JOB_TYPES = ["start_release", "trade_schedule_change_notice", "start_release_trade_notice", "start_package_notice"] as const
 const RELEASE_STEPS = ["project", "budget", "schedule", "checklists", "drawings", "pos", "notify_trades", "finalize"] as const
-const MAX_JOB_RETRIES = 3
 const HEARTBEAT_SECONDS = 45
 /** How long a pre-token (legacy `claim_jobs`) claim may sit silent before it is drained. */
 const LEGACY_STALE_PROCESSING_MINUTES = 3
@@ -136,17 +134,14 @@ async function purchasingEnabled(supabase: SupabaseClient, orgId: string, commun
   return (await loadPurchasingEnabledByCommunity(supabase, orgId, [communityId])).get(communityId) ?? false
 }
 
-async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, projectId: string, packageId: string) {
-  const [{ data: project, error: projectError }, roster] = await Promise.all([
-    supabase.from("projects").select("superintendent_id").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
-    readAllRows((from, to) => supabase.from("memberships").select("id,user_id,role_id")
-      .eq("org_id", orgId).eq("status", "active").order("id").range(from, to),
-    { cap: 100001, label: "Failed to read release notification audience" }),
-  ])
-  if (projectError || !project) throw new Error(`Failed to read release notification home: ${projectError?.message ?? "Home unavailable"}`)
+/** Every active member who holds start.release through a role or a grant. */
+async function startReleaseAudience(supabase: SupabaseClient, orgId: string) {
+  const roster = await readAllRows((from, to) => supabase.from("memberships").select("id,user_id,role_id")
+    .eq("org_id", orgId).eq("status", "active").order("id").range(from, to),
+  { cap: 100001, label: "Failed to read release notification audience" })
   if (roster.truncated) throw new Error("Release notification audience exceeds the supported limit")
   const memberships = roster.rows
-  const roleIds = Array.from(new Set((memberships ?? []).map((membership) => membership.role_id)))
+  const roleIds = Array.from(new Set(memberships.map((membership) => membership.role_id)))
   const grants: { role_id: string }[] = []
   for (let offset = 0; offset < roleIds.length; offset += 100) {
     const result = await readAllRows((from, to) => supabase.from("role_permissions").select("role_id,permission_key")
@@ -155,8 +150,8 @@ async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, proj
     if (result.truncated) throw new Error("Release notification roles exceed the supported limit")
     grants.push(...result.rows)
   }
-  const allowedRoles = new Set((grants ?? []).map((grant) => grant.role_id))
-  const recipients = new Set((memberships ?? []).filter((membership) => allowedRoles.has(membership.role_id)).map((membership) => membership.user_id))
+  const allowedRoles = new Set(grants.map((grant) => grant.role_id))
+  const recipients = new Set(memberships.filter((membership) => allowedRoles.has(membership.role_id)).map((membership) => membership.user_id))
   const usersByMembership = new Map(memberships.map(row => [row.id, row.user_id]))
   const membershipIds = Array.from(usersByMembership.keys())
   for (let offset = 0; offset < membershipIds.length; offset += 100) {
@@ -169,7 +164,16 @@ async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, proj
       if (userId) recipients.add(userId)
     }
   }
-  if (project?.superintendent_id) recipients.add(project.superintendent_id)
+  return recipients
+}
+
+async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, projectId: string, packageId: string) {
+  const [{ data: project, error: projectError }, recipients] = await Promise.all([
+    supabase.from("projects").select("superintendent_id").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
+    startReleaseAudience(supabase, orgId),
+  ])
+  if (projectError || !project) throw new Error(`Failed to read release notification home: ${projectError?.message ?? "Home unavailable"}`)
+  if (project.superintendent_id) recipients.add(project.superintendent_id)
   const notifications = new NotificationService()
   const ids = Array.from(recipients)
   for (let offset = 0; offset < ids.length; offset += 20) {
@@ -400,28 +404,66 @@ async function transitionClaim(service: SupabaseClient, job: ClaimedJob, action:
   return data === true
 }
 
+const packageNoticeSchema = z.object({
+  start_package_id: z.string().uuid(),
+  kind: z.enum(["ready", "gate_waived", "release_failed"]),
+  event_id: z.string().uuid(),
+  message: z.string().nullable(),
+})
+
+const PACKAGE_NOTICES = {
+  ready: { type: "start_package_ready", title: "Start package ready", message: "A start package has cleared its readiness gates." },
+  gate_waived: { type: "start_gate_waived", title: "Start gate waived", message: null },
+  release_failed: { type: "start_release_failed", title: "Start release failed", message: null },
+} as const
+
 /**
- * The final retry parks the package in the claim transition itself, and only
- * when this claim held its lease or nobody did. Reporting follows what the
- * transition actually did: a house another worker holds, or one already
- * released, raises no failure.
+ * A package notice is the notification intent the transaction that changed the
+ * package queued with it — a gate waived, a package turned ready, a release
+ * parked after its final failure (the claim transition or the lease reaper
+ * writes that one with the park). It names the event it announces, and each
+ * recipient's notification identity is derived from that event, so a replay of
+ * this job never double-sends. It runs as the system: the change it reports has
+ * already committed, and a release can fail precisely because its actor lost
+ * access.
  */
-async function reportTerminalFailure(service: SupabaseClient, job: ClaimedJob, message: string) {
-  if (job.job_type !== "start_release") return
-  const packageId = typeof job.payload.start_package_id === "string" ? job.payload.start_package_id : null
-  if (!packageId) return
-  const { data: pkg, error } = await service.from("start_packages").select("status")
-    .eq("org_id", job.org_id).eq("id", packageId).maybeSingle()
-  if (error) throw new Error(`Failed to read the unsuccessful start release: ${error.message}`)
-  if (pkg?.status !== "attention") return
-  await recordEvent({ orgId: job.org_id, actorId: typeof job.payload.actor_id === "string" ? job.payload.actor_id : null, eventType: "start.release_failed", entityType: "start_package", entityId: packageId, payload: { error: message } })
-  const { data: recipients } = await service.from("memberships").select("user_id,role:roles!inner(permissions:role_permissions!inner(permission_key))")
-    .eq("org_id", job.org_id).eq("status", "active").eq("role.permissions.permission_key", "start.release")
+async function sendPackageNotice(service: SupabaseClient, job: ClaimedJob) {
+  const notice = packageNoticeSchema.parse(job.payload)
+  const [{ data: pkg, error }, recipients] = await Promise.all([
+    service.from("start_packages").select("project_id").eq("org_id", job.org_id).eq("id", notice.start_package_id).maybeSingle(),
+    startReleaseAudience(service, job.org_id),
+  ])
+  if (error || !pkg) throw new Error(`Failed to read the start package notice: ${error?.message ?? "Start package not found"}`)
+  const template = PACKAGE_NOTICES[notice.kind]
+  const projectId = typeof pkg.project_id === "string" ? pkg.project_id : undefined
   const notifications = new NotificationService()
-  await Promise.allSettled(Array.from(new Set((recipients ?? []).map((row) => row.user_id))).map((userId) => notifications.createAndQueue({
-    orgId: job.org_id, userId, type: "start_release_failed", title: "Start release failed",
-    message, entityType: "start_package", entityId: packageId,
-  })))
+  const ids = Array.from(recipients)
+  for (let offset = 0; offset < ids.length; offset += 20) {
+    await Promise.all(ids.slice(offset, offset + 20).map(async (userId) => {
+      const access = await authorize({ orgId: job.org_id, userId, projectId, permission: "start.release" })
+      if (!access.allowed) return
+      await notifications.createAndQueue({
+        orgId: job.org_id, userId, type: template.type, title: template.title,
+        message: template.message ?? notice.message ?? template.title, projectId,
+        entityType: "start_package", entityId: notice.start_package_id, eventId: notice.event_id,
+      }, { idempotencyId: startsConfirmationId(job.org_id, `${notice.start_package_id}:${notice.kind}:${notice.event_id}`, "notification", userId) })
+    }))
+  }
+}
+
+async function runClaimedJob(supabase: SupabaseClient, service: SupabaseClient, job: ClaimedJob): Promise<ReleaseOutcome> {
+  if (job.job_type === "start_package_notice") {
+    await sendPackageNotice(service, job)
+    return "completed"
+  }
+  const context = await backgroundContext(supabase, job)
+  return runWithServiceSupabaseClient(supabase, () => runWithServiceOrgContext(context, async (): Promise<ReleaseOutcome> => {
+    await requirePermission(job.job_type === "start_release" ? "start.release" : "start.write", context)
+    if (job.job_type === "start_release") return await executeRelease(supabase, service, job)
+    if (job.job_type === "start_release_trade_notice") return await processReleaseTradeNotice(supabase, job)
+    await processScheduleChangeNotice(supabase, job)
+    return "completed"
+  }))
 }
 
 /**
@@ -440,14 +482,7 @@ async function processJob(service: SupabaseClient, job: ClaimedJob) {
     })().catch((error) => console.warn("[starts-pipeline] Failed to renew starts claim:", error))
   }, HEARTBEAT_SECONDS * 1000)
   try {
-    const context = await backgroundContext(supabase, job)
-    const outcome = await runWithServiceSupabaseClient(supabase, () => runWithServiceOrgContext(context, async (): Promise<ReleaseOutcome> => {
-      await requirePermission(job.job_type === "start_release" ? "start.release" : "start.write", context)
-      if (job.job_type === "start_release") return await executeRelease(supabase, service, job)
-      if (job.job_type === "start_release_trade_notice") return await processReleaseTradeNotice(supabase, job)
-      await processScheduleChangeNotice(supabase, job)
-      return "completed"
-    }))
+    const outcome = await runClaimedJob(supabase, service, job)
     // Another worker holds the package: not a failure, and it must not burn a
     // retry — the claim comes back once that lease has finished or gone stale.
     const owned = await transitionClaim(service, job, outcome === "deferred" ? "defer" : "complete")
@@ -459,11 +494,10 @@ async function processJob(service: SupabaseClient, job: ClaimedJob) {
       return false
     }
     // A lost completion write lands here too: the retry re-enters a released
-    // package, which only re-runs its idempotent confirmation.
-    const message = error instanceof Error ? error.message : String(error)
-    if (await transitionClaim(service, job, "retry", message) && job.retry_count + 1 >= MAX_JOB_RETRIES) {
-      await reportTerminalFailure(service, job, message)
-    }
+    // package, which only re-runs its idempotent confirmation. The final retry
+    // parks the package in that transition, with its failure event, audit and
+    // notice — and only when this claim held the package lease or nobody did.
+    await transitionClaim(service, job, "retry", error instanceof Error ? error.message : String(error))
     return false
   } finally {
     clearInterval(heartbeat)
