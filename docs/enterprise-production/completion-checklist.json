@@ -22334,7 +22334,7 @@
         {
           "kind": "acceptance_run",
           "scenario": "CLOSE-01",
-          "result": "failed",
+          "result": "passed",
           "freshness": "current",
           "date": "2026-10-11",
           "runIds": [
@@ -22343,14 +22343,12 @@
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
-          "failedChecks": [
-            "race-intercompany-lot-sale"
-          ]
+          "failedChecks": []
         },
         {
           "kind": "acceptance_run",
           "scenario": "CONSOL-01",
-          "result": "failed",
+          "result": "passed",
           "freshness": "current",
           "date": "2026-10-11",
           "runIds": [
@@ -22359,14 +22357,12 @@
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
-          "failedChecks": [
-            "race-intercompany-lot-sale"
-          ]
+          "failedChecks": []
         },
         {
           "kind": "acceptance_run",
           "scenario": "ENTITY-01",
-          "result": "failed",
+          "result": "passed",
           "freshness": "current",
           "date": "2026-10-11",
           "runIds": [
@@ -22375,14 +22371,12 @@
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
-          "failedChecks": [
-            "race-intercompany-lot-sale"
-          ]
+          "failedChecks": []
         },
         {
           "kind": "acceptance_run",
           "scenario": "HOME-01",
-          "result": "failed",
+          "result": "passed",
           "freshness": "current",
           "date": "2026-10-11",
           "runIds": [
@@ -22391,14 +22385,12 @@
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
-          "failedChecks": [
-            "race-intercompany-lot-sale"
-          ]
+          "failedChecks": []
         },
         {
           "kind": "acceptance_run",
           "scenario": "INTERCO-01",
-          "result": "failed",
+          "result": "passed",
           "freshness": "current",
           "date": "2026-10-11",
           "runIds": [
@@ -22407,9 +22399,7 @@
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
-          "failedChecks": [
-            "race-intercompany-lot-sale"
-          ]
+          "failedChecks": []
         },
         {
           "kind": "acceptance_run",
