@@ -69,7 +69,7 @@ for (const role of ROLES) {
       if (/^\/design-studio\/sheet\/\[projectId\]$/.test(route)) return [`/design-studio/sheet/${id.closedHome}`]
       if (/^\/projects\/\[id\]/.test(route)) return [withProject(route, id.closedHome), ...(OTHER_HOMES.test(route) ? [withProject(route, id.specHome), withProject(route, id.readyHome)] : [])]
       if (/^\/books\/close\/\[periodId\]/.test(route)) return [`/books/close/${id["2026-10"]}`]
-      if (/^\/books\/banking\/\[accountId\]/.test(route)) return [`/books/banking/${id.bank}`]
+      if (/^\/books\/banking\/\[accountId\]/.test(route)) return [`/books/banking/${id.bank}/reconcile`]
       if (/^\/(directory|companies)\/\[id\]/.test(route)) return [route.replace("[id]", id.vendor)]
       if (/^\/contacts\/\[id\]/.test(route)) return [route.replace("[id]", id.contact)]
       if (/^\/reports\/\[slug\]/.test(route)) return ["/reports/books-trial-balance"]

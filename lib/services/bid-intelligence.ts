@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { visibleBidPackageIds, visibleBidParentIds } from "@/lib/services/bid-intelligence-visibility"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { getBidPackage } from "@/lib/services/bids"
 import { readAllRows } from "@/lib/land/paging"
@@ -117,6 +118,9 @@ export interface CostCodeBidHistory {
 export async function getCostCodeBidHistory(costCodeId: string, orgId?: string): Promise<CostCodeBidHistory> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("bid.read", { supabase, orgId: resolvedOrgId, userId })
+  // Purchasing is an org/division desk role, not a house-team member: RLS on commitments hides awarded homes
+  // from it. Permission and division scope are enforced above and in every filter below.
+  const db = createServiceSupabaseClient()
   const access = await getDivisionAccessForUser({ orgId: resolvedOrgId, userId })
   const empty = { cost_code_id: costCodeId, award_count: 0, median_bid_to_budget_pct: null, min_award_cents: null, max_award_cents: null }
   if (access.assignedOnly && !access.divisionIds.length) return empty
@@ -124,7 +128,7 @@ export async function getCostCodeBidHistory(costCodeId: string, orgId?: string):
   type Package = { id: string; project_id: string | null; community_id: string | null; house_plan_id: string | null; budget_line_id: string | null; community: Parent; plan: Parent }
   type Award = { id: string; awarded_commitment_id: string | null; package: Package | Package[] | null }
   const page = await readAllRows<Award>((from, to) => {
-    let query = supabase.from("bid_awards").select(`id,awarded_commitment_id,
+    let query = db.from("bid_awards").select(`id,awarded_commitment_id,
       package:bid_packages!bid_awards_org_package_fk!inner(id,project_id,community_id,house_plan_id,budget_line_id,
         community:communities!bid_packages_community_id_fkey(id),
         plan:house_plans!bid_packages_house_plan_id_fkey(id))`)
@@ -146,7 +150,7 @@ export async function getCostCodeBidHistory(costCodeId: string, orgId?: string):
   }))]
   const visibleProjects = new Set<string>()
   for (let offset = 0; offset < projectIds.length; offset += 100) {
-    let query = supabase.from("projects").select("id").eq("org_id", resolvedOrgId).in("id", projectIds.slice(offset, offset + 100))
+    let query = db.from("projects").select("id").eq("org_id", resolvedOrgId).in("id", projectIds.slice(offset, offset + 100))
     if (access.assignedOnly) query = query.in("division_id", access.divisionIds)
     const { data, error } = await query
     if (error) throw new Error(`Unable to verify award project access: ${error.message}`)
@@ -166,7 +170,7 @@ export async function getCostCodeBidHistory(costCodeId: string, orgId?: string):
     const result = new Map<string, number>()
     for (let offset = 0; offset < uniqueIds.length; offset += 100) {
       const chunk = uniqueIds.slice(offset, offset + 100)
-      const { data, error } = await supabase.from(table).select(table === "commitments" ? "id,total_cents" : "id,amount_cents").eq("org_id", resolvedOrgId).in("id", chunk).returns<Array<{ id: string; total_cents?: number; amount_cents?: number }>>()
+      const { data, error } = await db.from(table).select(table === "commitments" ? "id,total_cents" : "id,amount_cents").eq("org_id", resolvedOrgId).in("id", chunk).returns<Array<{ id: string; total_cents?: number; amount_cents?: number }>>()
       if (error) throw new Error(`Unable to load award history amounts: ${error.message}`)
       if (data?.length !== chunk.length) throw new Error("Award history references missing amounts; reconcile before comparing")
       for (const row of data) {

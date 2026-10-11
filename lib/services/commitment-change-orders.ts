@@ -160,12 +160,16 @@ function mapSummary(row: any, lines: CommitmentChangeOrderLine[] = []): Commitme
   }
 }
 
+/**
+ * Purchasing works houses it is not a team member of, so RLS on commitments hides
+ * them from the caller. This read only feeds the authorization check that follows
+ * at every call site; it is scoped by org_id.
+ */
 async function loadParentCommitment(
-  supabase: SupabaseClient,
   orgId: string,
   commitmentId: string,
 ): Promise<ParentCommitmentRow> {
-  const { data, error } = await supabase
+  const { data, error } = await createServiceSupabaseClient()
     .from("commitments")
     .select("id, org_id, project_id, company_id, commitment_type, title, status, company:companies(id, name)")
     .eq("org_id", orgId)
@@ -346,7 +350,7 @@ export async function listCommitmentChangeOrders({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   if (commitmentId) {
-    const commitment = await loadParentCommitment(supabase, resolvedOrgId, commitmentId)
+    const commitment = await loadParentCommitment(resolvedOrgId, commitmentId)
     await requireAuthorization({
       permission: "commitment.read",
       userId,
@@ -467,19 +471,23 @@ export async function createCommitmentChangeOrder({
   orgId?: string
 }): Promise<CommitmentChangeOrderSummary> {
   const parsed = commitmentChangeOrderInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const commitment = await loadParentCommitment(supabase, resolvedOrgId, parsed.commitment_id)
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const commitment = await loadParentCommitment(resolvedOrgId, parsed.commitment_id)
 
   await requireAuthorization({
     permission: parsed.reason_code_id ? "vpo.request" : "commitment.write",
     userId,
     orgId: resolvedOrgId,
     projectId: commitment.project_id,
-    supabase,
+    supabase: callerClient,
     logDecision: true,
     resourceType: "commitment",
     resourceId: parsed.commitment_id,
   })
+
+  // Authorized above against the house. The change order rows are guarded by house-team RLS,
+  // which a purchasing manager working the whole division is not on.
+  const supabase = createServiceSupabaseClient()
 
   const totalCents = parsed.lines.reduce((sum, line) => sum + calculateLineAmount(line), 0)
   if (parsed.reason_code_id && commitment.commitment_type !== "purchase_order") {
@@ -991,7 +999,7 @@ export async function createCommitmentChangeOrderFromClientChangeOrder({
   const changeOrder = await fetchChangeOrder(supabase, { id: parsed.change_order_id, orgId: resolvedOrgId })
   if (!changeOrder) throw new Error("Change order not found")
 
-  const commitment = await loadParentCommitment(supabase, resolvedOrgId, parsed.commitment_id)
+  const commitment = await loadParentCommitment(resolvedOrgId, parsed.commitment_id)
   if (commitment.project_id !== changeOrder.project_id) {
     throw new Error("Commitment must belong to the same project as the change order.")
   }

@@ -99,6 +99,8 @@ export function formatCurrency(cents?: number | null, opts?: { compact?: boolean
       style: "currency",
       currency: "USD",
       notation: "compact",
+      // Pinned: Node's ICU prints "$1.0M" where the browser's prints "$1M" unless the minimum is explicit.
+      minimumFractionDigits: 0,
       maximumFractionDigits: 1,
     })
   }

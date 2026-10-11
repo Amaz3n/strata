@@ -20,6 +20,9 @@ import { isIncentiveLive, offeringPrice, type OfferingIncentive } from "@/lib/sa
  */
 const TRAFFIC_WINDOW_DAYS = 90
 
+const canManagePlans = (granted: readonly string[]) =>
+  granted.some((permission) => ["sales.manage", "org.admin", "*"].includes(permission))
+
 /**
  * The offer this community is making, as one document: what it sells, for how
  * much, what is coming off that price, and what the market is doing with it.
@@ -37,22 +40,27 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
     listPlansWithPublishedModels([...new Set(sheet.rows.map((row) => row.planId))])
       .catch(() => new Set<string>()),
   )
+  const permissionsPromise = getCurrentUserPermissions()
+  // Only managers get the "offer a plan" picker, so only they need the offerable list.
+  const offerablePlansPromise = permissionsPromise.then((permissions) =>
+    canManagePlans(permissions.permissions)
+      ? listOfferablePlans(id).catch((error) => {
+          console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
+          return []
+        })
+      : [],
+  )
   const [sheet, permissions, traffic, specs, lane, costs, offerablePlans, plansWith3d] = await Promise.all([
     sheetPromise,
-    getCurrentUserPermissions(),
+    permissionsPromise,
     listCommunityTraffic(id, { days: TRAFFIC_WINDOW_DAYS }).catch(() => []),
     listSpecInventory({ communityId: id, limit: 100 }).catch(() => []),
     getCommunityLane(id).catch(() => null),
     getCommunityOfferingCosts(id).catch(() => null),
-    listOfferablePlans(id).catch((error) => {
-      console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
-      return []
-    }),
+    offerablePlansPromise,
     modelsPromise,
   ])
-  const canManage = permissions.permissions.some((permission) =>
-    ["sales.manage", "org.admin", "*"].includes(permission),
-  )
+  const canManage = canManagePlans(permissions.permissions)
 
   const rows: OfferingPlanRow[] = sheet.rows.map((row, index) => ({
     key: `${row.planId}:${row.elevationId ?? index}`,

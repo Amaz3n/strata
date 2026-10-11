@@ -161,13 +161,18 @@ async function authorizeGeneration(permission: "po.generate" | "price_book.read"
 }
 
 /**
+ * Generation reads go through the service client: purchasing works every house in its
+ * divisions without being on each house team, so team RLS would hide the orders and
+ * exceptions that numbering and de-duplication must see. Each caller authorizes first
+ * (or right after loading) against the project, and every read is scoped by org_id.
+ *
  * Loads the exception, then authorizes against the project it actually belongs to.
  * Authorizing without a project id would let a division-restricted user resolve —
  * and trigger generation on — work outside their divisions.
  */
 async function authorizeExceptionAction(exceptionId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
-  const { data: existing, error } = await context.supabase.from("po_generation_exceptions").select("*")
+  const { data: existing, error } = await createServiceSupabaseClient().from("po_generation_exceptions").select("*")
     .eq("org_id", context.orgId).eq("id", exceptionId).maybeSingle()
   if (error || !existing) throw new Error("PO exception not found")
   await requireAuthorization({
@@ -179,7 +184,7 @@ async function authorizeExceptionAction(exceptionId: string, orgId?: string) {
 }
 
 async function loadGeneratedCommitments(context: GenerationContext, projectId: string) {
-  const { data, error } = await context.supabase.from("commitments").select("id,contract_number")
+  const { data, error } = await createServiceSupabaseClient().from("commitments").select("id,contract_number")
     .eq("org_id", context.orgId).eq("project_id", projectId).eq("commitment_type", "purchase_order")
     .eq("metadata->>source", "po_generation").order("created_at").limit(GENERATED_COMMITMENT_SCAN_LIMIT)
   if (error) throw new Error(`Failed to load generated purchase orders: ${error.message}`)
@@ -190,7 +195,7 @@ async function loadCoveredSourceKeys(context: GenerationContext, commitmentIds: 
   if (commitmentIds.length === 0) return new Set<string>()
   const lines = await collectPagedRows<{ metadata: Record<string, unknown> | null }>({
     label: "generated purchase-order lines",
-    fetchPage: (from, to) => context.supabase.from("commitment_lines").select("metadata")
+    fetchPage: (from, to) => createServiceSupabaseClient().from("commitment_lines").select("metadata")
       .eq("org_id", context.orgId).in("commitment_id", commitmentIds).order("id").range(from, to),
   })
   const covered = new Set<string>()
@@ -203,7 +208,7 @@ async function loadCoveredSourceKeys(context: GenerationContext, commitmentIds: 
 }
 
 async function loadOpenExceptionKeys(context: GenerationContext, projectId: string) {
-  const { data, error } = await context.supabase.from("po_generation_exceptions").select("source_kind,source_ref")
+  const { data, error } = await createServiceSupabaseClient().from("po_generation_exceptions").select("source_kind,source_ref")
     .eq("org_id", context.orgId).eq("project_id", projectId).eq("status", "open").limit(OPEN_EXCEPTION_SCAN_LIMIT)
   if (error) throw new Error(`Failed to load open PO exceptions: ${error.message}`)
   const keys = new Set<string>()

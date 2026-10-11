@@ -7,7 +7,7 @@ const test = require("node:test")
 const division = "00000000-0000-4000-8000-000000000001"
 const community = "00000000-0000-4000-8000-000000000002"
 
-function harness({ scope = { assignedOnly: false, divisionIds: [] }, denied = false, errorTable = null, responses = [], rows = [] } = {}) {
+function harness({ scope = { assignedOnly: false, divisionIds: [] }, denied = false, errorTable = null, responses = [], rows = [], total = 1203 } = {}) {
   const calls = []
   const context = { orgId: "org", userId: "buyer", supabase: { from(table) {
     const call = { table, filters: [] }; calls.push(call)
@@ -17,7 +17,11 @@ function harness({ scope = { assignedOnly: false, divisionIds: [] }, denied = fa
       ilike(...args) { call.filters.push(["ilike", ...args]); return query },
       in(...args) { call.filters.push(["in", ...args]); return query }, or(...args) { call.filters.push(["or", ...args]); return query },
       order(...args) { call.filters.push(["order", ...args]); return query }, range(from, to) { call.range = [from, to]; return query },
-      then(resolve, reject) { return Promise.resolve({ data: table === "bid_packages" ? rows : responses.slice(call.range[0], call.range[1] + 1), count: 1203, error: errorTable === table ? { message: "database unavailable" } : null }).then(resolve, reject) },
+      then(resolve, reject) {
+        // PostgREST answers 416 when the offset is past the last row, and still reports the total on a one-row page.
+        if (table === "bid_packages" && call.range[0] >= total && call.range[0] > 0) return Promise.resolve({ data: null, count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } }).then(resolve, reject)
+        return Promise.resolve({ data: table === "bid_packages" ? (call.range[0] === 0 && call.range[1] === 0 ? rows.slice(0, 1) : rows) : responses.slice(call.range[0], call.range[1] + 1), count: total, error: errorTable === table ? { message: "database unavailable" } : null }).then(resolve, reject)
+      },
     }
     return query
   } } }
@@ -85,4 +89,11 @@ test("search and explicit status filtering happen before pagination, including c
   assert.ok(calls[0].filters.some(([op, key, value]) => op === "eq" && key === "status" && value === "cancelled"))
   assert.equal(calls[0].filters.some(([op, key]) => op === "neq" && key === "status"), false)
   assert.ok(calls[0].filters.some(([op, key, value]) => op === "ilike" && key === "title" && value === "%Framing\\_50\\%%"))
+})
+
+test("a page past the last row is an empty page that still reports the total", async () => {
+  const { run } = harness({ rows: [row], total: 51 })
+  const result = await run({ page: 4, pageSize: 25 })
+  assert.equal(result.count, 51)
+  assert.equal(result.items.length, 0)
 })

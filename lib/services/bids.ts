@@ -1356,6 +1356,20 @@ export async function beginBidScopeRevision({ bidPackageId, reason, orgId }: { b
   return result.data as number
 }
 
+/**
+ * Whether a preconstruction job has its signed owner contract and commercial award.
+ * project_precon_handoffs is service-role only (no grant to authenticated), so the
+ * caller's client can never read it; callers authorize and scope the project first.
+ */
+async function hasOwnerAward(orgId: string, projectId: string): Promise<boolean> {
+  const { data, error } = await createServiceSupabaseClient().from("project_precon_handoffs")
+    .select("id,contract:contracts!inner(status)").eq("contract.status", "active")
+    .eq("org_id", orgId).eq("project_id", projectId)
+    .in("status", ["awarded", "baseline_approved", "accepted", "released"]).maybeSingle()
+  if (error) throw new Error(`Unable to verify owner award: ${error.message}`)
+  return Boolean(data)
+}
+
 export async function getBidPackage(bidPackageId: string, orgId?: string): Promise<BidPackage> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
@@ -1385,8 +1399,7 @@ export async function getBidPackage(bidPackageId: string, orgId?: string): Promi
     mapped.project_phase = project?.phase ?? null
     mapped.can_award = project?.phase !== "precon"
     if (project?.phase === "precon") {
-      const { data: handoff } = await supabase.from("project_precon_handoffs").select("id,contract:contracts!inner(status)").eq("contract.status","active").eq("org_id", resolvedOrgId).eq("project_id",mapped.project_id).in("status",["awarded","baseline_approved","accepted","released"]).maybeSingle()
-      mapped.can_award = !!handoff
+      mapped.can_award = await hasOwnerAward(resolvedOrgId, mapped.project_id).catch(() => false)
     }
   }
   mapped.budget_cents = await resolveLatestBudgetForBidPackage({
@@ -2167,7 +2180,7 @@ export async function createBidInvite({
 }): Promise<BidInvite> {
   const parsed = createBidInviteInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
   await ensureCompanyInOrg(parsed.company_id, resolvedOrgId, supabase)
   const prequalificationWarning = (await getBidInvitePrequalificationWarnings([parsed.company_id], resolvedOrgId)).get(parsed.company_id)
@@ -2236,7 +2249,7 @@ export async function bulkCreateBidInvites({
 }): Promise<BulkBidInviteResult> {
   const parsed = bulkCreateBidInvitesInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
 
@@ -2493,7 +2506,7 @@ export async function generateBidInviteLink(
   options?: { revokeExisting?: boolean },
 ): Promise<{ url: string; token: string }> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   const revokeExisting = options?.revokeExisting ?? true
   const link = await createBidInviteLink({
     supabase,
@@ -2524,7 +2537,7 @@ export async function resendBidInvite({
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: inviteRow, error: inviteError } = await supabase
     .from("bid_invites")
@@ -2623,7 +2636,7 @@ export async function sendBidPackage({
   orgId?: string
 }): Promise<SendBidPackageResult> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
 
   const [packageResult, scopeResult, invitesResult] = await Promise.all([
@@ -2774,7 +2787,7 @@ export async function sendBidPackage({
  * package, the record stays and access is revoked instead. */
 export async function removeBidInvite({ inviteId, orgId }: { inviteId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: invite, error: inviteError } = await supabase
     .from("bid_invites")
@@ -2852,10 +2865,15 @@ export async function createBidAddendum({
 }): Promise<BidAddendum & { notifications: BidNotificationOutcome }> {
   const parsed = createBidAddendumInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
 
-  const { data: existing } = await supabase
+  // The insert fires bid_addendum_reconfirmation, which snapshots the scope into
+  // bid_scope_revisions (service-role write) and bumps the package revision. It runs
+  // as the inserting role, so the insert goes through the service client once the
+  // caller is authorized above.
+  const service = createServiceSupabaseClient()
+  const { data: existing } = await service
     .from("bid_addenda")
     .select("number")
     .eq("org_id", resolvedOrgId)
@@ -2865,7 +2883,7 @@ export async function createBidAddendum({
 
   const nextNumber = (existing?.[0]?.number ?? 0) + 1
 
-  const { data, error } = await supabase
+  const { data, error } = await service
     .from("bid_addenda")
     .insert({
       org_id: resolvedOrgId,
@@ -3075,7 +3093,7 @@ export async function createManualBidSubmission({
 }): Promise<BidSubmission> {
   const parsed = manualBidSubmissionInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
   if (parsed.company_id) {
@@ -3237,7 +3255,7 @@ export async function updateBidSubmissionLeveling({
 }): Promise<BidSubmission> {
   const parsed = updateBidSubmissionLevelingInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   await ensureBidSubmissionAccess(parsed.bid_submission_id, resolvedOrgId, supabase)
 
@@ -3306,7 +3324,7 @@ export async function updateBidSubmissionItemLeveling({
 }): Promise<BidSubmissionItem> {
   const parsed = updateBidSubmissionItemLevelingInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: item, error: itemError } = await supabase.from("bid_submission_items").select("id,bid_submission_id")
     .eq("org_id", resolvedOrgId).eq("id", parsed.bid_submission_item_id).maybeSingle()
@@ -3835,9 +3853,7 @@ export async function awardBidSubmission({
       .eq("id", awardProjectId)
       .maybeSingle()
     if (awardProject?.phase === "precon") {
-      const { data: handoff, error: handoffError } = await supabase.from("project_precon_handoffs").select("id,contract:contracts!inner(status)").eq("contract.status","active").eq("org_id",resolvedOrgId).eq("project_id",awardProjectId).in("status",["awarded","baseline_approved","accepted","released"]).maybeSingle()
-      if(handoffError) throw new Error(`Unable to verify owner award: ${handoffError.message}`)
-      if(!handoff) throw new Error("Record the signed owner contract and commercial award before committing subcontract costs.")
+      if(!await hasOwnerAward(resolvedOrgId, awardProjectId)) throw new Error("Record the signed owner contract and commercial award before committing subcontract costs.")
     }
   }
 

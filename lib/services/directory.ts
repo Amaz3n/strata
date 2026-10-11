@@ -203,10 +203,12 @@ async function listDirectoryPageWithClient(
     )
   }
 
-  const { data, error, count } = await query
-    .order(sortColumn(sort), { ascending })
-    .order("id", { ascending: true })
-    .range(offset, offset + pageSize - 1)
+  const ordered = query.order(sortColumn(sort), { ascending }).order("id", { ascending: true })
+  const first = await ordered.range(offset, offset + pageSize - 1)
+  // A page past the last row is an empty page, not a failure (PostgREST answers 416).
+  const pastEnd = first.error?.code === "PGRST103"
+  const { error, count } = pastEnd ? await ordered.range(0, 0) : first
+  const data = pastEnd ? null : first.data
 
   if (error) throw new Error(`Failed to list directory: ${error.message}`)
 

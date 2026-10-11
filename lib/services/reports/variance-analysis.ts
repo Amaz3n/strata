@@ -3,6 +3,7 @@ import { readAllRows, type RangeResult } from "@/lib/land/paging"
 import { resolveDivisionScope } from "@/lib/land/scope"
 import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { toCsv } from "@/lib/services/reports/csv"
 
 export type VarianceDimension = "reason" | "community" | "plan" | "division" | "vendor" | "superintendent" | "month"
@@ -70,12 +71,21 @@ export async function getVarianceAnalysis({
   const scope = resolveDivisionScope(await getDivisionAccessForUser({ orgId: resolvedOrgId, userId }), divisionId)
   if (scope.kind === "none") return { ...emptyVariance(), scoped: true }
   if (scope.kind === "limited") {
-    const projects = await readAllRows<{ id: string }>((from, to) => supabase.from("projects").select("id")
-      .eq("org_id", resolvedOrgId).in("division_id", scope.divisionIds)
-      .order("id").range(from, to),
-    { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to scope variance analysis" })
-    if (projects.truncated) throw new Error("Variance analysis exceeds the supported project scope; narrow the division filter")
-    return getScopedVarianceAnalysis({ supabase, orgId: resolvedOrgId, projectIds: projects.rows.map((row) => row.id), startDate, endDate })
+    // The report's division is the lot's, falling back to the project's (coalesce in the RPC). A home
+    // on a lot in the division counts even when the project row carries no division of its own.
+    const [projects, lots] = await Promise.all([
+      readAllRows<{ id: string }>((from, to) => supabase.from("projects").select("id")
+        .eq("org_id", resolvedOrgId).in("division_id", scope.divisionIds)
+        .order("id").range(from, to),
+      { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to scope variance analysis" }),
+      readAllRows<{ id: string; project_id: string }>((from, to) => supabase.from("lots").select("id,project_id")
+        .eq("org_id", resolvedOrgId).in("division_id", scope.divisionIds).not("project_id", "is", null)
+        .order("id").range(from, to),
+      { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to scope variance analysis" }),
+    ])
+    if (projects.truncated || lots.truncated) throw new Error("Variance analysis exceeds the supported project scope; narrow the division filter")
+    const projectIds = [...new Set([...projects.rows.map((row) => row.id), ...lots.rows.map((row) => row.project_id)])]
+    return getScopedVarianceAnalysis({ supabase, orgId: resolvedOrgId, projectIds, divisionIds: scope.divisionIds, startDate, endDate })
   }
   const aggregate = await readAllRows<Record<string, unknown>>((from, to) => supabase.rpc("get_variance_analysis", {
     p_org_id: resolvedOrgId, p_start_date: startDate, p_end_date: endDate,
@@ -109,21 +119,25 @@ async function getScopedVarianceAnalysis({
   supabase,
   orgId,
   projectIds,
+  divisionIds,
   startDate,
   endDate,
 }: {
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
   projectIds: string[]
+  divisionIds: string[]
   startDate: string
   endDate: string
 }): Promise<VarianceAnalysisResult> {
   if (!projectIds.length) return { ...emptyVariance(), scoped: true }
 
-  const [facts, budgetByProject] = await Promise.all([
+  const [allFacts, budgetByProject] = await Promise.all([
     loadVarianceFacts({ supabase, orgId, projectIds, startDate, endDate }),
     loadLatestBudgets({ supabase, orgId, projectIds }),
   ])
+  // A project row in scope can sit on a lot that belongs to another division; the fact's division wins.
+  const facts = allFacts.filter((fact) => fact.division_id !== null && divisionIds.includes(fact.division_id))
   return { ...summarize(aggregateVarianceFacts(facts, budgetByProject)), scoped: true }
 }
 
@@ -213,7 +227,8 @@ async function loadSuperintendents({
   projectIds: string[]
 }): Promise<Map<string, { userId: string; label: string }>> {
   const byProject = new Map<string, { userId: string; label: string }>()
-  const { data: roles, error: roleError } = await supabase.from("roles").select("id").eq("key", "field")
+  // roles is a catalog the member client cannot read; the lookup carries no org data.
+  const { data: roles, error: roleError } = await createServiceSupabaseClient().from("roles").select("id").eq("key", "field")
   if (roleError) throw new Error(`Failed to load the superintendent role: ${roleError.message}`)
   const roleIds = (roles ?? []).map((row) => row.id as string)
   if (roleIds.length === 0) return byProject
