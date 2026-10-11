@@ -4518,6 +4518,499 @@
           "reported": true
         }
       }
+    },
+    "find-a-home-search-narrows": {
+      "derivation": "EP01-03 #0. Find a home is a typed, scoped search. Community A sells lots 1-10 (no plan), PK-01..PK-11 and PK-14; PK-12 is held and PK-13 is sold, so neither is ever offered. A lot number is matched as typed (PK-07 is one lot, PK-1 is PK-10, PK-11 and PK-14 because PK-12 and PK-13 are taken), a plan code or name matches the lots built on that plan (Palmetto is plan PL2100, on PK-07 to PK-11; Mangrove is on PK-01 to PK-06), a community name matches every lot in it, and a word nothing matches finds nothing. Lot HB-01 is in the other community, so only a search not limited to community A (the owner's) also finds it: 22 + 1 lots.",
+      "inputs": {
+        "sellableInA": 22,
+        "heldAndSold": [
+          "PK-12",
+          "PK-13"
+        ],
+        "otherCommunityLots": [
+          "HB-01"
+        ]
+      },
+      "expected": {
+        "allSellableInCommunityA": [
+          "1",
+          "10",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9",
+          "PK-01",
+          "PK-02",
+          "PK-03",
+          "PK-04",
+          "PK-05",
+          "PK-06",
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-10",
+          "PK-11",
+          "PK-14"
+        ],
+        "lotNumber": [
+          "PK-07"
+        ],
+        "partialLotNumber": [
+          "PK-10",
+          "PK-11",
+          "PK-14"
+        ],
+        "planCode": [
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-10",
+          "PK-11"
+        ],
+        "planName": [
+          "PK-01",
+          "PK-02",
+          "PK-03",
+          "PK-04",
+          "PK-05",
+          "PK-06"
+        ],
+        "communityName": 22,
+        "otherCommunityName": [],
+        "noMatch": [],
+        "withoutCommunityTheOwnerSeesBothCommunities": 23
+      }
+    },
+    "find-a-home-paging-walks-every-lot-once": {
+      "derivation": "EP01-03 #0. Paging must neither skip nor repeat. Walking community A five lots at a time from nextOffset yields exactly the 22 sellable lots (lots 1-10, PK-01..PK-11, PK-14), once each; PK-12 (held) and PK-13 (sold) never appear even though they sit inside the page windows, so a page that loses rows to the hold/sold filter refills rather than short-changing the walk. No page is larger than asked and the last page reports no next offset and no truncation. Searching PK- four at a time yields the 12 PK lots on sale; searching Palmetto two at a time yields PK-07 to PK-11.",
+      "inputs": {
+        "pageSize": 5,
+        "searchedPageSize": 4,
+        "planPageSize": 2
+      },
+      "expected": {
+        "walkedLots": 22,
+        "distinctLots": 22,
+        "walkedSet": [
+          "1",
+          "10",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9",
+          "PK-01",
+          "PK-02",
+          "PK-03",
+          "PK-04",
+          "PK-05",
+          "PK-06",
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-10",
+          "PK-11",
+          "PK-14"
+        ],
+        "heldOrSoldShown": [],
+        "everyPageWithinItsSize": true,
+        "lastPageEnds": true,
+        "searchedWalk": {
+          "lots": 12,
+          "distinct": 12,
+          "onlyPk": true
+        },
+        "planWalkInPairs": [
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-10",
+          "PK-11"
+        ]
+      }
+    },
+    "find-a-home-price-band-and-sort-agree-with-the-price-sheet": {
+      "derivation": "EP01-03 #0. Asking price = the community price sheet row (an elevation's own row outranks the plan-wide row) + lot premium + confirmed structural options, or the lot's override: Mangrove A $385,000 (PK-03 adds a $2,500 premium), Mangrove B $395,000 (PK-05 adds an $18,500 structural option; PK-06 is overridden to $412,345), Palmetto A's own row ended so its lots take the plan-wide $445,000, Palmetto B $455,000. A band is at least the minimum and below the maximum, so $386,000 to $400,000 holds PK-03 ($387,500) and PK-04 ($395,000), the band $445,000 to $455,000 holds the three Palmetto A lots and not the $455,000 ones, and a lot with no plan has no price and sits in no band. Price order is by that price with ties by lot number and unpriced lots last, in both directions. Palmetto is the four-bedroom plan.",
+      "inputs": {
+        "asking": {
+          "PK-01": 38500000,
+          "PK-02": 38500000,
+          "PK-03": 38750000,
+          "PK-04": 39500000,
+          "PK-05": 41350000,
+          "PK-06": 41234500,
+          "PK-07": 44500000,
+          "PK-08": 44500000,
+          "PK-09": 44500000,
+          "PK-10": 45500000,
+          "PK-11": 45500000
+        }
+      },
+      "expected": {
+        "band38To40Million": [
+          "PK-03",
+          "PK-04"
+        ],
+        "bandIsHalfOpen": [
+          "PK-07",
+          "PK-08",
+          "PK-09"
+        ],
+        "bandNoMinimum": [
+          "PK-01",
+          "PK-02"
+        ],
+        "unpricedInNoBand": [],
+        "ascending": [
+          "PK-01",
+          "PK-02",
+          "PK-03",
+          "PK-04",
+          "PK-06",
+          "PK-05",
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-10",
+          "PK-11"
+        ],
+        "descending": [
+          "PK-10",
+          "PK-11",
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-05",
+          "PK-06",
+          "PK-04",
+          "PK-03",
+          "PK-01",
+          "PK-02"
+        ],
+        "unpricedAreLastAscending": true,
+        "unpricedAreLastDescending": true,
+        "fourBedroomsOrMore": [
+          "PK-07",
+          "PK-08",
+          "PK-09",
+          "PK-10",
+          "PK-11"
+        ]
+      }
+    },
+    "view-asking-price-equals-the-apps-own-price": {
+      "derivation": "EP01-03 #0. sellable_lot_inventory is a SQL copy of the price the app derives (specAskingPrice and the community price sheet); a band or sort run on the view is only right if the two never drift. For every one of the 22 sellable lots in community A the view's asking_price_cents equals the price the app returns, and both equal the designed price (sheet row, premium, structural option, override, an ended elevation row falling back to the plan-wide row; a lot with no plan has none). The price does not depend on who asks: the sales consultant (who is on no home's team) sees the same price for every lot as the owner. Five plain lots also equal the price sheet's own row for their elevation plus their premium.",
+      "inputs": {
+        "asking": {
+          "PK-01": 38500000,
+          "PK-02": 38500000,
+          "PK-03": 38750000,
+          "PK-04": 39500000,
+          "PK-05": 41350000,
+          "PK-06": 41234500,
+          "PK-07": 44500000,
+          "PK-08": 44500000,
+          "PK-09": 44500000,
+          "PK-10": 45500000,
+          "PK-11": 45500000
+        },
+        "plainLotsWithNoPlan": 11
+      },
+      "expected": {
+        "lotsCompared": 22,
+        "drift": [],
+        "appPricesAreTheDesignedOnes": {
+          "PK-01": 38500000,
+          "PK-02": 38500000,
+          "PK-03": 38750000,
+          "PK-04": 39500000,
+          "PK-05": 41350000,
+          "PK-06": 41234500,
+          "PK-07": 44500000,
+          "PK-08": 44500000,
+          "PK-09": 44500000,
+          "PK-10": 45500000,
+          "PK-11": 45500000
+        },
+        "viewPricesAreTheDesignedOnes": {
+          "PK-01": 38500000,
+          "PK-02": 38500000,
+          "PK-03": 38750000,
+          "PK-04": 39500000,
+          "PK-05": 41350000,
+          "PK-06": 41234500,
+          "PK-07": 44500000,
+          "PK-08": 44500000,
+          "PK-09": 44500000,
+          "PK-10": 45500000,
+          "PK-11": 45500000
+        },
+        "unplannedLotsHaveNoPrice": true,
+        "everyViewerSeesTheSamePrice": true,
+        "priceSheetAgrees": {
+          "PK-01": true,
+          "PK-03": true,
+          "PK-04": true,
+          "PK-07": true,
+          "PK-10": true
+        }
+      }
+    },
+    "find-a-home-stays-in-the-consultants-division": {
+      "derivation": "EP01-03 #0. Division scope is the enforcement layer. A consultant limited to division A finds the 22 sellable lots of community A and not HB-01; one limited to division B finds only HB-01 and nothing of division A however it is searched (PK-0 finds none), and asking for community A by name is refused as not found; asking division A's consultant for division B's lots draws nothing. The unlimited owner sees PK-01..PK-11, PK-14 and HB-01, 13 lots with the PK prefix or HB-01.",
+      "inputs": {
+        "divisions": 2
+      },
+      "expected": {
+        "ownerSeesBothCommunities": 13,
+        "consultantInDivisionA": {
+          "sellable": 22,
+          "seesCommunityBLot": false
+        },
+        "consultantInDivisionB": {
+          "lots": [
+            "HB-01"
+          ],
+          "total": 1
+        },
+        "divisionBSearchForDivisionALots": {
+          "lots": 0,
+          "total": 0
+        },
+        "divisionBNamingCommunityA": "refused",
+        "divisionANamingDivisionB": {
+          "lots": 0,
+          "total": 0
+        }
+      }
+    },
+    "buyer-search-finds-and-attaches": {
+      "derivation": "EP01-03 #0/#1. A new organisation's directory already holds the buyer roles (prospect, buyer, homeowner, agent) that a registration promotes a person into; without them attaching a picked buyer cannot work. A returning buyer is found by typing a name fragment, an email in any case, or a phone fragment, never an id. Thirty-odd buyers page in tens (10, 10, 8 of 28 and then an empty page) without a repeat, in name order. A registration from the picked buyer attaches to that contact (the directory's name wins over the typed one, no second contact is made for the email); the same person typed again with the email in capitals still resolves to the one existing contact (one contact with that email in the organisation, the new prospect linked to it). Another organisation's contact id is refused with 'no longer in the directory', and writes neither a prospect nor a contact; that organisation's own consultant searching ours finds none.",
+      "inputs": {
+        "pageable": 28,
+        "pageSize": 10
+      },
+      "expected": {
+        "aNewOrganisationKnowsTheBuyerRoles": {
+          "prospect": true,
+          "buyer": true,
+          "homeowner": true,
+          "agent": true
+        },
+        "byName": [
+          "Ingrid Solberg"
+        ],
+        "byEmail": [
+          "Ingrid Solberg"
+        ],
+        "byPhone": [
+          "Ingrid Solberg"
+        ],
+        "byFirstNameFragment": [
+          "Ingrid Solberg"
+        ],
+        "pagedInTens": {
+          "pages": [
+            10,
+            10,
+            8,
+            0
+          ],
+          "total": 28,
+          "distinct": 28,
+          "inOrder": true
+        },
+        "pickedBuyerIsAttached": {
+          "prospectCarriesTheirName": true,
+          "linkedToTheirContact": true,
+          "contactsWithTheirEmail": 0
+        },
+        "retypedInOtherCase": {
+          "contactsWithThatEmail": 1,
+          "attachedToTheExistingContact": true
+        },
+        "anotherOrganisationsContact": {
+          "refused": "refused",
+          "prospectsWritten": 0,
+          "contactsWritten": 0
+        },
+        "otherOrganisationSeesNoneOfOurBuyers": 0
+      }
+    },
+    "project-search-finds-homes-by-name-or-address": {
+      "derivation": "EP01-03 #0. The project picker is typed, paged and scoped. The name of a spec home, a word of that name, or a word of its street address each find it; every production home reads the noun Home (never Project); the picker pages two at a time through every project once and matches its total; a page size over fifty is capped at fifty. A consultant limited to division B finds no home of division A, by listing or by name; one limited to division A finds both spec homes.",
+      "inputs": {
+        "homes": [
+          "PK-05",
+          "PK-06"
+        ]
+      },
+      "expected": {
+        "typingTheName": {
+          "found": true,
+          "noun": "Home"
+        },
+        "typingAWordOfTheName": true,
+        "typingAStreetName": true,
+        "everyProductionHomeIsAHome": true,
+        "pagedInPairsWalksEveryProjectOnce": {
+          "distinct": true,
+          "matchesTotal": true,
+          "containsBothSpecHomes": true
+        },
+        "pageSizeIsCapped": 50,
+        "limitedToDivisionB": {
+          "projects": 0,
+          "total": 0,
+          "findsDivisionAHomeByName": 0
+        },
+        "limitedToDivisionAFindsTheHomes": true
+      }
+    },
+    "plan-pickers-search-and-page": {
+      "derivation": "EP01-03 #0. The offering picker lists only released plans the community does not sell yet. Five Zephyr plans exist (ZX3000-ZX3004, trees Alder to Elm); ZX3004 has no released version so it is never offered, and Mangrove and Palmetto are already on the sheet so they are not offered either. A code (ZX3002), a name (birch is ZX3001) or a word of a name (zeph) finds them; two at a time the four offerable plans take two pages, once each, in code order; the total is four, a page size over fifty is capped at fifty, and a page past the end is empty. The other community sells nothing yet so it is offered the whole released library (MG1650, PL2100, ZX3000-ZX3003) and a consultant limited to the other division is refused. The lot's plan-assignment picker finds a plan by name (palm is PL2100) or code (MG16 is MG1650) and lists only plans with a released version (the Zephyr search finds ZX3000-ZX3003).",
+      "inputs": {
+        "zephyrPlans": 5,
+        "released": 4
+      },
+      "expected": {
+        "offerableByCode": [
+          "ZX3002"
+        ],
+        "offerableByName": [
+          "ZX3001"
+        ],
+        "offerableByWordOfName": [
+          "ZX3000",
+          "ZX3001",
+          "ZX3002",
+          "ZX3003"
+        ],
+        "alreadyOfferedAreNotOffered": [],
+        "unreleasedPlanIsNotOffered": [],
+        "walkedInPairs": {
+          "pages": 2,
+          "codes": [
+            "ZX3000",
+            "ZX3001",
+            "ZX3002",
+            "ZX3003"
+          ],
+          "distinct": 4
+        },
+        "total": 4,
+        "pageSizeIsCapped": 50,
+        "pageBeyondTheEndIsEmpty": 0,
+        "otherCommunityOffersTheWholeLibrary": [
+          "MG1650",
+          "PL2100",
+          "ZX3000",
+          "ZX3001",
+          "ZX3002",
+          "ZX3003"
+        ],
+        "consultantOfAnotherDivision": "refused: community not found",
+        "assignmentSearchByName": [
+          "PL2100"
+        ],
+        "assignmentSearchByCode": [
+          "MG1650"
+        ],
+        "assignmentSearchSkipsAPlanWithNoReleasedVersion": [
+          "ZX3000",
+          "ZX3001",
+          "ZX3002",
+          "ZX3003"
+        ]
+      }
+    },
+    "vendor-pickers-search-and-page": {
+      "derivation": "EP01-03 #0. The vendor picker is a typed, paged search of the organisation's companies. Words of a name (gulf conc) find Gulf Concrete. Thirty companies named Quarry Supply NN plus a run tag page in twenty-fives: a page of 25, then of 5, thirty names once each in name order, none of them the other organisation's Quarry Supply Foreign; the warranty desk's trade picker walks the same thirty and none foreign, and the other organisation's vendor cannot be reached by searching for it. The purchasing desk's home picker lists homes under construction (a released home is delivery phase) and finds one by the words of its name; its community picker finds Cypress and its plan picker Palmetto.",
+      "inputs": {
+        "companies": 30,
+        "pageSize": 25
+      },
+      "expected": {
+        "byWordsOfItsName": [
+          "Gulf Concrete"
+        ],
+        "walkedPages": [
+          25,
+          5
+        ],
+        "walkedNames": {
+          "count": 30,
+          "distinct": 30,
+          "allMine": true,
+          "inOrder": true
+        },
+        "warrantyDeskWalk": {
+          "count": 30,
+          "distinct": 30,
+          "foreignOnes": 0
+        },
+        "otherOrganisationsVendorIsUnreachable": 0,
+        "homePickerFindsAHomeByName": true,
+        "communityPicker": [
+          "Cypress Landing"
+        ],
+        "planPicker": [
+          "The Palmetto"
+        ]
+      }
+    },
+    "no-picker-asks-for-an-id": {
+      "derivation": "EP01-03 #1. An operator reaches every record by typing words. Find a home, the lot picker, the vendor picker and the plan picker each return, for a typed word, a row with a human label (lot number, plan, company or plan name; never a uuid) and the id the form submits; the lot picker says whether it truncated. A consultant then runs a sale with no id known: she types the buyer's surname and picks the buyer, registers from that pick, finds lot PK-10 by its number and holds it for that buyer, and the hold is on that lot for that contact. A sales manager picks an unoffered plan from the offering picker and offers it at $410,000; the starts coordinator picks it from the assignment picker and gives it to lot PK-14, which the lot picker found by number, and Find a home then shows PK-14 on that plan at that price.",
+      "inputs": {
+        "sale": "PK-10",
+        "offering": "NP3000 at $410,000",
+        "assignedTo": "PK-14"
+      },
+      "expected": {
+        "findAHome": {
+          "rows": 1,
+          "label": true,
+          "idIsAUuid": true
+        },
+        "lotPicker": {
+          "rows": 1,
+          "label": true,
+          "idIsAUuid": true,
+          "tellsWhenItTruncates": true
+        },
+        "vendorPicker": {
+          "rows": 1,
+          "label": true,
+          "idIsAUuid": true
+        },
+        "planPicker": {
+          "rows": 1,
+          "label": true,
+          "idIsAUuid": true
+        },
+        "buyerPicker": {
+          "label": true,
+          "idIsAUuid": true,
+          "isTheContactEntered": true
+        },
+        "holdFromWords": {
+          "status": "hold",
+          "onThePickedLot": true,
+          "forThePickedBuyer": true
+        },
+        "planAssignedFromThePickers": {
+          "lot": "PK-14",
+          "plan": "Nimbus Alder",
+          "askingPriceCents": 41000000
+        }
+      }
     }
   }
 }
