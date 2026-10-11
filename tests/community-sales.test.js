@@ -122,6 +122,7 @@ describe("voidPurchaseAgreement", () => {
     assert.equal(service.db.contracts[0].status, "void")
     assert.equal(service.db.lot_reservations[0].status, "released")
     assert.equal(service.db.prospects[0].status, "qualified")
+    assert.equal(service.db.prospects[0].won_at, null)
     assert.equal(service.db.closings[0].status, "cancelled")
     assert.equal(service.db.project_selections[0].locked_at, null)
     assert.equal(service.db.projects[0].client_id, null)
