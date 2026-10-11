@@ -44,6 +44,7 @@ import { getPlanLadder } from "@/lib/services/house-plans"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { createProject } from "@/lib/services/projects"
 import { findContactIdByEmail } from "@/lib/services/party-promotion"
+import { chunk } from "@/lib/utils"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -297,7 +298,7 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
     const ids: string[] = page.map((row) => row.lot_id)
     const askingPrices = new Map(page.map((row) => [row.lot_id as string, row.asking_price_cents == null ? null : Number(row.asking_price_cents)]))
     const { data: lots, error: lotsError } = ids.length
-      ? await context.supabase.from("lots").select(LOT_INVENTORY_SELECT).eq("org_id", context.orgId).in("id", ids)
+      ? await readByIds(ids, (slice) => context.supabase.from("lots").select(LOT_INVENTORY_SELECT).eq("org_id", context.orgId).in("id", slice))
       : { data: [], error: null }
     if (lotsError) throw new Error(`Failed to load spec inventory: ${lotsError.message}`)
     const byId = new Map((lots ?? []).map((lot) => [lot.id, lot]))
@@ -314,6 +315,18 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
   return { lots: mapped, truncated: more, total, nextOffset: more ? offset : null }
 }
 
+// A page of lots names up to 500 ids; one `.in()` filter that long overflows the
+// request URL, so id lookups read in slices and come back as one result.
+const ID_SLICE = 100
+async function readByIds<Row>(
+  ids: string[],
+  read: (slice: string[]) => PromiseLike<{ data: Row[] | null; error: { message: string } | null }>,
+): Promise<{ data: Row[]; error: { message: string } | null }> {
+  const results = await Promise.all(chunk(ids, ID_SLICE).map((slice) => read(slice)))
+  const failed = results.find((result) => result.error)
+  return { data: results.flatMap((result) => result.data ?? []), error: failed?.error ?? null }
+}
+
 type SpecInventoryLot = Awaited<ReturnType<typeof mapInventoryRows>>[number]
 
 /** Takes held and sold lots off a batch and prices what is left. */
@@ -321,8 +334,8 @@ async function availableInventory(context: OrgContext, lots: any[], askingPrices
   const lotIds = lots.map((lot: any) => lot.id)
   const projectIds = lots.map((lot: any) => lot.project_id).filter(Boolean)
   const [{ data: reservations }, { data: agreements }] = await Promise.all([
-    lotIds.length ? context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", lotIds).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()) : Promise.resolve({ data: [] }),
-    projectIds.length ? context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", projectIds).eq("contract_type", "purchase_agreement").eq("status", "active") : Promise.resolve({ data: [] }),
+    readByIds(lotIds, (slice) => context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", slice).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter())),
+    readByIds(projectIds, (slice) => context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", slice).eq("contract_type", "purchase_agreement").eq("status", "active")),
   ])
   const reserved = new Set((reservations ?? []).map((row: any) => row.lot_id))
   const sold = new Set((agreements ?? []).map((row: any) => row.project_id))
@@ -333,9 +346,8 @@ async function availableInventory(context: OrgContext, lots: any[], askingPrices
 
 async function mapInventoryRows(context: OrgContext, availableLots: any[], askingPrices: Map<string, number | null>) {
   const availableProjectIds = availableLots.map((lot: any) => lot.project_id).filter(Boolean) as string[]
-  const { data: completions } = availableProjectIds.length
-    ? await context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", availableProjectIds).not("books_inventory_completed_on", "is", null)
-    : { data: [] }
+  const { data: completions } = await readByIds(availableProjectIds, (slice) =>
+    context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", slice).not("books_inventory_completed_on", "is", null))
   const completedOnByProject = new Map((completions ?? []).map((row: any) => [row.project_id as string, row.books_inventory_completed_on as string]))
   return availableLots.map((lot: any) => ({
     lotId: lot.id,
@@ -424,8 +436,8 @@ export async function listSellableLots(communityId: string, search?: string, org
   const lotIds = (lots ?? []).map((lot: any) => lot.id)
   const projectIds = (lots ?? []).map((lot: any) => lot.project_id).filter(Boolean)
   const [{ data: reservations }, { data: agreements }] = await Promise.all([
-    lotIds.length ? context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", lotIds).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()) : Promise.resolve({ data: [] }),
-    projectIds.length ? context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", projectIds).eq("contract_type", "purchase_agreement").eq("status", "active") : Promise.resolve({ data: [] }),
+    readByIds(lotIds, (slice) => context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", slice).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter())),
+    readByIds(projectIds, (slice) => context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", slice).eq("contract_type", "purchase_agreement").eq("status", "active")),
   ])
   const reserved = new Set((reservations ?? []).map((row: any) => row.lot_id))
   const sold = new Set((agreements ?? []).map((row: any) => row.project_id))
