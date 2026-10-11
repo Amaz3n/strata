@@ -103,7 +103,7 @@ export const communityPlanPriceSchema = z.object({
 export const specAskingPriceSchema = z.object({
   lotId: z.string().uuid(),
   askingPriceCents: z.number().int().min(1).max(100_000_000_00).nullable(),
-  expectedAskingPriceCents: z.number().int().min(0).max(100_000_000_00),
+  expectedAskingPriceCents: z.number().int().min(0).max(100_000_000_00).nullable(),
   reason: z.string().trim().min(10, "Say why the price is moving (at least 10 characters).").max(1000),
 })
 export type SpecAskingPriceInput = z.infer<typeof specAskingPriceSchema>

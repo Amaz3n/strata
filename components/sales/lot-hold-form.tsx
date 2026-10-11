@@ -45,7 +45,7 @@ export interface HoldLot {
   communityId: string
   communityName: string | null
   planLabel: string | null
-  askingPriceCents: number
+  askingPriceCents: number | null
 }
 
 const DEFAULT_HOLD_DAYS = 3
@@ -160,11 +160,13 @@ export function LotHoldForm({ buyer, communities, lot = null, cancelLabel = "Can
             </p>
             <p className="mt-0.5 flex items-baseline justify-between gap-3 text-xs text-muted-foreground">
               <span className="truncate">{lot.planLabel ?? "No plan assigned"}</span>
-              {lot.askingPriceCents > 0 ? (
+              {lot.askingPriceCents != null ? (
                 <span className="shrink-0 font-medium text-foreground tabular-nums">
                   {formatMoneyCents(lot.askingPriceCents)}
                 </span>
-              ) : null}
+              ) : (
+                <span className="shrink-0">Unpriced</span>
+              )}
             </p>
           </div>
         ) : (

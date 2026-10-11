@@ -87,13 +87,33 @@ export async function getVarianceAnalysis({
     const projectIds = [...new Set([...projects.rows.map((row) => row.id), ...lots.rows.map((row) => row.project_id)])]
     return getScopedVarianceAnalysis({ supabase: createServiceSupabaseClient(), orgId: resolvedOrgId, projectIds, divisionIds: scope.divisionIds, startDate, endDate })
   }
-  // The function is security invoker and resolves each home's superintendent through `roles`, a catalog
-  // only the service role can read. It filters on `p_org_id`, so the privileged client is used only for a
-  // caller who is authorized and not limited to the homes they are a member of (RLS is that limit).
   const { projectMembershipRequired } = await getProjectReadScopeForUser({ orgId: resolvedOrgId, userId })
-  const reader = projectMembershipRequired ? supabase : createServiceSupabaseClient()
-  const aggregate = await readAllRows<Record<string, unknown>>((from, to) => reader.rpc("get_variance_analysis", {
-    p_org_id: resolvedOrgId, p_start_date: startDate, p_end_date: endDate,
+  if (projectMembershipRequired) {
+    // RLS limits a member to their own homes, and the function resolves superintendents through `roles`,
+    // which only the service role can read, so it would name none of them. The homes are found as the
+    // member (RLS is the limit); the facts and superintendent labels for exactly those homes are then read
+    // with the service client and aggregated here, over the same exclusive timestamp window as the function.
+    const range = utcReportDateRange(startDate, endDate)
+    const visible = await readAllRows<{ id: string; project_id: string }>((from, to) => supabase.from("commitment_change_orders").select("id,project_id")
+      .eq("org_id", resolvedOrgId).not("reason_code_id", "is", null).in("status", COUNTED_STATUSES)
+      .gte("approved_at", range.startInclusive).lt("approved_at", range.endExclusive)
+      .order("id").range(from, to),
+    { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to scope variance analysis" })
+    if (visible.truncated) throw new Error("Variance analysis exceeds the supported project scope; narrow the report dates")
+    const memberProjectIds = [...new Set(visible.rows.map((row) => row.project_id))]
+    if (!memberProjectIds.length) return { ...emptyVariance(), scoped: true }
+    const serviceClient = createServiceSupabaseClient()
+    const [facts, budgetByProject] = await Promise.all([
+      loadVarianceFacts({ supabase: serviceClient, orgId: resolvedOrgId, projectIds: memberProjectIds, startDate, endDate }),
+      loadLatestBudgets({ supabase: serviceClient, orgId: resolvedOrgId, projectIds: memberProjectIds }),
+    ])
+    return { ...summarize(aggregateVarianceFacts(facts, budgetByProject)), scoped: true }
+  }
+  // Org-wide: the privileged client is used only for a caller who is authorized and not limited to the
+  // homes they are a member of. The window is the exclusive timestamp range the scoped path reads.
+  const range = utcReportDateRange(startDate, endDate)
+  const aggregate = await readAllRows<Record<string, unknown>>((from, to) => createServiceSupabaseClient().rpc("get_variance_analysis", {
+    p_org_id: resolvedOrgId, p_start: range.startInclusive, p_end_exclusive: range.endExclusive,
   }).order("dimension").order("dimension_id").order("dimension_label").range(from, to),
   { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to load variance analysis" })
   if (aggregate.truncated) throw new Error("Variance analysis exceeds the supported group count; narrow the report scope")

@@ -17,6 +17,7 @@ import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-c
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
 import { projectJournal } from "@/lib/services/books/projector"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
+import { resolvePlanBasePrice } from "@/lib/sales/plan-offering"
 import { specInventoryAge } from "@/lib/sales/spec-inventory"
 import { z } from "zod"
 import type { CommunityPlanAvailabilityDto } from "@/lib/services/house-plans"
@@ -115,18 +116,28 @@ function invoiceUnitCostFromCents(amountCents: number) {
   return amountCents / 100
 }
 
-async function deriveLotAskingPrice(supabase: any, orgId: string, lot: any) {
+/** The plan-sheet price plus premium and structural options, or null when the sheet has no price for the home's plan. */
+function specAskingPrice(lot: any, sheet: any[], structuralByProject: Map<string, number>, onDate: string): number | null {
   if (lot.asking_price_override_cents != null) return Number(lot.asking_price_override_cents)
-  let basePrice = 0
-  if (lot.house_plan_id) {
-    let query = supabase.from("community_plan_availability").select("base_price_cents").eq("org_id", orgId).eq("community_id", lot.community_id).eq("house_plan_id", lot.house_plan_id).eq("is_available", true)
-    query = lot.house_plan_elevation_id ? query.eq("elevation_id", lot.house_plan_elevation_id) : query.is("elevation_id", null)
-    const { data } = await query.maybeSingle()
-    basePrice = Number(data?.base_price_cents ?? 0)
-  }
+  if (!lot.house_plan_id) return null
+  const base = resolvePlanBasePrice(
+    sheet.filter((row) => row.community_id === lot.community_id && row.house_plan_id === lot.house_plan_id),
+    { elevationId: lot.house_plan_elevation_id ?? null, onDate },
+  )
+  return base == null ? null : base + Number(lot.premium_cents ?? 0) + (structuralByProject.get(lot.project_id) ?? 0)
+}
+
+async function deriveLotAskingPrice(supabase: any, orgId: string, lot: any): Promise<number | null> {
+  if (lot.asking_price_override_cents != null) return Number(lot.asking_price_override_cents)
+  if (!lot.house_plan_id) return null
+  const { data: sheet, error: sheetError } = await supabase.from("community_plan_availability").select("is_available, elevation_id, effective_start, effective_end, base_price_cents").eq("org_id", orgId).eq("community_id", lot.community_id).eq("house_plan_id", lot.house_plan_id).limit(50)
+  if (sheetError) throw new Error(`Failed to load the community price sheet: ${sheetError.message}`)
+  const basePrice = resolvePlanBasePrice(sheet ?? [], { elevationId: lot.house_plan_elevation_id ?? null, onDate: new Date().toISOString().slice(0, 10) })
+  if (basePrice == null) return null
   let structuralOptions = 0
   if (lot.project_id) {
-    const { data } = await supabase.from("project_selections").select("price_cents_snapshot, option:selection_options!project_selections_selected_option_id_fkey(option_scope)").eq("org_id", orgId).eq("project_id", lot.project_id).in("status", ["confirmed", "ordered", "received"])
+    const { data, error } = await supabase.from("project_selections").select("price_cents_snapshot, option:selection_options!project_selections_selected_option_id_fkey(option_scope)").eq("org_id", orgId).eq("project_id", lot.project_id).in("status", ["confirmed", "ordered", "received"])
+    if (error) throw new Error(`Failed to load the home's structural options: ${error.message}`)
     structuralOptions = (data ?? []).reduce((sum: number, row: any) => {
       const option = Array.isArray(row.option) ? row.option[0] : row.option
       return sum + (option?.option_scope === "structural" ? Number(row.price_cents_snapshot ?? 0) : 0)
@@ -146,7 +157,7 @@ function reservationDto(row: any) {
     coBuyerContactId: row.co_buyer_contact_id,
     status: row.status,
     expiresAt: row.expires_at,
-    askingPriceCents: Number(row.asking_price_cents ?? 0),
+    askingPriceCents: row.asking_price_cents == null ? null : Number(row.asking_price_cents),
     depositRequiredCents: Number(row.deposit_required_cents ?? 0),
     depositInvoiceId: row.deposit_invoice_id,
     contractId: row.contract_id,
@@ -259,11 +270,14 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
   const communityIds = Array.from(new Set(availableLots.map((lot: any) => lot.community_id))) as string[]
   const planIds = Array.from(new Set(availableLots.map((lot: any) => lot.house_plan_id).filter(Boolean))) as string[]
   const availableProjectIds = availableLots.map((lot: any) => lot.project_id).filter(Boolean) as string[]
-  const [{ data: availability }, { data: selections }, { data: completions }] = await Promise.all([
-    communityIds.length && planIds.length ? context.supabase.from("community_plan_availability").select("community_id, house_plan_id, elevation_id, base_price_cents").eq("org_id", context.orgId).in("community_id", communityIds).in("house_plan_id", planIds).eq("is_available", true) : Promise.resolve({ data: [] }),
-    availableProjectIds.length ? context.supabase.from("project_selections").select("project_id, price_cents_snapshot, option:selection_options!project_selections_selected_option_id_fkey(option_scope)").eq("org_id", context.orgId).in("project_id", availableProjectIds).in("status", ["confirmed", "ordered", "received"]) : Promise.resolve({ data: [] }),
+  const [{ data: availability, error: availabilityError }, { data: selections, error: selectionsError }, { data: completions }] = await Promise.all([
+    communityIds.length && planIds.length ? context.supabase.from("community_plan_availability").select("community_id, house_plan_id, elevation_id, base_price_cents, is_available, effective_start, effective_end").eq("org_id", context.orgId).in("community_id", communityIds).in("house_plan_id", planIds).limit(2000) : Promise.resolve({ data: [], error: null }),
+    availableProjectIds.length ? context.supabase.from("project_selections").select("project_id, price_cents_snapshot, option:selection_options!project_selections_selected_option_id_fkey(option_scope)").eq("org_id", context.orgId).in("project_id", availableProjectIds).in("status", ["confirmed", "ordered", "received"]) : Promise.resolve({ data: [], error: null }),
     availableProjectIds.length ? context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", availableProjectIds).not("books_inventory_completed_on", "is", null) : Promise.resolve({ data: [] }),
   ])
+  if (availabilityError) throw new Error(`Failed to load community prices: ${availabilityError.message}`)
+  if (selectionsError) throw new Error(`Failed to load structural options: ${selectionsError.message}`)
+  const today = new Date().toISOString().slice(0, 10)
   const completedOnByProject = new Map((completions ?? []).map((row: any) => [row.project_id as string, row.books_inventory_completed_on as string]))
   const structuralByProject = new Map<string, number>()
   for (const row of selections ?? []) {
@@ -285,7 +299,7 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
     status: lot.status,
     startedAt: lot.project?.start_date ?? null,
     ...specInventoryAge(lot.project, completedOnByProject.get(lot.project_id)),
-    askingPriceCents: Number(lot.asking_price_override_cents ?? ((availability ?? []).find((row: any) => row.community_id === lot.community_id && row.house_plan_id === lot.house_plan_id && (row.elevation_id ?? null) === (lot.house_plan_elevation_id ?? null))?.base_price_cents ?? 0) + Number(lot.premium_cents ?? 0) + (structuralByProject.get(lot.project_id) ?? 0)),
+    askingPriceCents: specAskingPrice(lot, availability ?? [], structuralByProject, today),
     premiumCents: Number(lot.premium_cents ?? 0),
   }))
   return { lots: mapped, truncated: (count ?? 0) > limit }
@@ -401,7 +415,7 @@ export async function listProspectReservations(orgId?: string) {
     id: row.id as string,
     prospectId: row.prospect_id as string,
     status: row.status as "hold" | "reserved" | "converted",
-    askingPriceCents: Number(row.asking_price_cents ?? 0),
+    askingPriceCents: row.asking_price_cents == null ? null : Number(row.asking_price_cents),
     expiresAt: (row.expires_at ?? null) as string | null,
     communityId: row.community_id as string,
     communityName: ((Array.isArray(row.community) ? row.community[0]?.name : row.community?.name) ?? null) as string | null,

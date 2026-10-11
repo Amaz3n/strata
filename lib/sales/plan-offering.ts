@@ -17,17 +17,39 @@ export type PlanOfferingRow = {
   effective_end: string | null
 }
 
-export function isPlanOffered(
-  rows: readonly PlanOfferingRow[],
-  input: { elevationId: string | null; onDate: string },
-): boolean {
-  return rows.some(
+function offeredRows<Row extends PlanOfferingRow>(rows: readonly Row[], input: { elevationId: string | null; onDate: string }): Row[] {
+  return rows.filter(
     (row) =>
       row.is_available &&
       (row.elevation_id === null || row.elevation_id === input.elevationId) &&
       (!row.effective_start || row.effective_start <= input.onDate) &&
       (!row.effective_end || row.effective_end >= input.onDate),
   )
+}
+
+export function isPlanOffered(
+  rows: readonly PlanOfferingRow[],
+  input: { elevationId: string | null; onDate: string },
+): boolean {
+  return offeredRows(rows, input).length > 0
+}
+
+/**
+ * The base price the community's sheet quotes for this plan and elevation on a
+ * date, or null when the sheet does not price it. Same offering rule as
+ * `isPlanOffered`; an elevation's own row outranks the plan-wide row. Two
+ * offered rows at the same specificity are an ambiguous sheet and throw: a
+ * price is money, so it is never picked by order.
+ */
+export function resolvePlanBasePrice(
+  rows: readonly (PlanOfferingRow & { base_price_cents: number })[],
+  input: { elevationId: string | null; onDate: string },
+): number | null {
+  const offered = offeredRows(rows, input)
+  const exact = offered.filter((row) => row.elevation_id !== null)
+  const tier = exact.length ? exact : offered
+  if (tier.length > 1) throw new Error("Multiple community prices match this plan and elevation; reconcile the price sheet before pricing the home")
+  return tier.length ? Number(tier[0].base_price_cents) : null
 }
 
 export const MIN_OFFERING_OVERRIDE_REASON_LENGTH = 10

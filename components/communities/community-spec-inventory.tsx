@@ -13,7 +13,7 @@ export interface SpecRow {
   baths: number | null
   sqft: number | null
   agingDays: number
-  askingPriceCents: number
+  askingPriceCents: number | null
 }
 
 /** Past this a standing spec is a pricing problem, not an inventory position. */
@@ -41,7 +41,7 @@ function ageTone(days: number) {
 export function CommunitySpecInventory({ rows, communityId, canManage }: { rows: SpecRow[]; communityId: string; canManage: boolean }) {
   const sorted = [...rows].sort((a, b) => b.agingDays - a.agingDays)
   const aging = sorted.filter((row) => row.agingDays >= AGING_ALERT_DAYS).length
-  const standingValue = sorted.reduce((sum, row) => sum + row.askingPriceCents, 0)
+  const standingValue = sorted.reduce((sum, row) => sum + (row.askingPriceCents ?? 0), 0)
 
   return (
     <section className="border">
@@ -106,17 +106,17 @@ export function CommunitySpecInventory({ rows, communityId, canManage }: { rows:
                     {row.sqft?.toLocaleString() ?? "—"}
                   </TableCell>
                   <TableCell className="text-right font-medium tabular-nums">
-                    {row.askingPriceCents > 0 ? money.format(row.askingPriceCents / 100) : "—"}
+                    {row.askingPriceCents != null ? money.format(row.askingPriceCents / 100) : <span className="font-normal text-muted-foreground">Unpriced</span>}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {row.sqft && row.askingPriceCents > 0 ? `$${Math.round(row.askingPriceCents / 100 / row.sqft)}` : "—"}
+                    {row.sqft && row.askingPriceCents ? `$${Math.round(row.askingPriceCents / 100 / row.sqft)}` : "—"}
                   </TableCell>
                   <TableCell className={cn("text-right tabular-nums", ageTone(row.agingDays))}>
                     {row.agingDays}d
                   </TableCell>
                   {canManage ? (
                     <TableCell className="text-right">
-                      {row.askingPriceCents > 0 ? (
+                      {row.askingPriceCents != null ? (
                         <SpecRepriceDialog
                           communityId={communityId}
                           lotId={row.lotId}

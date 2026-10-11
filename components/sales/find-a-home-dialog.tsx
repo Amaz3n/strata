@@ -124,7 +124,7 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
         if (minBeds > 0 && (home.beds ?? 0) < minBeds) return false
         if (priceBand.value !== "any") {
           // An unpriced lot cannot satisfy a budget question, so a band excludes it.
-          if (home.askingPriceCents <= 0) return false
+          if (home.askingPriceCents == null) return false
           if (home.askingPriceCents < priceBand.min || home.askingPriceCents >= priceBand.max) return false
         }
         if (needle) {
@@ -136,8 +136,8 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
       .sort((a, b) => {
         if (sort === "lot") return a.lotLabel.localeCompare(b.lotLabel, undefined, { numeric: true })
         if (sort === "aging") return b.agingDays - a.agingDays
-        const left = a.askingPriceCents || Number.POSITIVE_INFINITY
-        const right = b.askingPriceCents || Number.POSITIVE_INFINITY
+        const left = a.askingPriceCents ?? Number.POSITIVE_INFINITY
+        const right = b.askingPriceCents ?? Number.POSITIVE_INFINITY
         return sort === "price_desc" ? right - left : left - right
       })
   }, [homes, search, availability, beds, band, sort])
@@ -313,7 +313,7 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
                             {home.isSpec ? `Spec · ${home.agingDays}d` : "To be built"}
                           </span>
                           <span className="text-right font-medium tabular-nums">
-                            {home.askingPriceCents > 0 ? (
+                            {home.askingPriceCents != null ? (
                               money.format(home.askingPriceCents / 100)
                             ) : (
                               <span className="font-normal text-muted-foreground">—</span>

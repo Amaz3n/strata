@@ -138,7 +138,7 @@ function LegacyReserveLotDialog({
               />
             </div>
             <p id="reserve-deposit-help" className="text-[11px] text-muted-foreground">
-              {target.askingPriceCents
+              {target.askingPriceCents != null
                 ? `Asking ${formatMoneyCents(target.askingPriceCents)}. `
                 : ""}
               {deposit.trim() !== "" && !depositValid ? `Enter a deposit from zero to ${formatMoneyCents(MAX_RESERVATION_DEPOSIT_CENTS)}.` : "Zero invoices nothing and still reserves the lot."}

@@ -235,6 +235,51 @@ describe("listSpecInventoryPage standing-spec age", () => {
   })
 })
 
+describe("spec asking price from the community sheet", () => {
+  const PLAN = id(70)
+  const ELEVATION = id(71)
+  const today = new Date().toISOString().slice(0, 10)
+  const day = (offset) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
+  const lot = { id: id(72), org_id: ORG, community_id: COMMUNITY, lot_number: "7", status: "started", premium_cents: 10_000_00, asking_price_override_cents: null, project_id: id(73), house_plan_id: PLAN, house_plan_elevation_id: ELEVATION, project: { id: id(73), name: "Home", start_date: day(-30), status: "active" }, plan: null, community: { name: "Oak Ridge" } }
+  const offer = (n, patch) => ({ id: id(80 + n), org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, base_price_cents: 400_000_00, effective_start: null, effective_end: null, ...patch })
+  const priced = async (sheet) => {
+    const service = createServiceHarness({
+      permissions: ["sales.read"],
+      tables: { lots: [lot], lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], community_plan_availability: sheet, project_selections: [], project_financial_settings: [] },
+    })
+    const { lots } = await service.run(() => listSpecInventoryPage({ communityId: COMMUNITY }))
+    return lots[0].askingPriceCents
+  }
+
+  test("an elevation's own price outranks the plan-wide price and the premium is added", async () => {
+    assert.equal(await priced([offer(1, {}), offer(2, { elevation_id: ELEVATION, base_price_cents: 420_000_00 })]), 430_000_00)
+  })
+
+  test("a price outside its effective dates does not price the home", async () => {
+    assert.equal(await priced([offer(1, { effective_end: day(-1) })]), null)
+    assert.equal(await priced([offer(1, { effective_start: day(1) })]), null)
+    assert.equal(await priced([offer(1, { effective_start: today, effective_end: today })]), 410_000_00)
+  })
+
+  test("a home with no sheet price is unpriced rather than zero", async () => {
+    assert.equal(await priced([]), null)
+  })
+
+  test("two prices for the same plan and elevation refuse to guess", async () => {
+    await assert.rejects(priced([offer(1, {}), offer(2, {})]), /Multiple community prices/)
+  })
+
+  test("an unreadable price sheet is an error, not a free home", async () => {
+    const service = createServiceHarness({
+      permissions: ["sales.manage"],
+      tables: { lots: [{ ...lot, updated_at: "2026-10-01T00:00:00+00:00", metadata: {} }], community_plan_availability: [offer(1, {})], project_selections: [], lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }] },
+    })
+    service.tamper("community_plan_availability", replies.error("db down"))
+    await assert.rejects(service.run(() => setSpecAskingPrice({ lotId: lot.id, askingPriceCents: 395_000_00, expectedAskingPriceCents: 410_000_00, reason: "Standing 110 days; match the comparable" })), /db down/)
+    assert.deepEqual(service.writes(), [])
+  })
+})
+
 describe("executePurchaseAgreementFromEnvelopeExecution", () => {
   const LOT = id(61)
   const GARAGE = id(62)
@@ -329,7 +374,7 @@ describe("createLotHoldFromProspect", () => {
 
     const [row] = service.db.lot_reservations
     assert.deepEqual([row.status, row.buyer_contact_id, row.prospect_id, row.lot_id, row.expires_at], ["hold", PROMOTED, PROSPECT, LOT, expiresAt])
-    assert.equal(row.asking_price_cents, 5_000_00)
+    assert.equal(row.asking_price_cents, null) // a lot with no priced plan holds unpriced, not at its premium alone
     assert.equal(reservation.id, row.id)
     assert.deepEqual(service.events.map((event) => event.eventType), ["lot_hold_created"])
     assert.deepEqual(service.audits.map((audit) => [audit.entityType, audit.entityId]), [["lot_reservation", row.id]])
