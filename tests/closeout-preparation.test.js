@@ -167,3 +167,18 @@ test('partial preparation keeps existing requirements visible while protecting u
   assert.match(html, /Prepare checklist<\/button>/)
   assert.doesNotMatch(html, /Add requirement/)
 })
+test('close readiness blocks on a closed punch item that required verification and has none', async () => {
+  const h = harness()
+  const punch = (id, over) => ({ id, org_id: ORG, project_id: PROJECT, title: id, status: 'closed', verification_required: true, verified_at: null, due_date: null, ...over })
+  h.db.store.punch_items = [
+    punch('unverified'),
+    punch('verified', { verified_at: '2026-10-09T00:00:00Z' }),
+    punch('not-required', { verification_required: false }),
+  ]
+  delete require.cache[require.resolve('../lib/services/project-close-readiness')]
+  const { getProjectCloseReadiness } = require('../lib/services/project-close-readiness')
+  const readiness = await getProjectCloseReadiness(PROJECT)
+  const punchIssues = readiness.sections.flatMap(section => section.issues ?? []).filter(issue => issue.id.startsWith('punch-'))
+  assert.deepEqual(punchIssues.map(issue => issue.id), ['punch-unverified'])
+  assert.match(punchIssues[0].detail, /without verification evidence/)
+})

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { isInspectionLifecycleEnabled, inspectionItemNeedsCorrection, inspectionReviewSource, inspectionCompletionResponseSchema, inspectionLifecycleInputSchema, inspectionLifecycleResponseSchema, inspectionObligationPageSchema } from "@/lib/inspections/lifecycle"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { readAllRowsById } from "@/lib/land/paging"
@@ -684,7 +685,8 @@ export async function completeInspection(inspectionId: string, orgId?: string): 
     if (error) throw new Error(`Unable to complete inspection attempt: ${error.message}`)
     const receipt = inspectionCompletionResponseSchema.parse(data)
     if (receipt.inspectionId !== detail.id) throw new Error("Inspection completion returned another attempt")
-    return getInspection(inspectionId, resolvedOrgId)
+    const recorded = await getInspection(inspectionId, resolvedOrgId)
+    return recorded.result === "fail" ? raiseCorrectiveWorkForFailedItems(recorded, context) : recorded
   }
   const answered = detail.items.filter((item) => item.response !== null && item.response !== "" && item.response !== "n/a")
   const hasDeficiency = detail.items.some(inspectionItemNeedsCorrection)
@@ -694,7 +696,7 @@ export async function completeInspection(inspectionId: string, orgId?: string): 
   if (detail.status === "completed") {
     if (detail.result === "pass" && result !== "pass") throw new Error("Recorded inspection no longer matches its passing checklist; reconcile its evidence before advancing scheduled work")
     await completeInspectionScheduledWork(detail, context)
-    return detail
+    return detail.result === "fail" ? raiseCorrectiveWorkForFailedItems(detail, context) : detail
   }
   const { data, error } = await supabase.from("inspections")
     .update({ status: "completed", result, inspected_at: detail.inspected_at ?? new Date().toISOString() })
@@ -706,7 +708,7 @@ export async function completeInspection(inspectionId: string, orgId?: string): 
     payload: { project_id: detail.project_id, kind: detail.kind, result, deficient_items: detail.items.filter((item) => item.is_deficient).length } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "inspection", entityId: inspectionId, after: data })
   await completeInspectionScheduledWork(completed, context)
-  return completed
+  return result === "fail" ? raiseCorrectiveWorkForFailedItems(completed, context) : completed
 }
 
 /**
@@ -739,18 +741,56 @@ export async function createPunchItemFromInspectionItem(
   if (parent.id !== inspection.id || parent.project_id !== inspection.project_id) throw new Error("Inspection corrective work ancestry changed")
   if (!inspectionItemNeedsCorrection(item)) throw new Error("Corrective punch work requires a deficient inspection item")
 
-  const punchItem = await createPunchItemFromInspection({ supabase, orgId: resolvedOrgId, userId }, inspection.project_id, {
+  return raiseCorrectivePunch(
+    { supabase, orgId: resolvedOrgId, userId },
+    { id: inspection.id, project_id: inspection.project_id, title: inspection.title, location: inspection.location, location_id: inspection.location_id, company_id: parent.company_id },
+    item,
+    { companyId: parsed.company_id ?? null, assignedTo: null, dueDate: parsed.due_date ?? null },
+  )
+}
+
+type CorrectivePunchOwner = { companyId: string | null; assignedTo: string | null; dueDate: string | null }
+
+/**
+ * Corrective work always has an owner: the company chosen for it, else the
+ * company that performed the inspected work, else the named person. Work with
+ * no one responsible for it is refused rather than left to sit unassigned. The
+ * item requires verification, so it closes only on an "after" photo or file.
+ */
+async function raiseCorrectivePunch(
+  context: { supabase: SupabaseClient; orgId: string; userId: string },
+  inspection: { id: string; project_id: string; title: string; location: string | null; location_id: string | null; company_id: string | null },
+  item: InspectionItem,
+  owner: CorrectivePunchOwner,
+): Promise<InspectionItem> {
+  const { supabase, orgId, userId } = context
+  const companyId = owner.companyId ?? (owner.assignedTo ? null : inspection.company_id)
+  if (!companyId && !owner.assignedTo) throw new Error("Choose the company or person responsible for this corrective work")
+
+  const punchItem = await createPunchItemFromInspection(context, inspection.project_id, {
     title: item.prompt,
     description: [item.note, `From inspection: ${inspection.title}`].filter(Boolean).join("\n"),
     location: inspection.location ?? null,
     location_id: inspection.location_id ?? null,
-    due_date: parsed.due_date ?? null,
-    assigned_company_id: parsed.company_id ?? null,
+    due_date: owner.dueDate,
+    assigned_company_id: companyId,
+    assigned_to: owner.assignedTo,
+    verification_required: true,
   }, inspection.id)
+
+  const { data: updated, error: updateError } = await supabase
+    .from("inspection_items")
+    .update({ punch_item_id: punchItem.id })
+    .eq("org_id", orgId)
+    .eq("id", item.id)
+    .is("punch_item_id", null)
+    .select(ITEM_SELECT)
+    .single()
+  if (updateError || !updated) throw new Error(`Punch item created but link failed: ${updateError?.message ?? "Inspection item already has a punch item"}`)
 
   if (item.photo_file_id) {
     const { error: linkError } = await supabase.from("file_links").insert({
-      org_id: resolvedOrgId,
+      org_id: orgId,
       project_id: inspection.project_id,
       file_id: item.photo_file_id,
       entity_type: "punch_item",
@@ -758,19 +798,32 @@ export async function createPunchItemFromInspectionItem(
       link_role: "before",
       created_by: userId,
     })
-    if (linkError) console.warn("Failed to link inspection photo to punch item", linkError.message)
+    if (linkError) throw new Error(`Punch item created but the inspection photo could not be attached: ${linkError.message}`)
   }
-
-  const { data: updated, error: updateError } = await supabase
-    .from("inspection_items")
-    .update({ punch_item_id: punchItem.id })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", inspectionItemId)
-    .select(ITEM_SELECT)
-    .single()
-  if (updateError || !updated) throw new Error(`Punch item created but link failed: ${updateError?.message}`)
-
   return updated as InspectionItem
+}
+
+/**
+ * A failed checklist item gets its corrective punch work the moment the
+ * inspection is recorded, not when someone remembers to raise it. Idempotent:
+ * items that already have corrective work are left alone, so a retry after a
+ * partial failure only creates what is missing.
+ */
+async function raiseCorrectiveWorkForFailedItems(
+  detail: InspectionDetail,
+  context: Awaited<ReturnType<typeof requireOrgContext>>,
+): Promise<InspectionDetail> {
+  const pending = detail.items.filter((item) => inspectionItemNeedsCorrection(item) && !item.punch_item_id)
+  if (!pending.length) return detail
+  const raised = new Map<string, InspectionItem>()
+  for (const item of pending) {
+    try {
+      raised.set(item.id, await raiseCorrectivePunch(context, detail, item, { companyId: detail.company_id, assignedTo: detail.company_id ? null : context.userId, dueDate: null }))
+    } catch (error) {
+      throw new Error(`Inspection is recorded; retry completing it to raise the remaining corrective work: ${error instanceof Error ? error.message : "Unknown error"}`)
+    }
+  }
+  return { ...detail, items: detail.items.map((item) => raised.get(item.id) ?? item) }
 }
 
 /** Spawns an observation from a deficient checklist item (Part 2 of the doc). */

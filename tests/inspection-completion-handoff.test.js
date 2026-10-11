@@ -44,7 +44,7 @@ function harness({ items = [{ id: ITEM, response: 'yes', is_deficient: false, so
     throw new Error(`Unexpected table ${table}`)
   } } })
   const context = { supabase, orgId: ORG, userId: ACTOR }
-  const bindings = { inspectionItemNeedsCorrection: require('../lib/inspections/lifecycle').inspectionItemNeedsCorrection, isInspectionLifecycleEnabled: () => false, inspectionItemResponseSchema, requireOrgContext: async () => context, requirePermission: async () => {}, requireAuthorization: async input => { gates.push(input); if (input.permission === denied) throw new Error('Home denied') }, readAllRowsById, mapInspection: row => row, INSPECTION_SELECT: '*', ITEM_SELECT: '*', recordEvent: async e => events.push(e), recordAudit: async e => events.push(e) }
+  const bindings = { raiseCorrectiveWorkForFailedItems: async detail => detail, inspectionItemNeedsCorrection: require('../lib/inspections/lifecycle').inspectionItemNeedsCorrection, isInspectionLifecycleEnabled: () => false, inspectionItemResponseSchema, requireOrgContext: async () => context, requirePermission: async () => {}, requireAuthorization: async input => { gates.push(input); if (input.permission === denied) throw new Error('Home denied') }, readAllRowsById, mapInspection: row => row, INSPECTION_SELECT: '*', ITEM_SELECT: '*', recordEvent: async e => events.push(e), recordAudit: async e => events.push(e) }
   const source = ts.createSourceFile('inspections.ts', fs.readFileSync('lib/services/inspections.ts', 'utf8'), ts.ScriptTarget.Latest, true)
   const names = ['getInspection', 'updateInspectionItem', 'completeInspectionScheduledWork', 'completeInspection']
   const declarations = source.statements.filter(n => ts.isFunctionDeclaration(n) && names.includes(n.name?.text))
