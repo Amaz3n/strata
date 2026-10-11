@@ -134,6 +134,7 @@ import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { createProjectPunchItem } from "@/lib/services/punch-lists"
 import type { DraftRevisionSheetPreview, UploadReviewSheet } from "./types"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -1343,61 +1344,31 @@ export async function createPunchItemFromDrawingAction(input: {
   attachmentFileId?: string | null
 }) {
   return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-
-      const payload = {
-        org_id: orgId,
-        project_id: input.projectId,
+      // The punch service owns authorization (punch.write on the project), validation,
+      // event and audit; the drawing snapshot rides file_links like any attachment.
+      const item = await createProjectPunchItem(input.projectId, {
         title: input.title,
         description: input.description ?? null,
         location: input.location ?? null,
         severity: input.severity ?? null,
-        status: "open",
-      }
+      })
 
-      const { data, error } = await supabase
-        .from("punch_items")
-        .insert(payload)
-        .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at")
-        .single()
-
-      if (error || !data) {
-        throw new Error(`Failed to create punch item: ${error?.message}`)
-      }
-
-      // Punch items have no first-class attachment column, so the drawing
-      // snapshot rides the normal file_links path like any other attachment.
       if (input.attachmentFileId) {
-        await supabase.from("file_links").insert({
+        const { supabase, orgId } = await requireOrgContext()
+        const { error } = await supabase.from("file_links").insert({
           org_id: orgId,
           file_id: input.attachmentFileId,
           project_id: input.projectId,
           entity_type: "punch_item",
-          entity_id: data.id,
+          entity_id: item.id,
           link_role: "drawing_snapshot",
         })
+        if (error) throw new Error(`Punch item created, but attaching the drawing snapshot failed: ${error.message}`)
       }
-
-      await recordEvent({
-        orgId,
-        eventType: "punch_item_created",
-        entityType: "punch_item",
-        entityId: data.id,
-        payload: { title: input.title, project_id: input.projectId },
-      })
-
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "insert",
-        entityType: "punch_item",
-        entityId: data.id,
-        after: payload as any,
-      })
 
       revalidatePath(`/projects/${input.projectId}`)
 
-      return data
+      return item
   })
 }
 
