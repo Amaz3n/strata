@@ -66,6 +66,18 @@ export function shouldShowCustomBuildNavigation(
   return orgTier !== "production" || hasActiveNonProductionProjects
 }
 
+/**
+ * Safety is a commercial-posture module (see `safety` in lib/project-modules.ts).
+ * A commercial-tier org keeps it; so does any other org that runs an active
+ * commercial job, because the project is the unit of posture, not the tier.
+ */
+export function shouldShowSafetyNavigation(
+  orgTier: ProductTier,
+  hasActiveCommercialProjects: boolean,
+): boolean {
+  return orgTier === "commercial" || hasActiveCommercialProjects
+}
+
 export function isProductionProjectPosture(posture: ProjectPosture): boolean {
   return posture === "production"
 }

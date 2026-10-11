@@ -26,7 +26,7 @@ import {
 import { getAppChromeContext } from "@/lib/services/app-chrome"
 import { getReleaseNotesSummary } from "@/lib/services/release-notes"
 import { getNavigationBadgeCounts } from "@/lib/services/navigation-badges"
-import { shouldShowCustomBuildNavigation, shouldShowProductionOrgNavigation } from "@/lib/product-tier"
+import { shouldShowCustomBuildNavigation, shouldShowProductionOrgNavigation, shouldShowSafetyNavigation } from "@/lib/product-tier"
 
 // This layout is the contract for every authenticated destination: a click
 // must be able to render app chrome immediately while request data streams.
@@ -105,12 +105,14 @@ async function AuthenticatedAppChrome({
     projects,
     hasProductionProjects,
     hasActiveNonProductionProjects,
+    hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
   } = await getAppChromeContext()
 
   const showProductionNavigation = shouldShowProductionOrgNavigation(productTier, hasProductionProjects)
   const showCustomBuildNavigation = shouldShowCustomBuildNavigation(productTier, hasActiveNonProductionProjects)
+  const showSafetyNavigation = shouldShowSafetyNavigation(productTier, hasActiveCommercialProjects)
   const showPurchasingNavigation = showProductionNavigation || hasPriceAgreements
 
   if (access.locked) {
@@ -155,6 +157,7 @@ async function AuthenticatedAppChrome({
               showProductionNavigation={showProductionNavigation}
               showPurchasingNavigation={showPurchasingNavigation}
               showPipelineNavigation={showCustomBuildNavigation}
+              showSafetyNavigation={showSafetyNavigation}
               booksEnabled={booksEnabled}
             />
             <MobileActionProvider>

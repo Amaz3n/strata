@@ -13,7 +13,7 @@ import { getCurrentPlatformAccess, type PlatformAccessState } from "@/lib/servic
 import { getPlatformSessionState, type PlatformSessionState } from "@/lib/services/platform-session"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
-import { orgHasActiveNonProductionProjects, orgHasProductionProjects } from "@/lib/services/production-desk-scope"
+import { orgHasActiveCommercialProjects, orgHasActiveNonProductionProjects, orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 import { listProjectNavigationItemsWithClient } from "@/lib/services/projects"
 import { getAuthContext } from "@/lib/auth/context"
 import { getCurrentUserProfile } from "@/lib/services/users"
@@ -32,6 +32,7 @@ export interface AppChromeContext {
   projects: ProjectNavigationItem[]
   hasProductionProjects: boolean
   hasActiveNonProductionProjects: boolean
+  hasActiveCommercialProjects: boolean
   hasPriceAgreements: boolean
   booksEnabled: boolean
 }
@@ -96,6 +97,7 @@ const SIGNED_OUT_CHROME: AppChromeContext = {
   projects: [],
   hasProductionProjects: false,
   hasActiveNonProductionProjects: false,
+  hasActiveCommercialProjects: false,
   hasPriceAgreements: false,
   booksEnabled: false,
 }
@@ -117,6 +119,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     ambientContext,
     hasProductionProjects,
     hasActiveNonProductionProjects,
+    hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
     businessProfile,
@@ -132,6 +135,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     getAmbientDeskContext().catch(() => EMPTY_AMBIENT),
     orgHasProductionProjects().catch(() => false),
     orgHasActiveNonProductionProjects().catch(() => false),
+    orgHasActiveCommercialProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
     isBooksWorkspaceEnabled().catch(() => false),
     getBusinessProfile(),
@@ -157,6 +161,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     projects,
     hasProductionProjects,
     hasActiveNonProductionProjects,
+    hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
   }

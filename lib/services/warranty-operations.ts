@@ -5,6 +5,7 @@ import { warrantyCompletionTransactionsEnabled, commitOfficeWarrantyCompletion }
 import { courtesyReservationsEnabled, generateReservedCourtesyInspections, authorizeCourtesyHome } from "@/lib/services/warranty-courtesy-reservations"
 import { enrollSystemWarrantyCoverage, readWarrantyEnrollmentTerms, warrantyEffectiveDateSchema } from "@/lib/services/warranty-enrollment"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { readAllRows } from "@/lib/land/paging"
 import { createServiceSupabaseClient as createBaseServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext as requireBaseOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
@@ -1899,29 +1900,49 @@ const COURTESY_MILESTONE_SEVERITY: Record<CourtesyMilestoneKey, WarrantySeverity
   month_11: "routine_60",
 }
 
+/** Ceiling on rows one courtesy sweep reads per source; hitting it fails the sweep instead of guessing. */
+const COURTESY_SCAN_CAP = 50_000
+
 async function createCourtesyInspectionsForOrg(supabase: SupabaseClient, orgId: string, asOf: Date, canCreate?: (projectId: string) => Promise<boolean>, actorId?: string) {
   if (await courtesyReservationsEnabled(supabase, orgId)) return generateReservedCourtesyInspections({ supabase, orgId, asOf, canCreate, actorId })
-  const { data: coverage, error } = await supabase
-    .from("project_warranty_coverage")
-    .select("project_id,effective_date")
-    // A 30-day walk and an 11-month walk are the whole ritual, so only homes
-    // inside that band can have anything due.
-    .eq("org_id", orgId)
-    .gte("effective_date", new Date(asOf.getTime() - 425 * 86_400_000).toISOString().slice(0, 10))
-    .lte("effective_date", asOf.toISOString().slice(0, 10))
-    .limit(2000)
-  if (error) throw new Error(`Failed to load warranty coverage: ${error.message}`)
-  const due = (coverage ?? []).flatMap((row) => dueCourtesyInspections(String(row.effective_date), asOf).map((milestone) => ({ projectId: String(row.project_id), milestone })))
+  // Both reads are exhaustive: a coverage set that stopped short would defer homes
+  // forever, and an "existing" set that stopped short would create duplicates. A
+  // read that cannot finish fails the sweep rather than guessing.
+  const coverage = await readAllRows<{ project_id: string; effective_date: string }>(
+    (from, to) => supabase
+      .from("project_warranty_coverage")
+      .select("project_id,effective_date")
+      // A 30-day walk and an 11-month walk are the whole ritual, so only homes
+      // inside that band can have anything due.
+      .eq("org_id", orgId)
+      .gte("effective_date", new Date(asOf.getTime() - 425 * 86_400_000).toISOString().slice(0, 10))
+      .lte("effective_date", asOf.toISOString().slice(0, 10))
+      .order("project_id", { ascending: true })
+      .range(from, to),
+    { cap: COURTESY_SCAN_CAP, label: "Failed to load warranty coverage" },
+  )
+  if (coverage.truncated) throw new Error("Failed to load warranty coverage: more homes than one sweep can read")
+  const due = coverage.rows.flatMap((row) => dueCourtesyInspections(String(row.effective_date), asOf).map((milestone) => ({ projectId: String(row.project_id), milestone })))
   if (due.length === 0) return 0
   const projectIds = Array.from(new Set(due.map((item) => item.projectId)))
-  const { data: existing, error: existingError } = await supabase
-    .from("warranty_requests").select("project_id,metadata")
-    .eq("org_id", orgId).in("project_id", projectIds).not("metadata->>courtesy_milestone", "is", null).limit(5000)
-  if (existingError) throw new Error(`Failed to load existing courtesy inspections: ${existingError.message}`)
-  const alreadyCreated = new Set((existing ?? []).map((row) => {
-    const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata as Record<string, unknown> : {}
-    return `${row.project_id}:${String(metadata.courtesy_milestone ?? "")}`
-  }))
+  const alreadyCreated = new Set<string>()
+  // Chunked so the `in` list stays inside the request URL.
+  for (let offset = 0; offset < projectIds.length; offset += 100) {
+    const chunk = projectIds.slice(offset, offset + 100)
+    const existing = await readAllRows<{ id: string; project_id: string; metadata: unknown }>(
+      (from, to) => supabase
+        .from("warranty_requests").select("id,project_id,metadata")
+        .eq("org_id", orgId).in("project_id", chunk).not("metadata->>courtesy_milestone", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to),
+      { cap: COURTESY_SCAN_CAP, label: "Failed to load existing courtesy inspections" },
+    )
+    if (existing.truncated) throw new Error("Failed to load existing courtesy inspections: more requests than one sweep can read")
+    for (const row of existing.rows) {
+      const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata as Record<string, unknown> : {}
+      alreadyCreated.add(`${row.project_id}:${String(metadata.courtesy_milestone ?? "")}`)
+    }
+  }
   let created = 0
   for (const item of due) {
     if (alreadyCreated.has(`${item.projectId}:${item.milestone.key}`) || (canCreate && !await canCreate(item.projectId))) continue

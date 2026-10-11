@@ -105,6 +105,7 @@ export async function OrgBillingWorkspace() {
     summaryResult.error ? `Receivables totals: ${summaryResult.error}` : null,
     opportunitiesResult.error ? `Ready to bill: ${opportunitiesResult.error}` : null,
     packagesResult.error ? `Backup packages: ${packagesResult.error}` : null,
+    opportunitiesResult.desk?.readyToBillTruncated ? "Ready to bill shows only the oldest unbilled items" : null,
   ].filter((entry): entry is string => Boolean(entry))
 
   return (

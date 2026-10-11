@@ -8,6 +8,7 @@ const {
   normalizeProductTier,
   shouldShowCustomBuildNavigation,
   shouldShowProductionOrgNavigation,
+  shouldShowSafetyNavigation,
 } = require("../lib/product-tier")
 const { ORG } = require("./support/service")
 const { terminology } = require("../lib/terminology")
@@ -91,4 +92,11 @@ test("an org's navigation follows its projects, not only its tier", async () => 
   assert.equal(shouldShowCustomBuildNavigation("production", true), true)
   assert.equal(shouldShowCustomBuildNavigation("residential", false), true)
   assert.equal(shouldShowProductionOrgNavigation("residential", true), true)
+})
+
+test("safety navigation follows the commercial tier or any active commercial job", () => {
+  assert.equal(shouldShowSafetyNavigation("commercial", false), true)
+  assert.equal(shouldShowSafetyNavigation("residential", true), true)
+  assert.equal(shouldShowSafetyNavigation("production", true), true)
+  assert.equal(shouldShowSafetyNavigation("residential", false), false)
 })

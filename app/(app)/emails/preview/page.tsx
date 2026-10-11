@@ -1,4 +1,5 @@
 import { connection } from "next/server"
+import { redirect } from "next/navigation"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import Link from "next/link"
@@ -16,6 +17,7 @@ import {
 import { PrequalificationRequestEmail } from "@/lib/emails/prequalification-request-email"
 import { PrequalificationDecisionEmail } from "@/lib/emails/prequalification-decision-email"
 import { renderEmailTemplate } from "@/lib/services/mailer"
+import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>
 type TemplateId =
@@ -95,6 +97,9 @@ function pillClass(isActive: boolean) {
 
 async function EmailPreviewPageContent({ searchParams }: { searchParams: SearchParams }) {
   await connection()
+  // Templates render with sample data and are an internal tool: Arc platform staff only.
+  const access = await getCurrentPlatformAccess()
+  if (!access.canAccessPlatform) redirect("/unauthorized")
   const resolvedSearchParams = await searchParams
   const params = toUrlParams(resolvedSearchParams)
 

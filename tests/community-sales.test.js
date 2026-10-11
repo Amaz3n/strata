@@ -86,6 +86,29 @@ describe("bulkRepriceCommunityPlans", () => {
   })
 })
 
+describe("a reprice run that stops part-way", () => {
+  const { startRepriceRun, nextRepriceSlice, completeRepriceSlice, repriceRunRemaining } = freshRequire("lib/sales/reprice-run.ts")
+  const targets = Array.from({ length: 5 }, (_, index) => ({ availabilityId: id(index + 1), basisCents: 400_000_00 + index }))
+
+  test("resumes with only the slices that did not complete, at the original prices", () => {
+    let run = startRepriceRun({ mode: "percent", value: 2 }, targets)
+    const first = nextRepriceSlice(run, 2)
+    assert.deepEqual(first.map((target) => target.availabilityId), [id(1), id(2)])
+    run = completeRepriceSlice(run, first)
+
+    // The next slice fails; a retry asks again and gets the same one, unchanged.
+    const retry = nextRepriceSlice(run, 2)
+    assert.deepEqual(retry, targets.slice(2, 4))
+    assert.equal(repriceRunRemaining(run), 3)
+
+    run = completeRepriceSlice(run, retry)
+    assert.deepEqual(nextRepriceSlice(run, 2), targets.slice(4))
+    run = completeRepriceSlice(run, targets.slice(4))
+    assert.deepEqual(nextRepriceSlice(run, 2), [])
+    assert.equal(repriceRunRemaining(run), 0)
+  })
+})
+
 describe("voidPurchaseAgreement", () => {
   function harness({ permissions = ["sales.manage", "project.manage"] } = {}) {
     return createServiceHarness({

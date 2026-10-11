@@ -49,6 +49,19 @@ export async function orgHasActiveNonProductionProjects(orgId?: string): Promise
   return (data ?? []).length > 0
 }
 
+export async function orgHasActiveCommercialProjects(orgId?: string): Promise<boolean> {
+  const context = await requireOrgContext(orgId)
+  const { data, error } = await context.supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("status", "active")
+    .eq("property_type", "commercial")
+    .limit(1)
+  if (error) throw new Error(`Failed to inspect commercial projects: ${error.message}`)
+  return (data ?? []).length > 0
+}
+
 export async function resolveProductionDeskScope(input: {
   communityId?: string
 }): Promise<ProductionDeskScope> {

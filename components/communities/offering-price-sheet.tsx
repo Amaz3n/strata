@@ -24,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { unwrapAction } from "@/lib/action-result"
 import { MARGIN_BAND_META, THIN_MARGIN_PCT, grossMarginPct, marginBand } from "@/lib/plans/margin"
+import { completeRepriceSlice, nextRepriceSlice, repriceRunRemaining, startRepriceRun, type RepriceRun } from "@/lib/sales/reprice-run"
 import { offeringPrice, type OfferingIncentive } from "@/lib/sales/offering"
 import { cn } from "@/lib/utils"
 
@@ -163,7 +164,7 @@ export function OfferingPriceSheet({
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({})
   /** Which row is in edit; the sheet is a document until you point at a number. */
   const [editing, setEditing] = useState<string | null>(null)
-  const [batch, setBatch] = useState<{ mode: "percent" | "amount"; value: string; excluded: Set<string> } | null>(null)
+  const [batch, setBatch] = useState<{ mode: "percent" | "amount"; value: string; excluded: Set<string>; run: RepriceRun | null } | null>(null)
 
   const groups = useMemo(() => groupByPlan(rows), [rows])
   const offeredPlans = useMemo(() => {
@@ -241,28 +242,32 @@ export function OfferingPriceSheet({
 
   function applyBatch() {
     if (!batch || !Number(batch.value) || batchTargets.length === 0) return
+    // A run that stopped part-way resumes with the targets it started with. Taking
+    // them from the sheet again would read prices the finished slices already moved.
+    let run: RepriceRun = batch.run ?? startRepriceRun(
+      { mode: batch.mode, value: batch.mode === "percent" ? Number(batch.value) : Math.round(Number(batch.value) * 100) },
+      batchTargets.map((row) => ({ availabilityId: row.availabilityId, basisCents: row.basePriceCents })),
+    )
+    const total = run.targets.length
     startTransition(async () => {
       let repriced = 0
       let conflicts = 0
-      let attempted = 0
       try {
-        // Sent in slices so the dialog can say how far along it is. Targets come
-        // from the price each row showed, so a retry of a slice lands on the same price.
-        for (let start = 0; start < batchTargets.length; start += REPRICE_SLICE) {
-          setRepriceProgress({ done: attempted, total: batchTargets.length })
-          const slice = batchTargets.slice(start, start + REPRICE_SLICE)
+        // Sent in slices so the dialog can say how far along it is.
+        for (let slice = nextRepriceSlice(run, REPRICE_SLICE); slice.length > 0; slice = nextRepriceSlice(run, REPRICE_SLICE)) {
+          setRepriceProgress({ done: total - repriceRunRemaining(run), total })
           const result = unwrapAction(
             await bulkRepriceCommunityPlansAction(communityId, {
               communityId,
-              availabilityIds: slice.map((row) => row.availabilityId),
-              mode: batch.mode,
-              value: batch.mode === "percent" ? Number(batch.value) : Math.round(Number(batch.value) * 100),
-              basisCents: Object.fromEntries(slice.map((row) => [row.availabilityId, row.basePriceCents])),
+              availabilityIds: slice.map((target) => target.availabilityId),
+              mode: run.move.mode,
+              value: run.move.value,
+              basisCents: Object.fromEntries(slice.map((target) => [target.availabilityId, target.basisCents])),
             }),
           )
           repriced += result.repriced
           conflicts += result.conflicts.length
-          attempted += slice.length
+          run = completeRepriceSlice(run, slice)
         }
         toast.success(`${repriced} ${repriced === 1 ? "plan" : "plans"} repriced`)
         if (conflicts > 0) {
@@ -273,8 +278,12 @@ export function OfferingPriceSheet({
         setBatch(null)
         router.refresh()
       } catch (error) {
+        const resumable = run
+        setBatch((current) => (current ? { ...current, run: resumable } : current))
         if (repriced > 0) router.refresh()
-        toast.error(`Repricing stopped after ${attempted} of ${batchTargets.length}`, { description: (error as Error).message })
+        toast.error(`Repricing stopped after ${total - repriceRunRemaining(run)} of ${total}`, {
+          description: `${(error as Error).message} Reprice again to finish the remaining ${repriceRunRemaining(run)}.`,
+        })
       } finally {
         setRepriceProgress(null)
       }
@@ -318,7 +327,7 @@ export function OfferingPriceSheet({
                 variant="outline"
                 size="sm"
                 className="h-7 rounded-none text-xs"
-                onClick={() => setBatch({ mode: "percent", value: "", excluded: new Set() })}
+                onClick={() => setBatch({ mode: "percent", value: "", excluded: new Set(), run: null })}
               >
                 Reprice sheet
               </Button>
@@ -550,6 +559,7 @@ export function OfferingPriceSheet({
                   <Select
                     value={batch.mode}
                     onValueChange={(value) => setBatch({ ...batch, mode: value as "percent" | "amount" })}
+                    disabled={batch.run !== null}
                   >
                     <SelectTrigger className="h-8 rounded-none text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -570,6 +580,7 @@ export function OfferingPriceSheet({
                     value={batch.value}
                     onChange={(event) => setBatch({ ...batch, value: event.target.value })}
                     placeholder={batch.mode === "percent" ? "2" : "5000"}
+                    disabled={batch.run !== null}
                   />
                 </div>
               </div>
@@ -603,6 +614,7 @@ export function OfferingPriceSheet({
                             <Checkbox
                               aria-label={`Reprice ${row.planName} ${row.elevationName}`}
                               checked={!excluded}
+                              disabled={batch.run !== null}
                               onCheckedChange={() =>
                                 setBatch((current) => {
                                   if (!current) return current
@@ -656,6 +668,8 @@ export function OfferingPriceSheet({
                 ? `Repricing ${repriceProgress.done} of ${repriceProgress.total}…`
                 : isPending
                 ? "Repricing…"
+                : batch?.run
+                ? `Finish remaining ${repriceRunRemaining(batch.run)}`
                 : `Reprice ${batchTargets.length} ${batchTargets.length === 1 ? "elevation" : "elevations"}`}
             </Button>
           </DialogFooter>

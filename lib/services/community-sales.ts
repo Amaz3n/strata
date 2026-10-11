@@ -5,7 +5,7 @@ import { logger } from "@/lib/logging/logger"
 import { saveAgreementCreation, agreementCreationExpected, type AgreementCreationReceipt } from "@/lib/services/agreement-creation"
 import { agreementQuoteFingerprint, AgreementQuoteChangedError } from "@/lib/sales/agreement-quote"
 import { agreementStructuralSelections, assertOneStructuralOptionPerCategory } from "@/lib/sales/agreement-selections"
-import { readAllRowsById } from "@/lib/land/paging"
+import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
 import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
@@ -702,12 +702,15 @@ export async function getCommunityPriceSheet(communityId: string, opts: { onDate
   await requirePermission("sales.read", context)
   await assertCommunityInSalesScope(context, communityId)
   const onDate = opts.onDate ?? new Date().toISOString().slice(0, 10)
-  const [{ data: availability, error }, { data: lots }, { data: community }, { data: libraryPlans }, incentives] = await Promise.all([
+  const [{ data: availability, error }, lotsPaged, { data: community }, { data: libraryPlans }, incentives] = await Promise.all([
     context.supabase.from("community_plan_availability").select("id, base_price_cents, elevation_id, metadata, plan:house_plans(id, name, code, beds, baths, heated_sqft, stories, garage_bays), elevation:house_plan_elevations(name, code)").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true).or(`effective_start.is.null,effective_start.lte.${onDate}`).or(`effective_end.is.null,effective_end.gte.${onDate}`),
     // One read of the lots answers three questions: what premiums the sheet's
     // "from" price spans, which plans are actually moving, and what a lot here
     // costs — the denominator under any margin the sheet reports.
-    context.supabase.from("lots").select("status, house_plan_id, premium_cents, cost_basis_cents").eq("org_id", context.orgId).eq("community_id", communityId).limit(PRICE_SHEET_LOT_CAP),
+    readAllRows<{ status: string; house_plan_id: string | null; premium_cents: number | null; cost_basis_cents: number | null }>(
+      (from, to) => context.supabase.from("lots").select("status, house_plan_id, premium_cents, cost_basis_cents").eq("org_id", context.orgId).eq("community_id", communityId).order("id", { ascending: true }).range(from, to),
+      { cap: PRICE_SHEET_LOT_CAP + 1, label: "Failed to load price sheet lots" },
+    ),
     context.supabase.from("communities").select("division_id").eq("org_id", context.orgId).eq("id", communityId).maybeSingle(),
     // How much of the library this community actually sells. An offering that is
     // four of eleven plans is a decision; it used to be invisible.
@@ -716,8 +719,8 @@ export async function getCommunityPriceSheet(communityId: string, opts: { onDate
   ])
   if (error) throw new Error(`Failed to load price sheet: ${error.message}`)
 
-  type LotRow = { status: string; house_plan_id: string | null; premium_cents: number | null; cost_basis_cents: number | null }
-  const lotRows = (lots ?? []) as LotRow[]
+  // Read one past the cap: that extra lot is the proof some were left out.
+  const lotRows = lotsPaged.rows.slice(0, PRICE_SHEET_LOT_CAP)
   const premiums = lotRows
     .filter((lot) => ["owned", "developed", "assigned"].includes(lot.status))
     .map((lot) => Number(lot.premium_cents ?? 0))
@@ -745,7 +748,7 @@ export async function getCommunityPriceSheet(communityId: string, opts: { onDate
     /** Median cost basis of a lot here — half of what a house on it has to cover. */
     lotBasisCents: median(lotRows.map((lot) => Number(lot.cost_basis_cents ?? 0)).filter((value) => value > 0)),
     libraryPlanCount,
-    lotsTruncated: lotRows.length >= PRICE_SHEET_LOT_CAP,
+    lotsTruncated: lotsPaged.rows.length > PRICE_SHEET_LOT_CAP,
     incentives,
     rows: (availability ?? []).map((row: any) => {
       const metadata = (row.metadata ?? {}) as { repriced_at?: string | null; previous_base_price_cents?: number | null }
@@ -785,24 +788,28 @@ export async function getCommunityOfferingCosts(
   ])
   if (!canReadMargin || !canReadPlans) return null
 
-  const [ladder, { data: lots, error }] = await Promise.all([
+  const [ladder, lotsPaged] = await Promise.all([
     getPlanLadder({ communityId }, context.orgId),
-    context.supabase
-      .from("lots")
-      .select("cost_basis_cents")
-      .eq("org_id", context.orgId)
-      .eq("community_id", communityId)
-      .gt("cost_basis_cents", 0)
-      .limit(PRICE_SHEET_LOT_CAP),
+    readAllRows<{ cost_basis_cents: number | null }>(
+      (from, to) =>
+        context.supabase
+          .from("lots")
+          .select("cost_basis_cents")
+          .eq("org_id", context.orgId)
+          .eq("community_id", communityId)
+          .gt("cost_basis_cents", 0)
+          .order("id", { ascending: true })
+          .range(from, to),
+      { cap: PRICE_SHEET_LOT_CAP, label: "Failed to load lot basis" },
+    ),
   ])
-  if (error) throw new Error(`Failed to load lot basis: ${error.message}`)
 
   const buildCostByPlanId: Record<string, number> = {}
   for (const rung of ladder.rungs) {
     if (rung.released_cost_cents != null) buildCostByPlanId[rung.id] = rung.released_cost_cents
   }
   return {
-    lotBasisCents: median((lots ?? []).map((lot: { cost_basis_cents: number | null }) => Number(lot.cost_basis_cents ?? 0))),
+    lotBasisCents: median(lotsPaged.rows.map((lot) => Number(lot.cost_basis_cents ?? 0))),
     buildCostByPlanId,
   }
 }

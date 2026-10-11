@@ -78,6 +78,7 @@ interface AppSidebarProps {
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
   showPipelineNavigation?: boolean
+  showSafetyNavigation?: boolean
   booksEnabled?: boolean
 }
 
@@ -121,6 +122,7 @@ function buildWorkspaceGroups(
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
+  showSafetyNavigation = false,
 ): SidebarNavGroup[] {
   const orgTerms = terminology(productTier)
 
@@ -226,7 +228,7 @@ function buildWorkspaceGroups(
     },
   ]
 
-  if (productTier === "commercial") {
+  if (showSafetyNavigation) {
     officeItems.push({
       title: "Safety",
       url: "/safety",
@@ -338,6 +340,7 @@ export function AppSidebar({
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
+  showSafetyNavigation = false,
   booksEnabled = false,
 }: AppSidebarProps) {
   const {
@@ -390,14 +393,14 @@ export function AppSidebar({
         ...buildTradeNavGroups(pathname),
         ...(booksEnabled ? [{ label: "Accounting", items: [{ title: "Books", url: "/books", icon: FileSpreadsheet, items: buildBooksNavItems(pathname), requiredAny: ["books.read"] }] }] : []),
         ...(canAccessPlatform ? [{ label: "Platform", items: [{ title: "Platform", url: "/platform", icon: Shield }] }] : []),
-      ] : buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation),
+      ] : buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation),
       permissionSet,
     )
     return groups.map((group) => ({
       ...group,
       items: group.items.filter((item) => item.title !== "Books" || booksEnabled),
     })).filter((group) => group.items.length > 0)
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, businessProfile, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, booksEnabled])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, businessProfile, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation, booksEnabled])
 
   const navMain = navGroups.map((group) => ({
     ...group,

@@ -1,3 +1,4 @@
+import { readAllRows } from "@/lib/land/paging"
 import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
@@ -34,6 +35,10 @@ export interface OutstandingInvoiceRow {
 export interface OrgBillingDeskData {
   readyToBill: ReadyToBillProject[]
   outstandingInvoices: OutstandingInvoiceRow[]
+  /** The cost or draw scan hit its cap: ready-to-bill covers the oldest items only. */
+  readyToBillTruncated: boolean
+  /** More open invoices exist than the outstanding list shows. */
+  outstandingInvoicesTruncated: boolean
   stats: {
     readyToBillCount: number
     readyToBillCents: number
@@ -58,6 +63,9 @@ function daysOld(value?: string | null) {
 }
 
 const FIXED_PRICE_MODEL = "fixed_price"
+/** Rows the ready-to-bill scan reads per source (costs, draws), oldest first. */
+export const READY_TO_BILL_SCAN_CAP = 5000
+const OUTSTANDING_INVOICE_LIMIT = 100
 
 interface ProjectMeta {
   name: string
@@ -147,44 +155,72 @@ export async function loadOrgBillingDeskData(projectIds: string[] | null = null)
 
   const today = new Date().toISOString().split("T")[0]
   const excludedProjectIds = projectIds === null ? [] : await getReportingExcludedProjectIds(supabase, orgId)
-  let costsQuery = supabase
-    .from("billable_costs")
-    .select("project_id, billable_cents, occurred_on")
-    .eq("org_id", orgId)
-    .eq("status", "open")
-    .eq("is_billable", true)
-    .order("occurred_on", { ascending: true })
-    .limit(2000)
-  let drawsQuery = supabase
-    .from("draw_schedules")
-    .select("project_id, amount_cents, percent_of_contract, due_date")
-    .eq("org_id", orgId)
-    .eq("status", "pending")
-    .lte("due_date", today)
-    .order("due_date", { ascending: true })
-    .limit(2000)
-  let invoicesQuery = supabase
-    .from("invoices")
-    .select("id, project_id, invoice_number, title, status, due_date, balance_due_cents, project:projects(id, name)")
-    .eq("org_id", orgId)
-    .in("status", ["sent", "partial", "overdue"])
-    .gt("balance_due_cents", 0)
+  const costsRead = readAllRows<{ project_id: string | null; billable_cents: number | null; occurred_on: string | null }>(
+    (from, to) =>
+      applyProjectIdScope(
+        applyReportingExclusion(
+          supabase
+            .from("billable_costs")
+            .select("project_id, billable_cents, occurred_on")
+            .eq("org_id", orgId)
+            .eq("status", "open")
+            .eq("is_billable", true),
+          excludedProjectIds,
+        ),
+        projectIds,
+      )
+        .order("occurred_on", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    { cap: READY_TO_BILL_SCAN_CAP + 1, label: "Failed to load ready-to-bill costs" },
+  )
+  const drawsRead = readAllRows<{ project_id: string | null; amount_cents: number | null; percent_of_contract: number | null; due_date: string | null }>(
+    (from, to) =>
+      applyProjectIdScope(
+        applyReportingExclusion(
+          supabase
+            .from("draw_schedules")
+            .select("project_id, amount_cents, percent_of_contract, due_date")
+            .eq("org_id", orgId)
+            .eq("status", "pending")
+            .lte("due_date", today),
+          excludedProjectIds,
+        ),
+        projectIds,
+      )
+        .order("due_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    { cap: READY_TO_BILL_SCAN_CAP + 1, label: "Failed to load due draws" },
+  )
+  const invoicesQuery = applyProjectIdScope(
+    applyReportingExclusion(
+      supabase
+        .from("invoices")
+        .select("id, project_id, invoice_number, title, status, due_date, balance_due_cents, project:projects(id, name)")
+        .eq("org_id", orgId)
+        .in("status", ["sent", "partial", "overdue"])
+        .gt("balance_due_cents", 0),
+      excludedProjectIds,
+    ),
+    projectIds,
+  )
     .order("due_date", { ascending: true, nullsFirst: false })
-    .limit(100)
-  costsQuery = applyProjectIdScope(applyReportingExclusion(costsQuery, excludedProjectIds), projectIds)
-  drawsQuery = applyProjectIdScope(applyReportingExclusion(drawsQuery, excludedProjectIds), projectIds)
-  invoicesQuery = applyProjectIdScope(applyReportingExclusion(invoicesQuery, excludedProjectIds), projectIds)
+    .limit(OUTSTANDING_INVOICE_LIMIT + 1)
 
-  const [costsResult, drawsResult, invoicesResult, retainageHeldCents] = await Promise.all([
-    costsQuery,
-    drawsQuery,
+  const [costsPaged, drawsPaged, invoicesResult, retainageHeldCents] = await Promise.all([
+    costsRead,
+    drawsRead,
     invoicesQuery,
     loadRetainageHeldCents(supabase, orgId, projectIds, excludedProjectIds),
   ])
-
-  if (costsResult.error) throw new Error(`Failed to load ready-to-bill costs: ${costsResult.error.message}`)
-  if (drawsResult.error) throw new Error(`Failed to load due draws: ${drawsResult.error.message}`)
   if (invoicesResult.error) throw new Error(`Failed to load outstanding invoices: ${invoicesResult.error.message}`)
+
+  // The scan reads one row past the cap; that extra row is the proof something was left out.
+  const costsResult = { data: costsPaged.rows.slice(0, READY_TO_BILL_SCAN_CAP) }
+  const drawsResult = { data: drawsPaged.rows.slice(0, READY_TO_BILL_SCAN_CAP) }
+  const readyToBillTruncated = costsPaged.rows.length > READY_TO_BILL_SCAN_CAP || drawsPaged.rows.length > READY_TO_BILL_SCAN_CAP
+  const outstandingInvoicesTruncated = (invoicesResult.data ?? []).length > OUTSTANDING_INVOICE_LIMIT
 
   const asProjectId = (id: unknown): id is string => typeof id === "string"
   const costProjectIds = (costsResult.data ?? []).map((row: any) => row.project_id).filter(asProjectId)
@@ -242,7 +278,7 @@ export async function loadOrgBillingDeskData(projectIds: string[] | null = null)
   }
 
   const readyToBill = Array.from(readyByProject.values()).sort((a, b) => b.totalCents - a.totalCents)
-  const outstandingInvoices = (invoicesResult.data ?? []).map((row: any) => {
+  const outstandingInvoices = (invoicesResult.data ?? []).slice(0, OUTSTANDING_INVOICE_LIMIT).map((row: any) => {
     const project = one(row.project)
     const projectId = (row.project_id as string | null) ?? null
     return {
@@ -261,6 +297,8 @@ export async function loadOrgBillingDeskData(projectIds: string[] | null = null)
   return {
     readyToBill,
     outstandingInvoices,
+    readyToBillTruncated,
+    outstandingInvoicesTruncated,
     stats: {
       readyToBillCount: readyToBill.reduce((sum, project) => sum + project.count, 0),
       readyToBillCents: readyToBill.reduce((sum, project) => sum + project.totalCents, 0),
