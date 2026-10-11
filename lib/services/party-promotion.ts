@@ -22,6 +22,8 @@ function normalizeName(value: string): string {
 }
 
 export interface PromotePersonInput {
+  /** The directory contact already chosen (a picked buyer): no matching, no new row. */
+  contactId?: string | null
   fullName: string
   email?: string | null
   phone?: string | null
@@ -102,6 +104,35 @@ async function resolveCompanyByName(
   return created.id as string
 }
 
+/** `ilike` treats backslash, `%` and `_` as pattern characters; an address has to match as written. */
+function exactPattern(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`)
+}
+
+/**
+ * The live contact already holding this email, matched without regard to case
+ * ("Jane@x.com" and "jane@x.com" are one buyer). The oldest wins when the
+ * directory already has duplicates, so a repeat registration lands on the same
+ * record every time instead of failing or minting another.
+ */
+export async function findContactIdByEmail(
+  supabase: SupabaseClient,
+  orgId: string,
+  email: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("org_id", orgId)
+    .is("archived_at", null)
+    .ilike("email", exactPattern(email.trim()))
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(1)
+  if (error) throw new Error(`Failed to match contact by email: ${error.message}`)
+  return data?.[0]?.id ?? null
+}
+
 export async function promotePersonToDirectoryWithClient(
   supabase: SupabaseClient,
   orgId: string,
@@ -120,17 +151,19 @@ export async function promotePersonToDirectoryWithClient(
   // match. Deliberately NOT fuzzy: a wrong merge of two buyers is far worse than
   // a duplicate, and `directory_merge_candidates` exists to catch the rest.
   let contactId: string | null = null
-  if (email) {
+  if (input.contactId) {
     const { data, error } = await supabase
       .from("contacts")
       .select("id")
       .eq("org_id", orgId)
       .is("archived_at", null)
-      .eq("email", email)
-      .limit(1)
+      .eq("id", input.contactId)
       .maybeSingle()
-    if (error) throw new Error(`Failed to match contact by email: ${error.message}`)
-    contactId = (data as { id: string } | null)?.id ?? null
+    if (error) throw new Error(`Failed to load contact: ${error.message}`)
+    if (!data) throw new Error("Contact not found")
+    contactId = input.contactId
+  } else if (email) {
+    contactId = await findContactIdByEmail(supabase, orgId, email)
   }
 
   if (!contactId) {

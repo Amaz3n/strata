@@ -5,7 +5,7 @@ import { OfferingIncentives } from "@/components/communities/offering-incentives
 import { OfferingPriceSheet, type OfferingPlanRow } from "@/components/communities/offering-price-sheet"
 import { OfferingSummary } from "@/components/communities/offering-summary"
 import { getCommunityLane } from "@/lib/services/community-portfolio"
-import { getCommunityOfferingCosts, getCommunityPriceSheet, listOfferablePlans, listSpecInventory } from "@/lib/services/community-sales"
+import { getCommunityOfferingCosts, getCommunityPriceSheet, listSpecInventory } from "@/lib/services/community-sales"
 import { listCommunityTraffic } from "@/lib/services/community-traffic"
 import { listPlansWithPublishedModels } from "@/lib/services/floorplan-models"
 import { getCurrentUserPermissions, hasPermission } from "@/lib/services/permissions"
@@ -58,23 +58,13 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
       .catch(() => new Set<string>()),
   )
   const permissionsPromise = getCurrentUserPermissions()
-  // Only managers get the "offer a plan" picker, so only they need the offerable list.
-  const offerablePlansPromise = permissionsPromise.then((permissions) =>
-    canManagePlans(permissions.permissions)
-      ? listOfferablePlans(id).catch((error) => {
-          console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
-          return []
-        })
-      : [],
-  )
-  const [sheet, permissions, traffic, specs, lane, costs, offerablePlans, plansWith3d] = await Promise.all([
+  const [sheet, permissions, traffic, specs, lane, costs, plansWith3d] = await Promise.all([
     sheetPromise,
     permissionsPromise,
     listCommunityTraffic(id, { days: TRAFFIC_WINDOW_DAYS }).catch(() => []),
     listSpecInventory({ communityId: id, limit: 100 }).catch(() => []),
     getCommunityLane(id).catch(() => null),
     getCommunityOfferingCosts(id).catch(() => null),
-    offerablePlansPromise,
     modelsPromise,
   ])
   const canManage = canManagePlans(permissions.permissions)
@@ -189,7 +179,6 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           buildCostByPlanId={costs?.buildCostByPlanId ?? {}}
           lotsTruncated={sheet.lotsTruncated}
           plansWith3d={plansWith3d}
-          offerablePlans={offerablePlans}
           canManage={canManage}
         />
         <OfferingIncentives

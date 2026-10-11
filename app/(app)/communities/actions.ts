@@ -165,8 +165,8 @@ export async function recordLotDeliveryExceptionAction(id: string, communityId: 
   return run(() => recordLotDeliveryException(z.string().uuid().parse(id), lotDeliveryExceptionSchema.parse(input)), [`/communities/${communityId}`])
 }
 
-export async function listPlanAssignmentOptionsAction(communityId: string) {
-  return run(() => listPlanAssignmentOptions(z.string().uuid().parse(communityId)))
+export async function listPlanAssignmentOptionsAction(communityId: string, search?: string) {
+  return run(() => listPlanAssignmentOptions(z.string().uuid().parse(communityId), { search: z.string().trim().max(60).optional().parse(search) }))
 }
 
 export async function assignPlanToLotAction(lotId: string, communityId: string, input: unknown) {

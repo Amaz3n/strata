@@ -19,6 +19,7 @@ import {
   priceAgreementDraft,
   releaseReservation,
   offerPlanInCommunity,
+  searchOfferablePlans,
   withdrawPlanFromCommunity,
   setCommunityPlanPrice,
   setSpecAskingPrice,
@@ -27,7 +28,7 @@ import {
   type AgreementDraftContext,
   type AgreementDraftPricing,
 } from "@/lib/services/community-sales"
-import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import {
   completeProspectFollowUp,
   logProspectContact,
@@ -37,14 +38,16 @@ import {
   setProspectFollowUp,
   updateDealDetails,
 } from "@/lib/services/prospects"
-import { registerProductionInquiry } from "@/lib/services/sales-inquiries"
+import { registerProductionInquiry, searchBuyerContacts } from "@/lib/services/sales-inquiries"
+import type { SearchPickerPage } from "@/components/ui/search-picker"
+import { SEARCH_PICKER_PAGE_SIZE, searchPickerPage, searchPickerQuerySchema } from "@/lib/search-picker"
 import {
   logProspectContactInputSchema,
   markProspectLostInputSchema,
   productionInquiryInputSchema,
   updateDealDetailsInputSchema,
 } from "@/lib/validation/prospects"
-import { createProspectLotHoldSchema } from "@/lib/validation/community-sales"
+import { createProspectLotHoldSchema, sellableHomesQuerySchema } from "@/lib/validation/community-sales"
 
 async function run<T>(operation: () => Promise<T>, paths: string[] = ["/sales"]): Promise<ActionResult<T>> {
   try {
@@ -135,6 +138,20 @@ export async function offerPlanInCommunityAction(communityId: string, input: unk
   return run(() => offerPlanInCommunity(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }
 
+/** Released plans the community does not sell yet, a page per search by code or name. Read-only. */
+export async function searchOfferablePlansAction(communityId: string, input: unknown): Promise<ActionResult<SearchPickerPage>> {
+  return run(async () => {
+    const query = searchPickerQuerySchema.parse(input)
+    const result = await searchOfferablePlans(z.string().uuid().parse(communityId), { search: query.search, page: query.page, pageSize: SEARCH_PICKER_PAGE_SIZE })
+    return searchPickerPage(
+      result.plans.map((plan) => ({ id: plan.id, name: plan.code ? `${plan.code} — ${plan.name}` : plan.name, detail: "Released" })),
+      result.page,
+      result.pageSize,
+      result.total,
+    )
+  }, [])
+}
+
 export async function withdrawPlanFromCommunityAction(communityId: string, input: unknown) {
   return run(() => withdrawPlanFromCommunity(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }
@@ -151,32 +168,44 @@ export async function bulkRepriceCommunityPlansAction(communityId: string, input
   return run(() => bulkRepriceCommunityPlans(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }
 
-const SELLABLE_HOME_LIMIT = 250
+const SELLABLE_HOME_PAGE_SIZE = 50
 
 export interface SellableHomePage {
   homes: SellableHome[]
-  /** More homes matched the scope than `limit` returned; the dialog says so. */
+  /** More homes match than this page holds; ask again from `nextOffset`. */
   truncated: boolean
-  limit: number
+  /** Lots the scope and filters match before holds and sales are taken off, so it can only over-count. */
+  total: number
+  nextOffset: number | null
 }
 
 /**
- * Sellable inventory for the Find a home dialog, in the caller's ambient scope.
- * Loaded on open rather than with the board — a consultant opens the picker a
- * few times a day and the board a hundred, so 250 lots do not ride along.
+ * One server-searched page of sellable inventory for the Find a home dialog, in
+ * the caller's ambient scope (division and community lens, refused lens draws
+ * nothing). Loaded on demand rather than with the board — a consultant opens the
+ * picker a few times a day and the board a hundred.
  */
-export async function listSellableHomesAction(): Promise<ActionResult<SellableHomePage>> {
+export async function searchSellableHomesAction(input: unknown): Promise<ActionResult<SellableHomePage>> {
   try {
-    const ambient = await getAmbientDeskContext()
-    const { lots, truncated } = await listSpecInventoryPage({
-      communityId: ambient.communityId,
-      divisionId: ambient.divisionId,
+    const query = sellableHomesQuerySchema.parse(input)
+    const scope = await resolveProductionDeskScope({})
+    if (scope.refused) return { success: true, data: { homes: [], truncated: false, total: 0, nextOffset: null } }
+    const { lots, truncated, total, nextOffset } = await listSpecInventoryPage({
+      communityId: scope.communityId,
+      divisionId: scope.divisionId,
       includeToBeBuilt: true,
-      limit: SELLABLE_HOME_LIMIT,
+      limit: SELLABLE_HOME_PAGE_SIZE,
+      order: query.sort,
+      search: query.search,
+      availability: query.availability,
+      minBeds: query.minBeds,
+      minPriceCents: query.minPriceCents,
+      maxPriceCents: query.maxPriceCents,
+      offset: query.offset,
     })
     return {
       success: true,
-      data: { limit: SELLABLE_HOME_LIMIT, truncated, homes: lots.map((lot) => ({
+      data: { truncated, total, nextOffset, homes: lots.map((lot) => ({
         lotId: lot.lotId,
         lotLabel: lot.lotLabel,
         communityId: lot.communityId,
@@ -201,6 +230,24 @@ const followUpSchema = z.string().datetime().nullable()
 /** Registers a model-home walk-in and moves the day's traffic tally with it. */
 export async function registerInquiryAction(input: unknown) {
   return run(() => registerProductionInquiry(productionInquiryInputSchema.parse(input)))
+}
+
+/** Existing people for the registration card's buyer lookup: a page per search, by name, email or phone. Read-only. */
+export async function searchBuyersAction(input: unknown): Promise<ActionResult<SearchPickerPage>> {
+  return run(async () => {
+    const query = searchPickerQuerySchema.parse(input)
+    const result = await searchBuyerContacts({ search: query.search, page: query.page, pageSize: SEARCH_PICKER_PAGE_SIZE })
+    return searchPickerPage(
+      result.buyers.map((buyer) => ({
+        id: buyer.id,
+        name: buyer.name,
+        detail: [buyer.email, buyer.phone, buyer.roles.join(", ")].filter(Boolean).join(" · "),
+      })),
+      result.page,
+      result.pageSize,
+      result.total,
+    )
+  }, [])
 }
 
 export async function logDealActivityAction(prospectId: string, input: unknown) {

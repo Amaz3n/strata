@@ -1,9 +1,9 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-import { listSellableHomesAction } from "@/app/(app)/sales/actions"
+import { searchSellableHomesAction } from "@/app/(app)/sales/actions"
 import { ArrowLeft, Home, Search, X } from "@/components/icons"
 import type { SalesCommunityOption } from "@/components/sales/community-option"
 import { LotHoldForm, type HoldBuyer, type HoldLot } from "@/components/sales/lot-hold-form"
@@ -19,7 +19,6 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { unwrapAction } from "@/lib/action-result"
 import { AGING_SPEC_DAYS, type SellableHome } from "@/lib/sales/inventory"
 import { cn } from "@/lib/utils"
 
@@ -40,13 +39,13 @@ const BEDS = [
 ] as const
 
 const PRICE_BANDS = [
-  { value: "any", label: "Any price", min: 0, max: Number.POSITIVE_INFINITY },
-  { value: "u300", label: "Under $300K", min: 0, max: 300_000_00 },
+  { value: "any", label: "Any price" },
+  { value: "u300", label: "Under $300K", max: 300_000_00 },
   { value: "300-400", label: "$300–400K", min: 300_000_00, max: 400_000_00 },
   { value: "400-500", label: "$400–500K", min: 400_000_00, max: 500_000_00 },
   { value: "500-650", label: "$500–650K", min: 500_000_00, max: 650_000_00 },
   { value: "650-800", label: "$650–800K", min: 650_000_00, max: 800_000_00 },
-  { value: "o800", label: "Over $800K", min: 800_000_00, max: Number.POSITIVE_INFINITY },
+  { value: "o800", label: "Over $800K", min: 800_000_00 },
 ] as const
 
 const SORTS = [
@@ -55,6 +54,21 @@ const SORTS = [
   { value: "aging", label: "Longest standing" },
   { value: "lot", label: "Lot number" },
 ] as const
+
+const NO_HOMES: SellableHome[] = []
+
+function homeFilters(search: string, availability: string, beds: string, band: string, sort: string, offset: number) {
+  const priceBand = PRICE_BANDS.find((option) => option.value === band)
+  return {
+    search,
+    availability,
+    sort,
+    ...(beds === "any" ? {} : { minBeds: Number(beds) }),
+    ...(priceBand && "min" in priceBand ? { minPriceCents: priceBand.min } : {}),
+    ...(priceBand && "max" in priceBand ? { maxPriceCents: priceBand.max } : {}),
+    offset,
+  }
+}
 
 const COLUMNS = "grid grid-cols-[0.7fr_1.3fr_1fr_0.9fr_0.9fr_92px] gap-3"
 
@@ -78,69 +92,79 @@ interface FindAHomeDialogProps {
  */
 export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: FindAHomeDialogProps) {
   const [homes, setHomes] = useState<SellableHome[] | null>(null)
-  const [loadedLimit, setLoadedLimit] = useState<number | null>(null)
+  const [nextOffset, setNextOffset] = useState<number | null>(null)
+  const [total, setTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
   const [search, setSearch] = useState("")
+  const [query, setQuery] = useState("")
   const [availability, setAvailability] = useState<string>("all")
   const [beds, setBeds] = useState<string>("any")
   const [band, setBand] = useState<string>("any")
   const [sort, setSort] = useState<string>("price_asc")
   const [holdLot, setHoldLot] = useState<HoldLot | null>(null)
+  const request = useRef(0)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [search])
 
   // Inventory moves — a lot held from another surface should not still be
-  // offered here — so it reloads on every open rather than caching across them.
+  // offered here — so it reloads on every open and every change of question
+  // rather than caching across them. Every search asks the server; nothing is
+  // filtered here.
   useEffect(() => {
     if (!open) return
-    let cancelled = false
+    const id = ++request.current
     setHomes(null)
-    setLoadedLimit(null)
+    setNextOffset(null)
     setError(null)
     setHoldLot(null)
-    listSellableHomesAction()
+    searchSellableHomesAction(homeFilters(query, availability, beds, band, sort, 0))
       .then((result) => {
-        if (cancelled) return
-        const page = unwrapAction(result)
-        setHomes(page.homes)
-        setLoadedLimit(page.truncated ? page.limit : null)
+        if (request.current !== id) return
+        if (!result.success) {
+          setError(result.error)
+          return
+        }
+        setHomes(result.data.homes)
+        setNextOffset(result.data.nextOffset)
+        setTotal(result.data.total)
       })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError((cause as Error).message)
+      .catch(() => {
+        if (request.current === id) setError("Unable to load homes. Try again.")
       })
     return () => {
-      cancelled = true
+      request.current++
     }
-  }, [open])
+  }, [open, query, availability, beds, band, sort, retry])
 
-  const visible = useMemo(() => {
-    if (!homes) return []
-    const needle = search.trim().toLowerCase()
-    const priceBand = PRICE_BANDS.find((option) => option.value === band) ?? PRICE_BANDS[0]
-    const minBeds = beds === "any" ? 0 : Number(beds)
+  async function loadMore() {
+    if (nextOffset === null || loadingMore) return
+    const id = ++request.current
+    setLoadingMore(true)
+    try {
+      const result = await searchSellableHomesAction(homeFilters(query, availability, beds, band, sort, nextOffset))
+      if (request.current !== id) return
+      if (!result.success) {
+        setError(result.error)
+        return
+      }
+      setHomes((current) => [
+        ...new Map([...(current ?? []), ...result.data.homes].map((home) => [home.lotId, home])).values(),
+      ])
+      setNextOffset(result.data.nextOffset)
+      setTotal(result.data.total)
+    } catch {
+      if (request.current === id) setError("Unable to load more homes. Try again.")
+    } finally {
+      if (request.current === id) setLoadingMore(false)
+    }
+  }
 
-    return homes
-      .filter((home) => {
-        if (availability === "spec" && !home.isSpec) return false
-        if (availability === "tbb" && home.isSpec) return false
-        if (minBeds > 0 && (home.beds ?? 0) < minBeds) return false
-        if (priceBand.value !== "any") {
-          // An unpriced lot cannot satisfy a budget question, so a band excludes it.
-          if (home.askingPriceCents == null) return false
-          if (home.askingPriceCents < priceBand.min || home.askingPriceCents >= priceBand.max) return false
-        }
-        if (needle) {
-          const haystack = [home.lotLabel, home.planLabel, home.communityName].filter(Boolean).join(" ").toLowerCase()
-          if (!haystack.includes(needle)) return false
-        }
-        return true
-      })
-      .sort((a, b) => {
-        if (sort === "lot") return a.lotLabel.localeCompare(b.lotLabel, undefined, { numeric: true })
-        if (sort === "aging") return b.agingDays - a.agingDays
-        const left = a.askingPriceCents ?? Number.POSITIVE_INFINITY
-        const right = b.askingPriceCents ?? Number.POSITIVE_INFINITY
-        return sort === "price_desc" ? right - left : left - right
-      })
-  }, [homes, search, availability, beds, band, sort])
+  const visible = homes ?? NO_HOMES
 
   const groups = useMemo(() => {
     const byCommunity = new Map<string, SellableHome[]>()
@@ -150,10 +174,11 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
       if (bucket) bucket.push(home)
       else byCommunity.set(key, [home])
     }
+    // Rows keep the server's order inside each community; that order is the chosen sort.
     return [...byCommunity.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [visible])
 
-  const narrowed = availability !== "all" || beds !== "any" || band !== "any" || search.trim().length > 0
+  const narrowed = availability !== "all" || beds !== "any" || band !== "any" || query.length > 0
   const specCount = visible.filter((home) => home.isSpec).length
 
   if (holdLot) {
@@ -230,7 +255,12 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {error ? (
-            <p className="px-5 py-12 text-center text-xs text-destructive">{error}</p>
+            <div className="flex flex-col items-center gap-3 px-5 py-12">
+              <p role="alert" className="text-center text-xs text-destructive">{error}</p>
+              <Button variant="outline" size="sm" className="rounded-none" onClick={() => setRetry((value) => value + 1)}>
+                Retry
+              </Button>
+            </div>
           ) : homes === null ? (
             <div className="space-y-2 px-5 py-4">
               {Array.from({ length: 6 }).map((_, index) => (
@@ -246,7 +276,7 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
                 </EmptyTitle>
                 <EmptyDescription className="text-xs">
                   {narrowed
-                    ? `${homes.length} home${homes.length === 1 ? "" : "s"} are available in this scope — widen the price band or bed count.`
+                    ? "No home in this scope matches — try another lot number, plan or community, or widen the price band or bed count."
                     : "Lots show up here once they are owned or developed, have a plan assigned, and are not already held or sold."}
                 </EmptyDescription>
               </EmptyHeader>
@@ -256,6 +286,7 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
                     type="button"
                     onClick={() => {
                       setSearch("")
+                      setQuery("")
                       setAvailability("all")
                       setBeds("any")
                       setBand("any")
@@ -352,20 +383,27 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
               "Loading inventory…"
             ) : (
               <>
-                <span className="font-medium text-foreground tabular-nums">{visible.length}</span> available ·{" "}
+                <span className="font-medium text-foreground tabular-nums">{visible.length}</span> shown ·{" "}
                 <span className="tabular-nums">{specCount}</span> ready or building
-                {loadedLimit !== null ? (
+                {nextOffset !== null ? (
                   <span className="text-warning">
                     {" "}
-                    · Showing the newest {loadedLimit} homes in this scope; narrow the community or division to see the rest
+                    · {total.toLocaleString()} lots match; search or narrow the community to find the rest
                   </span>
                 ) : null}
               </>
             )}
           </p>
-          <Button variant="outline" size="sm" className="rounded-none" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
+          <div className="flex items-center gap-2">
+            {nextOffset !== null ? (
+              <Button variant="outline" size="sm" className="rounded-none" disabled={loadingMore} onClick={loadMore}>
+                {loadingMore ? "Loading…" : "Load more"}
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" className="rounded-none" onClick={() => onOpenChange(false)}>
+              Close
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

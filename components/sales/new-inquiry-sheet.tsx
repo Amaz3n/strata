@@ -3,11 +3,12 @@
 import { useRouter } from "next/navigation"
 import { useEffect, useState, useTransition } from "react"
 
-import { registerInquiryAction } from "@/app/(app)/sales/actions"
+import { registerInquiryAction, searchBuyersAction } from "@/app/(app)/sales/actions"
 import { Plus } from "@/components/icons"
 import { Field, Picker, Section, labelOptions } from "@/components/sales/registration-fields"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
@@ -52,6 +53,8 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
   const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
 
+  const [existingBuyer, setExistingBuyer] = useState<SearchPickerItem | null>(null)
+  const [findingBuyer, setFindingBuyer] = useState(false)
   const [buyerName, setBuyerName] = useState("")
   const [phone, setPhone] = useState("")
   const [email, setEmail] = useState("")
@@ -68,6 +71,8 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
 
   useEffect(() => {
     if (open) return
+    setExistingBuyer(null)
+    setFindingBuyer(false)
     setBuyerName("")
     setPhone("")
     setEmail("")
@@ -84,7 +89,8 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
   }, [open, defaultCommunityId])
 
   const submit = () => {
-    if (buyerName.trim().length < 2) {
+    const name = existingBuyer?.name ?? buyerName.trim()
+    if (name.length < 2) {
       toast({ title: "Buyer name is required" })
       return
     }
@@ -92,9 +98,10 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
       try {
         unwrapAction(
           await registerInquiryAction({
-            buyerName: buyerName.trim(),
-            phone: phone.trim() || null,
-            email: email.trim() || null,
+            buyerName: name,
+            existingContactId: existingBuyer?.id ?? null,
+            phone: existingBuyer ? null : phone.trim() || null,
+            email: existingBuyer ? null : email.trim() || null,
             communityId: communityId || null,
             ownerUserId: ownerId || null,
             channel,
@@ -109,7 +116,7 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
           }),
         )
         toast({
-          title: `${buyerName.trim()} registered`,
+          title: `${name} registered`,
           description: communityId
             ? `Added to the board and counted in today's traffic.`
             : "Added to the board.",
@@ -141,36 +148,60 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
           <ScrollArea className="min-h-0 flex-1">
             <div className="divide-y">
               <Section title="Buyer">
-                <Field label="Name" htmlFor="inquiry-name" required>
-                  <Input
-                    id="inquiry-name"
-                    autoFocus
-                    value={buyerName}
-                    onChange={(event) => setBuyerName(event.target.value)}
-                    placeholder="First and last name"
-                    className="h-9 rounded-none"
-                  />
-                </Field>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Phone" htmlFor="inquiry-phone">
-                    <Input
-                      id="inquiry-phone"
-                      type="tel"
-                      value={phone}
-                      onChange={(event) => setPhone(event.target.value)}
-                      className="h-9 rounded-none tabular-nums"
+                {existingBuyer || findingBuyer ? (
+                  <>
+                    <SearchPicker
+                      label="Returning buyer"
+                      noun="buyers"
+                      placeholder="Search by name, email or phone"
+                      value={existingBuyer}
+                      onChange={setExistingBuyer}
+                      search={searchBuyersAction}
+                      disabled={pending}
                     />
-                  </Field>
-                  <Field label="Email" htmlFor="inquiry-email">
-                    <Input
-                      id="inquiry-email"
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      className="h-9 rounded-none"
-                    />
-                  </Field>
-                </div>
+                    {existingBuyer ? null : (
+                      <Button type="button" variant="ghost" size="sm" className="rounded-none" onClick={() => setFindingBuyer(false)}>
+                        Enter a new buyer instead
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Button type="button" variant="outline" size="sm" className="w-full justify-start rounded-none" onClick={() => setFindingBuyer(true)}>
+                      Returning buyer? Find them
+                    </Button>
+                    <Field label="Name" htmlFor="inquiry-name" required>
+                      <Input
+                        id="inquiry-name"
+                        autoFocus
+                        value={buyerName}
+                        onChange={(event) => setBuyerName(event.target.value)}
+                        placeholder="First and last name"
+                        className="h-9 rounded-none"
+                      />
+                    </Field>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label="Phone" htmlFor="inquiry-phone">
+                        <Input
+                          id="inquiry-phone"
+                          type="tel"
+                          value={phone}
+                          onChange={(event) => setPhone(event.target.value)}
+                          className="h-9 rounded-none tabular-nums"
+                        />
+                      </Field>
+                      <Field label="Email" htmlFor="inquiry-email">
+                        <Input
+                          id="inquiry-email"
+                          type="email"
+                          value={email}
+                          onChange={(event) => setEmail(event.target.value)}
+                          className="h-9 rounded-none"
+                        />
+                      </Field>
+                    </div>
+                  </>
+                )}
               </Section>
 
               <Section title="Visit">
@@ -287,7 +318,7 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
             <Button variant="outline" size="sm" className="rounded-none" onClick={() => setOpen(false)} disabled={pending}>
               Cancel
             </Button>
-            <Button size="sm" className="rounded-none" onClick={submit} disabled={pending || buyerName.trim().length < 2}>
+            <Button size="sm" className="rounded-none" onClick={submit} disabled={pending || (!existingBuyer && buyerName.trim().length < 2)}>
               {pending ? "Registering…" : "Register"}
             </Button>
           </SheetFooter>

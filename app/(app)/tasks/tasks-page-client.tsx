@@ -19,11 +19,12 @@ interface TasksPageClientProps {
   initialTasks: Task[]
   /** Older tasks exist beyond the newest ones listed. */
   tasksTruncated: boolean
-  projects: Array<{ id: string; name: string }>
+  /** What the org calls a project: Project, Home. */
+  projectNoun: string
   assignableResources: AssignableResource[]
   approvals: MyWorkApproval[]
   initialTaskId?: string
-  initialProjectFilter?: string
+  initialProject?: { id: string; name: string }
 }
 
 /* The Tasks page is the personal cross-project hub: approvals waiting on me sit
@@ -58,11 +59,11 @@ function ApprovalsBand({ approvals }: { approvals: MyWorkApproval[] }) {
 export function TasksPageClient({
   initialTasks,
   tasksTruncated,
-  projects,
+  projectNoun,
   assignableResources,
   approvals,
   initialTaskId,
-  initialProjectFilter,
+  initialProject,
 }: TasksPageClientProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -76,9 +77,9 @@ export function TasksPageClient({
         <TasksTab
           initialTaskId={initialTaskId}
           tasks={initialTasks}
-          projects={projects}
+          projectNoun={projectNoun}
           assignableResources={assignableResources}
-          initialProjectFilter={initialProjectFilter}
+          initialProject={initialProject}
           onTaskCreate={(input) => createMyTaskAction(input).then(unwrapAction)}
           onTaskUpdate={(taskId, updates) => updateMyTaskAction(taskId, updates).then(unwrapAction)}
           onTaskDelete={(taskId) => deleteMyTaskAction(taskId).then(unwrapAction)}

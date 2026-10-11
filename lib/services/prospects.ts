@@ -1138,11 +1138,12 @@ export async function createProspectContact({
   // a prospect gets promoted — co-buyers and co-op agents included — so an
   // active prospect is findable in the directory instead of existing only as
   // denormalized text on a sales row.
-  const promoted = await promotePersonToDirectoryWithClient(
+  const promotion = promotePersonToDirectoryWithClient(
     supabase,
     resolvedOrgId,
     userId,
     {
+      contactId: parsed.contact_id ?? null,
       fullName: parsed.full_name,
       email: parsed.email ?? null,
       phone: parsed.phone ?? null,
@@ -1151,7 +1152,10 @@ export async function createProspectContact({
       companyName: parsed.company_name ?? null,
       title: parsed.role ?? null,
     },
-  ).catch(() => null);
+  );
+  // A contact the user picked must exist and be attached; a failed lookup for a
+  // typed-in name is only the directory not learning about them yet.
+  const promoted = parsed.contact_id ? await promotion : await promotion.catch(() => null);
 
   const { data, error } = await supabase
     .from("prospect_contacts")

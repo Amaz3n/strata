@@ -9,6 +9,7 @@ import { recordPlanOfferingOverrideAction } from "@/app/(app)/projects/[id]/plan
 import { LotReasonDialog } from "@/components/communities/lot-reason-dialog"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -46,6 +47,8 @@ export function LotPlanAssignmentDialog({
   const router = useRouter()
   const [load, setLoad] = useState<Load>({ state: "loading" })
   const [planId, setPlanId] = useState("")
+  const [planSearch, setPlanSearch] = useState("")
+  const [query, setQuery] = useState("")
   const [versionId, setVersionId] = useState("")
   const [elevationId, setElevationId] = useState("")
   const [swing, setSwing] = useState(KEEP_SWING)
@@ -55,7 +58,16 @@ export function LotPlanAssignmentDialog({
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
-    if (!open) return
+    const timer = setTimeout(() => setQuery(planSearch.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [planSearch])
+
+  useEffect(() => {
+    if (!open) {
+      setPlanSearch("")
+      setQuery("")
+      return
+    }
     let active = true
     setLoad({ state: "loading" })
     setPlanId("")
@@ -64,7 +76,7 @@ export function LotPlanAssignmentDialog({
     setSwing(KEEP_SWING)
     setError(null)
     setOverriddenPlanId(lot.offeringOverridePlanId)
-    listPlanAssignmentOptionsAction(communityId).then((response) => {
+    listPlanAssignmentOptionsAction(communityId, query || undefined).then((response) => {
       if (!active) return
       try {
         const { plans, truncated } = unwrapAction(response)
@@ -76,7 +88,7 @@ export function LotPlanAssignmentDialog({
     return () => {
       active = false
     }
-  }, [open, communityId, lot.offeringOverridePlanId])
+  }, [open, communityId, lot.offeringOverridePlanId, query])
 
   const plans = load.state === "ready" ? load.plans : []
   const plan = plans.find((entry) => entry.planId === planId) ?? null
@@ -124,6 +136,19 @@ export function LotPlanAssignmentDialog({
             </DialogDescription>
           </DialogHeader>
 
+          <div className="grid gap-1.5">
+            <Label htmlFor="assign-plan-search">Find a plan</Label>
+            <Input
+              id="assign-plan-search"
+              value={planSearch}
+              disabled={isPending}
+              maxLength={60}
+              placeholder="Search plans by code or name"
+              className="rounded-none"
+              onChange={(event) => setPlanSearch(event.target.value)}
+            />
+          </div>
+
           {load.state === "loading" ? (
             <div aria-busy="true" className="space-y-3">
               {Array.from({ length: 3 }, (_, index) => (
@@ -136,7 +161,9 @@ export function LotPlanAssignmentDialog({
             </p>
           ) : plans.length === 0 ? (
             <p className="border px-3 py-4 text-sm text-muted-foreground">
-              No plan has a released version and an active elevation yet. Release one from the plan library first.
+              {query
+                ? "No plan with a released version and an active elevation matches that search."
+                : "No plan has a released version and an active elevation yet. Release one from the plan library first."}
             </p>
           ) : (
             <div className="grid gap-3">
@@ -156,7 +183,7 @@ export function LotPlanAssignmentDialog({
                 </Select>
                 {load.truncated ? (
                   <p className="text-xs text-muted-foreground">
-                    Showing the first {plans.length} plans. Retire plans you no longer build to shorten this list.
+                    Showing the first {plans.length} plans. Search by code or name to find the rest.
                   </p>
                 ) : null}
               </div>

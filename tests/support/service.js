@@ -35,7 +35,7 @@
  * stamps a later `updated_at` (the standard trigger), `update/delete(...)
  * .select().maybeSingle()` returns one row, `{ count: "exact" }` on a mutation
  * counts it, `.eq(jsonColumn, JSON.stringify(value))` compares by value,
- * `.eq("relation.column", x)` filters on an embedded row, and `maxRows` caps
+ * `.eq("relation.column", x)` (also `in`, `gte`) filters on an embedded row, and `maxRows` caps
  * each response the way PostgREST's max-rows does.
  *
  * Seeded tables are copied as JSON, so Infinity, NaN and undefined do not
@@ -136,6 +136,12 @@ function embeddedFilter(query, method) {
   query[method] = (column, value) => {
     if (!column.includes(".")) return original(column, value)
     const [relation, field] = column.split(".")
+    if (method === "gte") {
+      return query.addFilter((row) => {
+        const related = Array.isArray(row[relation]) ? row[relation] : [row[relation]]
+        return related.some((entry) => entry && entry[field] != null && Number(entry[field]) >= Number(value))
+      })
+    }
     const values = method === "in" ? value.map(String) : [String(value)]
     return query.addFilter((row) => {
       const related = Array.isArray(row[relation]) ? row[relation] : [row[relation]]
@@ -243,7 +249,7 @@ function createServiceHarness(options = {}) {
   service.client = {
     from(table) {
       const query = fake.from(table)
-      for (const method of ["eq", "neq", "in"]) embeddedFilter(query, method)
+      for (const method of ["eq", "neq", "in", "gte"]) embeddedFilter(query, method)
       // `query.where` is the query's equality filters, so a tamper can aim at
       // one read of a table: `query.where.sheet_version_id === TARGET`.
       query.where = {}

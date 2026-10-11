@@ -56,6 +56,8 @@ export const prospectContactInputSchema = z.object({
   phone: z.string().trim().optional().nullable(),
   role: z.string().trim().optional().nullable(),
   company_name: z.string().trim().optional().nullable(),
+  /** A directory contact the user picked: the person is attached, not created again. */
+  contact_id: z.string().uuid().optional().nullable(),
   is_primary: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
@@ -153,6 +155,8 @@ export type MarkProspectLostInput = z.infer<typeof markProspectLostInputSchema>;
  */
 export const productionInquiryInputSchema = z.object({
   buyerName: z.string().trim().min(2, "Buyer name is required"),
+  /** An existing directory contact chosen from the buyer search; their record supplies name, phone and email. */
+  existingContactId: z.string().uuid().optional().nullable(),
   phone: z.string().trim().max(50).optional().nullable(),
   email: z
     .string()
@@ -182,7 +186,6 @@ export const updateProspectContactInputSchema = prospectContactInputSchema
   .partial()
   .extend({
     expected_updated_at: z.string().datetime({ offset: true }).optional(),
-    contact_id: z.string().uuid().optional().nullable(),
     promoted_contact_id: z.string().uuid().optional().nullable(),
   });
 export type UpdateProspectContactInput = z.infer<

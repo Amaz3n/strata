@@ -29,7 +29,8 @@ export const taskTradeSchema = z.enum([
 
 const baseTaskSchema = z.object({
   // Optional: tasks can be personal (no project) or attached to any project.
-  project_id: z.string().uuid().optional(),
+  // On an update, null detaches the task from its project (makes it personal).
+  project_id: z.string().uuid().nullable().optional(),
   title: z.string().min(2, "Title is required"),
   description: z.string().optional(),
   status: z.enum(["todo", "in_progress", "blocked", "done"]).default("todo"),

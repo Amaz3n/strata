@@ -18,6 +18,16 @@ export const createProspectLotHoldSchema = z.object({
 })
 export type CreateProspectLotHoldInput = z.infer<typeof createProspectLotHoldSchema>
 
+export const sellableHomesQuerySchema = z.object({
+  search: z.string().trim().max(60).default(""),
+  availability: z.enum(["all", "spec", "tbb"]).default("all"),
+  minBeds: z.number().int().min(1).max(10).optional(),
+  minPriceCents: z.number().int().min(0).max(100_000_000_00).optional(),
+  maxPriceCents: z.number().int().min(0).max(100_000_000_00).optional(),
+  sort: z.enum(["lot", "price_asc", "price_desc", "aging"]).default("price_asc"),
+  offset: z.number().int().min(0).max(100_000).default(0),
+})
+
 export const convertReservationSchema = z.object({
   reservationId: z.string().uuid(),
   depositCents: z.number().int().safe().min(0).max(MAX_RESERVATION_DEPOSIT_CENTS, "The deposit exceeds the supported invoice amount"),

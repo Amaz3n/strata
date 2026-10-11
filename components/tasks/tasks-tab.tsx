@@ -23,6 +23,8 @@ import { Progress } from "@/components/ui/progress"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
+import { searchTaskProjectsAction } from "@/app/(app)/tasks/actions"
 import { MentionTextarea, HighlightedMentionsText } from "@/components/daily-logs/mention-textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -107,10 +109,10 @@ interface TasksTabProps {
   compact?: boolean
   readOnly?: boolean
   tasks: Task[]
-  /** Projects the task can be attached to. Empty = personal-only. */
-  projects: TaskProjectOption[]
+  /** What the org calls a project (Project, Home): the picker's label. */
+  projectNoun: string
   /** Preselect the project filter (e.g. arriving from a project's Tasks nav). */
-  initialProjectFilter?: string
+  initialProject?: TaskProjectOption
   initialTaskId?: string
   initialCreateOpen?: boolean
   fixedProjectName?: string
@@ -250,8 +252,8 @@ export function TasksTab({
   compact = false,
   readOnly = false,
   tasks: initialTasks,
-  projects,
-  initialProjectFilter,
+  projectNoun,
+  initialProject,
   initialTaskId,
   initialCreateOpen = false,
   fixedProjectName,
@@ -264,7 +266,7 @@ export function TasksTab({
   const [searchQuery, setSearchQuery] = useState("")
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "all">("all")
   const [assigneeFilter, setAssigneeFilter] = useState<string | "all">("all")
-  const [projectFilter, setProjectFilter] = useState<string | "all">(initialProjectFilter ?? "all")
+  const [projectFilter, setProjectFilter] = useState<string | "all">(initialProject?.id ?? "all")
   const [tradeFilter, setTradeFilter] = useState<TaskTrade | "all">("all")
   const [collapsedStatuses, setCollapsedStatuses] = useState<TaskStatus[]>(["done"])
 
@@ -344,13 +346,18 @@ export function TasksTab({
     return count
   }, [priorityFilter, assigneeFilter, tradeFilter, projectFilter])
 
-  const projectName = (id: string | null | undefined) =>
-    id ? projects.find((p) => p.id === id)?.name : undefined
+  // The filter offers the projects the listed tasks belong to (the filter works over
+  // the loaded tasks), so it never needs the portfolio.
+  const projectOptions = useMemo(() => {
+    const byId = new Map<string, TaskProjectOption>()
+    if (initialProject) byId.set(initialProject.id, initialProject)
+    for (const task of tasks) {
+      if (task.project_id && task.project_name) byId.set(task.project_id, { id: task.project_id, name: task.project_name })
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [tasks, initialProject])
 
-  const defaultCreateProjectId =
-    projectFilter !== "all" && projectFilter !== NO_PROJECT && projects.some((p) => p.id === projectFilter)
-      ? projectFilter
-      : undefined
+  const defaultCreateProject = projectOptions.find((project) => project.id === projectFilter)
 
   // ============================================
   // HANDLERS
@@ -571,19 +578,19 @@ export function TasksTab({
                 </Select>
               </div>
 
-              {projects.length > 0 && (
+              {projectOptions.length > 0 && (
                 <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Project</p>
+                  <p className="text-xs text-muted-foreground">{projectNoun}</p>
                   <Select value={projectFilter} onValueChange={setProjectFilter}>
                     <SelectTrigger size="sm" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">All projects</SelectItem>
-                      <SelectItem value={NO_PROJECT}>Personal (no project)</SelectItem>
+                      <SelectItem value="all">All {projectNoun.toLowerCase()}s</SelectItem>
+                      <SelectItem value={NO_PROJECT}>Personal (none)</SelectItem>
                       <SelectGroup>
-                        <SelectLabel>Projects</SelectLabel>
-                        {projects.map((project) => (
+                        <SelectLabel>{projectNoun}s with tasks</SelectLabel>
+                        {projectOptions.map((project) => (
                           <SelectItem key={project.id} value={project.id}>
                             {project.name}
                           </SelectItem>
@@ -651,7 +658,7 @@ export function TasksTab({
                       const dateStr = task.reminder_at ?? task.due_date
                       const dateInfo = formatDueDate(dateStr ?? undefined)
                       const isReminder = Boolean(task.reminder_at)
-                      const project = task.project_name ?? projectName(task.project_id)
+                      const project = task.project_name
                       return (
                         <div
                           key={task.id}
@@ -762,9 +769,9 @@ export function TasksTab({
       <CreateTaskDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        projects={projects}
+        projectNoun={projectNoun}
         team={team}
-        defaultProjectId={defaultCreateProjectId}
+        defaultProject={defaultCreateProject}
         fixedProjectName={fixedProjectName}
         onCreate={handleCreateTask}
         isSubmitting={isSubmitting}
@@ -779,7 +786,7 @@ export function TasksTab({
           task={selectedTask}
           fixedProjectName={fixedProjectName}
           team={team}
-          projects={projects}
+          projectNoun={projectNoun}
           onUpdate={handleUpdateTask}
           onDelete={() => {
             setTaskToDelete(selectedTask)
@@ -825,6 +832,59 @@ function useTaskPeople(open: boolean, projectId: string | undefined, fallback: T
 }
 
 // ============================================
+// PROJECT FIELD
+// ============================================
+
+/**
+ * Attach a task to a project by searching, never by scrolling the portfolio.
+ * `canClear` offers "Make personal", which clears the project.
+ */
+function TaskProjectField({
+  noun,
+  value,
+  canClear = false,
+  onChange,
+}: {
+  noun: string
+  value: SearchPickerItem | null
+  canClear?: boolean
+  onChange: (value: SearchPickerItem | null) => void
+}) {
+  const [picking, setPicking] = useState(false)
+  if (!value && !picking) {
+    return (
+      <Button type="button" variant="outline" className="w-full justify-start rounded-none bg-muted/50" onClick={() => setPicking(true)}>
+        <FolderOpen className="size-4" />
+        Personal task · attach to a {noun.toLowerCase()}
+      </Button>
+    )
+  }
+  return (
+    <div className="space-y-2">
+      <SearchPicker
+        label={noun}
+        value={picking ? null : value}
+        search={searchTaskProjectsAction}
+        onChange={(next) => {
+          if (next) {
+            setPicking(false)
+            onChange(next)
+          } else {
+            setPicking(true)
+          }
+        }}
+      />
+      {picking && value ? (
+        <Button type="button" variant="ghost" size="sm" onClick={() => setPicking(false)}>Keep {value.name}</Button>
+      ) : null}
+      {canClear && (value || picking) ? (
+        <Button type="button" variant="ghost" size="sm" onClick={() => { setPicking(false); onChange(null) }}>Make personal</Button>
+      ) : null}
+    </div>
+  )
+}
+
+// ============================================
 // CREATE TASK DIALOG
 // ============================================
 
@@ -832,20 +892,22 @@ interface CreateTaskDialogProps {
   team: TaskTeamMember[]
   open: boolean
   onOpenChange: (open: boolean) => void
-  projects: TaskProjectOption[]
+  projectNoun: string
   fixedProjectName?: string
-  defaultProjectId?: string
+  defaultProject?: TaskProjectOption
   onCreate: (values: { title: string; description?: string; project_id?: string; reminder_at?: string; assignee_id?: string; assignee_kind?: "user"; mentioned_user_ids?: string[] }) => void
   isSubmitting: boolean
 }
 
-function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projects, defaultProjectId, fixedProjectName, onCreate, isSubmitting }: CreateTaskDialogProps) {
+function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projectNoun, defaultProject, fixedProjectName, onCreate, isSubmitting }: CreateTaskDialogProps) {
   const [assigneeId, setAssigneeId] = useState("unassigned")
   const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([])
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? NO_PROJECT)
-  const { team, loading: peopleLoading } = useTaskPeople(open, projectId === NO_PROJECT ? undefined : projectId, initialTeam, Boolean(fixedProjectName && !defaultProjectId))
+  const defaultId = defaultProject?.id
+  const defaultName = defaultProject?.name
+  const [project, setProject] = useState<SearchPickerItem | null>(defaultId && defaultName ? { id: defaultId, name: defaultName, detail: "" } : null)
+  const { team, loading: peopleLoading } = useTaskPeople(open, project?.id, initialTeam, Boolean(fixedProjectName && !defaultId))
   const mentionableUsers = useMemo(() => team.map(member => ({ id: member.user_id, name: member.full_name, avatar_url: member.avatar_url })), [team])
   const [reminderAt, setReminderAt] = useState<Date | undefined>()
 
@@ -856,10 +918,10 @@ function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projects, def
       setMentionedUserIds([])
       setTitle("")
       setDescription("")
-      setProjectId(defaultProjectId ?? NO_PROJECT)
+      setProject(defaultId && defaultName ? { id: defaultId, name: defaultName, detail: "" } : null)
       setReminderAt(undefined)
     }
-  }, [open, defaultProjectId])
+  }, [open, defaultId, defaultName])
 
   useEffect(() => {
     if (!peopleLoading && assigneeId !== "unassigned" && !team.some(person => person.user_id === assigneeId)) setAssigneeId("unassigned")
@@ -873,7 +935,7 @@ function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projects, def
       mentioned_user_ids: mentionedUserIds,
       title: title.trim(),
       description: description.trim() || undefined,
-      project_id: projectId === NO_PROJECT ? undefined : projectId,
+      project_id: project?.id,
       reminder_at: reminderAt ? reminderAt.toISOString() : undefined,
     })
   }
@@ -928,27 +990,7 @@ function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projects, def
                 <SelectTrigger aria-label="Assignee" className="w-fit rounded-none bg-muted/50"><User className="size-4" /><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="unassigned">Unassigned</SelectItem>{team.map(member => <SelectItem key={member.user_id} value={member.user_id}>{member.full_name}</SelectItem>)}</SelectContent>
               </Select>
-              {fixedProjectName ? <span className="inline-flex items-center gap-2 bg-muted/50 px-3 py-2 text-sm"><FolderOpen className="size-4" />{fixedProjectName}</span> : (
-              <Select value={projectId} onValueChange={setProjectId}>
-                <SelectTrigger className="w-fit justify-start rounded-none bg-muted/50 px-3">
-                  <FolderOpen className="size-4" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_PROJECT}>Personal task</SelectItem>
-                  {projects.length > 0 && (
-                    <SelectGroup>
-                      <SelectLabel>Projects</SelectLabel>
-                      {projects.map((project) => (
-                        <SelectItem key={project.id} value={project.id}>
-                          {project.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )}
-                </SelectContent>
-              </Select>
-              )}
+              {fixedProjectName ? <span className="inline-flex items-center gap-2 bg-muted/50 px-3 py-2 text-sm"><FolderOpen className="size-4" />{fixedProjectName}</span> : null}
 
               <ReminderPicker
                 value={reminderAt}
@@ -957,6 +999,11 @@ function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projects, def
                 placeholder="Reminder"
               />
             </div>
+            {fixedProjectName ? null : (
+              <div className="mt-3">
+                <TaskProjectField noun={projectNoun} value={project} canClear onChange={setProject} />
+              </div>
+            )}
           </div>
 
           <DialogFooter className="items-center justify-end border-t px-5 py-3">
@@ -1058,12 +1105,12 @@ interface TaskDetailDialogProps {
   onOpenChange: (open: boolean) => void
   task: Task
   team: TaskTeamMember[]
-  projects: TaskProjectOption[]
+  projectNoun: string
   onUpdate: (taskId: string, updates: Partial<TaskInput>) => Promise<Task>
   onDelete: () => void
 }
 
-function TaskDetailDialog({ open, onOpenChange, task, team: initialTeam, projects, onUpdate, onDelete, fixedProjectName }: TaskDetailDialogProps) {
+function TaskDetailDialog({ open, onOpenChange, task, team: initialTeam, projectNoun, onUpdate, onDelete, fixedProjectName }: TaskDetailDialogProps) {
   const { team } = useTaskPeople(open, task.project_id ?? undefined, initialTeam)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
@@ -1341,24 +1388,15 @@ function TaskDetailDialog({ open, onOpenChange, task, team: initialTeam, project
                   </SelectContent>
                 </Select>
 
-                <Select disabled={Boolean(fixedProjectName)}
-                  value={task.project_id ?? NO_PROJECT}
-                  onValueChange={(value) =>
-                    onUpdate(task.id, { project_id: value === NO_PROJECT ? undefined : value })
-                  }
-                >
-                  <SelectTrigger className="w-full h-9">
-                    <SelectValue placeholder="Personal" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_PROJECT}>Personal (no project)</SelectItem>
-                    {projects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {fixedProjectName ? null : (
+                  <TaskProjectField
+                    key={task.project_id ?? NO_PROJECT}
+                    noun={projectNoun}
+                    value={task.project_id ? { id: task.project_id, name: task.project_name ?? projectNoun, detail: "" } : null}
+                    canClear
+                    onChange={(next) => { onUpdate(task.id, { project_id: next ? next.id : null }).catch(() => undefined) }}
+                  />
+                )}
               </div>
             </div>
 

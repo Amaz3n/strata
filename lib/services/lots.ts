@@ -532,14 +532,18 @@ export const PLAN_ASSIGNMENT_OPTION_CAP = 200
  */
 export async function listPlanAssignmentOptions(
   communityId: string,
+  input: { search?: string } = {},
   orgId?: string,
 ): Promise<{ plans: PlanAssignmentOption[]; truncated: boolean }> {
   const context = await requireOrgContext(orgId)
   await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
   await requireCommunityScope(communityId, context)
-  const { data: plans, error } = await context.supabase.from("house_plans")
+  let planQuery = context.supabase.from("house_plans")
     .select("id, code, name")
-    .eq("org_id", context.orgId).eq("status", "active").order("code").limit(PLAN_ASSIGNMENT_OPTION_CAP + 1)
+    .eq("org_id", context.orgId).eq("status", "active")
+  const term = input.search?.trim().replace(/[\\%_,()]/g, "")
+  if (term) planQuery = planQuery.or(`code.ilike.%${term}%,name.ilike.%${term}%`)
+  const { data: plans, error } = await planQuery.order("code").order("id").limit(PLAN_ASSIGNMENT_OPTION_CAP + 1)
   if (error) throw new Error(`Failed to load plans: ${error.message}`)
   const shown = (plans ?? []).slice(0, PLAN_ASSIGNMENT_OPTION_CAP)
   if (shown.length === 0) return { plans: [], truncated: false }

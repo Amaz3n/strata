@@ -42,6 +42,7 @@ import { revokePortalToken } from "@/lib/services/portal-access"
 import { getPlanLadder } from "@/lib/services/house-plans"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { createProject } from "@/lib/services/projects"
+import { findContactIdByEmail } from "@/lib/services/party-promotion"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -224,49 +225,129 @@ export async function listSpecInventory(opts: SpecInventoryOptions = {}) {
   return (await listSpecInventoryPage(opts)).lots
 }
 
+export type InventoryOrder = "newest" | "lot" | "price_asc" | "price_desc" | "aging"
+
 interface SpecInventoryOptions {
   communityId?: string
   divisionId?: string
   status?: string
   limit?: number
   includeToBeBuilt?: boolean
+  /** Lot number, block, plan code or name, or community name. */
+  search?: string
+  /** `spec` is a started house; `tbb` an unstarted lot the buyer still picks a plan on. */
+  availability?: "all" | "spec" | "tbb"
+  minBeds?: number
+  /** Asking-price band: at least `minPriceCents`, below `maxPriceCents`. An unpriced lot is in no band. */
+  minPriceCents?: number
+  maxPriceCents?: number
+  /** Where the previous page stopped (`nextOffset`). */
+  offset?: number
+  /**
+   * `lot` keeps a community's lots together for a picker; `newest` is the
+   * standing-spec view; `aging` puts the longest-standing finished homes first.
+   */
+  order?: InventoryOrder
 }
 
-/** Same read, plus whether more lots matched than `limit` returned — so a picker can say so. */
+/** A page whose rows are mostly held or sold keeps reading until it fills, but not forever. */
+const INVENTORY_FILL_BATCHES = 5
+
+const NO_INVENTORY = { lots: [], truncated: false, total: 0, nextOffset: null as number | null }
+
+const LOT_INVENTORY_SELECT = "id, community_id, division_id, lot_number, block, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, project:projects(id, name, start_date, status), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)"
+
+/**
+ * Same read, plus how much it left out: `truncated` says more lots matched than
+ * were returned, `total` is how many lots the scope and filters match before
+ * holds and sales are taken off (so it can only over-count), and `nextOffset`
+ * is where the next page starts.
+ *
+ * Filtering, price and age ordering and paging run in the database against
+ * `sellable_lot_inventory`, which derives the asking price and the days a
+ * finished home has stood; the lots on the page are then read and priced for display.
+ */
 export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
   const context = await requireOrgContext()
   await requirePermission("sales.read", context)
   const divisionAccess = await getSalesDivisionAccess(context)
-  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
-    return { lots: [], truncated: false }
-  }
+  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) return NO_INVENTORY
   if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
-  let query = context.supabase
-    .from("lots")
-    .select("id, community_id, division_id, lot_number, block, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, project:projects(id, name, start_date, status), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)", { count: "exact" })
-    .eq("org_id", context.orgId)
-  query = opts.includeToBeBuilt
-    ? query.in("status", SELLABLE_LOT_STATUSES)
-    : query.not("project_id", "is", null)
-  if (opts.communityId) query = query.eq("community_id", opts.communityId)
-  if (opts.divisionId) query = query.eq("division_id", opts.divisionId)
-  else if (divisionAccess.assignedOnly) {
-    if (divisionAccess.divisionIds.length === 0) return { lots: [], truncated: false }
-    query = query.in("division_id", divisionAccess.divisionIds)
-  }
-  if (opts.status) query = query.eq("status", opts.status)
+  if (!opts.divisionId && divisionAccess.assignedOnly && divisionAccess.divisionIds.length === 0) return NO_INVENTORY
+  const term = opts.search?.trim().replace(/[\\%_,()]/g, "")
   const limit = Math.min(opts.limit ?? 100, 250)
-  const { data: lots, error, count } = await query.order("created_at", { ascending: false }).order("id").limit(limit)
-  if (error) throw new Error(`Failed to load spec inventory: ${error.message}`)
-  const lotIds = (lots ?? []).map((lot: any) => lot.id)
-  const projectIds = (lots ?? []).map((lot: any) => lot.project_id).filter(Boolean)
+  const buildQuery = () => {
+    let query = context.supabase
+      .from("sellable_lot_inventory")
+      .select("lot_id", { count: "exact" })
+      .eq("org_id", context.orgId)
+    query = opts.includeToBeBuilt
+      ? query.in("status", SELLABLE_LOT_STATUSES)
+      : query.not("project_id", "is", null)
+    if (opts.availability === "spec") query = query.not("project_id", "is", null)
+    if (opts.availability === "tbb") query = query.is("project_id", null)
+    if (opts.minBeds) query = query.gte("plan_beds", opts.minBeds)
+    if (opts.minPriceCents != null) query = query.gte("asking_price_cents", opts.minPriceCents)
+    if (opts.maxPriceCents != null) query = query.lt("asking_price_cents", opts.maxPriceCents)
+    if (term) query = query.or(`lot_number.ilike.%${term}%,block.ilike.%${term}%,plan_code.ilike.%${term}%,plan_name.ilike.%${term}%,community_name.ilike.%${term}%`)
+    if (opts.communityId) query = query.eq("community_id", opts.communityId)
+    if (opts.divisionId) query = query.eq("division_id", opts.divisionId)
+    else if (divisionAccess.assignedOnly) query = query.in("division_id", divisionAccess.divisionIds)
+    if (opts.status) query = query.eq("status", opts.status)
+    switch (opts.order) {
+      case "lot": return query.order("community_id").order("lot_number").order("lot_id")
+      case "price_asc": return query.order("asking_price_cents", { ascending: true, nullsFirst: false }).order("lot_number").order("lot_id")
+      case "price_desc": return query.order("asking_price_cents", { ascending: false, nullsFirst: false }).order("lot_number").order("lot_id")
+      case "aging": return query.order("aging_days", { ascending: false }).order("lot_number").order("lot_id")
+      default: return query.order("created_at", { ascending: false }).order("lot_id")
+    }
+  }
+
+  const mapped: SpecInventoryLot[] = []
+  let offset = opts.offset ?? 0
+  let total = 0
+  let more = false
+  for (let batch = 0; batch < INVENTORY_FILL_BATCHES && mapped.length < limit; batch += 1) {
+    const { data: page, error, count } = await buildQuery().range(offset, offset + limit - 1)
+    if (error) throw new Error(`Failed to load spec inventory: ${error.message}`)
+    total = count ?? 0
+    const ids: string[] = (page ?? []).map((row) => row.lot_id)
+    const { data: lots, error: lotsError } = ids.length
+      ? await context.supabase.from("lots").select(LOT_INVENTORY_SELECT).eq("org_id", context.orgId).in("id", ids)
+      : { data: [], error: null }
+    if (lotsError) throw new Error(`Failed to load spec inventory: ${lotsError.message}`)
+    const byId = new Map((lots ?? []).map((lot) => [lot.id, lot]))
+    const rows = ids.flatMap((lotId) => byId.get(lotId) ?? [])
+    const available = await availableInventory(context, rows)
+    const taken = available.slice(0, limit - mapped.length)
+    // Stop right after the last lot handed out, so the next page starts at the first one left over.
+    const consumed = taken.length === available.length ? ids.length : ids.indexOf(available[taken.length].row.id)
+    mapped.push(...taken.map((entry) => entry.lot))
+    offset += consumed
+    more = offset < total
+    if (!more || ids.length < limit) break
+  }
+  return { lots: mapped, truncated: more, total, nextOffset: more ? offset : null }
+}
+
+type SpecInventoryLot = Awaited<ReturnType<typeof mapInventoryRows>>[number]
+
+/** Takes held and sold lots off a batch and prices what is left. */
+async function availableInventory(context: OrgContext, lots: any[]): Promise<Array<{ row: any; lot: SpecInventoryLot }>> {
+  const lotIds = lots.map((lot: any) => lot.id)
+  const projectIds = lots.map((lot: any) => lot.project_id).filter(Boolean)
   const [{ data: reservations }, { data: agreements }] = await Promise.all([
     lotIds.length ? context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", lotIds).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()) : Promise.resolve({ data: [] }),
     projectIds.length ? context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", projectIds).eq("contract_type", "purchase_agreement").eq("status", "active") : Promise.resolve({ data: [] }),
   ])
   const reserved = new Set((reservations ?? []).map((row: any) => row.lot_id))
   const sold = new Set((agreements ?? []).map((row: any) => row.project_id))
-  const availableLots = (lots ?? []).filter((lot: any) => !reserved.has(lot.id) && !sold.has(lot.project_id))
+  const availableLots = lots.filter((lot: any) => !reserved.has(lot.id) && !sold.has(lot.project_id))
+  const priced = await mapInventoryRows(context, availableLots)
+  return availableLots.map((row, index) => ({ row, lot: priced[index] }))
+}
+
+async function mapInventoryRows(context: OrgContext, availableLots: any[]) {
   const communityIds = Array.from(new Set(availableLots.map((lot: any) => lot.community_id))) as string[]
   const planIds = Array.from(new Set(availableLots.map((lot: any) => lot.house_plan_id).filter(Boolean))) as string[]
   const availableProjectIds = availableLots.map((lot: any) => lot.project_id).filter(Boolean) as string[]
@@ -284,7 +365,7 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
     const option = Array.isArray((row as any).option) ? (row as any).option[0] : (row as any).option
     if (option?.option_scope === "structural") structuralByProject.set((row as any).project_id, (structuralByProject.get((row as any).project_id) ?? 0) + Number((row as any).price_cents_snapshot ?? 0))
   }
-  const mapped = availableLots.map((lot: any) => ({
+  return availableLots.map((lot: any) => ({
     lotId: lot.id,
     lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number,
     communityId: lot.community_id,
@@ -302,7 +383,6 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
     askingPriceCents: specAskingPrice(lot, availability ?? [], structuralByProject, today),
     premiumCents: Number(lot.premium_cents ?? 0),
   }))
-  return { lots: mapped, truncated: (count ?? 0) > limit }
 }
 
 /**
@@ -450,10 +530,7 @@ export async function createLotHoldFromProspect(input: { prospectId: string; lot
   const primary = (prospectContacts ?? [])[0]
   if (!primary) throw new Error("Add a contact to this prospect before holding a lot")
   let buyerContactId = primary.promoted_contact_id as string | null
-  if (!buyerContactId && primary.email) {
-    const { data: existing } = await context.supabase.from("contacts").select("id").eq("org_id", context.orgId).eq("email", primary.email).maybeSingle()
-    buyerContactId = existing?.id ?? null
-  }
+  if (!buyerContactId && primary.email) buyerContactId = await findContactIdByEmail(context.supabase, context.orgId, primary.email)
   if (!buyerContactId) {
     const { createContact } = await import("@/lib/services/contacts")
     const contact = await createContact({
@@ -959,28 +1036,47 @@ export async function withdrawPlanFromCommunity(input: unknown, orgId?: string) 
   return { withdrawn: (data ?? []).length }
 }
 
-/** Released plans this community could sell but is not offering yet. */
-export async function listOfferablePlans(communityId: string, orgId?: string) {
+/**
+ * One page of the released plans this community could sell but is not offering
+ * yet, found by code or name. Only a released plan version can be sold — an
+ * unreleased plan has no priced takeoff behind it, so offering it would promise
+ * an unbuildable home.
+ */
+export async function searchOfferablePlans(
+  communityId: string,
+  input: { search?: string; page?: number; pageSize?: number } = {},
+  orgId?: string,
+): Promise<{ plans: Array<{ id: string; code: string | null; name: string }>; page: number; pageSize: number; total: number }> {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
   await assertCommunityInSalesScope(context, communityId)
-  const [{ data: offered, error: offeredError }, { data: plans, error: plansError }] = await Promise.all([
-    context.supabase.from("community_plan_availability").select("house_plan_id").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true),
-    context.supabase.from("house_plans").select("id, code, name, versions:house_plan_versions(id, status), elevations:house_plan_elevations(id, name, code, is_active)").eq("org_id", context.orgId).neq("status", "retired").order("code").limit(500),
-  ])
-  if (offeredError || plansError) throw new Error(`Failed to load offerable plans: ${(offeredError ?? plansError)?.message}`)
-  const offeredIds = new Set((offered ?? []).map((row) => row.house_plan_id))
-  return (plans ?? [])
-    .filter((plan) => !offeredIds.has(plan.id))
-    // Only a released plan version can be sold — an unreleased plan has no
-    // priced takeoff behind it, so offering it would promise an unbuildable home.
-    .filter((plan) => (Array.isArray(plan.versions) ? plan.versions : []).some((version: { status: string }) => version.status === "released"))
-    .map((plan) => ({
-      id: plan.id,
-      code: plan.code as string | null,
-      name: plan.name as string,
-      elevationIds: (Array.isArray(plan.elevations) ? plan.elevations : []).filter((elevation: { is_active: boolean }) => elevation.is_active).map((elevation: { id: string }) => elevation.id),
-    }))
+  const page = Math.max(1, input.page ?? 1)
+  const pageSize = Math.min(Math.max(1, input.pageSize ?? 25), 50)
+  const offered = await readAllRows<{ house_plan_id: string }>(
+    (from, to) => context.supabase.from("community_plan_availability").select("house_plan_id").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true).order("id").range(from, to),
+    { cap: 5_000, label: "Failed to load the plans already offered" },
+  )
+  if (offered.truncated) throw new Error("This community offers too many plans to list the rest. Withdraw plans it no longer sells first.")
+  const offeredIds = [...new Set(offered.rows.map((row) => row.house_plan_id))]
+
+  let query = context.supabase
+    .from("house_plans")
+    .select("id, code, name, versions:house_plan_versions!inner(status)", { count: "exact" })
+    .eq("org_id", context.orgId)
+    .neq("status", "retired")
+    .eq("versions.status", "released")
+  if (offeredIds.length) query = query.not("id", "in", `(${offeredIds.join(",")})`)
+  const term = input.search?.trim().replace(/[\\%_,()]/g, "")
+  if (term) query = query.or(`code.ilike.%${term}%,name.ilike.%${term}%`)
+  const from = (page - 1) * pageSize
+  const { data, error, count } = await query.order("code").order("id").range(from, from + pageSize - 1)
+  if (error) throw new Error(`Failed to load offerable plans: ${error.message}`)
+  return {
+    plans: (data ?? []).map((plan) => ({ id: plan.id, code: plan.code ?? null, name: plan.name })),
+    page,
+    pageSize,
+    total: count ?? 0,
+  }
 }
 
 export async function setCommunityPlanPrice(input: unknown, orgId?: string) {

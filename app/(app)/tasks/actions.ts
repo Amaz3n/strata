@@ -8,7 +8,9 @@ import { z } from "zod"
 import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
-import { resolveVisibleProjectIds } from "@/lib/services/projects"
+import { searchVisibleProjects } from "@/lib/services/projects"
+import { SEARCH_PICKER_PAGE_SIZE, searchPickerPage, searchPickerQuerySchema } from "@/lib/search-picker"
+import type { SearchPickerPage } from "@/components/ui/search-picker"
 import { recordEvent } from "@/lib/services/events"
 import type { Task } from "@/lib/types"
 import { taskInputSchema, taskUpdateSchema, type TaskInput } from "@/lib/validation/tasks"
@@ -444,7 +446,7 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
       }
 
       if (parsed.description !== undefined || parsed.mentioned_user_ids !== undefined || parsed.project_id !== undefined || parsed.assignee_kind === "user") {
-        const people = await taskPeople({ supabase, orgId, userId } as Awaited<ReturnType<typeof requireOrgContext>>, parsed.project_id ?? existing.project_id)
+        const people = await taskPeople({ supabase, orgId, userId } as Awaited<ReturnType<typeof requireOrgContext>>, parsed.project_id === undefined ? existing.project_id : parsed.project_id)
         if (parsed.assignee_kind === "user" && !people.some(person => person.id === parsed.assignee_id)) throw new Error("Choose someone with access to this task")
         if (parsed.description !== undefined || parsed.mentioned_user_ids !== undefined || parsed.project_id !== undefined) {
           parsed.mentioned_user_ids = resolveTaskMentions(parsed.description ?? existing.description ?? "", people.map(person => ({ id: person.id, name: person.full_name })))
@@ -539,25 +541,18 @@ export async function deleteMyTaskAction(taskId: string): Promise<ActionResult<v
   })
 }
 
-/** Projects for the task's project picker/filter: only the ones the caller can open. */
-export async function listTaskProjectsAction(): Promise<Array<{ id: string; name: string }>> {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      const visibleProjectIds = await resolveVisibleProjectIds({ supabase, orgId, userId, includePrecon: true })
-      if (visibleProjectIds?.length === 0) return []
-
-      let query = supabase
-        .from("projects")
-        .select("id, name")
-        .eq("org_id", orgId)
-        .order("name", { ascending: true })
-      if (visibleProjectIds) query = query.in("id", visibleProjectIds)
-      const { data, error } = await query
-
-      if (error) {
-        throw new Error(`Failed to list projects: ${error.message}`)
-      }
-
-      return (data ?? []).map((row) => ({ id: row.id, name: row.name ?? "Untitled project" }))
+/** Project picker for the task composer: one scoped page of the projects the caller can open per search, never the portfolio. */
+export async function searchTaskProjectsAction(input: unknown): Promise<ActionResult<SearchPickerPage>> {
+  return run(async () => {
+    const query = searchPickerQuerySchema.parse(input)
+    const result = await searchVisibleProjects({ search: query.search, page: query.page, pageSize: SEARCH_PICKER_PAGE_SIZE, includePrecon: true })
+    return searchPickerPage(
+      result.projects.map((project) => ({ id: project.id, name: project.name, detail: [project.noun, project.status].filter(Boolean).join(" · ") })),
+      result.page,
+      result.pageSize,
+      result.total,
+    )
+  })
 }
 
 /** Org-wide people a task can be assigned to: team members + contacts (no companies). */

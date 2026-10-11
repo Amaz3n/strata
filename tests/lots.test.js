@@ -164,6 +164,26 @@ describe("assignPlanToLot", () => {
     assert.equal(offered.plans[0].elevations[0].offered, true)
   })
 
+  test("searching the plan picker finds a plan by code or name from the whole library", async () => {
+    const service = planHarness({ offered: true })
+    const others = [id(70), id(71)]
+    service.db.house_plans = [
+      { id: PLAN, org_id: ORG, code: "A100", name: "Aspen", status: "active" },
+      { id: others[0], org_id: ORG, code: "B200", name: "Birch", status: "active" },
+      { id: others[1], org_id: ORG, code: "B300", name: "Birch Grande", status: "active" },
+    ]
+    for (const [index, planId] of others.entries()) {
+      service.db.house_plan_versions.push({ id: id(80 + index), org_id: ORG, house_plan_id: planId, status: "released", version_number: 1 })
+      service.db.house_plan_elevations.push({ id: id(90 + index), org_id: ORG, house_plan_id: planId, is_active: true, code: "A", swing_applicable: false })
+    }
+    const found = async (search) => (await service.run(() => listPlanAssignmentOptions(COMMUNITY, { search }))).plans.map((plan) => plan.code)
+
+    assert.deepEqual(await found("birch"), ["B200", "B300"])
+    assert.deepEqual(await found("A1"), ["A100"])
+    assert.deepEqual(await found("nothing like it"), [])
+    assert.deepEqual(await found(undefined), ["A100", "B200", "B300"])
+  })
+
   test("assigning a plan takes plan authority as well as lot authority", async () => {
     const clerk = harness({ permissions: ["lot.write", "community.read"] })
     await assert.rejects(assign(clerk), /Missing permission/)

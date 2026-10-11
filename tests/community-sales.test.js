@@ -29,7 +29,7 @@ stubModule("@/lib/services/invoices", {
   },
 })
 
-const { bulkRepriceCommunityPlans, convertHoldToReservation, createLotHoldFromProspect, executePurchaseAgreementFromEnvelopeExecution, listOfferablePlans, listSellableLots, listSpecInventoryPage, setSpecAskingPrice, voidPurchaseAgreement } =
+const { bulkRepriceCommunityPlans, convertHoldToReservation, createLotHoldFromProspect, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, setSpecAskingPrice, voidPurchaseAgreement } =
   freshRequire("lib/services/community-sales.ts")
 
 const COMMUNITY = id(1)
@@ -39,6 +39,19 @@ const RESERVATION = id(4)
 const LEAD = id(5)
 const TOKEN = id(6)
 const HOME_ID = id(90)
+
+/**
+ * The rows `sellable_lot_inventory` would hold for these lots. The view derives price and
+ * age in SQL, so a test states the two facts it cares about per lot instead of re-deriving them.
+ */
+function inventoryView(lots, facts = {}) {
+  return lots.map((lot) => ({
+    lot_id: lot.id, org_id: lot.org_id, community_id: lot.community_id, division_id: lot.division_id ?? null, project_id: lot.project_id,
+    status: lot.status, lot_number: lot.lot_number, block: lot.block ?? null, house_plan_id: lot.house_plan_id, created_at: lot.created_at ?? "2026-10-01T00:00:00Z",
+    community_name: lot.community?.name ?? null, plan_code: null, plan_name: lot.plan?.name ?? null, plan_beds: lot.plan?.beds ?? null,
+    asking_price_cents: null, aging_days: 0, ...facts[lot.id],
+  }))
+}
 
 describe("bulkRepriceCommunityPlans", () => {
   const offers = [
@@ -231,7 +244,7 @@ describe("listSpecInventoryPage standing-spec age", () => {
   const ages = async (lots, completions) => {
     const service = createServiceHarness({
       permissions: ["sales.read"],
-      tables: { lots, lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], community_plan_availability: [], project_selections: [], project_financial_settings: completions },
+      tables: { lots, sellable_lot_inventory: inventoryView(lots), lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], community_plan_availability: [], project_selections: [], project_financial_settings: completions },
     })
     const { lots: rows } = await service.run(() => listSpecInventoryPage({ communityId: COMMUNITY }))
     return Object.fromEntries(rows.map((row) => [row.lotLabel, [row.agingDays, row.completedAt, row.underConstruction]]))
@@ -258,6 +271,117 @@ describe("listSpecInventoryPage standing-spec age", () => {
   })
 })
 
+describe("listSpecInventoryPage as the Find a home search", () => {
+  const OAK = id(61)
+  const MAPLE = id(62)
+  const OAK_DIVISION = id(63)
+  const MAPLE_DIVISION = id(64)
+  const ASPEN = id(65)
+  const BIRCH = id(66)
+  const plans = [
+    { id: ASPEN, org_id: ORG, code: "A100", name: "Aspen" },
+    { id: BIRCH, org_id: ORG, code: "B200", name: "Birch" },
+  ]
+  const communities = [
+    { id: OAK, org_id: ORG, name: "Oak Ridge", division_id: OAK_DIVISION },
+    { id: MAPLE, org_id: ORG, name: "Maple Glen", division_id: MAPLE_DIVISION },
+  ]
+  const lot = (n, community, planId, patch = {}) => ({
+    id: id(4000 + n), org_id: ORG, community_id: community.id, division_id: community.division_id, lot_number: String(n).padStart(3, "0"), block: null,
+    status: "developed", premium_cents: 0, asking_price_override_cents: null, project_id: null, house_plan_id: planId, house_plan_elevation_id: null,
+    project: null, plan: { name: plans.find((entry) => entry.id === planId)?.name ?? null, beds: planId === ASPEN ? 3 : 5 }, community: { name: community.name }, created_at: "2026-10-01T00:00:00Z", ...patch,
+  })
+  const harness = (lots, options = {}) =>
+    createServiceHarness({
+      permissions: ["sales.read"],
+      tables: { lots, sellable_lot_inventory: inventoryView(lots, options.facts), lot_reservations: options.reservations ?? [], contracts: [], communities, house_plans: plans, community_plan_availability: [], project_selections: [], project_financial_settings: [] },
+      ...options.access,
+    })
+  const find = (service, opts) => service.run(() => listSpecInventoryPage({ includeToBeBuilt: true, order: "lot", ...opts }))
+  const labels = (page) => page.lots.map((entry) => entry.lotLabel)
+
+  test("a typed search reaches a lot by its number, its plan or its community and nothing else", async () => {
+    const service = harness([lot(101, communities[0], ASPEN), lot(102, communities[0], BIRCH), lot(7, communities[1], ASPEN)])
+    assert.deepEqual(labels(await find(service, { search: "102" })), ["102"])
+    assert.deepEqual(labels(await find(service, { search: "birch" })), ["102"])
+    assert.deepEqual(labels(await find(service, { search: "maple" })), ["007"])
+    assert.deepEqual(labels(await find(service, { search: "aspen" })).sort(), ["007", "101"])
+    assert.deepEqual(labels(await find(service, { search: "zzz" })), [])
+  })
+
+  test("availability and bedroom filters narrow on the server", async () => {
+    const service = harness([lot(1, communities[0], ASPEN), lot(2, communities[0], BIRCH, { project_id: id(9001), project: { id: id(9001), name: "Spec", start_date: "2026-08-01", status: "active" } })])
+    assert.deepEqual(labels(await find(service, { availability: "spec" })), ["002"])
+    assert.deepEqual(labels(await find(service, { availability: "tbb" })), ["001"])
+    assert.deepEqual(labels(await find(service, { minBeds: 4 })), ["002"])
+  })
+
+  test("a page says how much it left out and the next page starts where it stopped", async () => {
+    const service = harness(Array.from({ length: 120 }, (_, index) => lot(index + 1, communities[0], ASPEN)))
+
+    const first = await find(service, { limit: 50 })
+    assert.deepEqual([first.lots.length, first.truncated, first.total, first.nextOffset], [50, true, 120, 50])
+    const second = await find(service, { limit: 50, offset: first.nextOffset })
+    assert.deepEqual([second.lots.length, second.truncated, second.nextOffset], [50, true, 100])
+    const third = await find(service, { limit: 50, offset: second.nextOffset })
+    assert.deepEqual([third.lots.length, third.truncated, third.nextOffset], [20, false, null])
+    assert.equal(new Set([...first.lots, ...second.lots, ...third.lots].map((entry) => entry.lotId)).size, 120)
+  })
+
+  test("held lots come off the page without cutting it short or being skipped on the next one", async () => {
+    const lots = Array.from({ length: 10 }, (_, index) => lot(index + 1, communities[0], ASPEN))
+    const held = [1, 2, 3, 4].map((n) => ({ lot_id: id(4000 + n), org_id: ORG, status: "hold", expires_at: null }))
+    const service = harness(lots, { reservations: held })
+
+    const first = await find(service, { limit: 5 })
+    assert.deepEqual(labels(first), ["005", "006", "007", "008", "009"])
+    assert.deepEqual([first.truncated, first.nextOffset], [true, 9])
+    const second = await find(service, { limit: 5, offset: first.nextOffset })
+    assert.deepEqual(labels(second), ["010"])
+    assert.deepEqual([second.truncated, second.nextOffset], [false, null])
+  })
+
+  test("a price band keeps only homes the sheet prices inside it, and pages stay honest under it", async () => {
+    const lots = Array.from({ length: 8 }, (_, index) => lot(index + 1, communities[0], ASPEN))
+    const facts = Object.fromEntries(lots.map((entry, index) => [entry.id, { asking_price_cents: index === 7 ? null : (300 + index * 25) * 100_000 }]))
+    const service = harness(lots, { facts })
+
+    const band = await find(service, { minPriceCents: 400_00000, maxPriceCents: 460_00000, limit: 2 })
+    assert.deepEqual(labels(band), ["005", "006"])
+    assert.deepEqual([band.total, band.truncated], [3, true])
+    const rest = await find(service, { minPriceCents: 400_00000, maxPriceCents: 460_00000, limit: 2, offset: band.nextOffset })
+    assert.deepEqual([labels(rest), rest.truncated], [["007"], false])
+    assert.equal(labels(await find(service, { minPriceCents: 0 })).includes("008"), false) // unpriced is in no band
+  })
+
+  test("homes sort by price either way, and the longest-standing finished homes come first", async () => {
+    const lots = [lot(1, communities[0], ASPEN), lot(2, communities[0], ASPEN), lot(3, communities[0], ASPEN)]
+    const facts = {
+      [lots[0].id]: { asking_price_cents: 450_000_00, aging_days: 12 },
+      [lots[1].id]: { asking_price_cents: 350_000_00, aging_days: 95 },
+      [lots[2].id]: { asking_price_cents: 400_000_00, aging_days: 0 },
+    }
+    const service = harness(lots, { facts })
+    assert.deepEqual(labels(await find(service, { order: "price_asc" })), ["002", "003", "001"])
+    assert.deepEqual(labels(await find(service, { order: "price_desc" })), ["001", "003", "002"])
+    assert.deepEqual(labels(await find(service, { order: "aging" })), ["002", "001", "003"])
+  })
+
+  test("a division-limited seller never sees another division's lots, however they search", async () => {
+    const lots = [lot(1, communities[0], ASPEN), lot(2, communities[1], ASPEN)]
+    const service = harness(lots, { access: { divisions: [OAK_DIVISION] } })
+    assert.deepEqual(labels(await find(service, {})), ["001"])
+    assert.deepEqual(labels(await find(service, { search: "aspen" })), ["001"])
+    assert.deepEqual(labels(await find(service, { search: "maple" })), [])
+    assert.deepEqual(await find(service, { divisionId: MAPLE_DIVISION }), { lots: [], truncated: false, total: 0, nextOffset: null })
+  })
+
+  test("another organization's lots are never searched", async () => {
+    const service = harness([lot(1, communities[0], ASPEN), lot(2, communities[0], ASPEN, { org_id: id(999) })])
+    assert.deepEqual(labels(await find(service, { search: "aspen" })), ["001"])
+  })
+})
+
 describe("spec asking price from the community sheet", () => {
   const PLAN = id(70)
   const ELEVATION = id(71)
@@ -268,7 +392,7 @@ describe("spec asking price from the community sheet", () => {
   const priced = async (sheet) => {
     const service = createServiceHarness({
       permissions: ["sales.read"],
-      tables: { lots: [lot], lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], community_plan_availability: sheet, project_selections: [], project_financial_settings: [] },
+      tables: { lots: [lot], sellable_lot_inventory: inventoryView([lot]), lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], community_plan_availability: sheet, project_selections: [], project_financial_settings: [] },
     })
     const { lots } = await service.run(() => listSpecInventoryPage({ communityId: COMMUNITY }))
     return lots[0].askingPriceCents
@@ -353,21 +477,33 @@ describe("executePurchaseAgreementFromEnvelopeExecution", () => {
   })
 })
 
-describe("listOfferablePlans", () => {
-  const released = [{ id: id(51), status: "released" }]
-  const plan = (n, status, versions = released) => ({ id: id(n), org_id: ORG, code: `P${n}`, name: `Plan ${n}`, status, versions, elevations: [] })
-
-  test("a community is offered every released plan it does not sell yet, never a retired one", async () => {
-    const service = createServiceHarness({
+describe("searchOfferablePlans", () => {
+  const released = [{ status: "released" }]
+  const plan = (n, status, versions = released) => ({ id: id(n), org_id: ORG, code: `P${n}`, name: `Plan ${n}`, status, versions })
+  const harness = (plans, extra = {}) =>
+    createServiceHarness({
       permissions: ["sales.read"],
       tables: {
         communities: [{ id: COMMUNITY, org_id: ORG, division_id: null }],
         community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: id(44), is_available: true }],
-        house_plans: [plan(41, "active"), plan(42, "retired"), plan(43, "draft", [{ id: id(52), status: "draft" }]), plan(44, "active")],
+        house_plans: plans,
+        ...extra,
       },
     })
-    const offerable = await service.run(() => listOfferablePlans(COMMUNITY))
-    assert.deepEqual(offerable.map((row) => row.name), ["Plan 41"])
+  const names = (page) => page.plans.map((row) => row.name)
+
+  test("a community is offered every released plan it does not sell yet, never a retired one", async () => {
+    const service = harness([plan(41, "active"), plan(42, "retired"), plan(43, "draft", [{ status: "draft" }]), plan(44, "active")])
+    assert.deepEqual(names(await service.run(() => searchOfferablePlans(COMMUNITY))), ["Plan 41"])
+  })
+
+  test("a search finds a plan past the first page and a page says when there is more", async () => {
+    const service = harness(Array.from({ length: 60 }, (_, index) => plan(100 + index, "active")))
+
+    const first = await service.run(() => searchOfferablePlans(COMMUNITY, { pageSize: 25 }))
+    const third = await service.run(() => searchOfferablePlans(COMMUNITY, { pageSize: 25, page: 3 }))
+    assert.deepEqual([first.plans.length, first.total, third.plans.length], [25, 60, 10])
+    assert.deepEqual(names(await service.run(() => searchOfferablePlans(COMMUNITY, { search: "plan 159" }))), ["Plan 159"])
   })
 })
 
@@ -377,7 +513,7 @@ describe("createLotHoldFromProspect", () => {
   const PROMOTED = id(36)
   const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString()
 
-  function harness({ prospect = {}, lotStatus = "developed", promoted = PROMOTED } = {}) {
+  function harness({ prospect = {}, lotStatus = "developed", promoted = PROMOTED, contacts = [{ id: PROMOTED, org_id: ORG, full_name: "Pat Buyer", email: "pat@example.com" }] } = {}) {
     return createServiceHarness({
       permissions: ["sales.manage"],
       tables: {
@@ -385,7 +521,7 @@ describe("createLotHoldFromProspect", () => {
         prospect_contacts: [{ id: id(37), org_id: ORG, prospect_id: PROSPECT, full_name: "Pat Buyer", email: "pat@example.com", phone: null, role: null, is_primary: true, promoted_contact_id: promoted, created_at: "2026-10-01T00:00:00Z" }],
         lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: lotStatus, premium_cents: 5_000_00, asking_price_override_cents: null, project_id: null, house_plan_id: null, house_plan_elevation_id: null, lot_number: "47" }],
         lot_reservations: [],
-        contacts: [{ id: PROMOTED, org_id: ORG, full_name: "Pat Buyer", email: "pat@example.com" }],
+        contacts,
       },
     })
   }
@@ -401,6 +537,21 @@ describe("createLotHoldFromProspect", () => {
     assert.equal(reservation.id, row.id)
     assert.deepEqual(service.events.map((event) => event.eventType), ["lot_hold_created"])
     assert.deepEqual(service.audits.map((audit) => [audit.entityType, audit.entityId]), [["lot_reservation", row.id]])
+  })
+
+  test("a buyer already in the directory under another spelling of their email is held for, not created again", async () => {
+    const service = harness({
+      promoted: null,
+      contacts: [
+        { id: id(38), org_id: ORG, full_name: "Pat Buyer", email: "PAT@Example.com", created_at: "2026-09-01T00:00:00Z" },
+        { id: id(39), org_id: ORG, full_name: "Pat B.", email: "pat@example.com", created_at: "2026-09-15T00:00:00Z" },
+      ],
+    })
+
+    await hold(service)
+
+    assert.equal(service.db.lot_reservations[0].buyer_contact_id, id(38))
+    assert.equal(service.db.contacts.length, 2)
   })
 
   test("a closed prospect, a prospect without a contact, or a lot that is not for sale gets no hold", async () => {

@@ -48,8 +48,18 @@ function applyOperator(actual, operator, value) {
     case "lte": return actual !== null && actual !== undefined && actual <= value
     case "gt": return actual !== null && actual !== undefined && actual > value
     case "gte": return actual !== null && actual !== undefined && actual >= value
+    case "ilike": return actual !== null && actual !== undefined && likeMatcher(value).test(String(actual))
     default: throw new Error(`fake-supabase: unsupported operator "${operator}"`)
   }
+}
+
+/** `%` and `_` wildcards, case-insensitive, as Postgres ILIKE. */
+function likeMatcher(pattern) {
+  const source = String(pattern)
+    .split("")
+    .map((char) => (char === "%" ? ".*" : char === "_" ? "." : char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    .join("")
+  return new RegExp(`^${source}$`, "is")
 }
 
 function parseList(value) {
@@ -133,6 +143,7 @@ class Query {
   upsert(payload, options = {}) { this.action = "upsert"; this.payload = payload; this.upsertOptions = options; return this }
 
   eq(column, value) { return this.addFilter((row) => applyOperator(readPath(row, column), "eq", value)) }
+  ilike(column, pattern) { return this.addFilter((row) => applyOperator(readPath(row, column), "ilike", pattern)) }
   neq(column, value) { return this.addFilter((row) => applyOperator(readPath(row, column), "neq", value)) }
   is(column, value) { return this.addFilter((row) => applyOperator(readPath(row, column), "is", value)) }
   in(column, values) { return this.addFilter((row) => applyOperator(readPath(row, column), "in", values)) }

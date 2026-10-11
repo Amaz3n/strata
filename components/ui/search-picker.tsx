@@ -14,9 +14,11 @@ export type SearchPickerQuery = { search: string; cursor?: string; page?: number
  * A picker that never holds the whole roster: every keystroke (debounced) and
  * every "Load more" asks the server for one scoped, bounded page.
  */
-export function SearchPicker({ label, noun = label.toLowerCase(), value, onChange, search: searchPage, disabled = false }: {
+export function SearchPicker({ label, noun = label.toLowerCase(), placeholder = `Search ${noun} by name`, value, onChange, search: searchPage, disabled = false }: {
   label: string
   noun?: string
+  /** What the search box says it matches, when that is more than the name. */
+  placeholder?: string
   value: SearchPickerItem | null
   onChange: (value: SearchPickerItem | null) => void
   search: (query: SearchPickerQuery) => Promise<ActionResult<SearchPickerPage>>
@@ -76,7 +78,7 @@ export function SearchPicker({ label, noun = label.toLowerCase(), value, onChang
       <div><p className="font-medium">{value.name}</p><p className="text-xs text-muted-foreground">{value.detail}</p></div>
       <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setResult(null); onChange(null) }}>Change</Button>
     </div> : <>
-      <Input id={searchId} value={search} disabled={disabled} placeholder={`Search ${noun} by name`} onChange={(event) => { request.current++; setResult(null); setSearch(event.target.value) }} />
+      <Input id={searchId} value={search} disabled={disabled} placeholder={placeholder} onChange={(event) => { request.current++; setResult(null); setSearch(event.target.value) }} />
       <div className="max-h-52 overflow-y-auto border" aria-busy={loading}>
         {result?.items.map((item) => <button type="button" key={item.id} disabled={disabled || loading} className="flex w-full flex-col border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted focus-visible:outline focus-visible:outline-ring disabled:opacity-50" onClick={() => onChange(item)}>
           <span className="font-medium">{item.name}</span><span className="text-xs text-muted-foreground">{item.detail}</span>

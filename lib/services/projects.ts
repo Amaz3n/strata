@@ -23,6 +23,7 @@ import { getDivisionAccessForUser, getDivisionScopedProjectIds, getProjectReadSc
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { readAllRows } from "@/lib/land/paging"
 import { chunk } from "@/lib/utils"
+import { terminology } from "@/lib/terminology"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -500,6 +501,67 @@ export async function listProjectBillingOptions(
       billingModel,
     }
   })
+}
+
+export interface ProjectSearchResult {
+  id: string
+  name: string
+  /** What this project is called on its own posture: Project, Home. */
+  noun: string
+  status: string | null
+}
+
+export interface ProjectSearchPage {
+  projects: ProjectSearchResult[]
+  page: number
+  pageSize: number
+  total: number
+}
+
+/**
+ * One page of the projects the caller can open, found by name or street address.
+ * The picker for "attach this to a project" — it never holds the portfolio, so a
+ * 200-project org and a 400-lot community search the same way a small one does.
+ */
+export async function searchVisibleProjects(
+  input: { search?: string; page?: number; pageSize?: number; includePrecon?: boolean },
+  orgId?: string,
+  context?: OrgServiceContext,
+): Promise<ProjectSearchPage> {
+  const resolved = context || await requireOrgContext(orgId)
+  const page = Math.max(1, input.page ?? 1)
+  const pageSize = Math.min(Math.max(1, input.pageSize ?? 25), 50)
+  const empty = { projects: [], page, pageSize, total: 0 }
+  const visibleProjectIds = await resolveVisibleProjectIds({
+    supabase: resolved.supabase,
+    orgId: resolved.orgId,
+    userId: resolved.userId,
+    includePrecon: input.includePrecon ?? true,
+  })
+  if (visibleProjectIds?.length === 0) return empty
+
+  let query = resolved.supabase
+    .from("projects")
+    .select("id, name, status, property_type", { count: "exact" })
+    .eq("org_id", resolved.orgId)
+  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
+  const term = input.search?.trim().replace(/[\\%_,()]/g, "")
+  if (term) query = query.or(`name.ilike.%${term}%,location->>address.ilike.%${term}%`)
+  const from = (page - 1) * pageSize
+  const { data, error, count } = await query.order("name").order("id").range(from, from + pageSize - 1)
+  if (error) throw new Error(`Failed to search projects: ${error.message}`)
+
+  return {
+    projects: (data ?? []).map((row) => ({
+      id: row.id,
+      name: row.name || "Untitled project",
+      noun: terminology(getProjectPosture(row.property_type, resolved.productTier)).project,
+      status: row.status ?? null,
+    })),
+    page,
+    pageSize,
+    total: count ?? 0,
+  }
 }
 
 export async function listProjectsWithClient(

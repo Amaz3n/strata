@@ -6,7 +6,7 @@ import { Fragment, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { bulkRepriceCommunityPlansAction, setCommunityPlanPriceAction } from "@/app/(app)/sales/actions"
-import { OfferingPlanManager, type OfferablePlan } from "@/components/communities/offering-plan-manager"
+import { OfferingPlanManager } from "@/components/communities/offering-plan-manager"
 import { Plan3dDialog } from "@/components/plans/plan-3d-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -139,7 +139,6 @@ export function OfferingPriceSheet({
   buildCostByPlanId,
   lotsTruncated,
   plansWith3d,
-  offerablePlans,
   canManage,
 }: {
   communityId: string
@@ -154,8 +153,6 @@ export function OfferingPriceSheet({
   lotsTruncated: boolean
   /** Plan ids with a published 3D model — the rows that get a "3D" button. */
   plansWith3d: ReadonlySet<string>
-  /** Released plans this community could sell but is not offering yet. */
-  offerablePlans: OfferablePlan[]
   canManage: boolean
 }) {
   const router = useRouter()
@@ -319,7 +316,6 @@ export function OfferingPriceSheet({
           <div className="flex items-center gap-2">
             <OfferingPlanManager
               communityId={communityId}
-              offerablePlans={offerablePlans}
               offeredPlans={offeredPlans}
             />
             {rows.length > 0 ? (
@@ -346,7 +342,6 @@ export function OfferingPriceSheet({
             {canManage ? (
               <OfferingPlanManager
                 communityId={communityId}
-                offerablePlans={offerablePlans}
                 offeredPlans={offeredPlans}
                 triggerLabel="Offer a plan"
                 triggerVariant="default"
