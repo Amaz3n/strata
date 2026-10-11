@@ -635,3 +635,87 @@ test("start packages and project records indexed without a project stay in their
   await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
   assert.deepEqual(await seen(), { starts: [oak.id, pine.id].sort(), search: ["Oak start", "Pine start", "South OAC"] })
 })
+
+/**
+ * One row in each division for a sample of the tables that hang off a home, a
+ * lead, a lot or a community. `row(side, n)` builds a row for the North or
+ * South side; `n` keeps per-project numbers unique. `label` names the column
+ * the test reads back and writes to.
+ */
+async function wallOrg(t) {
+  const org = await salesOrg(t)
+  const { db, orgId, northHome, southHome, oak, pine, oakLot, pineLot, leads } = org
+  const contractOf = async (project) =>
+    (await db.query("select id from contracts where project_id = $1 limit 1", [project.id])).rows[0].id
+  const buyer = await insert(db, "contacts", { org_id: orgId, full_name: "Ada Buyer" })
+  const sides = {
+    North: { home: northHome, contract: await contractOf(northHome), community: oak, lot: oakLot, lead: leads["Oak lead"] },
+    South: { home: southHome, contract: await contractOf(southHome), community: pine, lot: pineLot, lead: leads["Pine lead"] },
+  }
+  const tables = {
+    meetings: { label: "title", row: (s, n) => ({ project_id: s.home.id, meeting_number: n, title: `${s.name} ${n}` }) },
+    inspections: {
+      label: "title",
+      row: (s, n) => ({ project_id: s.home.id, inspection_number: n, kind: "quality", title: `${s.name} ${n}` }),
+    },
+    warranty_requests: { label: "title", row: (s, n) => ({ project_id: s.home.id, request_number: n, title: `${s.name} ${n}` }) },
+    pay_applications: {
+      label: "application_number",
+      row: (s, n) => ({ project_id: s.home.id, contract_id: s.contract, application_number: s.name === "North" ? n : 10 + n, period_end: "2026-09-30" }),
+    },
+    estimates: { label: "title", row: (s, n) => ({ project_id: s.home.id, title: `${s.name} ${n}` }) },
+    lot_reservations: {
+      label: "notes",
+      // Released, so a lot may carry several.
+      row: (s, n) => ({ community_id: s.community.id, lot_id: s.lot.id, buyer_contact_id: buyer.id, status: "released", notes: `${s.name} ${n}` }),
+    },
+    prospect_contacts: { label: "full_name", row: (s, n) => ({ prospect_id: s.lead.id, full_name: `${s.name} ${n}` }) },
+    community_phases: { label: "name", row: (s, n) => ({ community_id: s.community.id, phase_number: n, name: `${s.name} ${n}` }) },
+  }
+  for (const [name, side] of Object.entries(sides)) side.name = name
+  for (const [table, { row }] of Object.entries(tables)) {
+    for (const side of Object.values(sides)) await insert(db, table, { org_id: orgId, ...row(side, 1) })
+  }
+  return { ...org, sides, tables }
+}
+
+test("every record under a home, a lead, a lot or a community stays in its division", async (t) => {
+  const { db, orgId, ownerId, northLead, seller, sides, tables } = await wallOrg(t)
+  // The lead manages the homes; deal records are the seller's to write.
+  const actorFor = (table) => (table === "prospect_contacts" ? seller : northLead)
+  const read = (userId, table) =>
+    asRole(db, { role: "authenticated", userId }, async (tx) =>
+      (await tx.query(`select ${tables[table].label}::text as label from ${table} order by 1`)).rows.map((row) => row.label),
+    )
+  const labelOf = (table, side) => String(tables[table].row(sides[side], 1)[tables[table].label])
+
+  for (const table of Object.keys(tables)) {
+    const north = labelOf(table, "North")
+    const south = labelOf(table, "South")
+    const as = (fn) => asRole(db, { role: "authenticated", userId: actorFor(table).userId }, fn)
+
+    assert.deepEqual(await read(actorFor(table).userId, table), [north], `${table}: limited read`)
+    assert.deepEqual(await read(ownerId, table), [north, south].sort(), `${table}: all-division read`)
+
+    const { label } = tables[table]
+    const touched = await as(async (tx) => ({
+      north: (await tx.query(`update ${table} set ${label} = ${label} where org_id = $1 and ${label}::text = $2`, [orgId, north])).affectedRows,
+      south: (await tx.query(`update ${table} set ${label} = ${label} where org_id = $1 and ${label}::text = $2`, [orgId, south])).affectedRows,
+    }))
+    assert.deepEqual(touched, { north: 1, south: 0 }, `${table}: limited update`)
+
+    const insertAs = (side) => {
+      const row = { org_id: orgId, ...tables[table].row(sides[side], 2) }
+      const columns = Object.keys(row)
+      return as((tx) =>
+        tx.query(
+          `insert into ${table} (${columns.join(", ")}) values (${columns.map((_, i) => `$${i + 1}`).join(", ")})`,
+          Object.values(row),
+        ),
+      )
+    }
+    await insertAs("North")
+    // Some tables refuse in a lifecycle trigger before RLS is asked.
+    await assert.rejects(insertAs("South"), /row-level security|division access/, `${table}: limited insert`)
+  }
+})
