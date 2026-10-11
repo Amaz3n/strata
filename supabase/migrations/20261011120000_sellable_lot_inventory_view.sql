@@ -32,7 +32,27 @@ as $$
   join public.project_selections ps on ps.org_id = p.org_id and ps.project_id = p.id
   join public.selection_options so on so.id = ps.selected_option_id and so.org_id = ps.org_id
   where p.id = p_project_id
-    and ((select auth.role()) = 'service_role' or public.is_org_member(p.org_id))
+    and (
+      (select auth.role()) = 'service_role'
+      -- Division scope is the enforcement layer: a member reaches the total only for a home in a
+      -- division they work in. Project assignment is deliberately not required, so everyone who
+      -- can sell in a division sees the same asking price.
+      or exists (
+        select 1
+        from public.memberships m
+        where m.org_id = p.org_id
+          and m.user_id = (select auth.uid())
+          and m.status = 'active'
+          and (
+            public.membership_is_org_admin(m.id, m.role_id)
+            or m.division_scope = 'all'
+            or exists (
+              select 1 from public.membership_divisions md
+              where md.membership_id = m.id and md.division_id = p.division_id
+            )
+          )
+      )
+    )
     and ps.status in ('confirmed', 'ordered', 'received')
     and so.option_scope = 'structural';
 $$;

@@ -4706,7 +4706,7 @@
       }
     },
     "view-asking-price-equals-the-apps-own-price": {
-      "derivation": "EP01-03 #0. sellable_lot_inventory is a SQL copy of the price the app derives (specAskingPrice and the community price sheet); a band or sort run on the view is only right if the two never drift. For every one of the 22 sellable lots in community A the view's asking_price_cents equals the price the app returns, and both equal the designed price (sheet row, premium, structural option, override, an ended elevation row falling back to the plan-wide row; a lot with no plan has none). The price does not depend on who asks: the sales consultant (who is on no home's team) sees the same price for every lot as the owner. Five plain lots also equal the price sheet's own row for their elevation plus their premium.",
+      "derivation": "EP01-03 #0. sellable_lot_inventory is a SQL copy of the price the app derives (the sellable_lot_inventory view and the community price sheet); a band or sort run on the view is only right if the two never drift. For every one of the 22 sellable lots in community A the view's asking_price_cents equals the price the app returns, and both equal the designed price (sheet row, premium, structural option, override, an ended elevation row falling back to the plan-wide row; a lot with no plan has none). The price does not depend on who asks: the sales consultant (who is on no home's team) sees the same price for every lot as the owner. Five plain lots also equal the price sheet's own row for their elevation plus their premium.",
       "inputs": {
         "asking": {
           "PK-01": 38500000,
