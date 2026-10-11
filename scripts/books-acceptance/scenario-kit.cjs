@@ -130,6 +130,10 @@ function createKit(stack) {
       if (!rows(`select id from public.outbox where ${relevant} and status in ('pending','processing')`).length) break
       const response = await POST(new NextRequest("http://127.0.0.1/api/jobs/process-outbox", { method: "POST", headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }))
       await settle()
+      // Starts jobs (releases and their notices, e.g. the ready/waived start_package_notice the
+      // starts desk RPCs queue) belong to the starts pipeline worker, not process-outbox.
+      if (rows(`select id from public.outbox where ${relevant} and status = 'pending' and job_type in ('start_release','trade_schedule_change_notice','start_release_trade_notice','start_package_notice')`).length)
+        await service(() => require("../../lib/services/starts-pipeline").runStartsPipeline())
       if (response.status >= 400) throw Error(`process-outbox returned ${response.status}: ${await response.text()}`)
     }
     const failed = rows(`select job_type, status, retry_count, run_at <= now() due, round(extract(epoch from now() - updated_at)) idle_s, last_error from public.outbox where ${relevant} and status in ('pending','processing','failed')`)

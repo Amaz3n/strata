@@ -88,9 +88,19 @@ async function failedInspectionBecomesOwnedCorrectiveWork(kit, expected, check) 
     // Corrective work from the failed item only: a passing item is refused, the sales desk is refused.
     const passingItemRefused = msg(await refuse(kit, sup, () => inspections.createPunchItemFromInspectionItem(header.id, {})), /requires a deficient inspection item/)
     roleRefusals.salesCreatesCorrectiveWork = msg(await refuse(kit, org.team.sales, () => inspections.createPunchItemFromInspectionItem(blocking.id, { company_id: vendor, due_date: seed.isoDay(5) })), /Missing permission/)
-    const linked = await kit.as(sup, () => inspections.createPunchItemFromInspectionItem(blocking.id, { company_id: vendor, due_date: seed.isoDay(5) }))
+    // Completing the failed inspection raised the corrective work itself, from the failed item only. The
+    // inspection names no company, so the inspector owns it until a responsible company and a date are set.
+    const raised = kit.rows(`select i.prompt, i.punch_item_id, p.assigned_to, p.assigned_company_id, p.created_by, p.verification_required, p.created_from_inspection from public.inspection_items i left join public.punch_items p on p.id=i.punch_item_id where i.inspection_id=${kit.q(original.id)} order by i.sort_order, i.prompt`)
+    const linked = { punch_item_id: raised.find((row) => row.prompt === blocking.prompt).punch_item_id }
+    const autoRaised = {
+      linkedItems: raised.filter((row) => row.punch_item_id).map((row) => row.prompt),
+      ownedByInspector: raised.find((row) => row.punch_item_id).assigned_to === sup.userId && raised.find((row) => row.punch_item_id).created_by === sup.userId,
+      fromInspection: raised.find((row) => row.punch_item_id).created_from_inspection,
+      verificationRequired: raised.find((row) => row.punch_item_id).verification_required,
+      punchItems: count(kit, `select 1 from public.punch_items where project_id=${kit.q(projectId)} and created_from_inspection`),
+    }
     const secondPunchRefused = msg(await refuse(kit, sup, () => inspections.createPunchItemFromInspectionItem(blocking.id, {})), /already has a punch item/)
-    await kit.as(sup, () => punch.updateProjectPunchItem(projectId, linked.punch_item_id, { assigned_to: sup.userId }))
+    await kit.as(sup, () => punch.updateProjectPunchItem(projectId, linked.punch_item_id, { assigned_company_id: vendor, due_date: seed.isoDay(5) }))
     const corrective = kit.rows(`select title, status, created_from_inspection, due_date::text due, assigned_company_id, assigned_to, created_by, dispatched_at is not null dispatched from public.punch_items where id=${kit.q(linked.punch_item_id)}`)[0]
     const evidence = kit.rows(`select file_id, link_role from public.file_links where entity_type='punch_item' and entity_id=${kit.q(linked.punch_item_id)}`)
     const creationEvent = count(kit, `select 1 from public.events where org_id=${kit.q(org.orgId)} and event_type='punch_item_created' and entity_id=${kit.q(linked.punch_item_id)} and payload->>'from_inspection'=${kit.q(original.id)}`)
@@ -108,6 +118,9 @@ async function failedInspectionBecomesOwnedCorrectiveWork(kit, expected, check) 
     const closeWhileFailed = await refuse(kit, owner, () => closings.markClearedToClose(closingId))
 
     // The corrective work is resolved; the inspector reinspects. The original attempt is kept.
+    const closeWithoutEvidence = msg(await refuse(kit, sup, () => punch.updateProjectPunchItem(projectId, linked.punch_item_id, { status: "closed" })), /Add verification evidence/)
+    const afterPhoto = homeFile(kit, org, projectId, "fire-blocking-after.jpg")
+    kit.sql(`insert into public.file_links(org_id,project_id,file_id,entity_type,entity_id,link_role,created_by) values(${kit.q(org.orgId)},${kit.q(projectId)},${kit.q(afterPhoto)},'punch_item',${kit.q(linked.punch_item_id)},'after',${kit.q(sup.userId)})`)
     await kit.as(sup, () => punch.updateProjectPunchItem(projectId, linked.punch_item_id, { status: "closed" }))
     const next = await kit.as(sup, () => inspections.mutateInspectionObligation(projectId, reinspect()))
     const second = await kit.as(sup, () => inspections.getInspection(next.inspectionId))
@@ -135,6 +148,7 @@ async function failedInspectionBecomesOwnedCorrectiveWork(kit, expected, check) 
       result: completed.result, receipt: { result: receipt.result, byInspector: receipt.actor_id === sup.userId, events: receipt.events, audits: receipt.audits },
       passingItemRefused, secondPunchRefused,
     })
+    equal(check, "completing the failed inspection raises the corrective work itself, from the failed item only, owned by the inspector and requiring evidence to close", expected.expected.autoRaised, { ...autoRaised, closeWithoutEvidence })
     equal(check, "the corrective punch item is owned: assigned company, due date, owner, creator, dispatched, tied to the inspection with the photo as before evidence", expected.expected.correctiveWork, {
       title: corrective.title, status: corrective.status, fromInspection: corrective.created_from_inspection, dueInDays: daysFromToday(corrective.due),
       company: corrective.assigned_company_id === vendor, owner: corrective.assigned_to === sup.userId, createdBy: corrective.created_by === sup.userId, dispatched: corrective.dispatched,

@@ -1080,7 +1080,7 @@
       }
     },
     "failed-inspection-becomes-owned-corrective-work-and-reinspects": {
-      "derivation": "EP09-04 #0 and #1 (docs/enterprise-production/inspection-obligation-lifecycle.md). Only inspection writers run inspections: the sales consultant cannot create a template or corrective work and the warranty manager cannot complete an inspection. A 3-item framing checklist with one pass_fail item answered 'fail' completes as result 'fail' with exactly one completion receipt tied to one event and one audit row, recorded by the inspector. Corrective work comes only from a deficient item (the passing item is refused) and only once (a second punch on the same item is refused). The spawned punch is open, due in 5 days, assigned to the named company and dispatched, owned by the superintendent (assigned_to), created by the inspector, tied to the inspection by a punch_item_created event carrying from_inspection, one insert audit row, and the failed item's photo linked to the punch as 'before' evidence. Reinspection is refused while that punch is open; closing is refused (required-inspection readiness) while the required inspection has no accepted attempt. After the punch is closed the reinspection creates attempt 2 whose checklist has the same three prompts with no answers and no deficiency, with prior_inspection_id pointing at the original and the resolved punch id captured in correction_evidence; attempt 2 completes with result 'pass'. The superintendent lacks inspection.review and cannot accept; accepting the stale first attempt is refused because a newer attempt exists; the owner (independent reviewer) accepts attempt 2. The original inspection stays completed with result 'fail', its failed response, note, photo and punch link intact; the obligation's accepted inspection is attempt 2, it has two attempts, it is required for closing, and the closing can now be cleared.",
+      "derivation": "EP09-04 #0 and #1 (docs/enterprise-production/inspection-obligation-lifecycle.md). Only inspection writers run inspections: the sales consultant cannot create a template or corrective work and the warranty manager cannot complete an inspection. A 3-item framing checklist with one pass_fail item answered 'fail' completes as result 'fail' with exactly one completion receipt tied to one event and one audit row, recorded by the inspector. Corrective work comes only from a deficient item (the passing item is refused) and only once (a second punch on the same item is refused). The spawned punch is open, due in 5 days, assigned to the named company and dispatched, owned by the superintendent (assigned_to), created by the inspector, tied to the inspection by a punch_item_created event carrying from_inspection, one insert audit row, and the failed item's photo linked to the punch as 'before' evidence. Reinspection is refused while that punch is open; closing is refused (required-inspection readiness) while the required inspection has no accepted attempt. After the punch is closed the reinspection creates attempt 2 whose checklist has the same three prompts with no answers and no deficiency, with prior_inspection_id pointing at the original and the resolved punch id captured in correction_evidence; attempt 2 completes with result 'pass'. The superintendent lacks inspection.review and cannot accept; accepting the stale first attempt is refused because a newer attempt exists; the owner (independent reviewer) accepts attempt 2. The original inspection stays completed with result 'fail', its failed response, note, photo and punch link intact; the obligation's accepted inspection is attempt 2, it has two attempts, it is required for closing, and the closing can now be cleared. Product change (corrective punch is raised automatically on a failed inspection and needs evidence to close): completing the failed inspection itself raises exactly one punch item, from the failed item only, created and owned by the inspector because the inspection names no company, with verification required; the superintendent then names the responsible company and the due date on that punch item (which dispatches it), a second punch on the same item stays refused, and closing it is refused ('Add verification evidence') until an 'after' file is attached, after which it closes.",
       "inputs": {
         "checklistItems": 3,
         "failedItem": "Fire blocking installed",
@@ -1179,6 +1179,16 @@
           "cleared": "cleared_to_close",
           "obligationsListed": 1,
           "attemptsOnObligation": 2
+        },
+        "autoRaised": {
+          "linkedItems": [
+            "Fire blocking installed"
+          ],
+          "ownedByInspector": true,
+          "fromInspection": true,
+          "verificationRequired": true,
+          "punchItems": 1,
+          "closeWithoutEvidence": "refused"
         }
       }
     },
