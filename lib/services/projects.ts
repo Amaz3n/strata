@@ -1,3 +1,4 @@
+import { orFilterTerm } from "@/lib/search-picker"
 import { cacheLife } from "next/cache"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -545,8 +546,8 @@ export async function searchVisibleProjects(
     .select("id, name, status, property_type", { count: "exact" })
     .eq("org_id", resolved.orgId)
   if (visibleProjectIds) query = query.in("id", visibleProjectIds)
-  const term = input.search?.trim().replace(/[\\%_,()]/g, "")
-  if (term) query = query.or(`name.ilike.%${term}%,location->>address.ilike.%${term}%`)
+  const term = input.search ? orFilterTerm(input.search) : ""
+  if (term) query = query.or(`name.ilike.%${term}%,location->>address.ilike.%${term}%,location->>formatted.ilike.%${term}%`)
   const from = (page - 1) * pageSize
   const { data, error, count } = await query.order("name").order("id").range(from, from + pageSize - 1)
   if (error) throw new Error(`Failed to search projects: ${error.message}`)

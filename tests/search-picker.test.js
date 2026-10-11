@@ -10,6 +10,8 @@ stubLeaves(["@/components/ui/button", "@/components/ui/input", "@/components/ui/
 
 const { SearchPicker } = freshRequire("components/ui/search-picker.tsx")
 
+const { orFilterTerm } = freshRequire("lib/search-picker.ts")
+
 const debounce = () => new Promise((resolve) => setTimeout(resolve, 280))
 
 test("a lookup failure shows its reason, retries on request and never clears the chosen value", async () => {
@@ -42,4 +44,12 @@ test("a lookup failure shows its reason, retries on request and never clears the
   const chosen = text(view.render())
   assert.match(chosen, /Lot 7/)
   assert.ok(button(view.render(), "Change"))
+})
+
+test("a typed term reaches a PostgREST or() filter as plain text only", () => {
+  assert.equal(orFilterTerm('  A-12 '), "A-12")
+  assert.equal(orFilterTerm('oak"),name.ilike.(*'), "oak name.ilike.")
+  assert.equal(orFilterTerm("100%_*\\"), "100")
+  assert.equal(orFilterTerm("Oak   Ridge"), "Oak Ridge")
+  assert.equal(orFilterTerm('"*"'), "")
 })

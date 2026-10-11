@@ -47,7 +47,7 @@ const HOME_ID = id(90)
 function inventoryView(lots, facts = {}) {
   return lots.map((lot) => ({
     lot_id: lot.id, org_id: lot.org_id, community_id: lot.community_id, division_id: lot.division_id ?? null, project_id: lot.project_id,
-    status: lot.status, lot_number: lot.lot_number, block: lot.block ?? null, house_plan_id: lot.house_plan_id, created_at: lot.created_at ?? "2026-10-01T00:00:00Z",
+    status: lot.status, lot_number: lot.lot_number, block: lot.block ?? null, lot_label: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number, house_plan_id: lot.house_plan_id, created_at: lot.created_at ?? "2026-10-01T00:00:00Z",
     community_name: lot.community?.name ?? null, plan_code: null, plan_name: lot.plan?.name ?? null, plan_beds: lot.plan?.beds ?? null,
     asking_price_cents: null, aging_days: 0, ...facts[lot.id],
   }))
@@ -307,6 +307,27 @@ describe("listSpecInventoryPage as the Find a home search", () => {
     assert.deepEqual(labels(await find(service, { search: "maple" })), ["007"])
     assert.deepEqual(labels(await find(service, { search: "aspen" })).sort(), ["007", "101"])
     assert.deepEqual(labels(await find(service, { search: "zzz" })), [])
+  })
+
+  test("a lot is found by the label the screen shows, block and number together", async () => {
+    const service = harness([lot(12, communities[0], ASPEN, { block: "A", lot_number: "12" }), lot(13, communities[0], ASPEN, { block: "B" }), lot(14, communities[1], ASPEN, { lot_number: "12" })])
+    assert.deepEqual(labels(await find(service, { search: "A-12" })), ["A-12"])
+    assert.deepEqual(labels(await find(service, { search: "B-013" })), ["B-013"])
+  })
+
+  test("quotes and wildcards in a search are matched as text, never as filter syntax", async () => {
+    const service = harness([lot(1, communities[0], ASPEN)])
+    assert.deepEqual(labels(await find(service, { search: 'oak"),lot_number.ilike.(*' })), [])
+    assert.deepEqual(labels(await find(service, { search: "*" })), ["001"])
+  })
+
+  test("a page never comes back empty while lots remain behind a long run of held ones", async () => {
+    const lots = Array.from({ length: 30 }, (_, index) => lot(index + 1, communities[0], ASPEN))
+    const held = lots.slice(0, 29).map((entry) => ({ lot_id: entry.id, org_id: ORG, status: "hold", expires_at: null }))
+    const service = harness(lots, { reservations: held })
+    const page = await find(service, { limit: 2 })
+    assert.deepEqual(labels(page), ["030"])
+    assert.deepEqual([page.truncated, page.nextOffset], [false, null])
   })
 
   test("availability and bedroom filters narrow on the server", async () => {

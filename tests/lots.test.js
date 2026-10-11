@@ -181,6 +181,7 @@ describe("assignPlanToLot", () => {
     assert.deepEqual(await found("birch"), ["B200", "B300"])
     assert.deepEqual(await found("A1"), ["A100"])
     assert.deepEqual(await found("nothing like it"), [])
+    assert.deepEqual(await found('birch"),code.ilike.(*'), [])
     assert.deepEqual(await found(undefined), ["A100", "B200", "B300"])
   })
 

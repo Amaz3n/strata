@@ -1,3 +1,4 @@
+import { orFilterTerm } from "@/lib/search-picker"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import {
@@ -541,7 +542,7 @@ export async function listPlanAssignmentOptions(
   let planQuery = context.supabase.from("house_plans")
     .select("id, code, name")
     .eq("org_id", context.orgId).eq("status", "active")
-  const term = input.search?.trim().replace(/[\\%_,()]/g, "")
+  const term = input.search ? orFilterTerm(input.search) : ""
   if (term) planQuery = planQuery.or(`code.ilike.%${term}%,name.ilike.%${term}%`)
   const { data: plans, error } = await planQuery.order("code").order("id").limit(PLAN_ASSIGNMENT_OPTION_CAP + 1)
   if (error) throw new Error(`Failed to load plans: ${error.message}`)

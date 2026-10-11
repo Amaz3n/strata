@@ -1,3 +1,4 @@
+import { orFilterTerm } from "@/lib/search-picker"
 import { COOP_AGENT_ROLE, INQUIRY_CHANNEL_LABELS } from "@/lib/sales/activity"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
@@ -114,7 +115,7 @@ export async function searchBuyerContacts(
   await requirePermission("sales.read", context)
   const page = Math.max(1, input.page ?? 1)
   const pageSize = Math.min(Math.max(1, input.pageSize ?? 25), 50)
-  const term = input.search.replace(/[\\%_,()"]/g, " ").replace(/\s+/g, " ").trim()
+  const term = orFilterTerm(input.search)
 
   const from = (page - 1) * pageSize
   let query = context.supabase

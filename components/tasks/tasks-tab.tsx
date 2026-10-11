@@ -42,8 +42,8 @@ import {
   Select,
   SelectContent,
   SelectGroup,
-  SelectLabel,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -267,6 +267,7 @@ export function TasksTab({
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "all">("all")
   const [assigneeFilter, setAssigneeFilter] = useState<string | "all">("all")
   const [projectFilter, setProjectFilter] = useState<string | "all">(initialProject?.id ?? "all")
+  const [filterProject, setFilterProject] = useState<TaskProjectOption | null>(initialProject ?? null)
   const [tradeFilter, setTradeFilter] = useState<TaskTrade | "all">("all")
   const [collapsedStatuses, setCollapsedStatuses] = useState<TaskStatus[]>(["done"])
 
@@ -346,18 +347,7 @@ export function TasksTab({
     return count
   }, [priorityFilter, assigneeFilter, tradeFilter, projectFilter])
 
-  // The filter offers the projects the listed tasks belong to (the filter works over
-  // the loaded tasks), so it never needs the portfolio.
-  const projectOptions = useMemo(() => {
-    const byId = new Map<string, TaskProjectOption>()
-    if (initialProject) byId.set(initialProject.id, initialProject)
-    for (const task of tasks) {
-      if (task.project_id && task.project_name) byId.set(task.project_id, { id: task.project_id, name: task.project_name })
-    }
-    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
-  }, [tasks, initialProject])
-
-  const defaultCreateProject = projectOptions.find((project) => project.id === projectFilter)
+  const defaultCreateProject = filterProject?.id === projectFilter ? filterProject : undefined
 
   // ============================================
   // HANDLERS
@@ -578,28 +568,31 @@ export function TasksTab({
                 </Select>
               </div>
 
-              {projectOptions.length > 0 && (
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">{projectNoun}</p>
-                  <Select value={projectFilter} onValueChange={setProjectFilter}>
-                    <SelectTrigger size="sm" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All {projectNoun.toLowerCase()}s</SelectItem>
-                      <SelectItem value={NO_PROJECT}>Personal (none)</SelectItem>
-                      <SelectGroup>
-                        <SelectLabel>{projectNoun}s with tasks</SelectLabel>
-                        {projectOptions.map((project) => (
-                          <SelectItem key={project.id} value={project.id}>
-                            {project.name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">{projectNoun}</p>
+                <Select value={projectFilter} onValueChange={setProjectFilter}>
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All {projectNoun.toLowerCase()}s</SelectItem>
+                    <SelectItem value={NO_PROJECT}>Personal (none)</SelectItem>
+                    {filterProject ? <SelectItem value={filterProject.id}>{filterProject.name}</SelectItem> : null}
+                  </SelectContent>
+                </Select>
+                {projectFilter !== NO_PROJECT ? (
+                  <SearchPicker
+                    label={`Find a ${projectNoun.toLowerCase()}`}
+                    noun={projectNoun.toLowerCase()}
+                    value={filterProject && filterProject.id === projectFilter ? { ...filterProject, detail: "" } : null}
+                    search={searchTaskProjectsAction}
+                    onChange={(next) => {
+                      setFilterProject(next ? { id: next.id, name: next.name } : null)
+                      setProjectFilter(next ? next.id : "all")
+                    }}
+                  />
+                ) : null}
+              </div>
             </PopoverContent>
           </Popover>
 

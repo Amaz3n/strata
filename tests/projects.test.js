@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { createProject, listProjectSummaries, prepareProjectOpeningContract } = freshRequire("lib/services/projects.ts")
+const { createProject, listProjectSummaries, searchVisibleProjects, prepareProjectOpeningContract } = freshRequire("lib/services/projects.ts")
 
 describe("createProject", () => {
   const harness = () =>
@@ -151,5 +151,28 @@ describe("listProjectSummaries", () => {
     assert.equal(page.total, 250)
     const empty = await service.run(() => listProjectSummaries(undefined, undefined, { projectIds: [] }))
     assert.deepEqual(empty, { projects: [], total: 0, truncated: false })
+  })
+})
+
+describe("searchVisibleProjects", () => {
+  const rows = [
+    { id: id(901), org_id: ORG, name: "Maple House", status: "active", property_type: "residential", location: { address: "12 Oak Lane" } },
+    { id: id(902), org_id: ORG, name: "Birch House", status: "active", property_type: "residential", location: { formatted: "7 Elm Court, Austin" } },
+    { id: id(903), org_id: ORG, name: "Cedar House", status: "active", property_type: "residential", location: null },
+  ]
+  const search = (term) => {
+    const service = createServiceHarness({ permissions: ["project.read"], tables: { projects: rows, memberships: [], project_members: [] } })
+    return service.run(async () => (await searchVisibleProjects({ search: term })).projects.map((project) => project.name))
+  }
+
+  test("a project is found by name, street address, or the formatted address it falls back to", async () => {
+    assert.deepEqual(await search("maple"), ["Maple House"])
+    assert.deepEqual(await search("oak lane"), ["Maple House"])
+    assert.deepEqual(await search("elm court"), ["Birch House"])
+    assert.deepEqual(await search("nowhere"), [])
+  })
+
+  test("quotes in the search cannot rewrite the filter", async () => {
+    assert.deepEqual(await search('x"),name.ilike.(*'), [])
   })
 })

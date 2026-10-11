@@ -120,6 +120,7 @@ export function FindAHomeDialog({ buyer, communities, open, onOpenChange }: Find
     const id = ++request.current
     setHomes(null)
     setNextOffset(null)
+    setLoadingMore(false)
     setError(null)
     setHoldLot(null)
     searchSellableHomesAction(homeFilters(query, availability, beds, band, sort, 0))

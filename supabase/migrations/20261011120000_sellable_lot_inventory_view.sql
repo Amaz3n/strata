@@ -25,6 +25,7 @@ select
   l.status,
   l.lot_number,
   l.block,
+  concat_ws('-', nullif(l.block, ''), l.lot_number) as lot_label,
   l.house_plan_id,
   l.created_at,
   c.name         as community_name,

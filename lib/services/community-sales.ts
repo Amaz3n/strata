@@ -1,3 +1,4 @@
+import { orFilterTerm } from "@/lib/search-picker"
 import { reservationConversionEnabled, assertReservationConversionScope, callReservationConversion, prepareReservationConversionBundle } from "@/lib/services/reservation-conversion"
 import { reservationConversionRegistrationSchema, reservationConversionIdentitySchema, reservationConversionScopeSchema, savedReservationConversionInputSchema, type ReservationConversionExpected } from "@/lib/validation/reservation-conversion"
 import { readAgreementCatalogRevision } from "@/lib/services/agreement-catalog-revision"
@@ -274,7 +275,7 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
   if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) return NO_INVENTORY
   if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
   if (!opts.divisionId && divisionAccess.assignedOnly && divisionAccess.divisionIds.length === 0) return NO_INVENTORY
-  const term = opts.search?.trim().replace(/[\\%_,()]/g, "")
+  const term = opts.search ? orFilterTerm(opts.search) : ""
   const limit = Math.min(opts.limit ?? 100, 250)
   const buildQuery = () => {
     let query = context.supabase
@@ -289,7 +290,7 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
     if (opts.minBeds) query = query.gte("plan_beds", opts.minBeds)
     if (opts.minPriceCents != null) query = query.gte("asking_price_cents", opts.minPriceCents)
     if (opts.maxPriceCents != null) query = query.lt("asking_price_cents", opts.maxPriceCents)
-    if (term) query = query.or(`lot_number.ilike.%${term}%,block.ilike.%${term}%,plan_code.ilike.%${term}%,plan_name.ilike.%${term}%,community_name.ilike.%${term}%`)
+    if (term) query = query.or(`lot_label.ilike.%${term}%,lot_number.ilike.%${term}%,block.ilike.%${term}%,plan_code.ilike.%${term}%,plan_name.ilike.%${term}%,community_name.ilike.%${term}%`)
     if (opts.communityId) query = query.eq("community_id", opts.communityId)
     if (opts.divisionId) query = query.eq("division_id", opts.divisionId)
     else if (divisionAccess.assignedOnly) query = query.in("division_id", divisionAccess.divisionIds)
@@ -307,7 +308,8 @@ export async function listSpecInventoryPage(opts: SpecInventoryOptions = {}) {
   let offset = opts.offset ?? 0
   let total = 0
   let more = false
-  for (let batch = 0; batch < INVENTORY_FILL_BATCHES && mapped.length < limit; batch += 1) {
+  // A page may never come back empty while lots remain: keep reading past held and sold runs until something is found or the scope is exhausted.
+  for (let batch = 0; mapped.length < limit && (batch < INVENTORY_FILL_BATCHES || mapped.length === 0); batch += 1) {
     const { data: page, error, count } = await buildQuery().range(offset, offset + limit - 1)
     if (error) throw new Error(`Failed to load spec inventory: ${error.message}`)
     total = count ?? 0
