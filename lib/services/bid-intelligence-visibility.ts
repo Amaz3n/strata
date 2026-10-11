@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 type Context = { supabase: SupabaseClient; orgId: string }
 type Access = { assignedOnly: boolean; divisionIds: string[] }
@@ -27,11 +28,20 @@ export async function visibleBidPackageIds(ids: string[], context: Context, acce
     const { data, error } = await context.supabase.from("bid_packages").select("id,project_id,community_id,house_plan_id")
       .eq("org_id", context.orgId).in("id", chunk)
     if (error) throw new Error(`Unable to resolve bid history packages: ${error.message}`)
-    // The division wall hides another division's packages from a division-limited
-    // member, so for them an unreadable package is simply not theirs. For an
-    // organization-wide reader every referenced package must exist.
-    if (!access.assignedOnly && data?.length !== chunk.length) throw new Error("Bid history references missing packages")
-    packages.push(...(data ?? []))
+    const rows = data ?? []
+    if (rows.length !== chunk.length) {
+      // The division wall hides another division's packages from a division-limited
+      // member: a package that exists but is unreadable is simply not theirs. One
+      // that does not exist at all means the history does not add up.
+      const read = new Set(rows.map((row) => row.id))
+      const unread = chunk.filter((packageId) => !read.has(packageId))
+      const { data: existing, error: existingError } = access.assignedOnly
+        ? await createServiceSupabaseClient().from("bid_packages").select("id").eq("org_id", context.orgId).in("id", unread)
+        : { data: [], error: null }
+      if (existingError) throw new Error(`Unable to resolve bid history packages: ${existingError.message}`)
+      if ((existing ?? []).length !== unread.length) throw new Error("Bid history references missing packages")
+    }
+    packages.push(...rows)
   }
   const [projects, communities, plans] = await Promise.all([
     visibleBidParentIds("projects", packages.flatMap((row) => row.project_id ? [row.project_id] : []), context, access),
