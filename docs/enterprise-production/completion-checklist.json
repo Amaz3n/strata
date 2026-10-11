@@ -6061,7 +6061,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -6198,6 +6198,34 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "assertSalesConfiguration at community-sales.ts:1136 (priceAgreementDraft, reached from both createPurchaseAgreement paths at :1378/:1417); assertProjectConfiguration at selections.ts:246 (select), :361 (package), :424 (confirm), :466 (change-order apply), po-generation.ts:235, starts.ts:778, starts-pipeline.ts:285/321. configuration-rules.ts:122-181 validates availability, category membership, requires/excludes via validateOptionSet; flag read fails closed (configuration-rules.ts:14-29)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "configuration-rules.ts:150-153 throws when an unchanged stored selection resolves to a different effective (community override) option id; only explicitly changed selections adopt the effective id."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -6778,7 +6806,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Unchanged since Oct 5. Precedence and ambiguity handling are explicit and reads are bounded; medium confidence because production homes without a pinned plan version fall back to base option price instead of failing.",
       "remainingWork": [
         "Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price.",
@@ -6884,7 +6912,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -7031,6 +7059,31 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "catalog-math.ts:1-13 chooseResolvedPrice: community price > plan price > base; option-catalog.ts:757-766 applies it; community option overrides resolved via overridesByParent (:~733)."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "Duplicates fail explicitly (option-catalog.ts duplicate override/price/category-override throws) and reads are paged with caps via readAllRowsById. But resolveOptionPricing (:631) does not fail on missing context: omitting housePlanVersionId skips plan/community price reads and silently falls back to base price (:~672 guard `if (opts.housePlanVersionId)`); callers pass `?? undefined` (selections.ts:241-242, configuration-rules.ts:139-140). No integer/non-negative validation of price_cents/cost_cents on the resolved rows (Number(chosen.price_cents) at :~770)."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -7040,7 +7093,9 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "Review 2026-10-11: resolveOptionPricing silently falls back to base price when plan-version/community context is missing and does not validate resolved money values."
+      ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [],
       "plain": {
@@ -8154,7 +8209,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Unchanged since Oct 5. Lifecycle transitions and truncation-honest inventory reads are in place and tested.",
       "remainingWork": [
         "Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org."
@@ -8249,7 +8304,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -8436,6 +8491,31 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "lot-lifecycle.ts:48-75 requires a project for 'started', forces confirmation (force + community.write, lots.ts:441) to leave started/closed or step back >1; attach/detach go through same machine (lots.ts:606,686). But nothing requires a home for 'closed' (or forbids a project on controlled/owned/developed): updateLot/bulkUpdateLots (lots.ts:402,423) can move controlled->closed without a project, and assigned->developed with a project attached."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "community-inventory.ts:368 truncated via isTruncated(total from exact count); bulk select ids returns capped flag (:~233); inventory-query.ts shared filter/window clamps; phase counts return truncated from readAllRows (:186-203); status counts use head exact counts (:~148)."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -8446,7 +8526,8 @@
         2
       ],
       "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): inventory-map-page-loads-at-its-documented-size"
+        "Acceptance (LOT-01, 2026-10-11): inventory-map-page-loads-at-its-documented-size",
+        "Review 2026-10-11: Lot state machine does not require/validate home association for closed (or non-started states with an attached project); only 'started' requires a project."
       ],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
@@ -9392,7 +9473,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -9557,6 +9638,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/community-sales.ts:418-469 createLotHoldFromProspect carries prospect_id/buyer onto the hold; supabase/migrations/20261005121409_reservation_conversion_ownership.sql:250 hold->reserved with receipt, events, audit; 20261004000100_purchase_agreement_creation_receipts.sql create_purchase_agreement_atomic sets lot_reservations.contract_id and writes an immutable receipt (unique org_id,reservation_id)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "community-sales.ts:162-203 sweepExpiredLotHolds expires holds; conversion RPC rejects expired/non-hold (migration 20261005121409:205); both agreement paths (community-sales.ts:1366-1374 legacy and RPC line 'r.status is distinct from reserved') require status='reserved' so expired/released/hold reservations cannot produce agreements."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -10401,7 +10510,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -10563,6 +10672,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/financials/purchase-agreement-pricing.ts composePurchaseAgreementPricing/buildPurchaseAgreementSettlement are integer-cent sums (incentive percent rounded); closings.ts:133,139-140 reject non-safe-integer amounts; closing-settlement-evidence.ts:27-40 re-derives and reconciles saved evidence; DB guard 20261003050000 guard_closing_settlement_evidence."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "closings.ts:447-455 refuses to settle unless invoice-line total equals settlement.finalPriceCents; closings.ts:493-497 verifies issued invoice total_cents equals finalPriceCents; DB trigger 20261003050000:177 requires invoice total_cents = settlement.finalPriceCents."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -10619,7 +10756,7 @@
       "dependencies": [
         "EP05-08"
       ],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Settlement is fenced by a unique closing-invoice index, bills the signed agreement's buyer and checks deposit writes (5dc16e16); retry-after-failure, refund-net deposits and closing reversal were already in place. The unique index is migration 20261010120000, pending approval; inventory relief and closing reversal depend on Books migrations 20261007180000-220000. The deposit invoice now goes to the buyer (4158415c; found by LOT-01).",
       "remainingWork": [
         "Apply migration 20261010120000_closing_invoice_unique (pending approval).",
@@ -10716,7 +10853,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -10951,6 +11088,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "20261010120000_closing_invoice_unique.sql unique index fences duplicate closing invoice; closings.ts:467-492 resume/race handling; pendingSettlementWrites (pricing.ts) + deposit apply RPC advisory-locked/idempotent per deposit (20261011000000 replay guard); balance payment keyed provider_payment_id closing:<id> under unique(provider,provider_payment_id) (20260731221030:449); final closings update guarded by status=cleared_to_close (closings.ts:572); sale relief idempotent by sold_on check. Caveat: migrations staged in repo, applied status not verified."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "closings.ts:98-137 deposits limited to agreement buyer, net of payment_reversals and prior applications; invoice bills agreement buyer via readAgreementBuyer (closings.ts:458); apply RPC enforces customer match; reverseClosing (604-638) refunds/reverses per payment. Minor looseness: closings.ts:103 admits deposit invoices lacking customer_id."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -11553,7 +11718,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -11723,6 +11888,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Schedule-derived cutoffs: selection-cutoffs.ts recomputeProjectSelectionCutoffs (skips manual_override) + lockDueGroups sweep; mutation gate assertSelectionMutable (selections.ts:170-216) rejects on locked status, cutoff_date < today, or locked_at, called from select (:237), package (:368), confirm (:419). Manual override overrideGroupCutoff (selection-cutoffs.ts ~:215) sets cutoff_source=manual_override and reopens/locks accordingly; change-order path intentionally bypasses with skipGate (selections.ts:480)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "overrideGroupCutoff requires permission selections.cutoff.override (seeded in 20260718182718_rbac_selections_catalog.sql), cutoffOverrideSchema requires reason min 5 chars (validation/selections.ts:176-181), stores override_reason/overridden_by, emits recordEvent + recordAudit; revertCutoffToSchedule likewise requires reason and audits before/after. Minor: override audit has no `before` cutoff date."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -13261,7 +13454,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1"
@@ -13395,6 +13588,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/starts.ts:1057-1083 loadStartTradeNotices reads all outbox notice rows (pending/processing/completed/failed, throws if >10001); components/starts/start-package-sheet.tsx:540-575 shows counts, per-state labels, Retry only on failed; retryStartTradeNotice (starts.ts:1085-1105) requeues only status=failed via conditional update"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "starts.ts:1085-1102 requires start.release+start.write, loadPackageRow enforces org + division scope (376-395), notice filtered by package id/job_type/org, requires package released, update guarded .eq(status,failed) and length===1 else 'Notice state changed'; actions.ts:102 validates ids"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -14184,7 +14405,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1"
@@ -14333,6 +14554,34 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "supabase/migrations/20261003048000_starts_release_and_purchasing_fences.sql: claim_starts_jobs:15 issues token+3min lease; transition_starts_job_lease:1275-1325 selects only status=processing AND token match AND unexpired lease for update, covers heartbeat/defer/complete/retry; recover_starts_job_leases:1403 reaps expired leases and clears package lease; fence_starts_worker_outbox_write:1327 re-validates token/lease on every worker write and limits claim transitions; lib/services/starts-pipeline.ts:393-405 and 478-481 use only these RPCs"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "guard_starts_job_browser_writes:81-94 blocks anon/authenticated writes to starts jobs and any row with a claim token; RPCs revoked from public/anon/authenticated (granted to service_role only); worker headers rejected for browser roles (fence ~1340); actor taken from claimed job payload and re-asserted via assert_starts_release_actor"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -14385,7 +14634,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Interactive starts mutations write through the service client after their checks (dd770797). Home creation is now authorized in the transaction that writes it: open_start_package locks the lot, re-checks start.write (and project.manage when it builds a home) with division reach over community, lot and home, and creates the home, contract, financial settings, lot link, package and gates together; ensure_start_package_home does the same for a release (66900c27, migration 20261010140000 pending approval). Publication re-checks lot/home ancestry. Everything works only once the staged migrations are applied with the code; the staged migrations remain tracked in supabase/migrations behind later applied versions (audit defect still open).",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval).",
@@ -14493,7 +14742,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1",
@@ -14680,6 +14929,31 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Release path is strong: lock_starts_release_control + assert_starts_release_actor in queue/retry/cancel RPCs (20261010100000_starts_release_control.sql:20-45), publish_start_release (re-checks claim, package lease, actor, lot/home ancestry), worker core fences (048000 migration:1089-1162). But desk writes updateStartPackage (starts.ts:673), mutateGate (696), recomputePackageStatus (455), cancelStartPackage (883) check ownership/division in TS beforehand then write via headerless service client; fence_starts_core_worker_write returns immediately without worker headers (1097-1100), so no in-transaction actor/ownership validation"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "20261010140000_starts_home_creation.sql: open_start_package/ensure_start_package_home lock the lot, check assert_starts_actor_permission start.write/project.manage with division reach over community/lot/home, create_start_home validates org/actor/property_type, link_start_home only if lot has no project, refuse browser roles and worker claims; abandoned-copy cleanup (20261010141000) never deletes referenced paths"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -14692,7 +14966,8 @@
         1
       ],
       "auditDefects": [
-        "Staged, unapplied starts fence migrations (including 20261003048000 and 20261010100000) are tracked in supabase/migrations alongside later applied versions; a blanket db push would sweep them in. They must ship together with the dd770797 code (the interactive-write break is fixed in code, not in the database)."
+        "Staged, unapplied starts fence migrations (including 20261003048000 and 20261010100000) are tracked in supabase/migrations alongside later applied versions; a blanket db push would sweep them in. They must ship together with the dd770797 code (the interactive-write break is fixed in code, not in the database).",
+        "Review 2026-10-11: Non-release desk mutations (update package, gates, cancel package, readiness recompute) validate ownership in TS only and write via unfenced service role, not in-transaction."
       ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
@@ -15271,7 +15546,7 @@
         "performance"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Unchanged copy path. Commit 0cae93cc made uploadFilesObject conditional (no overwrite) and introduced an acceptance-bucket storage kit (STORE-01) for Books documents; plan PDF copy has not yet been run through that kit, and memory/latency are unmeasured.",
       "remainingWork": [
         "Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit).",
@@ -15372,7 +15647,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -15491,6 +15766,34 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/storage/files-storage.ts:548-579 copyFilesObject uses R2 CopyObjectCommand (server-side, no byte buffering, 5GiB cap), org-scoped paths, private payroll refusal, CopySourceIfMatch on source ETag; lib/services/plan-drawing-copy.ts:49-66 reserves destination, copies with expectedSize/expectedSourceEtag; file row visibility private (plan-instantiation.ts:850-865 and publish_plan_drawing_copy). Legacy flag-off path (plan-instantiation.ts:810-880) also uses copyFilesObject"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "files-storage.ts:565-570 rejects changed length/ETag vs reservation; If-Match fails copy if source mutates; plan-drawing-copy.ts:54-57 verifies copied size/etag match reservation; publish_plan_drawing_copy (048000 migration:787) re-verifies evidence, size vs source file record and path, and refuses differing replays. Caveat: legacy path (flag default off) only checks size, not a reserved ETag"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -15500,7 +15803,9 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "Verification 2026-10-11: plan PDF copy has only been proven to refuse without storage; it must run against the acceptance storage bucket (--storage-env) before EP07-14 is verified."
+      ],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
@@ -15958,7 +16263,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1",
@@ -16166,6 +16471,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Drawing: 20261001121920_drawing_job_leases.sql claim_drawing_jobs/transition_drawing_job_lease (token+unexpired lease)/recover_drawing_job_leases (retry cap 3, marks revisions failed) and fence_drawing_worker_write triggers on sheets/versions/revisions/outbox fanout; lib/services/drawings-pipeline.ts:520-547,628-641. Notice workers: start_release_trade_notice claimed via claim_starts_jobs with token, transition_starts_job_lease enforces token and 3-retry backoff, fan-out insert fence checks package/actor/vendor assignment (048000:1327+); starts-pipeline.ts:processReleaseTradeNotice re-checks division access and defers when package releasing. Weak spot: notice send itself is not fenced, at-least-once if lease lost mid-send"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "20261010141000_abandoned_plan_drawing_copy_cleanup.sql: claim only reserved manifests >=1 day old, no live release lease, no files row naming path, marks abandoned (publish/reserve refuse abandoned); clear_abandoned_plan_drawing_copy re-checks files under project lock and raises if referenced; paths are attempt-unique; plan-instantiation.ts:970-995 deletes only claimed paths"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -16228,7 +16561,7 @@
         "EP07-15",
         "EP07-16"
       ],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Retry, cancel and publication are single SQL transactions. Publication (publish_start_release, 66900c27, migration 20261010100000 edited, pending approval) now proves the step ledger settled, starts the lot, moves the home to delivery, releases the package and writes its audit, start.released event and search reindex jobs together; the claimed start_release job is the durable notification intent and the worker only sends idempotent confirmations afterward. A lot that left its home publishes nothing. The starts worker may now queue reindex jobs for its own lot and schedule items (edit to unapplied 20261003048000, 12c622af; found by LOT-01).",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval).",
@@ -16332,7 +16665,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1",
@@ -16510,6 +16843,31 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "queue_start_release, retry_start_release, cancel_start_release and publish_start_release (20261010100000_starts_release_control.sql:48-246) commit package status, step ledger/job, lot/project state, audit, events and reindex in one transaction; notification intent is the claimed job itself and confirmation is idempotent (starts-pipeline.ts:354-360). But reportTerminalFailure (starts-pipeline.ts:410-430) writes event and notifications after the claim-transition commit; retryStartTradeNotice (starts.ts:1097-1103) and cancelStartPackage/updateStartPackage/gate mutations write status first then recordAudit/recordEvent separately in TS"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Cancel/retry/queue serialize on lock_starts_release_control (start_release jobs then package row lock, :20-40); retry refuses while pending/processing job exists, cancel revokes claim and returns package to ready under same lock, publish_start_release re-checks claim, lease token and status releasing so a preempted worker cannot publish"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -16519,7 +16877,9 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "Review 2026-10-11: Terminal-failure event/notification and desk-side cancel/update/notice-retry write state and audit/event in separate non-atomic steps."
+      ],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "retryRelease updates status to 'releasing' with no .eq('status','attention') guard (lib/services/starts.ts:834-837), racing a concurrent cancel or retry. — fixed in dd770797",
@@ -16834,7 +17194,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -16978,6 +17338,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "components/purchasing/create-bid-dialog.tsx:12-57 community/plan scoped pickers -> createBidPackageAction -> router.push(/purchasing/bids/[id]); lib/services/bids.ts:1645-1700 createBidPackage (assertProductionBidAccess division scope, award_target=price_agreement, bid.write/project.manage); lib/validation/bids.ts:35-43 one-context refine; app/(app)/purchasing/bids/[packageId]/page.tsx:25-62 renders BidPackageWorkbench; bid.write seeded to purchasing mgr (20260718193937:196)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "components/bids/bid-award-sheet.tsx:61,159,171-172 requires reviewed scope+terms; lib/validation/bids.ts awardBidSubmissionInputSchema reviewed_scope/reviewed_terms min(1); lib/services/bids.ts:3794-3806 calls run_bid_award_price_agreements with terms in p_notes; migration 20260718193938:27-176 inserts vendor_price_agreements (notes=terms), supersedes old; 20261004120000 active-award unique index"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -17028,7 +17416,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Bid queue is a server-filtered, division-scoped, exactly counted, stably ordered page; vendor/entity pickers search on the server with retry that keeps selection. No changes since Oct 5. Vendor picker searches every directory company and shows no total count.",
       "remainingWork": [
         "QA judgement whether the vendor picker must show a visible total; if so surface the directory page total.",
@@ -17139,7 +17527,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -17294,6 +17682,31 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Bid queue (production-bid-queue.ts:27-69), bid vendor picker (production-bid-vendors.ts, production-bid-vendor-picker.tsx), PurchasingEntityPicker/searchPurchasingEntities (purchasing-workspace.ts:26-62) all use scoped server search, order+id tie-break, exact counts. BUT app/(app)/purchasing/page.tsx:41-52,77-81 loads listCompanies/listCostCodes/listCommunities/listHousePlans in full and components/purchasing/purchasing-client.tsx:154-157 New agreement form uses unpaged native <select> of whole vendor/community/plan rosters (unscoped vendor picker)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "production-bid-vendor-picker.tsx:34-36 error + Retry button, selection held in parent value; components/ui/search-picker.tsx:100 Retry button, selection value untouched on failure"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -17304,7 +17717,8 @@
         0
       ],
       "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): picker-page-past-the-end-is-empty"
+        "Acceptance (LOT-01, 2026-10-11): picker-page-past-the-end-is-empty",
+        "Review 2026-10-11: Purchasing price-book New agreement form still uses full-roster native selects for vendor/community/plan (purchasing/page.tsx:41-52, purchasing-client.tsx:154-157) instead of scoped server-search pickers."
       ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [],
@@ -17635,7 +18049,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -17782,6 +18196,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/bid-intelligence.ts:53-66 getPackageIntelligence, :130-144 getCostCodeBidHistory, :239-250 getVendorBidStats all via readAllRows with truncation errors and org_id scoping; visibility via bid-intelligence-visibility.ts:7-43 and division filters at bid-intelligence.ts:139-141,153-154"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "bid-intelligence.ts:72 invalid bid total throws; :175,179 missing references/invalid amounts throw; visibleBidPackageIds:30 missing package throws; :261 missing award throws; :254-280,284 production_awarded_count is Set of award ids (dedupes revisions). Caveat: app page .catch(()=>null) on package intelligence (page.tsx:35) and workbench drops stats failure silently (bid-package-workbench.tsx:177-181) - UI-level, services fail explicitly"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -19858,7 +20300,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Full fail → corrective work → reinspection → independent acceptance code exists but only as a staged migration behind INSPECTION_LIFECYCLE_ENABLED. Corrective punch resolution goes through the authorized punch service (bb8d2c74), and punch items raised from a failed inspection item are now created by the same service (createPunchItemFromInspection, 3bf6c38b), so they get its validation, assignee and location checks, event, audit and dispatch; the link back to the inspection item is still a separate write. getInspection authorizes per project and createInspection validates the schedule item belongs to the project, but the deleted URL-adapter test was not restored.",
       "remainingWork": [
         "Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write).",
@@ -19942,7 +20384,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09",
             "FIX-20261010-W1",
@@ -20072,6 +20514,31 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "inspections.ts:717-770 createPunchItemFromInspectionItem is a manual per-item action; owner (assigned_company_id) and due date are optional (null defaults, line 748); photo linked best-effort with only console.warn on failure (761). Not automatic on failed items in the live path."
+            },
+            {
+              "index": 1,
+              "verdict": "missing",
+              "evidence": "Reinspection/prior-result retention exists only in supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql, headed 'STAGED / UNAPPLIED' and docs/enterprise-production/inspection-obligation-lifecycle.md:39 'has not been applied'; code gated by INSPECTION_LIFECYCLE_ENABLED=false (lib/inspections/lifecycle.ts:5, .env.example:122); mutateInspectionObligation throws when disabled (inspections.ts:843)."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -20082,7 +20549,8 @@
         2
       ],
       "auditDefects": [
-        "Lifecycle migration 20261005031540 not applied; flag off."
+        "Lifecycle migration 20261005031540 not applied; flag off.",
+        "Review 2026-10-11: Corrective punch is manual with optional owner, and reinspection/obligation lifecycle is staged, unapplied and flag-off."
       ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
@@ -20195,7 +20663,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09",
             "FIX-20261010-W1"
@@ -20335,6 +20803,31 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "punch-lists.ts:435-470 insertPunchItem stores assigned_to, assigned_company_id, due_date, severity, verification_required; update path stamps verified_at/verified_by/resolved_by (539-556) requiring 'after' evidence (hasVerificationEvidence 372-387); events+audit recorded (570-578); punch.write authz (343)."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "closing-readiness.ts:50-52 and project-close-readiness.ts:162-168,418-433 block non-closed items, but project-close-readiness only selects status<>closed so a closed-but-unverified required item passes; and daily-log RPC (supabase/migrations/20260908151828_daily_log_project_name_fix.sql:121-123, via lib/mobile/daily-logs.ts:388) sets status='closed' on punch items with mark_closed without verification evidence or verified_at, bypassing the rule."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -20766,7 +21259,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Oct 5's setup-only native entity registry and per-entity ledger were retired on 2026-10-07 in favour of a legal-entity segment on every journal line. Per-company statements, AR/AP aging, 1099s, openings, intercompany legs, intercompany lot sales, consolidation with eliminations and a blocking intercompany close control are built and proven on the Books acceptance stack (ENTITY-01 8/8, INTERCO-01, CONSOL-01). Close remains one org-wide close that saves each company's statements; minority interests and dated group membership are explicitly out of scope.",
       "remainingWork": [
         "Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together).",
@@ -20860,7 +21353,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -21107,6 +21600,31 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Per-entity: journal_lines.legal_entity_id, per-company TB/P&L/BS/cash flow and AR/AP aging saved at close (period-close.ts:1005-1030), AR/AP aging filter by legal entity (ar-aging.ts:116, ap-aging.ts:90), intercompany pair tie-out. But close controls ar_control/ap_control/cash/land_inventory/completed_homes (period-close.ts:422-428,635-675; verifier.ts:60-71 books_home_inventory_controls takes only org) tie org-wide only; no per-legal-entity tie of AR/AP/cash/inventory subledger to that entity's GL. docs/books-entities.md also states independent per-company close not built"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "20261008001000_books_companies.sql:108-272 post_books_journal_entry resolves owner per line and adds balancing due-from/due-to legs per entity, settling existing balances; :276-292 ownership guard once posted; :402 sell_books_lot_to_affiliate; verifier.ts:73-87 + period-close.ts:660-675 blocking intercompany_control"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -21118,7 +21636,9 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [],
+      "auditDefects": [
+        "Review 2026-10-11: Subledger-to-GL tie-outs for AR, AP, cash and inventory run only org-wide; there is no per-legal-entity reconciliation of those balances."
+      ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "Oct 5 'every tie-out is org-level, no entity references' — superseded: legal_entity_id on every journal line with per-company statements and AR/AP (supabase/migrations/20261007235800_books_legal_entities.sql; lib/services/reports/ar-aging.ts)",
@@ -22634,7 +23154,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11",
             "FIX-20261010-W1"
@@ -22769,6 +23289,34 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/warranty/domain.ts:46-69 addCalendarMonths clamps month-end (Jan31+1mo=Feb28/29), buildCoverageSnapshot; :71-81 classifyCoverage inclusive through expires_on 23:59:59.999Z else out_of_warranty; warranty-operations.ts:472 expired flag; warranty-enrollment.ts:11 strict calendar-date validation and :46-52 re-derives expires_on to verify"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "20261010120100_warranty_coverage_write_scope.sql:62-82 snapshot-immutable trigger on project_warranty_coverage (program_id, effective_date, source, terms_snapshot) for all writers, no delete policy, write RLS needs warranty.manage; warranty-operations.ts:436 program edits only rewrite warranty_coverage_terms, not snapshots; enrollment is single insert (:487-517). Note: this migration must be applied in prod (not verified)"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -24174,7 +24722,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "verified",
+      "status": "implemented",
       "implementationNotes": "Imported open homes keep buyer, agreement total, budget, current stage and remaining POs, and a failed row never publishes the lot. A failed row still leaves behind any buyer contact or vendor company it created. Books openings (MIG-01) now carry the financial side of owned lots and spec homes, which complements this operational import.",
       "remainingWork": [
         "Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row.",
@@ -24270,7 +24818,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -24390,6 +24938,31 @@
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "imports.ts:828-876 creates project with wip_cutover metadata, approved budget+lines, remaining-balance POs (metadata original_cents), contract status active (purchase_agreement), buyer contact. But schedule is created only if plan version has schedule_template_id (imports.ts:845, set at :271) - silently skipped otherwise even when stage_task given; buyer contact only if buyer_email (:857) with no validation requiring it for sold rows, so a sold home can import with no buyer; email lookup uses unescaped ilike (:858)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "imports.ts:874-878 lot link guarded by .is(project_id,null) and throws; :883-895 unpublishWipHomes compensates, errors if rollback incomplete; :928-940 batch marked failed on any error; :820-824 pre-existing lot project from another batch refused. Minor: auto-created companies/contacts not rolled back"
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -24404,7 +24977,8 @@
       "auditDefects": [
         "Failed Open-WIP row rollback deletes the project but leaves a newly inserted buyer contact (imports.ts:793) and any vendor company created by ensureCompany as orphans — still open.",
         "Acceptance (LOT-01, 2026-10-11): open-wip-failed-batch-leaves-no-published-homes",
-        "Acceptance (LOT-01, 2026-10-11): open-wip-schedule-follows-the-plan-template"
+        "Acceptance (LOT-01, 2026-10-11): open-wip-schedule-follows-the-plan-template",
+        "Review 2026-10-11: Imported homes can commit without current-stage schedule (no plan schedule template) or without a buyer (no email) with no error, so provenance is not guaranteed."
       ],
       "auditConfidence": "high",
       "fixedSinceAudit": [],

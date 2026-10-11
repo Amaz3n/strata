@@ -9,9 +9,9 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 | Measure | Current result |
 | --- | --- |
 | Implemented | 18.7% — a documented lower bound, not an ETA |
-| Fully verified | 16.3% |
+| Fully verified | 11.1% |
 | Release ready | 0% |
-| Code implemented | 4 items |
+| Code implemented | 12 items |
 | Partially implemented | 84 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
@@ -86,7 +86,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP03-04 | Atomic configuration mutation | partial | Apply migration 20261010162000_selection_package_save (pending approval). |
 | EP03-05 | Community offering restrictions | partial | Add the screen that assigns a plan to an unsold lot (service and action exist in lib/services/lots.ts and app/(app)/communities/actions.ts). |
 | EP03-06 | Lot fit and orientation | partial | Model lot buildable constraints (dimensions, setbacks, orientation, allowed elevations) and plan/elevation footprint requirements. |
-| EP03-07 | Deterministic pricing resolution | verified | Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price. |
+| EP03-07 | Deterministic pricing resolution | implemented | Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price. |
 | EP03-08 | Immutable commercial snapshots | partial | Apply migration 20261010161000_budget_baseline_write_once (pending approval). |
 | EP03-09 | Revision impact and rollout | partial | Revision proposal with affected-home preview (contracted vs released vs unsold) for plan, elevation and catalog changes. |
 | EP03-10 | Guided configuration correction | partial | Return structured violations (rule, source, target) from the preflight instead of a joined string. |
@@ -99,7 +99,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP04-02 | Entitlement milestones | pending | Model entitlements and jurisdiction conditions per community/phase with due dates, owners and status. |
 | EP04-03 | Takedown obligations | partial | Link takedowns to a land contract with deposit schedule, refundability and extension/penalty terms, preserving signed evidence. |
 | EP04-04 | Horizontal development controls | partial | Apply migration 20261010160000_lot_land_delivery (pending approval). |
-| EP04-05 | Lot lifecycle and bounded inventory | verified | Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org. |
+| EP04-05 | Lot lifecycle and bounded inventory | implemented | Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org. |
 | EP04-06 | Concurrent lot allocation | partial | Approve/apply 20261005121409 and 20261003221905 after reconciling legacy duplicates; cut over to the atomic conversion and delete the legacy multi-step path. |
 | EP04-07 | Spec aging calculation | verified | Decide how completed spec homes outside Books inventory record a completion date (today they show no age). |
 | EP04-08 | Spec disposition workflow | partial | Extend the single-spec price change to an approval step for large moves and to incentive changes. |
@@ -116,7 +116,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP05-06 | Commission controls | pending | Product decision on commission plans (co-op %, internal sales comp) and payout source. |
 | EP05-07 | Agreement amendments and cancellation | partial | Cancel/hold start packages, POs/variance orders and open signing envelopes on void; release incentive capacity. |
 | EP05-08 | Purchase and settlement arithmetic | verified | Apply 20261003050000_closing_evidence_guards after approval. |
-| EP05-09 | Atomic closing and deposit reconciliation | implemented | Apply migration 20261010120000_closing_invoice_unique (pending approval). |
+| EP05-09 | Atomic closing and deposit reconciliation | verified | Apply migration 20261010120000_closing_invoice_unique (pending approval). |
 | EP05-10 | Closing to warranty handoff | partial | Apply migration 20261010120100_warranty_coverage_write_scope (pending approval). |
 
 ### EP06: Selections and permits
@@ -146,13 +146,13 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP07-08 | Trade acceptance workflow | pending | Design trade response records bound to the issued scope version (accept/decline/reschedule with proposed dates): schema, RLS, RBAC, pending migration. |
 | EP07-09 | Dependency-aware bulk rescheduling | partial | Fix bulkUpdateScheduleItems silently ignoring failed item updates (schedule.ts:930). |
 | EP07-10 | Tokenized job claim protocol | verified | Full-schema, independent-session claim/heartbeat/reaper race proof. |
-| EP07-11 | Core release ownership | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval). |
+| EP07-11 | Core release ownership | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval). |
 | EP07-12 | Generated artifact ownership | verified | Replay schedule/budget/inspection/PO/land guards against the full schema (move their tests onto tests/support/pglite.js). |
 | EP07-13 | Transactional actor authority | partial | Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval). |
-| EP07-14 | Bounded storage copy | verified | Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit). |
+| EP07-14 | Bounded storage copy | implemented | Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit). |
 | EP07-15 | Durable drawing publication | verified | Run the consumer, SQL chain and real storage together in QA. |
 | EP07-16 | Child worker and orphan recovery | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval). |
-| EP07-17 | Atomic release finalization | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval). |
+| EP07-17 | Atomic release finalization | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval). |
 | EP07-18 | Starts cutover and rollback | pending | Keep the staged starts migrations from being swept in by db push until the approved cutover. |
 
 ### EP08: Purchasing and supply chain
@@ -160,7 +160,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP08-01 | Production bid workbench entry | verified | Fix rescind of price-book awards (EP08-05) since it is reachable from this workbench. |
-| EP08-02 | Bounded bid and vendor queues | verified | QA judgement whether the vendor picker must show a visible total; if so surface the directory page total. |
+| EP08-02 | Bounded bid and vendor queues | implemented | QA judgement whether the vendor picker must show a visible total; if so surface the directory page total. |
 | EP08-03 | Bid subresource authorization | partial | Route listBidPackages/getProjectBuyoutSummary through assertBidProjectVisibility; scope or delete listCommunityBidPackages. |
 | EP08-04 | Complete bid intelligence | verified | Render an explicit error state instead of .catch(() => null) at app/(app)/purchasing/bids/[packageId]/page.tsx:40. |
 | EP08-05 | Rebid and renewal lifecycle | partial | Make rescind_bid_award void/end the minted agreements and restore superseded predecessors transactionally (migration, needs approval). |
@@ -179,7 +179,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP09-01 | Assigned-home mobile access | partial | Replace per-request listProjects scans with a single-project check (lib/mobile/field.ts and sibling requireProject helpers). |
 | EP09-02 | Offline conflict recovery | partial | Apply migration 20261010170000_mobile_idempotency_receipts (pending approval). |
 | EP09-03 | Released field documents | partial | Approve/apply the plan drawing publication migrations and enable planDrawingCopyTransactions in the QA org. |
-| EP09-04 | Inspection failure lifecycle | verified | Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write). |
+| EP09-04 | Inspection failure lifecycle | implemented | Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write). |
 | EP09-05 | Punch and close readiness | implemented | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
 | EP09-06 | Cross-home daily records | partial | Add a cross-home review band (logs missing today, new photos) for assigned homes on the super's Home/My Work. |
 | EP09-07 | Supplier and trade communication | partial | Add optional PO linkage on field issues/punch with ancestry validation. |
@@ -189,7 +189,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP10-01 | Legal-entity financial reconciliation | verified | Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together). |
+| EP10-01 | Legal-entity financial reconciliation | implemented | Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together). |
 | EP10-02 | Inventory and land capitalization | partial | Add a governed correction for a land acquisition (reverse, clear the lot's acquisition pointer, re-acquire) and for a start transfer (reverse and re-transfer when the start is undone or redated), preserving receipts. |
 | EP10-03 | Construction-driven cash forecast | partial | Feed starts (budgets by schedule), closings (settlement proceeds), takedowns, loan draws and payoffs, with editable scenario assumptions. |
 | EP10-04 | Margin arithmetic | partial | Expose original vs revised budget separately from the approved/locked baseline. |
@@ -216,7 +216,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP12-01 | Bounded validated import reads | verified | Add a case to tests/imports.test.js with >1,000 communities / >10,000 lots proving no false unresolved rejections. |
-| EP12-02 | Open-WIP continuity | verified | Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row. |
+| EP12-02 | Open-WIP continuity | implemented | Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row. |
 | EP12-03 | Atomic resumable cutover | partial | Move Open-WIP commit to a durable outbox job with a lease and per-row transactional RPC that writes the import_rows receipt with the home (migration needs approval). |
 | EP12-04 | Financial and signed-document migration | partial | Agreement + executed-document importer (file, hash, signers, immutable) linked to the Open-WIP home, reusing Documents/Signing storage (STORE-01 proved the storage layer). |
 | EP12-05 | Selections and warranty continuity | pending | Installed-home importer (home identity, close date, program/terms version, structural carrier) creating coverage with an import source and terms snapshot. |
