@@ -2144,7 +2144,7 @@
           "blankTerms": "refused: terms not reviewed",
           "unresolvedWarnings": "refused: pre-award warnings",
           "salesConsultant": "refused: missing permission",
-          "buyerOutsideDivision": "refused: bid package not found",
+          "buyerOutsideDivision": "Bid submission not found",
           "agreementsWritten": 0
         },
         "agreements": [
