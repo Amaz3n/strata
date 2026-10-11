@@ -29,7 +29,7 @@ const { stubModule, freshRequire } = require("./support/modules");
 
 const PERIOD = id(70);
 const tieOut = (code, differenceCents = 0) => ({ code, label: code, status: differenceCents ? "failed" : "passed", ledgerCents: 1000, subledgerCents: 1000 - differenceCents, differenceCents });
-const TIE_OUT_CODES = ["trial_balance", "job_cost_control", "ar_control", "ap_control", "retainage_receivable_control", "retainage_payable_control", "customer_deposits_control", "debt_register_control", "fixed_assets_control", "accumulated_depreciation_control", "land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control", "intercompany_control"];
+const TIE_OUT_CODES = ["trial_balance", "job_cost_control", "ar_control", "ap_control", "retainage_receivable_control", "retainage_payable_control", "customer_deposits_control", "debt_register_control", "fixed_assets_control", "accumulated_depreciation_control", "land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control", "intercompany_control", "cash_control"];
 let tieOuts = [];
 
 stubModule("@/lib/services/books/verifier", { runLedgerTieOuts: async () => tieOuts });

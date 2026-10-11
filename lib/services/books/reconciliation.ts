@@ -500,7 +500,11 @@ async function collectLedgerItems(orgId: string, asOf: string): Promise<Reconcil
       localAmountCents: tieOut.ledgerCents,
       externalAmountCents: tieOut.subledgerCents,
       differenceCents: tieOut.differenceCents,
-      details: { label: tieOut.label, as_of: asOf },
+      details: {
+        label: tieOut.label,
+        as_of: asOf,
+        ...(tieOut.companies ? { out_of_balance_companies: tieOut.companies.filter((company) => company.status === "failed").map((company) => company.name) } : {}),
+      },
     })
   }
   return items

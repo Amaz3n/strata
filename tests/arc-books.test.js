@@ -4090,6 +4090,7 @@ test("two exceptions of one kind against one record stay two findings", () => {
 });
 
 test("the close gate reads the current state of reconciliation, not its history", () => {
+  const { tieOutCloseCheck } = require("../lib/services/books/close-control-rules");
   const source = fs.readFileSync(
     path.join(__dirname, "../lib/services/books/period-close.ts"),
     "utf8",
@@ -4115,7 +4116,8 @@ test("the close gate reads the current state of reconciliation, not its history"
   // The dedicated control checks remain the single place a tie-out blocks a close.
   for (const code of ["job_cost_control", "ar_control", "ap_control"]) {
     assert.ok(TIE_OUT_ITEM_CATEGORIES.includes(`tie_out_${code}`));
-    assert.match(source, new RegExp(`code: "${code}"`));
+    const check = tieOutCloseCheck({ code, label: code, status: "failed", ledgerCents: 1, subledgerCents: 0, differenceCents: 1 });
+    assert.deepEqual([check.code, check.blocking, check.status], [code, true, "failed"]);
   }
 
   // The spine no longer wipes and rewrites the day's items, and it does close them.

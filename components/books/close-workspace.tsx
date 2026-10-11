@@ -70,6 +70,17 @@ function record(value: unknown): Record<string, unknown> {
     ? (value as Record<string, unknown>)
     : {};
 }
+/** Per-company tie-out rows a control carries when the org keeps books for more than one company. */
+function companyTieOuts(value: unknown) {
+  return (Array.isArray(value) ? value : []).map(record).flatMap((row) =>
+    typeof row.name === "string" &&
+    typeof row.ledger_cents === "number" &&
+    typeof row.subledger_cents === "number" &&
+    typeof row.difference_cents === "number"
+      ? [{ id: String(row.legal_entity_id ?? row.name), name: row.name, ledgerCents: row.ledger_cents, subledgerCents: row.subledger_cents, differenceCents: row.difference_cents, failed: row.status === "failed" }]
+      : [],
+  );
+}
 function destination(value: unknown) {
   if (
     typeof value !== "string" ||
@@ -257,6 +268,7 @@ function PeriodReview({
       destination(evidence.href) ??
       (check.category === "controls" ? "/books/ledger" : null);
     const isPassed = check.status === "passed";
+    const companies = companyTieOuts(evidence.companies);
     return (
       <details key={check.id} className="group border-b last:border-b-0">
         <summary className="flex cursor-pointer list-none items-start gap-3 px-1 py-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
@@ -331,6 +343,32 @@ function PeriodReview({
                 ) : null,
               )}
             </dl>
+          ) : null}
+          {companies.length ? (
+            <table className="w-full border-l-2 text-xs">
+              <thead className="text-muted-foreground">
+                <tr>
+                  <th scope="col" className="py-1 pl-4 text-left font-normal">Company</th>
+                  <th scope="col" className="py-1 text-right font-normal">Ledger</th>
+                  <th scope="col" className="py-1 text-right font-normal">Subledger</th>
+                  <th scope="col" className="py-1 text-right font-normal">Difference</th>
+                </tr>
+              </thead>
+              <tbody>
+                {companies.map((company) => (
+                  <tr key={company.id}>
+                    <th scope="row" className={cn("py-1 pl-4 text-left font-medium", company.failed && "text-destructive")}>
+                      {company.name}
+                    </th>
+                    <td className="py-1 text-right font-mono tabular-nums">{currency(company.ledgerCents)}</td>
+                    <td className="py-1 text-right font-mono tabular-nums">{currency(company.subledgerCents)}</td>
+                    <td className={cn("py-1 text-right font-mono tabular-nums", company.failed && "text-destructive")}>
+                      {currency(company.differenceCents)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           ) : null}
           {evidence.scan_capped === true ? (
             <p className="text-xs text-warning">

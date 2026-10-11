@@ -66,6 +66,7 @@ const TIE_OUT_LABELS: Record<string, string> = {
   ap_control: "AP control does not tie to open bills",
   retainage_receivable_control: "Retainage receivable does not tie",
   retainage_payable_control: "Retainage payable does not tie",
+  cash_control: "Cash is on the books of a company that does not own the account",
 }
 
 export interface ReconciliationDigestRow {

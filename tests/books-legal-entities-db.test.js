@@ -132,3 +132,32 @@ test("each company's position with its affiliate is the affiliate's opposite, wh
   assert.equal(land.dueFromCents - land.dueToCents + (primary.dueFromCents - primary.dueToCents), 0)
   assert.equal(Math.abs(land.dueFromCents - land.dueToCents), 3_500)
 })
+
+test("land, completed homes and job cost are reported per company for the close's company tie-outs", async (t) => {
+  const b = await books(t)
+  const account = (code, name) => insert(b.db, "gl_accounts", { org_id: b.orgId, code, name, account_type: "asset", subtype: "other_asset", normal_balance: "debit" })
+  const [land, completed] = await Promise.all([account("1120", "Owned land"), account("1170", "Completed homes")])
+  const home = await insert(b.db, "projects", { org_id: b.orgId, name: "Lot 9", legal_entity_id: b.land.id })
+  const community = await insert(b.db, "communities", { org_id: b.orgId, name: "Oak Ridge" })
+  const { id: lotId } = await insert(b.db, "lots", { org_id: b.orgId, community_id: community.id, lot_number: "9" })
+
+  // One lot's land carried 400 by the builder and 600 by the land company; a home on the land company's books.
+  await b.post([[land.id, 400, 0, { legal_entity_id: b.primary, dimensions: { lot_id: lotId } }], [b.cash.id, 0, 400]])
+  await b.post([[land.id, 600, 0, { legal_entity_id: b.land.id, dimensions: { lot_id: lotId } }], [b.landBank.id, 0, 600]])
+  await b.post([[completed.id, 700, 0, { project_id: home.id }], [b.landBank.id, 0, 700]])
+  await insert(b.db, "job_cost_entries", { org_id: b.orgId, project_id: home.id, source_type: "project_expense", source_id: lotId, incurred_on: "2026-10-10", cost_cents: 250, status: "posted" })
+
+  const controls = await rpc(b.db, "books_home_inventory_controls", { p_org_id: b.orgId, p_as_of: "2026-10-31" })
+  assert.equal(controls.land.ledgerCents, 1_000)
+  const [lot] = controls.land.holdings
+  assert.equal(lot.lotId, lotId)
+  assert.deepEqual(
+    Object.fromEntries(lot.ledger.map((held) => [held.legalEntityId, held.cents])),
+    { [b.primary]: 400, [b.land.id]: 600 },
+  )
+  assert.deepEqual(controls.completedHomes.holdings, [{ projectId: home.id, held: false, ledger: [{ legalEntityId: b.land.id, cents: 700 }] }])
+  assert.deepEqual(controls.completedHomes.exceptions, [{ projectId: home.id, cents: 700 }])
+
+  const jobCost = await rpc(b.db, "books_job_cost_subledger_by_project", { p_org_id: b.orgId, p_as_of: "2026-10-31" })
+  assert.deepEqual(jobCost.map((row) => [row.project_id, Number(row.cost_cents)]), [[home.id, 250]])
+})

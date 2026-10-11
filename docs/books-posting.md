@@ -125,7 +125,7 @@ A company without the Arc ledger gets no status.
 
 The close checklist and the as-of statements read ledger totals, job-cost
 totals, clearing positions and which jobs carry cost from database functions
-(`books_ledger_balances`, `books_job_cost_subledger_cents`,
+(`books_ledger_balances`, `books_job_cost_subledger_by_project`,
 `books_account_positions`, `books_projects_with_posted_cost`), not every line
 since the company began. The AP and AP-retainage tie-outs read each payable bill
 once. Reports over a window (P&L, general ledger) still load that window's entries.

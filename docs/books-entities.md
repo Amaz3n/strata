@@ -104,6 +104,18 @@ sides, and the lots sold between them. The close's blocking intercompany control
 requires every company's due-from to equal its affiliate's due-to; posting writes
 both legs in one atomic entry, so a one-sided posting cannot occur.
 
+**Per-company tie-outs.** With more than one company, the AR, AP, cash, job-cost
+(homes under construction), land and completed-homes controls are also tied for
+each company: the company's own ledger lines against the subledger records that
+belong to it by the ownership rule above (`expectedOwner()` in
+`lib/services/books/close-control-rules.ts`) — an invoice or bill by its job, a
+lot's basis by the land account's owner or the one company carrying it, a home
+held for sale by its job, a cash account by its owner. A company out of balance
+fails the control and blocks the close by name even when the companies'
+differences cancel in the org total; the close checklist shows each company's
+ledger, subledger and difference. A single-company organization is unaffected,
+and the cash control (which only has something to say per company) is not shown.
+
 ## Opening balances
 
 Each company brings its own opening position as its own batch (the opening wizard

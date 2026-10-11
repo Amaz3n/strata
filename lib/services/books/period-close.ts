@@ -6,7 +6,7 @@ import "server-only";
 import { z } from "zod";
 import { clearingReviewSchema, loadClearingPosition } from "@/lib/services/books/clearing-support";
 import { clearingSupportMatches } from "@/lib/services/books/clearing-support-rules";
-import { requireLedgerTieOut, retainageCloseChecks } from "@/lib/services/books/close-control-rules";
+import { requireLedgerTieOut, retainageCloseChecks, tieOutCloseCheck } from "@/lib/services/books/close-control-rules";
 
 import {
   BILLED_INVOICE_STATUSES,
@@ -422,6 +422,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   const jobCostTieOut = tieOut("job_cost_control");
   const arTieOut = tieOut("ar_control");
   const apTieOut = tieOut("ap_control");
+  const cashTieOut = tieOut("cash_control");
   const customerDepositsTieOut = tieOut("customer_deposits_control");
   const debtRegisterTieOut = tieOut("debt_register_control");
   const fixedAssetsTieOut = tieOut("fixed_assets_control");
@@ -618,64 +619,16 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       href: "/books/revenue-policies",
       evidence: { unreviewed: unreviewedPolicies },
     },
-    {
-      code: "job_cost_control",
-      label: "GL job cost ties to the job-cost subledger",
-      category: "controls",
-      blocking: true,
-      status: jobCostTieOut.status,
-      issueCount: jobCostTieOut.status === "failed" ? 1 : 0,
-      evidence: {
-        ledger_cents: jobCostTieOut.ledgerCents,
-        subledger_cents: jobCostTieOut.subledgerCents,
-        difference_cents: jobCostTieOut.differenceCents,
-      },
-    },
-    {
-      code: "ar_control",
-      label: "Accounts receivable ties to the AR subledger",
-      category: "controls",
-      blocking: true,
-      status: arTieOut.status,
-      issueCount: arTieOut.status === "failed" ? 1 : 0,
-      evidence: {
-        ledger_cents: arTieOut.ledgerCents,
-        subledger_cents: arTieOut.subledgerCents,
-        difference_cents: arTieOut.differenceCents,
-      },
-    },
-    {
-      code: "ap_control",
-      label: "Accounts payable ties to the AP subledger",
-      category: "controls",
-      blocking: true,
-      status: apTieOut.status,
-      issueCount: apTieOut.status === "failed" ? 1 : 0,
-      evidence: {
-        ledger_cents: apTieOut.ledgerCents,
-        subledger_cents: apTieOut.subledgerCents,
-        difference_cents: apTieOut.differenceCents,
-      },
-    },
-    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control", "intercompany_control"] as const).map((code) => {
-      const control = tieOut(code);
-      return {
-        code,
-        href: code === "warranty_reserve_control" ? "/warranty/accounting" : code === "intercompany_control" ? "/books/entities" : "/books/close",
-        label: control.label,
-        category: "controls",
-        blocking: true,
-        status: control.status,
-        issueCount: control.status === "failed" ? Math.max(1, control.exceptions?.length ?? 0) : 0,
-        evidence: {
-          ledger_cents: control.ledgerCents,
-          subledger_cents: control.subledgerCents,
-          difference_cents: control.differenceCents,
-          ...(control.exceptions?.length ? { exceptions: control.exceptions } : {}),
-          ...(control.rows ? { rows: control.rows } : {}),
-        },
-      };
-    }),
+    // Each of these is also held to every company when the org keeps books for
+    // more than one: a company out of balance blocks the close by name even when
+    // the org total nets to zero.
+    tieOutCloseCheck(jobCostTieOut),
+    tieOutCloseCheck(arTieOut),
+    tieOutCloseCheck(apTieOut),
+    tieOutCloseCheck(cashTieOut, { href: "/books/entities", applicable: cashTieOut.companies !== undefined }),
+    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control", "intercompany_control"] as const).map((code) =>
+      tieOutCloseCheck(tieOut(code), { href: code === "warranty_reserve_control" ? "/warranty/accounting" : code === "intercompany_control" ? "/books/entities" : "/books/close" }),
+    ),
     {
       code: "customer_deposits_control",
       href: "/billing/deposits",
