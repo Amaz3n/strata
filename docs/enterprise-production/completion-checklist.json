@@ -18429,7 +18429,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Preview and commit share one pricing pass with an input fingerprint and validated resolutions; dismissing an exception only succeeds while it is open (bb8d2c74). An interactive commit is now refused unless it carries the fingerprint of the preview it was approved from (poGenerationInputSchema refine, 3bf6c38b); the panel previews first and sends it, and the starts release commits through generatePurchaseOrdersForStartsRelease, a system path that computes its own fingerprint. Unchanged weak spots: zero-price manual resolutions need no note and the preview does not list agreement expiry dates. Preview and generation now read selections after authorization regardless of project membership (4158415c; found by LOT-01).",
       "remainingWork": [
         "Decide policy for zero-price manual resolutions.",
@@ -18685,7 +18685,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -18696,6 +18696,19 @@
           "failedChecks": [
             "purchasing-manager-requests-a-variance-order-on-a-house"
           ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA3-20261011"
+          ],
+          "head": "fffc08a7",
+          "scope": "LOT-01 variance subcases mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -19719,7 +19732,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -19733,6 +19746,22 @@
             "division-scoped-variance-report-matches-the-organisation-report",
             "variance-report-labels-the-superintendent",
             "division-scoped-variance-report-counts-each-home-once"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA3-20261011"
+          ],
+          "head": "fffc08a7",
+          "scope": "LOT-01 variance subcases mapped to this item.",
+          "failedChecks": [
+            "division-scoped-variance-report-matches-the-organisation-report",
+            "variance-report-labels-the-superintendent"
           ]
         }
       ],
