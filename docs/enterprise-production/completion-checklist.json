@@ -7131,7 +7131,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -7193,6 +7193,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA6-20261011"
+          ],
+          "head": "e510655e",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "LOT-01 normal and --include-pending, 0 failed subcases.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -20380,7 +20394,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA5-20261011"
@@ -20417,6 +20431,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA6-20261011"
+          ],
+          "head": "e510655e",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "LOT-01 normal and --include-pending, 0 failed subcases.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -21555,7 +21583,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -21643,6 +21671,20 @@
           ],
           "scope": "Review G plus the fix for its one web-path gap. Mobile API punch paths deferred by owner decision.",
           "deferredMobile": "lib/mobile/daily-logs.ts and lib/mobile/workspace-punch.ts punch paths are not assessed (iOS API out of scope for now)."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA6-20261011"
+          ],
+          "head": "e510655e",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "LOT-01 normal and --include-pending, 0 failed subcases.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -32828,6 +32870,16 @@
       "files": [],
       "sourceHashes": {},
       "notes": "EP07-14 held: real storage copy not exercised."
+    },
+    {
+      "id": "QA6-20261011",
+      "date": "2026-10-11",
+      "scope": "LOT-01 (normal 70/0, --include-pending 79/0) at e510655e on arc-books-acceptance-fc3c48f0dfe4 with 20261011100000 applied.",
+      "command": [],
+      "counts": {},
+      "files": [],
+      "sourceHashes": {},
+      "notes": "No regressions."
     }
   ],
   "deferredBacklog": [
