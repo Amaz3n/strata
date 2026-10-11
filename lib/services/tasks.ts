@@ -89,7 +89,7 @@ export async function createTask({ input, orgId }: { input: TaskInput; orgId?: s
       id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
       task_assignments (
         id, user_id, contact_id, role,
-        user:app_users(id, full_name, avatar_url, email),
+        user:app_users!task_assignments_user_id_fkey(id, full_name, avatar_url, email),
         contact:contacts(id, full_name, email, primary_company:companies!contacts_primary_company_id_fkey(name))
       )
     `)
@@ -184,7 +184,7 @@ export async function updateTask({
       id, org_id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at,
       task_assignments (
         id, user_id, contact_id, role,
-        user:app_users(id, full_name, avatar_url, email),
+        user:app_users!task_assignments_user_id_fkey(id, full_name, avatar_url, email),
         contact:contacts(id, full_name, email, primary_company:companies!contacts_primary_company_id_fkey(name))
       )
     `)

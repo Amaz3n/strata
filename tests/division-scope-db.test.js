@@ -464,3 +464,88 @@ test("a division-restricted member cannot pull another division's home onto thei
   assert.deepEqual(rows, [{ division_id: south.id }])
   assert.deepEqual((await db.query("select division_id from communities where id = $1", [oak.id])).rows, [{ division_id: north.id }])
 })
+
+test("community and lot search results follow their division", async (t) => {
+  const { db, orgId, north, pine, pineLot, northLead } = await landedOrg(t)
+  // Indexed as the outbox indexer writes them: no project, no division named.
+  await insert(db, "search_documents", { org_id: orgId, entity_type: "community", entity_id: pine.id, title: "Pine community" })
+  await insert(db, "search_documents", { org_id: orgId, entity_type: "lot", entity_id: pineLot.id, title: "Pine lot 1" })
+  const found = async () => (await readLand(db, northLead.userId)).search_documents
+
+  assert.deepEqual(await found(), ["North"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
+  assert.deepEqual(await found(), ["North", "Pine community", "Pine lot 1", "South"])
+})
+
+test("a home's division history starts when it is recorded and stays readable by the division it left", async (t) => {
+  const { db, orgId, north, south, oak, northHome, northLead } = await landedOrg(t)
+  const imported = await insert(db, "projects", { org_id: orgId, name: "Imported", division_id: north.id, created_at: "2001-01-01T00:00:00Z" })
+  const { rows: [started] } = await db.query(
+    "select valid_from > now() - interval '1 minute' as recorded_now from project_division_history where project_id = $1",
+    [imported.id],
+  )
+  assert.deepEqual(started, { recorded_now: true })
+
+  await db.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])
+
+  const seen = await asRole(db, { role: "authenticated", userId: northLead.userId }, (tx) =>
+    tx.query("select division_id from project_division_history where project_id = $1 order by valid_from", [northHome.id]),
+  )
+  assert.deepEqual(seen.rows, [{ division_id: north.id }])
+})
+
+test("a home on a lot cannot be filed under a division its lot is not in", async (t) => {
+  const { db, south, oak, northHome } = await landedOrg(t)
+
+  await assert.rejects(
+    db.query("update projects set division_id = $2 where id = $1", [northHome.id, south.id]),
+    /stands in its community's division/,
+  )
+
+  await db.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])
+  const { rows } = await db.query("select division_id from projects where id = $1", [northHome.id])
+  assert.deepEqual(rows, [{ division_id: south.id }])
+})
+
+test("a lot moved to another community takes its home into that community's division", async (t) => {
+  const { db, south, pine, oakLot, northHome } = await landedOrg(t)
+
+  await db.query("update lots set community_id = $2 where id = $1", [oakLot.id, pine.id])
+
+  const { rows } = await db.query("select division_id from projects where id = $1", [northHome.id])
+  assert.deepEqual(rows, [{ division_id: south.id }])
+})
+
+test("the closing backlog counts a home closed this year for the division it closed in", async (t) => {
+  const { db, orgId, ownerId, north, south, oak, oakLot, northHome } = await landedOrg(t)
+  await insert(db, "contracts", {
+    org_id: orgId, project_id: northHome.id, title: "Purchase agreement", contract_type: "purchase_agreement", status: "active", total_cents: 41_000_000,
+  })
+  // A closing is recorded closed only with its invoice and a completed gate.
+  const invoice = await insert(db, "invoices", { org_id: orgId, project_id: northHome.id, total_cents: 41_000_000 })
+  const closing = await insert(db, "closings", { org_id: orgId, project_id: northHome.id, lot_id: oakLot.id, community_id: oak.id, status: "scheduled", scheduled_date: new Date().toISOString().slice(0, 10) })
+  await insert(db, "closing_checklist_items", {
+    org_id: orgId, closing_id: closing.id, title: "Final walk", is_gate: true, status: "complete", completed_by: ownerId, completed_at: new Date().toISOString(),
+  })
+  await db.query(
+    "update closings set status = 'closed', actual_date = current_date, closing_invoice_id = $2, settlement = '{\"finalPriceCents\": 41000000}' where id = $1",
+    [closing.id, invoice.id],
+  )
+  await db.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])
+  // The move happened after the closing day: shift it past today's end.
+  await db.query("update project_division_history set valid_to = valid_to + interval '2 days' where project_id = $1 and valid_to is not null", [northHome.id])
+  await db.query("update project_division_history set valid_from = valid_from + interval '2 days' where project_id = $1 and valid_to is null", [northHome.id])
+
+  const report = (divisionId) =>
+    asRole(db, { role: "authenticated", userId: ownerId }, async (tx) =>
+      (await tx.query(
+        "select community_name, division_id, closed_units_ytd::int as closed, closed_value_ytd_cents::int as value, backlog_units::int as backlog from get_sales_backlog_report($1, $2)",
+        [orgId, divisionId],
+      )).rows.filter((row) => row.community_name === "Oak"),
+    )
+
+  assert.deepEqual(await report(north.id), [{ community_name: "Oak", division_id: south.id, closed: 1, value: 41_000_000, backlog: 0 }])
+  assert.deepEqual(await report(south.id), [{ community_name: "Oak", division_id: south.id, closed: 0, value: 0, backlog: 0 }])
+  assert.deepEqual(await report(null), [{ community_name: "Oak", division_id: south.id, closed: 1, value: 41_000_000, backlog: 0 }])
+})
