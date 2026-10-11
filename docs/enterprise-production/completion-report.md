@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 23.5% — a documented lower bound, not an ETA |
-| Fully verified | 22.1% |
+| Implemented | 28.4% — a documented lower bound, not an ETA |
+| Fully verified | 27% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 76 items |
+| Partially implemented | 70 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
@@ -67,14 +67,14 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP02-01 | Enterprise hierarchy | partial | Move the community division cascade into one RPC (community, lots, projects in a transaction) and record effective-dated division attribution that reports can read. |
-| EP02-02 | SSO and MFA enforcement | partial | Add an organization 'require MFA' setting enforced in proxy.ts and the mobile bearer check (forced enrollment). |
-| EP02-03 | Provisioning and deprovisioning | partial | On suspend/remove: revoke Supabase sessions and mobile device tokens, and reassign or cancel queued authority (designated approvals, scheduled sends, outbox jobs acting as the user); document the interval. |
-| EP02-04 | Organization and division isolation | partial | Apply migration 20261010130000_audit_log_read_scope (pending approval); until then audit_log_read is still is_org_member. |
-| EP02-05 | Financial separation of duties | partial | Reject a bill or invoice approval by its creator/submitter when another approver exists (org policy toggle for one-person AP). |
-| EP02-06 | Audit completeness | partial | Add a correlation/request ID column to audit_log and propagate it from actions (migration, needs approval). |
-| EP02-07 | Audit retention and export | partial | Write the retention policy (what is kept, how long, who may read). |
-| EP02-08 | Access review and emergency access | partial | Make platform org access break-glass: time-boxed, reason required, logged, visible to the customer. |
+| EP02-01 | Enterprise hierarchy | verified | Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval); the B14 legal-entity migrations (20261007235500, 20261007235800) remain pending too. |
+| EP02-02 | SSO and MFA enforcement | partial | Later: enterprise SSO (SAML) with recovery and failure paths demonstrated in a customer IdP sandbox. |
+| EP02-03 | Provisioning and deprovisioning | verified | Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval). |
+| EP02-04 | Organization and division isolation | verified | Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval). |
+| EP02-05 | Financial separation of duties | verified | Accepted; no required work remains. |
+| EP02-06 | Audit completeness | verified | Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval). |
+| EP02-07 | Audit retention and export | partial | Later: retention policy, permission-gated org audit export with integrity hash, append-only guard on audit_log. |
+| EP02-08 | Access review and emergency access | verified | Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval). |
 
 ### EP03: Product and configuration
 
@@ -299,6 +299,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/sales/actions.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-desk-scope.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/communities.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/schedule/gantt-chart.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/product-tier.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-house-overview.ts
@@ -313,22 +314,29 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/starts.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: scripts/qa/production-readiness.mjs
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/communities.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/books/legal-entities.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: supabase/migrations/20261007235800_books_legal_entities.sql
 - AUDIT-20261009-EP01-EP02: source changed since proof: supabase/migrations/20261007235500_books_retire_native_entity_ledger.sql
 - AUDIT-20261009-EP01-EP02: source changed since proof: proxy.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/auth/mfa-gate-cookie.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/team.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/auth/context.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/mobile/auth.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/invoices.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/authorization.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/bids.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/tasks/actions.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/financial-exports.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/reports/cash-flow-forecast.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/authorization-project-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/search-visibility.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/imports.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/bids.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/payment-runs.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/audit.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/platform-session.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/platform-actions.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/house-plans.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/plan-instantiation.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-sales.ts
@@ -358,6 +366,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/budgets.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/communities.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/starts-gates.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-portfolio.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/land/lot-lifecycle.ts
@@ -402,6 +411,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/financials/closing-settlement-evidence.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/warranty-operations.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: app/api/jobs/process-outbox/route.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/option-catalog.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/validation/selections.ts
@@ -426,6 +436,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: lib/services/schedule.ts
 - AUDIT-20261009-EP07: source changed since proof: components/schedule/gantt-chart.tsx
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003041000_starts_claim_actor_transitions.sql
+- AUDIT-20261009-EP07: source changed since proof: lib/supabase/server.ts
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-job-leases-db.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003024000_starts_core_write_fences.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003030000_starts_package_lease_rpc.sql
@@ -455,6 +466,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: app/(app)/purchasing/page.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/production-bid-queue.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/purchasing-page.test.js
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/bid-intelligence-visibility.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/bid-intelligence.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: components/purchasing/purchasing-client.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/po-generation.ts
@@ -543,6 +555,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: proxy.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: docs/mobile-api-v1.openapi.yaml
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/runtime.cjs
+- AUDIT-20261009-EP12-EP14: source changed since proof: app/api/jobs/process-outbox/route.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-job-leases-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: docs/books-operations.md
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release.test.js
@@ -554,6 +567,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/catalog.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/spec-inventory-aging.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/journeys/app-sweep.spec.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: tests/authorization-project-scope.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/authorization-policy.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/browser-seed.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/community-sales.ts

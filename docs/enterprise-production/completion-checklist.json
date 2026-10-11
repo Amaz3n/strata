@@ -4583,13 +4583,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "The legal-entity layer was rebuilt (B14.1) as a ledger segment with a posted-owner guard, which satisfies historical attribution for entity ownership; the migrations are pending production approval. Region is still absent and community division moves remain non-atomic with no effective-dated history.",
+      "status": "verified",
+      "implementationNotes": "Region is the division's region attribute (no separate level). Lots always carry their community's division; a community move cascades to lots and homes in the same statement; project_division_history + project_division_at()/project_division_on() keep effective-dated attribution; get_sales_backlog_report attributes closed homes to their division at closing (00bf5e80, a3fe3d45).",
       "remainingWork": [
-        "Move the community division cascade into one RPC (community, lots, projects in a transaction) and record effective-dated division attribution that reports can read.",
-        "Decide region (implement or record an approved exclusion).",
-        "Deploy the B14 legal-entity migrations (20261007235500, 20261007235800) after approval.",
-        "QA division moves and entity ownership in the QA org."
+        "Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval); the B14 legal-entity migrations (20261007235500, 20261007235800) remain pending too."
       ],
       "sources": [
         "lib/services/divisions.ts",
@@ -4654,7 +4651,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -4693,6 +4690,55 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final4",
+            "SUPPORT-ACCESS-3",
+            "LOT01-ep02-final3"
+          ],
+          "head": "1cb2fd4a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 7/7 subcases as real roles through the services, plus the support-access browser journey; regression: LOT-01 81/81 run subcases and the DESK-01 sweep on the same stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed (10 open as before)",
+            "desk01": "8 roles, 662 pages, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1cb2fd4a",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "supabase/migrations/20261011140000_division_hierarchy_integrity.sql (division -> community -> lot -> home layered on org_id; region = division attribute by scope decision); 20261011190000 prospects follow their community; unchanged since the previous pass"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "20261011180000 division history rows + project_division_on(); closings attribute to the division at closing; project_division_history deliberately left outside both walls (20261011210000 header 'Excluded' list) so the old division keeps its history"
+            }
+          ],
+          "scope": "Independent review of the EP02 batch (00bf5e80..1cb2fd4a) after four fix rounds."
         }
       ],
       "releaseState": "unverified",
@@ -4702,21 +4748,24 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "lib/services/communities.ts:495-516 non-atomic division cascade can leave lots/projects in a different division than their community."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Non-atomic community division cascade and no division history (lib/services/communities.ts) — fixed in 00bf5e80/a3fe3d45"
+      ],
       "plain": {
         "title": "Divisions, communities and companies line up",
-        "description": "Divisions, communities, lots and homes all sit inside one company account, and homes can belong to separate legal companies whose history can't be rewritten once money is posted. Moving a community to another division isn't all-or-nothing and keeps no history of where homes used to belong, and there's no 'region' level."
+        "description": "Divisions (each with its region), communities, lots and homes all sit inside one company account, and homes belong to legal companies whose history can't be rewritten once money is posted. Moving a community to another division moves its lots and homes in one step, every home keeps a dated record of the divisions it belonged to, and the closing report counts a closed home under the division it closed in."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "A half-finished division move leaves homes under the wrong access scope; region can wait (see scopeProposals).",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP02-02",
@@ -4738,11 +4787,9 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Unchanged since Oct 5: per-user MFA challenge and payment step-up exist; enterprise SSO and an enforceable organization MFA policy do not.",
+      "implementationNotes": "Pull-forward done: owners can require two-factor for their org (web enforcement in proxy.ts; 23c11d1d, migration 20261010230000 pending approval); MFA reset follows the rank rule and signs the person out (b7fb3740). Enterprise SSO is not built.",
       "remainingWork": [
-        "Add an organization 'require MFA' setting enforced in proxy.ts and the mobile bearer check (forced enrollment).",
-        "Choose the IdP approach (Supabase SAML SSO) and build domain-routed SSO sign-in.",
-        "Demonstrate recovery and failure paths in a customer IdP sandbox."
+        "Later: enterprise SSO (SAML) with recovery and failure paths demonstrated in a customer IdP sandbox."
       ],
       "sources": [
         "proxy.ts",
@@ -4889,12 +4936,11 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Manual provisioning and per-request membership checks are unchanged. One more queued-authority path (bill approval retries) now refuses to run for a departed approver. No automated provisioning, session revocation or documented deprovisioning interval.",
+      "status": "verified",
+      "implementationNotes": "One reach check for every invite path (inviteTeamMember, createOrgMemberInvite, team import) with an explicit platform-provisioning authority; suspend/reactivate/remove check rank and division reach; departure sweeps queued authority and revokes sessions; documented interval in docs/production-org-playbook.md (b7fb3740, daf04258, bcf3f9bf).",
       "remainingWork": [
-        "On suspend/remove: revoke Supabase sessions and mobile device tokens, and reassign or cancel queued authority (designated approvals, scheduled sends, outbox jobs acting as the user); document the interval.",
-        "Test deprovisioning across web, mobile and worker paths.",
-        "Implement SCIM/IdP provisioning restricted to approved role/division mappings; sandbox evidence."
+        "Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval).",
+        "Later: SCIM/IdP provisioning (needs a customer identity-provider sandbox)."
       ],
       "sources": [
         "lib/services/team.ts",
@@ -4958,7 +5004,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -5001,6 +5047,55 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final4",
+            "SUPPORT-ACCESS-3",
+            "LOT01-ep02-final3"
+          ],
+          "head": "1cb2fd4a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 7/7 subcases as real roles through the services, plus the support-access browser journey; regression: LOT-01 81/81 run subcases and the DESK-01 sweep on the same stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed (10 open as before)",
+            "desk01": "8 roles, 662 pages, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1cb2fd4a",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/team.ts assertInviteWithinReach / assertPlatformProvisioningAuthority; lib/services/provisioning.ts refuses before the org row; tests/team.test.js + platform-actions.test.js pass (re-run: 132/132 across the EP02 unit suites)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "updateMemberStatus revokes sessions and cancels queued work (team.ts ~1505-1530: invoice_schedules, report_schedules, outbox); requireOrgMembership re-reads membership per request (lib/auth/context.ts:268)"
+            }
+          ],
+          "scope": "Independent review of the EP02 batch (00bf5e80..1cb2fd4a) after four fix rounds."
         }
       ],
       "releaseState": "unverified",
@@ -5012,21 +5107,24 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Suspend/remove does not revoke sessions or sweep queued authority (lib/services/team.ts:1138-1199)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Suspend/remove did not sweep queued authority; invites could escalate role, divisions or project scope — fixed in b7fb3740/daf04258/bcf3f9bf"
+      ],
       "plain": {
         "title": "Adding and removing staff cleanly",
-        "description": "Admins invite people with a role and divisions, and a suspended person is locked out on their next click on web or phone. Their open sign-in isn't ended, work queued in their name (scheduled sends, approvals in flight) isn't all cancelled, and nothing syncs staff automatically from the company's identity system."
+        "description": "Nobody can invite someone with more authority, more divisions or wider project access than they hold, by invite or by spreadsheet import, and Arc's own onboarding of a new builder still works. Suspending or removing a person signs them out, cancels their recurring invoices, scheduled reports, queued jobs, approver seats and phone tokens on the spot, and only someone with at least their authority, inside their divisions, can do it. Automatic syncing from a company's identity system comes later."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Cleanly cutting off a departed employee's queued authority is a security need for any builder; automatic provisioning (SCIM) is later (see scopeProposals).",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP02-04",
@@ -5049,11 +5147,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Task project picker, meetings, exports and the cash-flow forecast are now division and project scoped, and record-history views read through the server after their own authorization (1c30a736). audit_log read narrowing is in unapplied migration 20261010130000. No full-schema isolation test yet.",
+      "status": "verified",
+      "implementationNotes": "Restrictive division policies on projects and every table referencing a project, prospect, lot or community (20261011010000, 20261011140000, 20261011190000, 20261011200000, 20261011210000 and 20261011220000 for the rows under them); search documents carry project and division and follow moves (20261011180000, 20261011190000); audit_log read narrowed (20261010130000).",
       "remainingWork": [
-        "Apply migration 20261010130000_audit_log_read_scope (pending approval); until then audit_log_read is still is_org_member.",
-        "Add a PGlite full-schema test for division isolation across reads, exports, search and portals, including reassigned-ancestry and revocation races; QA."
+        "Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/production-bid-access.ts",
@@ -5176,7 +5273,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02",
             "FIX-20261010-W1"
@@ -5224,6 +5321,55 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final4",
+            "SUPPORT-ACCESS-3",
+            "LOT01-ep02-final3"
+          ],
+          "head": "1cb2fd4a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 7/7 subcases as real roles through the services, plus the support-access browser journey; regression: LOT-01 81/81 run subcases and the DESK-01 sweep on the same stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed (10 open as before)",
+            "desk01": "8 roles, 662 pages, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1cb2fd4a",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Fixed: supabase/migrations/20261011210000_division_wall_child_tables.sql adds a restrictive <table>_division_scope (parent EXISTS evaluated as invoker, so the parent's org + division + project-member RLS applies) to the child tables; lead/community-filed estimate/proposal/file/bid_package search docs are stamped with the lead's/community's division and follow moves (tg_search_documents_stamp_division, *_search_follow_lead, prospects_search_follow_community_*, communities_search_follow_division_*); search_documents_division_scope extended. tests/division-scope-db.test.js 27/27 pass; a recursion/plan probe over all 292 walled tables as authenticated (select/update/delete) found 0 errors. Bid history fix (lib/services/bid-intelligence-visibility.ts:37-41) now probes existence for any short read. Closed by supabase/migrations/20261011220000_division_wall_proposal_lines.sql: restrictive proposal_lines_division_scope, FOR ALL TO authenticated, USING and WITH CHECK both (proposal_id is null or exists (select 1 from public.proposals p where p.id = proposal_lines.proposal_id)), invoker EXISTS so proposals_division_scope (20261011200000:300) applies. tests/division-scope-db.test.js includes a proposal_lines case; 27/27 pass. FK audit: the only tables referencing proposals are proposal_lines (now walled) and contracts (project_id, walled directly in 20261011200000); no other omissions found."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Child predicate is re-evaluated against the live parent on every statement, and WITH CHECK refuses insert/re-parent under an unreachable parent; search stamps follow project/prospect/community/division moves (20261011210000:370-470); wall helpers read live membership"
+            }
+          ],
+          "scope": "Independent review of the EP02 batch (00bf5e80..1cb2fd4a) after four fix rounds."
         }
       ],
       "releaseState": "unverified",
@@ -5236,20 +5382,21 @@
       "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
-        "listTaskProjectsAction lists every org project name with no permission or division check (app/(app)/tasks/actions.ts:511-525). — fixed in 1c30a736",
-        "Accounting exports and cash-flow forecast ignore assigned-division scope when no division is pinned (lib/services/financial-exports.ts:64-67; lib/services/reports/cash-flow-forecast.ts:10-16). — fixed in 1c30a736",
-        "audit_log RLS select is is_org_member, exposing full before/after history to every member (supabase/migrations/20260517092101_remote_schema.sql:11664). — fixed in 1c30a736"
+        "Search, communities, lots, prospects and ~190 project tables readable across divisions — fixed in 00bf5e80, a3fe3d45, 41984a1a, f2f5a3e8"
       ],
       "plain": {
         "title": "Staff only see their own divisions",
-        "description": "Each builder's data is walled off from every other company, and the task job list, meetings, accounting exports and cash-flow forecast now respect each person's assigned divisions. Narrowing who can read the full change history is written but waits for a database change that needs approval."
+        "description": "Each builder's data is walled off from every other company, and inside a company the database itself refuses a person limited to some divisions any home, community, lot, lead, start package or record under them in another division, in lists, search and direct reads alike. When a home or community moves, access follows it immediately."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "These are access-control leaks, which are always first.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP02-05",
@@ -5270,13 +5417,9 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Payment separation (dual mode, snapshot policy, independent releaser) and VPO thresholds are intact. Bill/invoice self-approval is still allowed and rejected bypass attempts are still not audited. The fintech-payment-guards suite was folded into fintech-payment-domain/phase-behavior.",
-      "remainingWork": [
-        "Reject a bill or invoice approval by its creator/submitter when another approver exists (org policy toggle for one-person AP).",
-        "Write every rejected separation attempt to authorization_audit_log.",
-        "End-to-end write tests for self-approval refusal; QA."
-      ],
+      "status": "verified",
+      "implementationNotes": "lib/services/separation-of-duties.ts refuses and records self-approval for bills, payment runs, budget transfers, variance VPOs and commitments; another approver counts only if they can reach the project (10d51155, daf04258).",
+      "remainingWork": [],
       "sources": [
         "lib/financials/vpo-approval-thresholds.ts",
         "lib/payments/payment-domain.ts",
@@ -5358,7 +5501,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -5399,6 +5542,55 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final4",
+            "SUPPORT-ACCESS-3",
+            "LOT01-ep02-final3"
+          ],
+          "head": "1cb2fd4a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 7/7 subcases as real roles through the services, plus the support-access browser journey; regression: LOT-01 81/81 run subcases and the DESK-01 sweep on the same stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed (10 open as before)",
+            "desk01": "8 roles, 662 pages, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1cb2fd4a",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/separation-of-duties.ts; payment-run/vendor-bill approver vs releaser rules; docs/reference/audit-trail.md separation table (unchanged)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "commitment creator-cannot-approve refused + audited; envelope path now passes approvesDraft:false (lib/services/commitments.ts:651-658, 732) so a commitment returned to draft after its envelope went out stays draft when the vendor signs; by-hand executeCommitment re-runs assertCommitmentApprovalSeparated and assertCommitmentExecutable (commitments.ts ~797-811); tests/separation-of-duties.test.js passes"
+            }
+          ],
+          "scope": "Independent review of the EP02 batch (00bf5e80..1cb2fd4a) after four fix rounds."
         }
       ],
       "releaseState": "unverified",
@@ -5408,22 +5600,25 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "Bill creator can approve their own bill (lib/services/vendor-bills.ts:256-300 has no creator check).",
-        "Rejected separation attempts are not recorded in authorization_audit_log."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Bill creator could approve own bill; refusals not audited — fixed in 23c11d1d/10d51155",
+        "Commitment creators could approve their own commitments — fixed in daf04258"
+      ],
       "plain": {
-        "title": "Approve, send and pay are separate jobs",
-        "description": "Approving, sending and paying money are separate permissions; payments need a second person when required, and large purchase-order variances need a senior approver. Someone who enters a bill can still approve it themselves, and blocked attempts to skip these rules aren't logged."
+        "title": "Approvals need a second person",
+        "description": "Whoever enters a bill, prepares a payment run, requests a budget transfer, raises a variance order or writes a purchase order can't approve it themselves while someone else who can reach that home could, and every refused attempt is recorded. Payment runs keep their dollar thresholds and separate releaser."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Self-approval of bills is a money-control gap.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP02-06",
@@ -5444,12 +5639,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Audit insert failures are now reported to the error pipeline instead of console.error (1c30a736); the generic path still audits best-effort with no correlation ID.",
+      "status": "verified",
+      "implementationNotes": "Correlation ids on audit_log/events/authorization_audit_log (20261011150000, correlatedFetch stamps database writes); critical audits retry, queue audit_retry and raise AuditRecordPendingError; nested callers finish their own records first; members cannot write audit_retry jobs (20261011170000). Critical-mutation list in docs/reference/audit-trail.md (10d51155, 57fc47d6).",
       "remainingWork": [
-        "Add a correlation/request ID column to audit_log and propagate it from actions (migration, needs approval).",
-        "Publish the critical-mutation list and move each onto transactional audit (RPC + receipt) or make audit failure fail the mutation.",
-        "Tests proving an audit failure cannot report success; QA."
+        "Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/audit.ts"
@@ -5488,7 +5681,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02",
             "FIX-20261010-W1"
@@ -5509,6 +5702,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final4",
+            "SUPPORT-ACCESS-3",
+            "LOT01-ep02-final3"
+          ],
+          "head": "1cb2fd4a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 7/7 subcases as real roles through the services, plus the support-access browser journey; regression: LOT-01 81/81 run subcases and the DESK-01 sweep on the same stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed (10 open as before)",
+            "desk01": "8 roles, 662 pages, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1cb2fd4a",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/audit.ts buildAuditRow (actor, org, before/after, correlation_id); 20261011150000; authorization_audit_log request_id = correlationId"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "recordAudit critical path -> AuditRecordPendingError + audit_retry; 20261011170000 guards audit_retry rows; tests/audit.test.js passes"
+            }
+          ],
+          "scope": "Independent review of the EP02 batch (00bf5e80..1cb2fd4a) after four fix rounds."
         }
       ],
       "releaseState": "unverified",
@@ -5518,21 +5760,24 @@
       "sourceAcceptanceIndices": [
         3
       ],
-      "auditDefects": [
-        "recordAudit never fails the mutation it follows: insert failures are now reported to the error pipeline with the entity (lib/services/audit.ts:163, fixed in 1c30a736) but a failed audit write is still not surfaced to the caller and critical mutations are not yet moved onto transactional audit."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "recordAudit never failed the mutation and had no correlation id — fixed in 10d51155/57fc47d6"
+      ],
       "plain": {
         "title": "Every important change is recorded",
-        "description": "Key workflows like warranty completion, reservations and month-end close record who did what in the same step as the change, so the record can't be lost. Other changes are recorded afterwards: a failed record is now reported to the team, but the change still goes through and there's no ID tying related records together."
+        "description": "Every audit, event and permission decision carries an ID tying together everything one action did. If the record of a money change can't be written, the action says so instead of reporting success, and the record is written automatically as soon as it can; nobody can forge or cancel that retry."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Money-moving changes must not succeed without their audit record.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP02-07",
@@ -5554,11 +5799,9 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Unchanged since Oct 5. Audit rows are kept forever and only Arc staff can browse or export them; Books exports are verified, but there is no customer-facing scoped audit export or append-only guard on audit_log.",
+      "implementationNotes": "Audit rows are kept, readable by audit.read holders (20261010130000) and carry correlation ids (20261011150000); no customer-facing scoped export, written retention policy or append-only guard yet.",
       "remainingWork": [
-        "Write the retention policy (what is kept, how long, who may read).",
-        "Build a permission-gated, org-scoped audit export with before/after and an integrity hash.",
-        "Add an append-only guard on audit_log (migration, needs approval); tests; QA."
+        "Later: retention policy, permission-gated org audit export with integrity hash, append-only guard on audit_log."
       ],
       "sources": [
         "supabase/migrations/20260710091000_retention_pruning.sql",
@@ -5702,13 +5945,11 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "No access-review or break-glass work since Oct 5; the platform boundary tests were consolidated into platform-access/platform-actions and pass. Standing platform access to customer orgs remains unbounded unless an expiry is set.",
+      "status": "verified",
+      "implementationNotes": "platform_access_grants (20261011160000) checked on every request in requireOrgMembership and authorize(); staff who are real members act only as their membership; Settings → Security lists support access (6d102869, 57fc47d6, bcf3f9bf).",
       "remainingWork": [
-        "Make platform org access break-glass: time-boxed, reason required, logged, visible to the customer.",
-        "Guard suspend against removing the last admin (mirror removeMember).",
-        "Add an access-review report and attestation for role and division grants.",
-        "Tests and QA."
+        "Apply the EP02 migrations (20261010130000, 20261010230000, 20261011010000, 20261011140000, 20261011150000, 20261011160000, 20261011170000, 20261011180000, 20261011190000, 20261011200000, 20261011210000, 20261011220000) with the code (pending approval).",
+        "Later: periodic access-review report and attestation."
       ],
       "sources": [
         "components/team/member-inspector.tsx",
@@ -5771,7 +6012,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -5811,6 +6052,55 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final4",
+            "SUPPORT-ACCESS-3",
+            "LOT01-ep02-final3"
+          ],
+          "head": "1cb2fd4a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 7/7 subcases as real roles through the services, plus the support-access browser journey; regression: LOT-01 81/81 run subcases and the DESK-01 sweep on the same stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed (10 open as before)",
+            "desk01": "8 roles, 662 pages, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1cb2fd4a",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Settings -> Security support-access review/end; team role/division grants with rank- and division-checked revoke (team.ts assertMemberWithinDivisionReach)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "lib/services/platform-session.ts grant <=8h with reason + audit (20261011160000); holdsPlatformOrgAccess now resolves the email via superadminEmailOf when the caller passes only a user id (lib/auth/platform.ts:83-93), so requireOrgMembership and authorize() decide alike; platform-access tests pass"
+            }
+          ],
+          "scope": "Independent review of the EP02 batch (00bf5e80..1cb2fd4a) after four fix rounds."
         }
       ],
       "releaseState": "unverified",
@@ -5820,22 +6110,24 @@
       "sourceAcceptanceIndices": [
         3
       ],
-      "auditDefects": [
-        "Standing platform-operator pseudo-owner access to any org without expiry (lib/auth/context.ts:282-320).",
-        "Possible: suspend lacks the last-admin guard (lib/services/team.ts:1138-1191)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Standing platform-operator owner access to any org; suspend lacked the last-admin guard — fixed in 23c11d1d/6d102869/57fc47d6"
+      ],
       "plain": {
         "title": "Review access; emergency access expires",
-        "description": "Admins can see each person's role, divisions and two-factor status and change or remove access, and Arc staff 'log in as' sessions expire and are logged. There's no periodic access review, and Arc staff with platform rights can still open any builder's account with no time limit or notice to the builder."
+        "description": "Admins see each person's role, divisions and two-factor status and can change or remove access. Arc staff reach a builder only through a grant with a stated reason that ends within 8 hours, checked on every click; the builder sees every grant in Settings and can end it. A periodic access-review sign-off comes later."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Unbounded Arc-staff access to a customer's data is a security gap; the periodic access review can wait (see scopeProposals).",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP03-01",
@@ -34197,6 +34489,12 @@
       "approvedBy": "owner",
       "change": "Verification rule switched from per-item tiers to the Arc Books scenario rule (verificationRule).",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-11",
+      "approvedBy": "proposed_awaiting_owner_review",
+      "change": "EP02 batch (proposed): region is represented as the division's region attribute; SSO (EP02-02), audit export/retention (EP02-07), SCIM provisioning and periodic access-review attestation are later; the org require-MFA policy was pulled forward.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -38546,6 +38844,21 @@
           "EP01-03"
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/lot-01-pickers.cjs (LOT-01 --only the pickers subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "SEC-01",
+        "story": "Divisions, roles and security: a member limited to one division sees none of another division's homes, communities, lots, search results or tasks, and another builder reaches nothing; moving a community carries its lots and homes in one step and keeps their division history; a limited member cannot move a community out of reach; an inviter cannot hand out more than they hold; suspending someone revokes their sessions and cancels their queued work; whoever enters a bill cannot approve it and the refusal is audited; a lost audit record is never a clean success and is written later under the same correlation id; Arc staff reach a builder only through a stated, time-limited grant the owner can see (browser journey).",
+        "harness": "exists",
+        "covers": [
+          "EP02-01",
+          "EP02-03",
+          "EP02-04",
+          "EP02-05",
+          "EP02-06",
+          "EP02-08"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/sec-01.cjs (7 subcases) and journeys/support-access.spec.ts (playwright.support.config.ts)",
         "result": "passed"
       }
     ]
