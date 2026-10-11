@@ -7,6 +7,7 @@ const { freshRequire } = require("./support/modules")
 const {
   approveCommitmentChangeOrder,
   createCommitmentChangeOrder,
+  listVarianceOrders,
   rejectVarianceOrder,
   updateCommitmentChangeOrder,
 } = freshRequire("lib/services/commitment-change-orders.ts")
@@ -125,5 +126,61 @@ describe("deciding a variance order", () => {
     await assert.rejects(service.run(() => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO })), /changed while you were reviewing/)
     assert.equal(service.db.commitment_change_orders[0].status, "rejected")
     assert.equal(service.db.commitment_change_orders[0].approved_by ?? null, null)
+  })
+})
+
+describe("the variance queue's division lens", () => {
+  const NORTH = id(70)
+  const SOUTH = id(71)
+  const home = (n) => id(100 + n)
+  // PostgREST's inner embed of the owning project, which the queue filters on.
+  const order = (n) => vpo({ id: id(200 + n), project_id: home(n), title: `VPO ${n}`, project: { org_id: ORG } })
+
+  function lensHarness(divisionIds) {
+    return createServiceHarness({
+      permissions: ["price_book.read", "project.read"],
+      divisions: divisionIds ?? undefined,
+      tables: {
+        // 0: presold, the project has no division but its lot is North. 1: the project says North but its lot is South.
+        // 2: ordinary North. 3: South.
+        projects: [
+          { id: home(0), org_id: ORG, division_id: null },
+          { id: home(1), org_id: ORG, division_id: NORTH },
+          { id: home(2), org_id: ORG, division_id: NORTH },
+          { id: home(3), org_id: ORG, division_id: SOUTH },
+        ],
+        lots: [
+          { id: id(300), org_id: ORG, project_id: home(0), division_id: NORTH },
+          { id: id(301), org_id: ORG, project_id: home(1), division_id: SOUTH },
+          { id: id(302), org_id: ORG, project_id: home(3), division_id: null },
+        ],
+        commitments: [],
+        variance_reason_codes: [],
+        commitment_change_orders: [0, 1, 2, 3].map(order),
+        commitment_change_order_lines: [],
+      },
+    })
+  }
+
+  test("a home counts in the lot's division, falling back to the project's", async () => {
+    const result = await lensHarness().run(() => listVarianceOrders({ divisionId: NORTH }))
+
+    assert.deepEqual(result.items.map((item) => item.title).sort(), ["VPO 0", "VPO 2"])
+    assert.equal(result.count, 2)
+  })
+
+  test("a lens outside the member's divisions lists nothing and reads nothing", async () => {
+    const service = lensHarness([SOUTH])
+
+    const result = await service.run(() => listVarianceOrders({ divisionId: NORTH }))
+
+    assert.deepEqual(result.items, [])
+    assert.deepEqual(service.reads().filter((query) => query.table === "commitment_change_orders"), [])
+  })
+
+  test("an unrestricted member with no lens sees every home", async () => {
+    const result = await lensHarness().run(() => listVarianceOrders())
+
+    assert.equal(result.items.length, 4)
   })
 })

@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { readAllRows } from "@/lib/land/paging"
 import { requireOrgContext } from "@/lib/services/context"
 import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -398,6 +399,42 @@ export async function listCommitmentChangeOrders({
   return hydrate(data ?? [], supabase, resolvedOrgId)
 }
 
+/** A PostgREST `in (...)` list stays inside the URL limit at this size. */
+const DIVISION_LENS_PROJECT_LIMIT = 300
+const SCOPE_BATCH = 100
+
+/**
+ * The homes among `projectIds` that sit in `divisionIds`. A home's division is its lot's, falling
+ * back to the project's: the same rule `get_variance_analysis` applies, so this queue and the
+ * variance report list the same homes. Reads through `supabase` (the service client) because the
+ * member's division backstop hides a project row that carries no division of its own.
+ */
+async function projectIdsInDivisions(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectIds: string[],
+  divisionIds: string[],
+): Promise<string[]> {
+  const inScope = new Set<string>()
+  for (let offset = 0; offset < projectIds.length; offset += SCOPE_BATCH) {
+    const ids = projectIds.slice(offset, offset + SCOPE_BATCH)
+    const [projects, lots] = await Promise.all([
+      supabase.from("projects").select("id,division_id").eq("org_id", orgId).in("id", ids).limit(SCOPE_BATCH),
+      supabase.from("lots").select("project_id,division_id").eq("org_id", orgId).in("project_id", ids).limit(SCOPE_BATCH),
+    ])
+    if (projects.error) throw new Error(`Failed to scope variance orders: ${projects.error.message}`)
+    if (lots.error) throw new Error(`Failed to scope variance orders: ${lots.error.message}`)
+    const lotDivision = new Map<string, string | null>(
+      (lots.data ?? []).map((lot) => [lot.project_id as string, (lot.division_id as string | null) ?? null]),
+    )
+    for (const project of projects.data ?? []) {
+      const division = lotDivision.get(project.id as string) ?? (project.division_id as string | null) ?? null
+      if (division !== null && divisionIds.includes(division)) inScope.add(project.id as string)
+    }
+  }
+  return [...inScope]
+}
+
 export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   status?: CommitmentChangeOrderStatus | "pending"
   reasonCodeId?: string
@@ -414,25 +451,46 @@ export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
   const scope = await resolvePurchasingQueueReadScope(context, parsed.divisionId)
   if (scope.divisionIds?.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+  // Authorized and scoped above, and every scope below is an explicit predicate. The member client's
+  // division backstop would hide a home whose project has no division even when its lot is in the lens.
+  const reader = createServiceSupabaseClient()
   const from = (parsed.page - 1) * parsed.pageSize
-  let query = supabase.from("commitment_change_orders").select(`
+  const orders = (select: string, count: boolean, projectIds: string[] | null) => {
+    let query = reader.from("commitment_change_orders").select(
+      `${select}, ${purchasingQueueProjectSelect("", scope, parsed.communityId)}`,
+      count ? { count: "exact" } : undefined,
+    ).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).not("reason_code_id", "is", null)
+    if (parsed.status === "pending") query = query.in("status", ["draft", "sent"])
+    else if (parsed.status) query = query.eq("status", parsed.status)
+    if (parsed.reasonCodeId) query = query.eq("reason_code_id", parsed.reasonCodeId)
+    if (parsed.origin) query = query.eq("origin", parsed.origin)
+    if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
+    if (projectIds) query = query.in("project_id", projectIds)
+    if (parsed.communityId) query = query.eq("project.lot.community_id", parsed.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+    if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+    return query
+  }
+
+  let projectIds: string[] | null = null
+  if (scope.divisionIds) {
+    // Only the homes that have a matching order can appear, so the division lens resolves over those.
+    const candidates = await readAllRows<{ project_id: string }>((rangeFrom, rangeTo) => orders("project_id", false, null)
+      .order("id").range(rangeFrom, rangeTo), { cap: 100001, pageSize: 1000, label: "Failed to scope variance orders" })
+    if (candidates.truncated) throw new Error("Too many variance orders to scope; narrow the division or community lens")
+    projectIds = await projectIdsInDivisions(reader, resolvedOrgId, [...new Set(candidates.rows.map((row) => row.project_id))], scope.divisionIds)
+    if (projectIds.length > DIVISION_LENS_PROJECT_LIMIT) throw new Error("Too many homes have variance orders for this division; narrow the community lens or filter by status")
+    if (projectIds.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+  }
+
+  const { data, error, count } = await orders(`
     id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
     approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id,
     prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, metadata, created_at, updated_at,
-    ${purchasingQueueProjectSelect("", scope, parsed.communityId)}, commitment:commitments(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
-  `, { count: "exact" }).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).not("reason_code_id", "is", null)
-    .order("created_at", { ascending: false }).order("id", { ascending: false })
-  if (parsed.status === "pending") query = query.in("status", ["draft", "sent"])
-  else if (parsed.status) query = query.eq("status", parsed.status)
-  if (parsed.reasonCodeId) query = query.eq("reason_code_id", parsed.reasonCodeId)
-  if (parsed.origin) query = query.eq("origin", parsed.origin)
-  if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
-  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
-  if (parsed.communityId) query = query.eq("project.lot.community_id", parsed.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
-  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
-  const { data, error, count } = await query.range(from, from + parsed.pageSize - 1)
+    commitment:commitments(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
+  `, true, projectIds).order("created_at", { ascending: false }).order("id", { ascending: false })
+    .range(from, from + parsed.pageSize - 1)
   if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
-  return { items: await hydrate(data ?? [], supabase, resolvedOrgId), count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
+  return { items: await hydrate(data ?? [], reader, resolvedOrgId), count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
 }
 
 export async function rejectVarianceOrder({

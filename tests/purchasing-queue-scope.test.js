@@ -36,11 +36,12 @@ function harness({ scope = { divisionIds: null, projectMembershipRequired: false
   const bindings = { ...helpers, z, requireOrgContext: async () => context, requireAuthorization: async input => { gates.push(input); if (denied) throw new Error('Forbidden') }, hydrate: async data => data }
   const exceptions = declarations('lib/services/po-generation.ts', ['poExceptionStatusSchema', 'poExceptionListSchema', 'authorizeGeneration', 'listPoExceptions'], bindings).listPoExceptions
   const completions = declarations('lib/services/po-completions.ts', ['listPoCompletions'], bindings).listPoCompletions
-  const variance = declarations('lib/services/commitment-change-orders.ts', ['listVarianceOrders'], bindings).listVarianceOrders
-  return { queues: { exceptions, completions, variance }, calls, gates }
+  return { queues: { exceptions, completions }, calls, gates }
 }
 
-for (const queue of ['exceptions', 'completions', 'variance']) {
+// The variance queue reads through the service client and resolves homes by lot-then-project division;
+// tests/commitment-change-orders.test.js covers it through the real service.
+for (const queue of ['exceptions', 'completions']) {
   test(`${queue}: actual home lens, active membership and tenant filters precede exact page/count`, async () => {
     const h = harness({ scope: { divisionIds: [PACKAGE, COMMUNITY], projectMembershipRequired: true }, rows: [{ id: PROJECT }] })
     const result = await h.queues[queue]({ communityId: COMMUNITY, divisionId: PACKAGE, projectId: PROJECT, page: 3, pageSize: 50 })
@@ -110,15 +111,10 @@ test('original queue-specific filters and stable sort survive scope narrowing', 
   const h = harness()
   await h.queues.exceptions({ status: 'dismissed' })
   await h.queues.completions({ status: 'reported' })
-  await h.queues.variance({ status: 'pending', origin: 'field_mobile', reasonCodeId: PACKAGE })
   assert.equal(h.calls[0].params.get('status'), 'eq.dismissed')
   assert.equal(h.calls[0].params.get('order'), 'created_at.asc,id.asc')
   assert.equal(h.calls[1].params.get('status'), 'eq.reported')
   assert.equal(h.calls[1].params.get('order'), 'reported_at.desc,id.desc')
-  assert.equal(h.calls[2].params.get('status'), 'in.(draft,sent)')
-  assert.deepEqual(h.calls[2].params.getAll('reason_code_id'), ['not.is.null', `eq.${PACKAGE}`])
-  assert.equal(h.calls[2].params.get('origin'), 'eq.field_mobile')
-  assert.equal(h.calls[2].params.get('order'), 'created_at.desc,id.desc')
 })
 test('actual Purchasing page forwards the same ambient lens and preserves home/page links on all three queues', async () => {
   const keys = []

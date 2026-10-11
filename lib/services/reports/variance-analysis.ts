@@ -1,7 +1,7 @@
 import { utcReportDateRange } from "@/lib/reports/date-range"
 import { readAllRows, type RangeResult } from "@/lib/land/paging"
 import { resolveDivisionScope } from "@/lib/land/scope"
-import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
+import { getDivisionAccessForUser, getProjectReadScopeForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { toCsv } from "@/lib/services/reports/csv"
@@ -87,7 +87,12 @@ export async function getVarianceAnalysis({
     const projectIds = [...new Set([...projects.rows.map((row) => row.id), ...lots.rows.map((row) => row.project_id)])]
     return getScopedVarianceAnalysis({ supabase: createServiceSupabaseClient(), orgId: resolvedOrgId, projectIds, divisionIds: scope.divisionIds, startDate, endDate })
   }
-  const aggregate = await readAllRows<Record<string, unknown>>((from, to) => supabase.rpc("get_variance_analysis", {
+  // The function is security invoker and resolves each home's superintendent through `roles`, a catalog
+  // only the service role can read. It filters on `p_org_id`, so the privileged client is used only for a
+  // caller who is authorized and not limited to the homes they are a member of (RLS is that limit).
+  const { projectMembershipRequired } = await getProjectReadScopeForUser({ orgId: resolvedOrgId, userId })
+  const reader = projectMembershipRequired ? supabase : createServiceSupabaseClient()
+  const aggregate = await readAllRows<Record<string, unknown>>((from, to) => reader.rpc("get_variance_analysis", {
     p_org_id: resolvedOrgId, p_start_date: startDate, p_end_date: endDate,
   }).order("dimension").order("dimension_id").order("dimension_label").range(from, to),
   { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to load variance analysis" })
