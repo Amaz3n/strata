@@ -56,7 +56,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | --- | --- | --- | --- |
 | EP01-01 | Role navigation | verified | Apply migration 20261010200000_purchasing_manager_baseline_reads (pending approval) so the purchasing manager role holds its read keys in production. |
 | EP01-02 | Complete desk queues | verified | Apply migration 20261011110000_bill_search_text (pending approval) together with the code, or payables text search errors. |
-| EP01-03 | Searchable operator pickers | partial | Make Find-a-home server-searched and paged instead of a capped client-filtered list; swap the tasks project Select to the shared server-searched picker (components/ui/search-picker.tsx). |
+| EP01-03 | Searchable operator pickers | partial | Apply migrations 20261011120000_sellable_lot_inventory_view and 20261011130000_directory_buyer_roles_on_org_create (pending approval) with the code; Find-a-home reads the view. |
 | EP01-04 | Shared scope across desks | verified | Accepted; no required work remains. |
 | EP01-05 | Desk states and recovery | verified | Accepted; no required work remains. |
 | EP01-06 | Home and lot drill-down | verified | Accepted; no required work remains. |
@@ -283,8 +283,11 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-bid-queue.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-inventory.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/land/paging.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/purchasing-workspace.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/org-payables.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/production-bid-queue.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/land-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/purchasing-queue-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-query.test.js
@@ -349,6 +352,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/imports.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261003033500_starts_release_lot_plan_scope.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/validation/lots.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/land/paging.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-price-validation.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/production-reporting.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/budgets.ts
@@ -363,6 +367,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261005121409_reservation_conversion_ownership.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/land-foundation.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-inventory.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/land-scope.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/reservation-conversion.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/reservation-conversion.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/reservation-conversion-db.test.js
@@ -417,6 +422,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003023000_starts_job_claim_leases.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/start-trade-notices.test.js
+- AUDIT-20261009-EP07: source changed since proof: lib/land/paging.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/services/schedule.ts
 - AUDIT-20261009-EP07: source changed since proof: components/schedule/gantt-chart.tsx
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003041000_starts_claim_actor_transitions.sql
@@ -445,6 +451,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/bids.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/production-bid-queue.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: components/purchasing/entity-picker.tsx
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/purchasing-workspace.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: app/(app)/purchasing/page.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/production-bid-queue.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/purchasing-page.test.js
@@ -553,6 +560,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/reservation-conversion.ts
 - VERIFY-20261010: source changed since proof: tests/catalog-price-validation.test.js
 - VERIFY-20261010: source changed since proof: tests/land-foundation.test.js
+- VERIFY-20261010: source changed since proof: tests/land-scope.test.js
 - VERIFY-20261010: source changed since proof: tests/lots.test.js
 - VERIFY-20261010: source changed since proof: tests/community-sales.test.js
 - VERIFY-20261010: source changed since proof: tests/reservation-creation-preparation.test.js
@@ -566,6 +574,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/starts-release.test.js
 - VERIFY-20261010: source changed since proof: tests/bids.test.js
 - VERIFY-20261010: source changed since proof: tests/production-bid-queue.test.js
+- VERIFY-20261010: source changed since proof: tests/search-picker.test.js
 - VERIFY-20261010: source changed since proof: tests/purchasing-page.test.js
 - VERIFY-20261010: source changed since proof: tests/variance-analysis.test.js
 - VERIFY-20261010: source changed since proof: tests/inspection-completion-handoff.test.js

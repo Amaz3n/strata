@@ -3294,9 +3294,7 @@
       "status": "partial",
       "implementationNotes": "Lot-hold now searches lots on the server and says when it shows the first 500; Find-a-home says when it shows only the newest 250; design-studio booking searches homes by lot number on the server; warranty trade pickers use a shared server-searched picker (SearchPicker, which the purchasing picker now also uses) (56b76687). Find-a-home is still a client-filtered list, the tasks project picker is unchanged, and there is no buyer lookup on new inquiries.",
       "remainingWork": [
-        "Make Find-a-home server-searched and paged instead of a capped client-filtered list; swap the tasks project Select to the shared server-searched picker (components/ui/search-picker.tsx).",
-        "Add a buyer/contact search on new inquiries and reservations so existing buyers are matched, not duplicated.",
-        "Show 'first N of M' wherever a capped list remains; QA pass."
+        "Apply migrations 20261011120000_sellable_lot_inventory_view and 20261011130000_directory_buyer_roles_on_org_create (pending approval) with the code; Find-a-home reads the view."
       ],
       "sources": [
         "components/purchasing/entity-picker.tsx",
@@ -3402,7 +3400,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02",
             "FIX-20261010-W3"
@@ -3444,6 +3442,60 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PICK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "PICK01-final3"
+          ],
+          "head": "8cfba08e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "11 LOT-01 pickers subcases in one run as real roles through the services.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-sweep4"
+          ],
+          "head": "ae8d4b37",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep; 8 roles, 662 pages, 0 errors.",
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-03-R2"
+          ],
+          "date": "2026-10-11",
+          "head": "ae8d4b37",
+          "confidence": "medium-high",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "passed",
+              "evidence": "Home/lot/plan/buyer/vendor/project pickers page and search server-side. readPageOrEmpty (lib/land/paging.ts:44-54) turns PGRST103 into an empty page with a true count; it is used in directory.ts:208, sales-inquiries.ts:130, projects.ts:553, community-sales.ts:294 and :1045, purchasing-workspace.ts:46. readAllRows treats PGRST103 as end (paging.ts:80). The earlier gaps (lot-label search, stuck Load more, quote sanitising, tasks filter, empty last page) are addressed in ce617df2/3f0bb656. The view's lot_label is concat_ws('-', block, lot_number) and matches the TS label. Lots plan pin now uses neq retired (lib/services/lots.ts:544)."
+            },
+            {
+              "index": 1,
+              "verdict": "passed",
+              "evidence": "Pickers replace raw-ID entry. Buyer-role seed migration 20261011130000 is correct: same return type (void) and signature as 20261006112832, so create or replace is valid; search_path '' with fully qualified names; on conflict do nothing, so it is idempotent and keeps renamed labels; revoked from public/anon/authenticated; the backfill covers all orgs; no deletes."
+            }
+          ],
+          "scope": "Independent review of a9f2764c..ae8d4b37; its division-scope gap fixed in 8cfba08e."
         }
       ],
       "releaseState": "unverified",
@@ -3456,18 +3508,24 @@
       "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
-        "Silent caps in lot/home pickers: lot-hold 500 (lib/services/community-sales.ts:300), Find-a-home 250 (app/(app)/sales/actions.ts:161), no truncation notice. — fixed in 56b76687"
+        "Silent caps in lot/home pickers: lot-hold 500 (lib/services/community-sales.ts:300), Find-a-home 250 (app/(app)/sales/actions.ts:161), no truncation notice. — fixed in 56b76687",
+        "Find-a-home client-filtered newest-250 list, tasks project Select, no buyer lookup — fixed in a9f2764c..8cfba08e",
+        "Asking price depended on the viewer (RLS on selections), new orgs lacked buyer roles, pickers threw past the last page — found by PICK-01, fixed in 3f0bb656"
       ],
       "plain": {
         "title": "Search to pick homes, lots, vendors",
-        "description": "People search for the home, plan, lot or vendor they need instead of scrolling a long list, and nobody ever has to paste an ID. Holding a lot, booking a design appointment and picking a warranty trade now search on the server; Find-a-home still shows a capped list (and says so), and there is no way to look up an existing buyer before creating a new one."
+        "description": "People find the home, lot, plan, buyer, project or vendor they need by typing a name, number or address; nobody pastes an ID. Find-a-home searches, filters by price, beds and availability, sorts by price or aging and pages on the server, and every seller in a division sees the same asking price. A returning buyer is matched instead of duplicated. Two database changes (the inventory view and buyer roles for every company) need approval."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "At 25-250 closings a builder's lots, homes and vendors fit under the current list sizes, so this is polish and scale work; the buyer lookup is the piece to pull forward if duplicates show up.",
+        "scope": "first",
+        "reason": "Pulled forward by the owner on 2026-10-11 to finish Desks and lists.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01",
+        "PICK-01"
+      ]
     },
     {
       "id": "EP01-04",
@@ -38475,6 +38533,16 @@
           "EP01-08"
         ],
         "existingSupport": "scripts/books-acceptance/journeys/production-sweep.spec.ts on the production seed (browser-seed.cjs --journey production)",
+        "result": "passed"
+      },
+      {
+        "id": "PICK-01",
+        "story": "Operators find homes, lots, plans, buyers, projects and vendors by typing: Find-a-home searches, filters by price, beds and availability, sorts and pages on the server with one asking price for every viewer; a returning buyer is found and attached instead of duplicated; a division-limited member never sees another division; a page past the end is empty; no step needs an id.",
+        "harness": "exists",
+        "covers": [
+          "EP01-03"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/lot-01-pickers.cjs (LOT-01 --only the pickers subcases)",
         "result": "passed"
       }
     ]
