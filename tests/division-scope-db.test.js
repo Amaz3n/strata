@@ -751,6 +751,7 @@ async function childOrg(t) {
         })).id,
       },
       bid_invites: { parentId: (await insert(db, "bid_packages", { org_id: orgId, project_id: side.home.id, title: `${side.name} framing` })).id },
+      proposal_lines: { parentId: (await insert(db, "proposals", { org_id: orgId, project_id: side.home.id })).id },
     }
   }
   const children = {
@@ -768,6 +769,7 @@ async function childOrg(t) {
     },
     meeting_attendees: { label: "display_name", row: (s, p, n) => ({ meeting_id: p.parentId, display_name: `${s.name} ${n}` }) },
     closing_checklist_items: { label: "title", row: (s, p, n) => ({ closing_id: p.parentId, title: `${s.name} ${n}` }) },
+    proposal_lines: { label: "description", row: (s, p, n) => ({ proposal_id: p.parentId, description: `${s.name} ${n}` }) },
     // Written only by the service role: the wall is on what members read.
     invoice_lines: { label: "description", readOnly: true, row: (s, p, n) => ({ invoice_id: p.parentId, description: `${s.name} ${n}` }) },
   }
