@@ -403,48 +403,28 @@ describe("listSpecInventoryPage as the Find a home search", () => {
   })
 })
 
-describe("spec asking price from the community sheet", () => {
-  const PLAN = id(70)
-  const ELEVATION = id(71)
-  const today = new Date().toISOString().slice(0, 10)
-  const day = (offset) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
-  const lot = { id: id(72), org_id: ORG, community_id: COMMUNITY, lot_number: "7", status: "started", premium_cents: 10_000_00, asking_price_override_cents: null, project_id: id(73), house_plan_id: PLAN, house_plan_elevation_id: ELEVATION, project: { id: id(73), name: "Home", start_date: day(-30), status: "active" }, plan: null, community: { name: "Oak Ridge" } }
-  const offer = (n, patch) => ({ id: id(80 + n), org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, base_price_cents: 400_000_00, effective_start: null, effective_end: null, ...patch })
-  const priced = async (sheet) => {
-    const service = createServiceHarness({
+describe("a spec home's asking price", () => {
+  const lot = { id: id(72), org_id: ORG, community_id: COMMUNITY, lot_number: "7", status: "started", premium_cents: 10_000_00, asking_price_override_cents: null, project_id: id(73), house_plan_id: id(70), house_plan_elevation_id: null, project: { id: id(73), name: "Home", start_date: "2026-09-01", status: "active" }, plan: null, community: { name: "Oak Ridge" } }
+  const harness = (facts) =>
+    createServiceHarness({
       permissions: ["sales.read"],
-      tables: { lots: [lot], sellable_lot_inventory: inventoryView([lot]), lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], community_plan_availability: sheet, project_selections: [], project_financial_settings: [] },
+      tables: { lots: [lot], sellable_lot_inventory: inventoryView([lot], { [lot.id]: facts }), lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }], project_financial_settings: [] },
     })
-    const { lots } = await service.run(() => listSpecInventoryPage({ communityId: COMMUNITY }))
-    return lots[0].askingPriceCents
-  }
 
-  test("an elevation's own price outranks the plan-wide price and the premium is added", async () => {
-    assert.equal(await priced([offer(1, {}), offer(2, { elevation_id: ELEVATION, base_price_cents: 420_000_00 })]), 430_000_00)
+  test("Find a home shows the price the database derives, so it is the price the band and sort used", async () => {
+    const { lots } = await harness({ asking_price_cents: 430_000_00 }).run(() => listSpecInventoryPage({ communityId: COMMUNITY }))
+    assert.equal(lots[0].askingPriceCents, 430_000_00)
   })
 
-  test("a price outside its effective dates does not price the home", async () => {
-    assert.equal(await priced([offer(1, { effective_end: day(-1) })]), null)
-    assert.equal(await priced([offer(1, { effective_start: day(1) })]), null)
-    assert.equal(await priced([offer(1, { effective_start: today, effective_end: today })]), 410_000_00)
+  test("a home the sheet does not price is unpriced rather than zero", async () => {
+    const { lots } = await harness({ asking_price_cents: null }).run(() => listSpecInventoryPage({ communityId: COMMUNITY }))
+    assert.equal(lots[0].askingPriceCents, null)
   })
 
-  test("a home with no sheet price is unpriced rather than zero", async () => {
-    assert.equal(await priced([]), null)
-  })
-
-  test("two prices for the same plan and elevation refuse to guess", async () => {
-    await assert.rejects(priced([offer(1, {}), offer(2, {})]), /Multiple community prices/)
-  })
-
-  test("an unreadable price sheet is an error, not a free home", async () => {
-    const service = createServiceHarness({
-      permissions: ["sales.manage"],
-      tables: { lots: [{ ...lot, updated_at: "2026-10-01T00:00:00+00:00", metadata: {} }], community_plan_availability: [offer(1, {})], project_selections: [], lot_reservations: [], contracts: [], communities: [{ id: COMMUNITY, org_id: ORG }] },
-    })
-    service.tamper("community_plan_availability", replies.error("db down"))
-    await assert.rejects(service.run(() => setSpecAskingPrice({ lotId: lot.id, askingPriceCents: 395_000_00, expectedAskingPriceCents: 410_000_00, reason: "Standing 110 days; match the comparable" })), /db down/)
-    assert.deepEqual(service.writes(), [])
+  test("an unreadable inventory is an error, not a free home", async () => {
+    const service = harness({ asking_price_cents: 430_000_00 })
+    service.tamper("sellable_lot_inventory", replies.error("db down"))
+    await assert.rejects(service.run(() => listSpecInventoryPage({ communityId: COMMUNITY })), /db down/)
   })
 })
 
@@ -503,6 +483,7 @@ describe("searchOfferablePlans", () => {
   const plan = (n, status, versions = released) => ({ id: id(n), org_id: ORG, code: `P${n}`, name: `Plan ${n}`, status, versions })
   const harness = (plans, extra = {}) =>
     createServiceHarness({
+      strictRanges: true,
       permissions: ["sales.read"],
       tables: {
         communities: [{ id: COMMUNITY, org_id: ORG, division_id: null }],
@@ -512,6 +493,12 @@ describe("searchOfferablePlans", () => {
       },
     })
   const names = (page) => page.plans.map((row) => row.name)
+
+  test("a page past the last plan is empty, not an error, and the total stays true", async () => {
+    const service = harness([plan(41, "active"), plan(42, "active")])
+    const page = await service.run(() => searchOfferablePlans(COMMUNITY, { pageSize: 25, page: 2 }))
+    assert.deepEqual([page.plans, page.total], [[], 2])
+  })
 
   test("a community is offered every released plan it does not sell yet, never a retired one", async () => {
     const service = harness([plan(41, "active"), plan(42, "retired"), plan(43, "draft", [{ status: "draft" }]), plan(44, "active")])
@@ -695,15 +682,13 @@ describe("convertHoldToReservation (live path)", () => {
 describe("setSpecAskingPrice", () => {
   const LOT = id(41)
   const PLAN = id(42)
-  const REPRICED = id(43)
 
   function harness({ permissions = ["sales.manage"], override = null, reservations = [], contracts = [], projectId = HOME } = {}) {
     return createServiceHarness({
       permissions,
       tables: {
         lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 10_000_00, asking_price_override_cents: override, project_id: projectId, house_plan_id: PLAN, house_plan_elevation_id: null, metadata: {}, updated_at: "2026-10-01T00:00:00+00:00" }],
-        community_plan_availability: [{ id: REPRICED, org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, base_price_cents: 400_000_00 }],
-        project_selections: [],
+        sellable_lot_inventory: [{ lot_id: LOT, org_id: ORG, asking_price_cents: override ?? 410_000_00 }],
         lot_reservations: reservations,
         contracts,
         communities: [{ id: COMMUNITY, org_id: ORG }],
@@ -725,6 +710,9 @@ describe("setSpecAskingPrice", () => {
 
   test("clearing the override returns the home to its plan-sheet price", async () => {
     const service = harness({ override: 395_000_00 })
+    // The view answers 395,000 while the override stands and the sheet's 410,000 once it is cleared.
+    let reads = 0
+    service.tamper("sellable_lot_inventory", (result) => (reads++ === 0 ? result : { ...result, data: { ...result.data, asking_price_cents: 410_000_00 } }))
     const result = await reprice(service, { askingPriceCents: null, expectedAskingPriceCents: 395_000_00 })
     assert.equal(result.askingPriceCents, 410_000_00)
     assert.equal(service.db.lots[0].asking_price_override_cents, null)

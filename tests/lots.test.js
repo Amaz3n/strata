@@ -140,12 +140,12 @@ describe("assignPlanToLot", () => {
     await assert.rejects(assign(planHarness({ versionStatus: "draft" })), /released plan version/)
   })
 
-  test("the picker lists unoffered plans too, flagged per elevation, and skips plans with nothing releasable", async () => {
+  test("the picker lists unoffered and not-yet-activated plans too, flagged per elevation, and skips retired plans and plans with nothing releasable", async () => {
     const OTHER_PLAN = id(70)
     const service = planHarness({ offered: false })
     service.db.house_plans = [
-      { id: PLAN, org_id: ORG, code: "A100", name: "Aspen", status: "active" },
-      { id: OTHER_PLAN, org_id: ORG, code: "B200", name: "Birch", status: "active" },
+      { id: PLAN, org_id: ORG, code: "A100", name: "Aspen", status: "draft" }, // released, not yet activated: still assignable
+      { id: OTHER_PLAN, org_id: ORG, code: "B200", name: "Birch", status: "retired" },
     ]
     service.db.house_plan_versions[0].version_number = 2
     service.db.house_plan_elevations[0].code = "A"

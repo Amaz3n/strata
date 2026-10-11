@@ -177,13 +177,14 @@ function collapseMutationResult(query, result) {
  * @param {Record<string, Function>} [options.rpc] Handlers for `supabase.rpc(name)`.
  * @param {number} [options.maxRows] PostgREST's per-response row cap, to prove a
  *   reader pages to the end instead of trusting one short response.
+ * @param {boolean} [options.strictRanges] Answer a `.range()` past the last row with PostgREST's 416 (`PGRST103`).
  * @param {string} [options.orgId]
  * @param {string} [options.userId]
  */
 function createServiceHarness(options = {}) {
   const orgId = options.orgId ?? ORG
   const userId = options.userId ?? ACTOR
-  const fake = createFakeSupabase(options.tables ?? {}, options.rpc ?? {}, { uuidIds: true })
+  const fake = createFakeSupabase(options.tables ?? {}, options.rpc ?? {}, { uuidIds: true, strictRanges: options.strictRanges })
   const tampering = new Map()
 
   const service = {

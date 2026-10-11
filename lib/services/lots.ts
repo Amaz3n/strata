@@ -541,7 +541,7 @@ export async function listPlanAssignmentOptions(
   await requireCommunityScope(communityId, context)
   let planQuery = context.supabase.from("house_plans")
     .select("id, code, name")
-    .eq("org_id", context.orgId).eq("status", "active")
+    .eq("org_id", context.orgId).neq("status", "retired")
   const term = input.search ? orFilterTerm(input.search) : ""
   if (term) planQuery = planQuery.or(`code.ilike.%${term}%,name.ilike.%${term}%`)
   const { data: plans, error } = await planQuery.order("code").order("id").limit(PLAN_ASSIGNMENT_OPTION_CAP + 1)

@@ -34,24 +34,6 @@ export function isPlanOffered(
   return offeredRows(rows, input).length > 0
 }
 
-/**
- * The base price the community's sheet quotes for this plan and elevation on a
- * date, or null when the sheet does not price it. Same offering rule as
- * `isPlanOffered`; an elevation's own row outranks the plan-wide row. Two
- * offered rows at the same specificity are an ambiguous sheet and throw: a
- * price is money, so it is never picked by order.
- */
-export function resolvePlanBasePrice(
-  rows: readonly (PlanOfferingRow & { base_price_cents: number })[],
-  input: { elevationId: string | null; onDate: string },
-): number | null {
-  const offered = offeredRows(rows, input)
-  const exact = offered.filter((row) => row.elevation_id !== null)
-  const tier = exact.length ? exact : offered
-  if (tier.length > 1) throw new Error("Multiple community prices match this plan and elevation; reconcile the price sheet before pricing the home")
-  return tier.length ? Number(tier[0].base_price_cents) : null
-}
-
 export const MIN_OFFERING_OVERRIDE_REASON_LENGTH = 10
 
 const offeringOverrideSchema = z.object({

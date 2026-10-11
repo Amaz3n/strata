@@ -175,4 +175,10 @@ describe("searchVisibleProjects", () => {
   test("quotes in the search cannot rewrite the filter", async () => {
     assert.deepEqual(await search('x"),name.ilike.(*'), [])
   })
+
+  test("a page past the last project is empty, not an error, and the total stays true", async () => {
+    const service = createServiceHarness({ strictRanges: true, permissions: ["project.read"], tables: { projects: rows, memberships: [], project_members: [] } })
+    const page = await service.run(() => searchVisibleProjects({ page: 2, pageSize: 3 }))
+    assert.deepEqual([page.projects, page.total], [[], 3])
+  })
 })

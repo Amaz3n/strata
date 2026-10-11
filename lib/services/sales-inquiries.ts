@@ -1,3 +1,4 @@
+import { readPageOrEmpty } from "@/lib/land/paging"
 import { orFilterTerm } from "@/lib/search-picker"
 import { COOP_AGENT_ROLE, INQUIRY_CHANNEL_LABELS } from "@/lib/sales/activity"
 import { requireOrgContext } from "@/lib/services/context"
@@ -125,11 +126,12 @@ export async function searchBuyerContacts(
     .eq("kind", "contact")
     .is("archived_at", null)
   if (term) query = query.or(`name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`)
-  const { data, error, count } = await query.order("name").order("id").range(from, from + pageSize - 1)
+  const ordered = query.order("name").order("id")
+  const { data, error, count } = await readPageOrEmpty((start, end) => ordered.range(start, end), from, from + pageSize - 1)
   if (error) throw new Error(`Failed to search buyers: ${error.message}`)
 
   return {
-    buyers: (data ?? []).map((row) => ({
+    buyers: data.map((row) => ({
       id: row.id,
       name: row.name,
       email: row.email ?? null,

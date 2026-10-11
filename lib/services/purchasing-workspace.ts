@@ -3,6 +3,8 @@ import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { resolveDivisionScope } from "@/lib/land/scope"
 import { z } from "zod"
 
+import { readPageOrEmpty } from "@/lib/land/paging"
+
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { listDirectoryPage } from "@/lib/services/directory"
@@ -35,19 +37,18 @@ export async function searchPurchasingEntities(raw: unknown): Promise<Purchasing
     const pageSize = 25
     let query = context.supabase.from(input.kind === "community" ? "communities" : "house_plans")
       .select("id,name,code").eq("org_id", context.orgId).order("name").order("id")
-      .range((input.page - 1) * pageSize, input.page * pageSize)
     if (scope.kind === "limited") {
       query = input.kind === "plan"
         ? query.or(`division_id.is.null,division_id.in.(${scope.divisionIds.join(",")})`)
         : query.in("division_id", scope.divisionIds)
     }
     if (input.search) query = query.ilike("name", `%${input.search.replace(/[\\%_]/g, "\\$&")}%`)
-    const { data, error } = await query
+    const { data, error } = await readPageOrEmpty((from, to) => query.range(from, to), (input.page - 1) * pageSize, input.page * pageSize)
     if (error) throw new Error(`Unable to search ${input.kind === "plan" ? "plans" : "communities"}: ${error.message}`)
     return {
-      items: (data ?? []).slice(0, pageSize).map((row) => ({ id: row.id, name: row.name, detail: row.code ?? "" })),
+      items: data.slice(0, pageSize).map((row) => ({ id: row.id, name: row.name, detail: row.code ?? "" })),
       nextCursor: null,
-      nextPage: (data ?? []).length > pageSize ? input.page + 1 : null,
+      nextPage: data.length > pageSize ? input.page + 1 : null,
     }
   }
   if (input.kind === "home") {

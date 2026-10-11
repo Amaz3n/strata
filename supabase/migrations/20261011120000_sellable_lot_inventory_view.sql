@@ -5,13 +5,40 @@
 -- sale today count) plus the lot premium and the home's confirmed structural
 -- options, unless the lot carries its own asking price; the age is the days
 -- since Books recorded the home's completion into finished inventory. The
--- application derives the same two numbers to display them
--- (lib/services/community-sales.ts specAskingPrice, lib/sales/spec-inventory.ts
--- specInventoryAge); this view exists so a price band, a price sort and an aging
--- sort can run in the database, where paging and counting happen.
+-- application displays the price this view derives (it does not recompute it),
+-- so the price a band, a sort and the screen agree on has exactly one formula;
+-- the age is derived in lib/sales/spec-inventory.ts specInventoryAge as well.
 --
 -- security_invoker: the org RLS on lots, communities, plans and the price sheet
 -- applies to whoever selects from it. Callers still filter on org_id.
+--
+-- The asking price of a home must not depend on who asks. project_selections is
+-- RLS-limited to project members and org admins, so a sales consultant reading
+-- it directly would price a home without its confirmed structural options.
+-- project_structural_option_cents is the one narrow door through it: a definer
+-- function that returns a single number (the total of the home's confirmed
+-- structural options) for a project in an organisation the caller belongs to,
+-- and nothing about the selections themselves.
+
+create or replace function public.project_structural_option_cents(p_project_id uuid)
+returns bigint
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select sum(ps.price_cents_snapshot)::bigint
+  from public.projects p
+  join public.project_selections ps on ps.org_id = p.org_id and ps.project_id = p.id
+  join public.selection_options so on so.id = ps.selected_option_id and so.org_id = ps.org_id
+  where p.id = p_project_id
+    and ((select auth.role()) = 'service_role' or public.is_org_member(p.org_id))
+    and ps.status in ('confirmed', 'ordered', 'received')
+    and so.option_scope = 'structural';
+$$;
+
+revoke all on function public.project_structural_option_cents(uuid) from public, anon;
+grant execute on function public.project_structural_option_cents(uuid) to authenticated, service_role;
 
 create or replace view public.sellable_lot_inventory
 with (security_invoker = true)
@@ -35,7 +62,7 @@ select
   case
     when l.asking_price_override_cents is not null then l.asking_price_override_cents
     when base.base_price_cents is null then null
-    else base.base_price_cents + l.premium_cents + coalesce(structural.cents, 0)
+    else base.base_price_cents + l.premium_cents + coalesce(public.project_structural_option_cents(l.project_id), 0)
   end            as asking_price_cents,
   case
     when fs.books_inventory_completed_on is not null and fs.books_inventory_completed_on <= current_date
@@ -58,15 +85,6 @@ left join lateral (
   order by (a.elevation_id is not null) desc
   limit 1
 ) base on l.house_plan_id is not null
-left join lateral (
-  select sum(ps.price_cents_snapshot)::bigint as cents
-  from public.project_selections ps
-  join public.selection_options so on so.id = ps.selected_option_id and so.org_id = ps.org_id
-  where ps.org_id = l.org_id
-    and ps.project_id = l.project_id
-    and ps.status in ('confirmed', 'ordered', 'received')
-    and so.option_scope = 'structural'
-) structural on l.project_id is not null
 left join lateral (
   select s.books_inventory_completed_on
   from public.project_financial_settings s

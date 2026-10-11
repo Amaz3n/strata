@@ -9,6 +9,7 @@ import type {
 } from "@/lib/directory/roles"
 import { DIRECTORY_READ_PERMISSIONS as READ_PERMISSIONS } from "@/lib/directory/permissions"
 import { requireOrgContext } from "@/lib/services/context"
+import { readPageOrEmpty } from "@/lib/land/paging"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { listRelationshipTypesWithClient } from "@/lib/services/party-roles"
@@ -204,16 +205,12 @@ async function listDirectoryPageWithClient(
   }
 
   const ordered = query.order(sortColumn(sort), { ascending }).order("id", { ascending: true })
-  const first = await ordered.range(offset, offset + pageSize - 1)
-  // A page past the last row is an empty page, not a failure (PostgREST answers 416).
-  const pastEnd = first.error?.code === "PGRST103"
-  const { error, count } = pastEnd ? await ordered.range(0, 0) : first
-  const data = pastEnd ? null : first.data
+  const { data, error, count } = await readPageOrEmpty((start, end) => ordered.range(start, end), offset, offset + pageSize - 1)
 
   if (error) throw new Error(`Failed to list directory: ${error.message}`)
 
   return {
-    entries: ((data ?? []) as DirectoryEntryRow[]).map(mapEntry),
+    entries: (data as DirectoryEntryRow[]).map(mapEntry),
     total: count ?? 0,
     page,
     pageSize,

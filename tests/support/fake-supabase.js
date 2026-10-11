@@ -224,7 +224,13 @@ class Query {
         return ordering.ascending ? direction : -direction
       })
     }
-    if (this.rangeValue) result = result.slice(this.rangeValue[0], this.rangeValue[1] + 1)
+    if (this.rangeValue) {
+      // PostgREST refuses a range that starts past the last row (416).
+      if (this.store.__strictRanges && this.rangeValue[0] > 0 && result.length <= this.rangeValue[0]) {
+        return { data: null, count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } }
+      }
+      result = result.slice(this.rangeValue[0], this.rangeValue[1] + 1)
+    }
     if (this.limitValue !== null) result = result.slice(0, this.limitValue)
     if (this.cardinality === "single") {
       if (result.length !== 1) return { data: null, error: { message: "expected exactly one row" }, count }
@@ -252,11 +258,15 @@ class Query {
 
 /**
  * `options.uuidIds` gives inserted rows real UUIDs, like a database default,
- * for services that validate the ids they read back.
+ * for services that validate the ids they read back. `options.strictRanges`
+ * answers a `.range()` that starts past the last row with PostgREST's 416
+ * (`PGRST103`) instead of an empty page.
  */
 function createFakeSupabase(tables = {}, rpcHandlers = {}, options = {}) {
   const newId = options.uuidIds ? () => randomUUID() : (table, ordinal) => `${table}-${ordinal}`
   const store = clone(tables)
+  // Opt-in, because a test that pages through `tamper` serves its own ranges.
+  if (options.strictRanges) Object.defineProperty(store, "__strictRanges", { value: true, enumerable: false })
   return {
     store,
     from(table) { return new Query(store, table, newId) },

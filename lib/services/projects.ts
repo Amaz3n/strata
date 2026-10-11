@@ -22,7 +22,7 @@ import {
 import { getDefaultProjectPropertyType, getProjectPosture, isProductionProjectPosture, type ProjectPosture } from "@/lib/product-tier"
 import { getDivisionAccessForUser, getDivisionScopedProjectIds, getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { readAllRows } from "@/lib/land/paging"
+import { readAllRows, readPageOrEmpty } from "@/lib/land/paging"
 import { chunk } from "@/lib/utils"
 import { terminology } from "@/lib/terminology"
 
@@ -549,11 +549,12 @@ export async function searchVisibleProjects(
   const term = input.search ? orFilterTerm(input.search) : ""
   if (term) query = query.or(`name.ilike.%${term}%,location->>address.ilike.%${term}%,location->>formatted.ilike.%${term}%`)
   const from = (page - 1) * pageSize
-  const { data, error, count } = await query.order("name").order("id").range(from, from + pageSize - 1)
+  const ordered = query.order("name").order("id")
+  const { data, error, count } = await readPageOrEmpty((start, end) => ordered.range(start, end), from, from + pageSize - 1)
   if (error) throw new Error(`Failed to search projects: ${error.message}`)
 
   return {
-    projects: (data ?? []).map((row) => ({
+    projects: data.map((row) => ({
       id: row.id,
       name: row.name || "Untitled project",
       noun: terminology(getProjectPosture(row.property_type, resolved.productTier)).project,
