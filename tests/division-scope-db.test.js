@@ -549,3 +549,89 @@ test("the closing backlog counts a home closed this year for the division it clo
   assert.deepEqual(await report(south.id), [{ community_name: "Oak", division_id: south.id, closed: 0, value: 0, backlog: 0 }])
   assert.deepEqual(await report(null), [{ community_name: "Oak", division_id: south.id, closed: 1, value: 41_000_000, backlog: 0 }])
 })
+
+/** landedOrg, with a lead in each community, an unattributed walk-in, and a seller limited to North. */
+async function salesOrg(t) {
+  const org = await landedOrg(t)
+  const { db, orgId, north, oak, pine } = org
+  const leads = {}
+  for (const [name, community] of [["Oak lead", oak], ["Pine lead", pine], ["Walk-in", null]]) {
+    leads[name] = await insert(db, "prospects", { org_id: orgId, name, community_id: community?.id ?? null })
+    // Indexed as the outbox indexer writes it: no project, no division named.
+    await insert(db, "search_documents", { org_id: orgId, entity_type: "prospect", entity_id: leads[name].id, title: name })
+  }
+  const seller = await member(db, orgId, { role: "org_sales_agent", divisionScope: "assigned", divisions: [north.id] })
+  return { ...org, leads, seller }
+}
+
+async function leadsSeenBy(db, userId) {
+  return asRole(db, { role: "authenticated", userId }, async (tx) => ({
+    prospects: (await tx.query("select name from prospects order by 1")).rows.map((row) => row.name),
+    search: (await tx.query("select title from search_documents where entity_type = 'prospect' order by 1")).rows.map((row) => row.title),
+  }))
+}
+
+test("a division-limited seller reads their division's leads and unattributed ones, never another division's", async (t) => {
+  const { db, orgId, ownerId, seller, leads, oak, pine } = await salesOrg(t)
+
+  assert.deepEqual(await leadsSeenBy(db, seller.userId), {
+    prospects: ["Oak lead", "Walk-in"],
+    search: ["Oak lead", "Walk-in"],
+  })
+  assert.deepEqual(await leadsSeenBy(db, ownerId), {
+    prospects: ["Oak lead", "Pine lead", "Walk-in"],
+    search: ["Oak lead", "Pine lead", "Walk-in"],
+  })
+
+  const as = (fn) => asRole(db, { role: "authenticated", userId: seller.userId }, fn)
+  const renamed = await as((tx) => tx.query("update prospects set name = 'Mine' where id = $1", [leads["Pine lead"].id]))
+  assert.equal(renamed.affectedRows, 0)
+  await assert.rejects(
+    as((tx) => tx.query("update prospects set community_id = $2 where id = $1", [leads["Oak lead"].id, pine.id])),
+    /row-level security/,
+  )
+
+  // Their own division's work goes on as before.
+  const worked = await as(async (tx) => ({
+    added: (await tx.query("insert into prospects (org_id, name, community_id) values ($1, 'Oak 2', $2) returning name", [orgId, oak.id])).rows[0].name,
+    walkIn: (await tx.query("insert into prospects (org_id, name) values ($1, 'Walk-in 2') returning name", [orgId])).rows[0].name,
+    updated: (await tx.query("update prospects set notes = 'Wants a corner lot' where id = $1", [leads["Oak lead"].id])).affectedRows,
+  }))
+  assert.deepEqual(worked, { added: "Oak 2", walkIn: "Walk-in 2", updated: 1 })
+})
+
+test("a lead's search result follows its community, and the community's division", async (t) => {
+  const { db, north, south, oak, pine, seller, leads } = await salesOrg(t)
+  const searched = async () => (await leadsSeenBy(db, seller.userId)).search
+
+  await db.query("update prospects set community_id = $2 where id = $1", [leads["Oak lead"].id, pine.id])
+  assert.deepEqual(await searched(), ["Walk-in"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
+  assert.deepEqual(await searched(), ["Oak lead", "Pine lead", "Walk-in"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, south.id])
+  assert.deepEqual(await searched(), ["Walk-in"])
+})
+
+test("start packages and project records indexed without a project stay in their division", async (t) => {
+  const { db, orgId, north, oak, pine, oakLot, pineLot, southHome, northLead } = await landedOrg(t)
+  const oakStart = await insert(db, "start_packages", { org_id: orgId, lot_id: oakLot.id, community_id: oak.id })
+  const pineStart = await insert(db, "start_packages", { org_id: orgId, lot_id: pineLot.id, community_id: pine.id })
+  const meeting = await insert(db, "meetings", { org_id: orgId, project_id: southHome.id, meeting_number: 1, title: "South OAC" })
+  for (const [type, id, title] of [["start_package", oakStart.id, "Oak start"], ["start_package", pineStart.id, "Pine start"], ["meeting", meeting.id, "South OAC"]]) {
+    await insert(db, "search_documents", { org_id: orgId, entity_type: type, entity_id: id, title })
+  }
+  const seen = () =>
+    asRole(db, { role: "authenticated", userId: northLead.userId }, async (tx) => ({
+      starts: (await tx.query("select community_id from start_packages order by 1")).rows.map((row) => row.community_id),
+      search: (await tx.query("select title from search_documents where entity_type <> 'project' order by 1")).rows.map((row) => row.title),
+    }))
+
+  assert.deepEqual(await seen(), { starts: [oak.id], search: ["Oak start"] })
+
+  // The lot carries its package's division, and the home its meeting's.
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
+  assert.deepEqual(await seen(), { starts: [oak.id, pine.id].sort(), search: ["Oak start", "Pine start", "South OAC"] })
+})
