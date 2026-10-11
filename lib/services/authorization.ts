@@ -2,7 +2,7 @@ import { readAllRows } from "@/lib/land/paging"
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { hasActivePlatformAccessGrant, isPlatformAdminId } from "@/lib/auth/platform"
+import { getPlatformPermissions, hasActivePlatformAccessGrant, holdsPlatformOrgAccess, isPlatformAdminId } from "@/lib/auth/platform"
 import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
@@ -265,9 +265,6 @@ const fetchOrgPermissionsCached = cache((orgId: string, userId: string) =>
 const fetchProjectPermissionsCached = cache((projectId: string, userId: string, orgId: string) =>
   fetchProjectPermissions({ supabase: createServiceSupabaseClient(), projectId, userId, orgId }),
 )
-const fetchPlatformPermissionsCached = cache((userId: string) =>
-  fetchPlatformPermissions({ supabase: createServiceSupabaseClient(), userId }),
-)
 /** Membership grants are read only inside the already-verified home organization. */
 async function resolveProjectScope({ projectId, userId, orgIdHint }: { projectId: string; userId: string; orgIdHint: string }) {
   const result = await fetchProjectPermissionsCached(projectId, userId, orgIdHint)
@@ -378,27 +375,6 @@ export async function getDivisionScopedProjectIds({
   )
 }
 
-async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
-  const { data, error } = await supabase
-    .from("platform_memberships")
-    .select("role:roles!inner(permissions:role_permissions(permission_key))")
-    .eq("user_id", userId)
-    .eq("status", "active")
-    // Expiry is Postgres' to evaluate ("now" is a timestamptz literal); permission
-    // loading is on the render path of every page and cannot read a JS clock.
-    .or("expires_at.is.null,expires_at.gt.now")
-
-  if (error) {
-    throw new Error(`Unable to load platform permissions: ${error.message}`)
-  }
-
-  const permissions = unique(((data ?? []) as PermissionRow[]).flatMap((row) => normalizePermissionRow(row)))
-  return {
-    permissions,
-    hasMembership: (data ?? []).length > 0,
-  }
-}
-
 /**
  * Whether Arc staff stand inside this organization as the platform pseudo-owner:
  * every permission, no denies, no division or project narrowing.
@@ -411,14 +387,12 @@ async function fetchPlatformPermissions({ supabase, userId }: { supabase: Supaba
  * grant exists for this organization. This is the same grant
  * `requireOrgMembership()` reads, so entering and acting never disagree.
  */
+// Members never depend on reading platform roles: staff standing is probed only
+// for someone who is not a member of the organization.
 export const hasPlatformOrgContext = cache(async (orgId: string, userId: string) => {
-  const [org, platform] = await Promise.all([fetchOrgPermissionsCached(orgId, userId), fetchPlatformPermissionsCached(userId)])
+  const org = await fetchOrgPermissionsCached(orgId, userId)
   if (org.hasMembership) return false
-  const isOperator =
-    isPlatformAdminId(userId, undefined) ||
-    platform.permissions.includes("*") ||
-    platform.permissions.includes("platform.org.access")
-  return isOperator && hasActivePlatformAccessGrant(orgId, userId)
+  return (await holdsPlatformOrgAccess(userId)) && hasActivePlatformAccessGrant(orgId, userId)
 })
 
 async function logAuthorizationDecision(
@@ -565,7 +539,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
       return decision
     }
 
-    const platform = await fetchPlatformPermissionsCached(input.userId)
+    const platform = await getPlatformPermissions(input.userId)
     const allowed = platform.hasMembership &&
       (platform.permissions.includes(input.permission) || platform.permissions.includes("*"))
     const decision: AuthorizationDecision = {

@@ -160,7 +160,7 @@ test("entering refuses a short reason and more than eight hours before writing a
  * `grants` is what the database reports as the operator's open, unexpired
  * grants (expiry itself is the database's job, tested below).
  */
-function loadContext({ memberOf = [], grants = [], grantError = null, operator = true, cookieOrgId = ORG }) {
+function loadContext({ memberOf = [], grants = [], grantError = null, operator = true, orgAccess = true, cookieOrgId = ORG }) {
   delete process.env.SUPERADMIN_IDS
   const supabase = createFakeSupabase(
     {
@@ -174,7 +174,17 @@ function loadContext({ memberOf = [], grants = [], grantError = null, operator =
         roles: { key: "project_manager" },
         orgs: { product_tier: "residential" },
       })),
-      platform_memberships: operator ? [{ id: "platform", user_id: OPERATOR, status: "active", expires_at: null }] : [],
+      platform_memberships: operator
+        ? [
+            {
+              id: "platform",
+              user_id: OPERATOR,
+              status: "active",
+              expires_at: null,
+              role: { permissions: [{ permission_key: orgAccess ? "platform.org.access" : "platform.users.read" }] },
+            },
+          ]
+        : [],
       orgs: [{ id: ORG, product_tier: "production" }],
     },
     {
@@ -224,6 +234,10 @@ test("a platform operator with an open grant acts as the organization's owner", 
 
 test("a grant does nothing for someone who is no longer a platform operator", async () => {
   await assert.rejects(loadContext({ grants: [OPEN_GRANT], operator: false }).requireOrgMembership(ORG), /no longer have access/)
+})
+
+test("a platform member without platform.org.access gets no organization context from a grant", async () => {
+  await assert.rejects(loadContext({ grants: [OPEN_GRANT], orgAccess: false }).requireOrgMembership(ORG), /no longer have access/)
 })
 
 test("a grant that cannot be read refuses access rather than granting it", async () => {

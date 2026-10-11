@@ -203,6 +203,7 @@ test("the requester of a variance order cannot approve it, and the attempt is au
 })
 
 const { updateCommitment } = freshRequire("lib/services/commitments.ts")
+const { assertCommitmentExecutable } = freshRequire("lib/services/subcontract-execution.ts")
 
 const COMMITMENT = id(70)
 
@@ -275,4 +276,17 @@ test("an approver outside the commitment's division does not stop its creator ap
   await approveCommitment(service)
 
   assert.equal(service.db.commitments[0].status, "approved")
+})
+
+test("a commitment cannot be sent for signature until it is approved, so its creator cannot route around approval", async () => {
+  const service = commitmentOrg({ createdBy: ACTOR, other: commitmentApprover() })
+  const sendForSignature = () =>
+    service.run(() =>
+      assertCommitmentExecutable({ supabase: service.client, orgId: ORG, commitmentId: COMMITMENT, action: "sending the subcontract for signature" }),
+    )
+
+  await assert.rejects(sendForSignature(), /Approve this commitment before sending the subcontract for signature/)
+
+  service.db.commitments[0].status = "approved"
+  await sendForSignature()
 })

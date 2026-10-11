@@ -2,7 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { syncOrgEntitlementsFromPlan } from "@/lib/services/billing"
-import { createOrgMemberInvite } from "@/lib/services/team"
+import { assertPlatformProvisioningAuthority, createOrgMemberInvite } from "@/lib/services/team"
 import { businessProfileSchema, type BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier } from "@/lib/product-tier"
 import { seedCSICostCodes, seedNAHBCostCodes } from "@/lib/services/cost-codes"
@@ -43,6 +43,10 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
   const productTier = input.productTier ?? "residential"
   const profile = input.businessProfile ? businessProfileSchema.parse(input.businessProfile) : null
 
+  // Refused before any write: the owner invite below would otherwise fail after
+  // the org row exists and leave an ownerless organization.
+  await assertPlatformProvisioningAuthority(input.createdBy)
+
   const { data: existingOrg } = await supabase.from("orgs").select("id").eq("slug", slug).maybeSingle()
   if (existingOrg?.id) {
     throw new Error("An organization with this slug already exists.")
@@ -79,6 +83,7 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
     fullName: input.primaryName,
     role: "org_owner",
     sendEmail: input.sendInviteEmail,
+    authority: { kind: "platform_provisioning" },
   })
 
   if (productTier === "commercial") {

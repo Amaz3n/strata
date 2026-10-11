@@ -91,7 +91,7 @@ nothing changed.
 | Rule (`context.rule`) | Refused | Exception |
 |---|---|---|
 | `bill.enterer_cannot_approve` | the person who keyed in a bill, or uploaded its invoice, approving it | nobody else who holds `bill.approve` **and can reach the bill's project** (division and assigned-project scope, overrides) — a one-person AP department |
-| `commitment.creator_cannot_approve` | the person who created a commitment (recorded in `metadata.created_by_user_id`) approving it, by update, create-as-approved, or recording its execution | nobody else who holds `commitment.approve` and can reach the project; commitments with no recorded creator (generated, imported) are never refused |
+| `commitment.creator_cannot_approve` | the person who created a commitment (recorded in `metadata.created_by_user_id`) approving it, by update, create-as-approved, or recording its execution | nobody else who holds `commitment.approve` and can reach the project; commitments with no recorded creator (generated, imported) are never refused; the envelope path is covered at send, because a draft cannot be sent for signature (`assertCommitmentExecutable`), so the vendor's signature only ever executes an already-approved commitment |
 | `payment_run.preparer_cannot_approve` | the preparer deciding their own run | the org's sole-approval policy allows the requester |
 | `budget_transfer.requester_cannot_approve` | the requester approving their transfer | none (also enforced in `post_budget_transfer`) |
 | `variance_order.requester_cannot_approve` | the requester approving their variance order | none |

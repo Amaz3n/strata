@@ -13,6 +13,15 @@ const {
 
 stubModule("@/lib/services/mailer", { sendInviteEmail: async () => {} })
 
+// The platform gate answers from this operator list; everything else is real.
+const platformOperators = new Set()
+stubModule("@/lib/services/platform-access", {
+  requireAnyPlatformPermission: async () => {
+    if (!platformOperators.has(ACTOR)) throw new Error("Forbidden")
+    return { id: ACTOR }
+  },
+})
+
 const { suspendMember, reactivateMember, removeMember, inviteTeamMember, resetMemberMfa } = freshRequire("lib/services/team.ts")
 const { getOrgSecurityPolicy, setOrgRequireMfa } = freshRequire("lib/services/org-security.ts")
 
@@ -181,7 +190,10 @@ function inviteOrg({ permissions = ["members.manage", "invoice.read"], divisions
         { id: DIVISION_B, org_id: ORG },
       ],
     },
-    rpc: { get_org_member_mfa_status: () => ({ data: [], error: null }) },
+    rpc: {
+      get_org_member_mfa_status: () => ({ data: [], error: null }),
+      revoke_user_sessions: () => ({ data: 0, error: null }),
+    },
   })
   service.db.memberships.push(...extraMemberships)
   return service
@@ -252,7 +264,7 @@ test("a project-limited inviter cannot invite someone with access to every proje
   assert.equal(memberRows(service)[0].project_scope, "assigned")
 })
 
-test("an invite created for the importer or provisioning meets the same rank rule", async () => {
+test("an invite created for the importer meets the same rank rule", async () => {
   const service = inviteOrg({ appUsers: [newUser] })
   const { createOrgMemberInvite, inviteRefusal } = freshRequire("lib/services/team.ts")
   const base = { supabase: service.client, orgId: ORG, actorUserId: ACTOR, email: "new@example.com", sendEmail: false }
@@ -261,6 +273,44 @@ test("an invite created for the importer or provisioning meets the same rank rul
   assert.deepEqual(memberRows(service), [])
   assert.match(await service.run(() => inviteRefusal({ ...base, role: "org_owner", divisionId: null })), /cannot grant access/)
   assert.equal(await service.run(() => inviteRefusal({ ...base, role: "org_user", divisionId: null })), null)
+})
+
+test("platform provisioning invites the owner of a new org without any membership there, but only for a platform operator", async () => {
+  const service = inviteOrg({ permissions: [], appUsers: [newUser] })
+  const { createOrgMemberInvite } = freshRequire("lib/services/team.ts")
+  const request = { supabase: service.client, orgId: ORG, actorUserId: ACTOR, email: "new@example.com", sendEmail: false, role: "org_owner" }
+
+  await assert.rejects(
+    service.run(() => createOrgMemberInvite({ ...request, authority: { kind: "platform_provisioning" } })),
+    /Forbidden/,
+  )
+  assert.deepEqual(memberRows(service), [])
+
+  platformOperators.add(ACTOR)
+  try {
+    await service.run(() => createOrgMemberInvite({ ...request, authority: { kind: "platform_provisioning" } }))
+  } finally {
+    platformOperators.delete(ACTOR)
+  }
+  assert.equal(memberRows(service)[0].role_id, OWNER_ROLE)
+})
+
+test("a division-limited manager can only suspend, reactivate or remove members limited to their own divisions", async () => {
+  const cases = [
+    { name: "an org-wide member", target: member({ division_scope: "all" }), allowed: false },
+    { name: "a member of another division", target: member({ division_scope: "assigned" }), divisions: [DIVISION_B], allowed: false },
+    { name: "a member spanning a foreign division", target: member({ division_scope: "assigned" }), divisions: [DIVISION_A, DIVISION_B], allowed: false },
+    { name: "a member inside their divisions", target: member({ division_scope: "assigned" }), divisions: [DIVISION_A], allowed: true },
+  ]
+  for (const { name, target, divisions = [], allowed } of cases) {
+    for (const act of [(id) => suspendMember(id), (id) => reactivateMember(id), (id) => removeMember(id)]) {
+      const service = inviteOrg({ divisions: [DIVISION_A], extraMemberships: [target] })
+      service.db.membership_divisions.push(...divisions.map((division_id) => ({ membership_id: target.id, division_id })))
+      const run = service.run(() => act(target.id))
+      if (allowed) await run
+      else await assert.rejects(run, /limited to your own divisions/, name)
+    }
+  }
 })
 
 test("inviting an active or suspended member again is refused and changes nothing", async () => {

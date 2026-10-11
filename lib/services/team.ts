@@ -24,6 +24,7 @@ import {
   getEffectiveOrgPermissions,
   requireAuthorization,
 } from "@/lib/services/authorization"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { logger } from "@/lib/logging/logger"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
@@ -290,6 +291,23 @@ async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
   }, {})
 }
 
+/**
+ * Who is allowed to hand out membership. The default is an org member, held to
+ * the in-org reach rules. Platform provisioning is the one path where the actor
+ * (Arc staff) has no membership in a brand-new org; it is re-verified here
+ * against the platform permission, so no caller can claim it without holding it.
+ */
+export type InviteAuthority = { kind: "platform_provisioning" }
+
+const PLATFORM_PROVISIONING_PERMISSION = "platform.billing.manage"
+
+export async function assertPlatformProvisioningAuthority(actorUserId: string) {
+  const user = await requireAnyPlatformPermission([PLATFORM_PROVISIONING_PERMISSION])
+  if (user.id !== actorUserId) {
+    throw new Error("Platform provisioning must be performed by the signed-in operator.")
+  }
+}
+
 export async function createOrgMemberInvite(input: {
   supabase: SupabaseClient
   orgId: string
@@ -301,6 +319,7 @@ export async function createOrgMemberInvite(input: {
   projectScope?: "all" | "assigned"
   divisionScope?: "all" | "assigned"
   divisionIds?: string[]
+  authority?: InviteAuthority
 }) {
   const email = input.email.trim().toLowerCase()
   const projectScope = input.projectScope ?? "all"
@@ -309,17 +328,21 @@ export async function createOrgMemberInvite(input: {
   // Every path that creates a membership -- the importer, org provisioning and
   // the team form -- is refused here before a user, a membership or an email exists.
   const roleId = await resolveRoleId(input.supabase, input.role)
-  await assertInviteWithinReach({
-    orgId: input.orgId,
-    userId: input.actorUserId,
-    supabase: input.supabase,
-    client: input.supabase,
-    roleId,
-    grantedPermissions: [],
-    projectScope,
-    divisionScope,
-    divisionIds,
-  })
+  if (input.authority?.kind === "platform_provisioning") {
+    await assertPlatformProvisioningAuthority(input.actorUserId)
+  } else {
+    await assertInviteWithinReach({
+      orgId: input.orgId,
+      userId: input.actorUserId,
+      supabase: input.supabase,
+      client: input.supabase,
+      roleId,
+      grantedPermissions: [],
+      projectScope,
+      divisionScope,
+      divisionIds,
+    })
+  }
   const { data: existingUser } = await input.supabase
     .from("app_users")
     .select("id, email, full_name, avatar_url")
@@ -887,6 +910,32 @@ async function assertDivisionGrantWithinReach({
 }
 
 /**
+ * A division-limited actor may only act on a member who is themselves limited to
+ * a subset of the actor's divisions; an org-wide or foreign-division member is
+ * out of reach. org.admin is never division-limited, so it is exempt.
+ */
+async function assertMemberWithinDivisionReach({
+  orgId,
+  userId,
+  client,
+  membership,
+}: {
+  orgId: string
+  userId: string
+  client: SupabaseClient
+  membership: { id: string; user_id: string; division_scope: string | null }
+}) {
+  if (membership.user_id === userId) return
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!access.assignedOnly) return
+  const refusal = "You are limited to your own divisions, so you can only manage members who are limited to them."
+  if (membership.division_scope !== "assigned") throw new Error(refusal)
+  const targetDivisions = (await mapMembershipDivisions(client, [membership.id]))[membership.id] ?? []
+  const reachable = new Set(access.divisionIds)
+  if (targetDivisions.some((divisionId) => !reachable.has(divisionId))) throw new Error(refusal)
+}
+
+/**
  * Everything an invite hands out must be inside the inviter's own reach: the
  * role and granted overrides they hold, the divisions they belong to, and --
  * when their own project access is assigned-only -- no wider project scope.
@@ -1271,7 +1320,7 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
 
   const { data: existing, error: fetchError } = await supabase
     .from("memberships")
-    .select("id, org_id, user_id, role_id, status, created_at")
+    .select("id, org_id, user_id, role_id, status, division_scope, created_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .maybeSingle()
@@ -1282,6 +1331,12 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
 
   // Suspending someone ends their access and reactivating restores it: both are
   // decisions about authority the actor must already hold themselves.
+  await assertMemberWithinDivisionReach({
+    orgId: resolvedOrgId,
+    userId,
+    client: createServiceSupabaseClient(),
+    membership: existing,
+  })
   if (existing.user_id !== userId) {
     await assertActorHoldsPermissions({
       orgId: resolvedOrgId,
@@ -1513,7 +1568,7 @@ export async function removeMember(membershipId: string, orgId?: string) {
 
   const { data: membership, error: fetchError } = await supabase
     .from("memberships")
-    .select("id, org_id, user_id, role_id, status")
+    .select("id, org_id, user_id, role_id, status, division_scope")
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .maybeSingle()
@@ -1521,6 +1576,13 @@ export async function removeMember(membershipId: string, orgId?: string) {
   if (fetchError || !membership) {
     throw new Error("Membership not found")
   }
+
+  await assertMemberWithinDivisionReach({
+    orgId: resolvedOrgId,
+    userId,
+    client: createServiceSupabaseClient(),
+    membership,
+  })
 
   if (membership.user_id !== userId) {
     await assertActorHoldsPermissions({

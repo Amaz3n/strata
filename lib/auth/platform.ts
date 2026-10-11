@@ -44,3 +44,42 @@ export const hasActivePlatformAccessGrant = cache(async (orgId: string, userId: 
   if (error) throw new Error(`Unable to verify support access: ${error.message}`)
   return Array.isArray(data) && data.length > 0
 })
+
+type PlatformRolePermissions = {
+  role?: { permissions?: { permission_key: string }[] | null } | { permissions?: { permission_key: string }[] | null }[] | null
+}
+
+/**
+ * The permission keys held by a user's active, unexpired platform roles.
+ * Expiry is Postgres' to evaluate ("now" is a timestamptz literal), so this
+ * stays callable from prerendered and cached scopes.
+ */
+export const getPlatformPermissions = cache(async (userId: string) => {
+  const { data, error } = await createServiceSupabaseClient()
+    .from("platform_memberships")
+    .select("role:roles!inner(permissions:role_permissions(permission_key))")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .or("expires_at.is.null,expires_at.gt.now")
+  if (error) throw new Error(`Unable to load platform permissions: ${error.message}`)
+
+  const rows = (data ?? []) as PlatformRolePermissions[]
+  const keys = rows.flatMap((row) => {
+    const role = Array.isArray(row.role) ? row.role[0] : row.role
+    return role?.permissions?.map((permission) => permission.permission_key) ?? []
+  })
+  return { permissions: [...new Set(keys)], hasMembership: rows.length > 0 }
+})
+
+/**
+ * Whether this user is Arc staff entitled to enter an organization they do not
+ * belong to: an environment superadmin, or a platform role holding
+ * `platform.org.access` or `*`. Being staff is not access by itself; an open
+ * support grant is also required. Org context (`requireOrgMembership`) and
+ * permission decisions (`hasPlatformOrgContext`) both ask this one question.
+ */
+export async function holdsPlatformOrgAccess(userId: string, email?: string | null) {
+  if (isPlatformAdminId(userId, email)) return true
+  const { permissions } = await getPlatformPermissions(userId)
+  return permissions.includes("*") || permissions.includes("platform.org.access")
+}

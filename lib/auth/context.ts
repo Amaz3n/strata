@@ -8,7 +8,7 @@ import { unstable_rethrow } from "next/navigation"
 import { preserveQueryError } from "@/lib/supabase/query-error"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
-import { hasActivePlatformAccessGrant, isPlatformAdminUser } from "@/lib/auth/platform"
+import { hasActivePlatformAccessGrant, holdsPlatformOrgAccess } from "@/lib/auth/platform"
 import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 
 export interface OrgMembership {
@@ -264,16 +264,11 @@ export const requireOrgMembership = cache(async (
   // revocation takes effect on the next request even if the browser still has
   // an active Supabase session and a cached app shell.
   //
-  // The platform-membership probe and that membership re-read are keyed on the
-  // same already-known (user, org) pair and neither decides the other, so they
-  // travel together instead of costing two serial round trips on every
-  // authenticated request. A configured superadmin skips the probe: that check
-  // is a local env lookup.
+  // Whether the caller is Arc staff matters only when they are not a member of
+  // the organization, so that probe runs only then: a member's own access never
+  // depends on reading platform roles, and staff pay the extra round trip.
   const ambientOrgId = orgId ?? context.orgId
-  const [isPlatformOperator, ambientMembership]: [boolean, OrgMembership | null] = await Promise.all([
-    isPlatformAdminUser(context.user) || hasActivePlatformMembership(context.user.id),
-    ambientOrgId ? fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null,
-  ])
+  const ambientMembership = ambientOrgId ? await fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null
 
   // Break-glass: Arc staff reach an organization they do not belong to only
   // through an open, unexpired grant with a stated reason. Being staff is not
@@ -282,7 +277,7 @@ export const requireOrgMembership = cache(async (
   if (
     !ambientMembership &&
     ambientOrgId &&
-    isPlatformOperator &&
+    (await holdsPlatformOrgAccess(context.user.id, context.user.email)) &&
     (await hasActivePlatformAccessGrant(ambientOrgId, context.user.id))
   ) {
     const svc = createServiceSupabaseClient()

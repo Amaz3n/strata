@@ -276,6 +276,7 @@ export async function provisionPlatformOrgAction(
         email: member.email,
         role: member.role,
         sendEmail: parsed.data.sendInvites,
+        authority: { kind: "platform_provisioning" },
       })
     }
 
