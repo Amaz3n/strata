@@ -9,9 +9,9 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 | Measure | Current result |
 | --- | --- |
 | Implemented | 18.7% — a documented lower bound, not an ETA |
-| Fully verified | 11.4% |
+| Fully verified | 14.9% |
 | Release ready | 0% |
-| Code implemented | 11 items |
+| Code implemented | 6 items |
 | Partially implemented | 84 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
@@ -99,7 +99,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP04-02 | Entitlement milestones | pending | Model entitlements and jurisdiction conditions per community/phase with due dates, owners and status. |
 | EP04-03 | Takedown obligations | partial | Link takedowns to a land contract with deposit schedule, refundability and extension/penalty terms, preserving signed evidence. |
 | EP04-04 | Horizontal development controls | partial | Apply migration 20261010160000_lot_land_delivery (pending approval). |
-| EP04-05 | Lot lifecycle and bounded inventory | implemented | Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org. |
+| EP04-05 | Lot lifecycle and bounded inventory | verified | Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org. |
 | EP04-06 | Concurrent lot allocation | partial | Approve/apply 20261005121409 and 20261003221905 after reconciling legacy duplicates; cut over to the atomic conversion and delete the legacy multi-step path. |
 | EP04-07 | Spec aging calculation | verified | Decide how completed spec homes outside Books inventory record a completion date (today they show no age). |
 | EP04-08 | Spec disposition workflow | partial | Extend the single-spec price change to an approval step for large moves and to incentive changes. |
@@ -146,13 +146,13 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP07-08 | Trade acceptance workflow | pending | Design trade response records bound to the issued scope version (accept/decline/reschedule with proposed dates): schema, RLS, RBAC, pending migration. |
 | EP07-09 | Dependency-aware bulk rescheduling | partial | Fix bulkUpdateScheduleItems silently ignoring failed item updates (schedule.ts:930). |
 | EP07-10 | Tokenized job claim protocol | verified | Full-schema, independent-session claim/heartbeat/reaper race proof. |
-| EP07-11 | Core release ownership | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval). |
+| EP07-11 | Core release ownership | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval). |
 | EP07-12 | Generated artifact ownership | verified | Replay schedule/budget/inspection/PO/land guards against the full schema (move their tests onto tests/support/pglite.js). |
 | EP07-13 | Transactional actor authority | partial | Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval). |
 | EP07-14 | Bounded storage copy | implemented | Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit). |
 | EP07-15 | Durable drawing publication | verified | Run the consumer, SQL chain and real storage together in QA. |
 | EP07-16 | Child worker and orphan recovery | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval). |
-| EP07-17 | Atomic release finalization | implemented | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval). |
+| EP07-17 | Atomic release finalization | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval). |
 | EP07-18 | Starts cutover and rollback | pending | Keep the staged starts migrations from being swept in by db push until the approved cutover. |
 
 ### EP08: Purchasing and supply chain
@@ -160,7 +160,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP08-01 | Production bid workbench entry | verified | Fix rescind of price-book awards (EP08-05) since it is reachable from this workbench. |
-| EP08-02 | Bounded bid and vendor queues | implemented | QA judgement whether the vendor picker must show a visible total; if so surface the directory page total. |
+| EP08-02 | Bounded bid and vendor queues | verified | QA judgement whether the vendor picker must show a visible total; if so surface the directory page total. |
 | EP08-03 | Bid subresource authorization | partial | Route listBidPackages/getProjectBuyoutSummary through assertBidProjectVisibility; scope or delete listCommunityBidPackages. |
 | EP08-04 | Complete bid intelligence | verified | Render an explicit error state instead of .catch(() => null) at app/(app)/purchasing/bids/[packageId]/page.tsx:40. |
 | EP08-05 | Rebid and renewal lifecycle | partial | Make rescind_bid_award void/end the minted agreements and restore superseded predecessors transactionally (migration, needs approval). |
@@ -216,7 +216,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP12-01 | Bounded validated import reads | verified | Add a case to tests/imports.test.js with >1,000 communities / >10,000 lots proving no false unresolved rejections. |
-| EP12-02 | Open-WIP continuity | implemented | Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row. |
+| EP12-02 | Open-WIP continuity | verified | Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row. |
 | EP12-03 | Atomic resumable cutover | partial | Move Open-WIP commit to a durable outbox job with a lease and per-row transactional RPC that writes the import_rows receipt with the home (migration needs approval). |
 | EP12-04 | Financial and signed-document migration | partial | Agreement + executed-document importer (file, hash, signers, immutable) linked to the Open-WIP home, reusing Documents/Signing storage (STORE-01 proved the storage layer). |
 | EP12-05 | Selections and warranty continuity | pending | Installed-home importer (home identity, close date, program/terms version, structural carrier) creating coverage with an import source and terms snapshot. |
