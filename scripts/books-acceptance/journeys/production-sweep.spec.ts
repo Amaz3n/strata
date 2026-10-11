@@ -16,7 +16,7 @@ import { accounting, pages, sweepPages, type SweepResult } from "./sweep"
 // Arc's own staff consoles turn an organization's owner away, by a thrown permission or a redirect to /unauthorized.
 const STAFF_REFUSAL = /Missing permission: platform\.|Only Arc platform owners|redirected to \/unauthorized/
 const ADMIN_AND_TRADE: Array<[RegExp, RegExp]> = [
-  [/^\/(admin|platform)(\/|$)/, STAFF_REFUSAL],
+  [/^\/(admin|platform|emails\/preview)(\/|$)/, STAFF_REFUSAL],
   [/^\/trade(\/|$)/, /Enable Arc Trade in Company setup first/],
 ]
 
