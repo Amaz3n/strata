@@ -699,7 +699,9 @@ export async function createWarrantyRequest({ input, orgId }: { input: WarrantyR
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
   const parsed = warrantyRequestInputSchema.parse(input)
   await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, parsed.project_id, "warranty.write")
-  return createRequestWithClient(parsed, { supabase, orgId: resolvedOrgId, userId, source: "office" })
+  // The table policy only admits project members and org admins, so a warranty
+  // manager who is neither could never open a claim. Authorization above is the gate.
+  return createRequestWithClient(parsed, { supabase: createServiceSupabaseClient(), orgId: resolvedOrgId, userId, source: "office" })
 }
 
 export async function createWarrantyRequestFromPortal({ orgId, projectId, contactId, input }: { orgId: string; projectId: string; contactId?: string | null; input: WarrantyRequestInput }) {
@@ -715,12 +717,14 @@ export async function listWarrantyRequestsForPortal(orgId: string, projectId: st
 
 export async function updateWarrantyRequest({ requestId, input, orgId }: { requestId: string; input: WarrantyRequestUpdate; orgId?: string }) {
   const parsed = warrantyRequestUpdateSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
+  // Table policy admits only project members and org admins; authorizeWarrantyHome is the gate.
+  const supabase = createServiceSupabaseClient()
   const { data: existing, error: existingError } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", requestId).maybeSingle()
   if (existingError || !existing) throw new Error("Warranty request not found")
   const current = mapWarranty(existing as unknown as Record<string, unknown>)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, current.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, current.project_id, "warranty.write")
   if (!current.updated_at) throw new Error("Warranty request revision is unavailable; refresh before making changes")
   const updates: Record<string, unknown> = {}
   for (const key of ["title","description","priority","category","cost_code_id","coverage_term_key","assigned_company_id","assigned_user_id","scheduled_date","resolution_note","structural_claim","structural_claim_number","structural_claim_submitted_at"] as const) {
@@ -789,12 +793,14 @@ export async function updateWarrantyRequest({ requestId, input, orgId }: { reque
  */
 export async function acknowledgeWarrantyRequest(input: unknown, orgId?: string) {
   const parsed = warrantyAcknowledgeSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
+  // Table policy admits only project members and org admins; authorizeWarrantyHome is the gate.
+  const supabase = createServiceSupabaseClient()
   const { data: existing, error: existingError } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).maybeSingle()
   if (existingError || !existing) throw new Error("Warranty request not found")
   const current = mapWarranty(existing as unknown as Record<string, unknown>)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, current.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, current.project_id, "warranty.write")
   if (current.first_responded_at) return current
   if (!current.updated_at) throw new Error("Warranty request revision is unavailable; refresh before making changes")
   const now = new Date().toISOString()
@@ -833,7 +839,7 @@ export async function listWarrantyRequestsForOrg(params: { orgId?: string; statu
     ? "lot:lots!lots_project_id_fkey!inner(community_id,community:communities!inner(name,time_zone))"
     : "lot:lots!lots_project_id_fkey(community_id,community:communities(name,time_zone))"
   const searchRelations = search ? ",search_home:projects(),search_community:projects(lot:lots!lots_project_id_fkey!inner(community:communities!inner()))" : ""
-  let query = supabase.from("warranty_requests").select(`${WARRANTY_SELECT},${warrantyDeskProjectSelect(`name,home_org:orgs(time_zone),${lotRelation}`, scope.projectMembershipRequired)}${searchRelations}`, { count: "exact" }).eq("org_id", resolvedOrgId)
+  let query = supabase.from("warranty_requests").select(`${WARRANTY_SELECT},${warrantyDeskProjectSelect(`name,home_org:orgs!projects_org_id_fkey(time_zone),${lotRelation}`, scope.projectMembershipRequired)}${searchRelations}`, { count: "exact" }).eq("org_id", resolvedOrgId)
   if (params.status?.length) query = query.in("status", params.status)
   if (params.severity?.length) query = query.in("severity", params.severity)
   if (params.assignedUserId) query = query.eq("assigned_user_id", params.assignedUserId)
@@ -935,7 +941,7 @@ export async function listWarrantyVisitsForDispatch(params: { from: string; to: 
   const paging = warrantyDeskPage(params.page, params.pageSize)
   const scope = await warrantyDeskReadScope(resolvedOrgId, userId, params.divisionId)
   if (scope.divisionIds?.length === 0) return { rows: [], total: 0 }
-  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,severity,org_id,project_id),${warrantyDeskProjectSelect("name,location,home_org:orgs(time_zone),home_lot:lots!lots_project_id_fkey(community:communities(time_zone))", scope.projectMembershipRequired, params.communityId)}`, { count: "exact" }).eq("org_id", resolvedOrgId).gte("window_start", params.from).lt("window_start", params.to).neq("status", "canceled")
+  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,severity,org_id,project_id),${warrantyDeskProjectSelect("name,location,home_org:orgs!projects_org_id_fkey(time_zone),home_lot:lots!lots_project_id_fkey(community:communities(time_zone))", scope.projectMembershipRequired, params.communityId)}`, { count: "exact" }).eq("org_id", resolvedOrgId).gte("window_start", params.from).lt("window_start", params.to).neq("status", "canceled")
   query = query.eq("project.org_id", resolvedOrgId)
   if (params.communityId) query = query.eq("project.lot.community_id", params.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
   if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)

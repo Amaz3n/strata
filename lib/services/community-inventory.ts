@@ -13,7 +13,11 @@ import { getCommunity } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { readLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
 import { requirePermission } from "@/lib/services/permissions"
+import { chunk } from "@/lib/utils"
 import { offeringOverridePlanId } from "@/lib/sales/plan-offering"
+
+/** Lot ids per `.in()` filter; a page of 250 overflows the request line. */
+const LOT_ID_FILTER_BATCH = 100
 
 /** A hold or reservation still standing against a lot. */
 export interface InventoryBuyerDTO {
@@ -277,31 +281,32 @@ export async function listCommunityInventory(
 
   // Buyer and closing ride the page, not the community, so a 400-lot community
   // never pulls its whole sales history to render 100 rows.
+  // A filter of 250 uuids overflows the request line, so ids go in batches.
   const [reservations, closings] = await Promise.all([
-    lotIds.length > 0
-      ? context.supabase
-          .from("lot_reservations")
-          .select("id, lot_id, status, expires_at, contract_id, asking_price_cents, prospect_id, prospect:prospects(name)")
-          .eq("org_id", context.orgId)
-          .in("lot_id", lotIds)
-          .in("status", LIVE_RESERVATION_STATUSES)
-          .limit(INVENTORY_MAP_PAGE_SIZE)
-      : Promise.resolve({ data: [], error: null }),
-    lotIds.length > 0
-      ? context.supabase
-          .from("closings")
-          .select("lot_id, status, scheduled_date, actual_date")
-          .eq("org_id", context.orgId)
-          .in("lot_id", lotIds)
-          .neq("status", "cancelled")
-          .limit(INVENTORY_MAP_PAGE_SIZE)
-      : Promise.resolve({ data: [], error: null }),
+    Promise.all(chunk(lotIds, LOT_ID_FILTER_BATCH).map((ids) => context.supabase
+      .from("lot_reservations")
+      .select("id, lot_id, status, expires_at, contract_id, asking_price_cents, prospect_id, prospect:prospects(name)")
+      .eq("org_id", context.orgId)
+      .in("lot_id", ids)
+      .in("status", LIVE_RESERVATION_STATUSES)
+      .limit(INVENTORY_MAP_PAGE_SIZE))),
+    Promise.all(chunk(lotIds, LOT_ID_FILTER_BATCH).map((ids) => context.supabase
+      .from("closings")
+      .select("lot_id, status, scheduled_date, actual_date")
+      .eq("org_id", context.orgId)
+      .in("lot_id", ids)
+      .neq("status", "cancelled")
+      .limit(INVENTORY_MAP_PAGE_SIZE))),
   ])
-  if (reservations.error) throw new Error(`Failed to load lot holds: ${reservations.error.message}`)
-  if (closings.error) throw new Error(`Failed to load lot closings: ${closings.error.message}`)
+  const reservationError = reservations.find((result) => result.error)?.error
+  const closingError = closings.find((result) => result.error)?.error
+  const reservationRows = reservations.flatMap((result) => result.data ?? [])
+  const closingRows = closings.flatMap((result) => result.data ?? [])
+  if (reservationError) throw new Error(`Failed to load lot holds: ${reservationError.message}`)
+  if (closingError) throw new Error(`Failed to load lot closings: ${closingError.message}`)
 
   const buyerByLot = new Map<string, InventoryBuyerDTO>()
-  for (const row of reservations.data ?? []) {
+  for (const row of reservationRows) {
     buyerByLot.set(row.lot_id as string, {
       reservationId: row.id as string,
       status: row.status as string,
@@ -314,7 +319,7 @@ export async function listCommunityInventory(
   }
 
   const closingByLot = new Map<string, InventoryClosingDTO>()
-  for (const row of closings.data ?? []) {
+  for (const row of closingRows) {
     closingByLot.set(row.lot_id as string, {
       status: row.status as string,
       scheduledDate: (row.scheduled_date as string | null) ?? null,

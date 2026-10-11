@@ -24,6 +24,12 @@ function harness({ cutoffSource = "manual_override" } = {}) {
         { id: INSTANCE, org_id: ORG, project_id: HOME, group_id: GROUP, cutoff_date: "2026-11-30", cutoff_source: cutoffSource, override_reason: "Buyer travelling", overridden_by: id(9), status: "open" },
       ],
       schedule_items: [],
+      project_selections: [
+        { id: id(10), org_id: ORG, project_id: HOME, group_id: GROUP, status: "selected", locked_at: "2026-10-01T00:00:00Z" },
+        { id: id(11), org_id: ORG, project_id: HOME, group_id: GROUP, status: "pending", locked_at: "2026-10-01T00:00:00Z" },
+        { id: id(12), org_id: ORG, project_id: HOME, group_id: GROUP, status: "confirmed", locked_at: "2026-10-01T00:00:00Z" },
+        { id: id(13), org_id: ORG, project_id: id(99), group_id: GROUP, status: "selected", locked_at: "2026-10-01T00:00:00Z" },
+      ],
     },
   })
 }
@@ -94,6 +100,16 @@ describe("overrideGroupCutoff", () => {
     open.db.project_selection_groups[0].status = "locked"
     await override(open)
     assert.deepEqual([open.db.project_selection_groups[0].status, open.db.project_selection_groups[0].locked_at], ["open", null])
+  })
+
+  test("extending a swept cutoff reopens its open choices, but not confirmed ones or another home's", async () => {
+    const service = harness({ cutoffSource: "schedule" })
+    service.db.project_selection_groups[0].status = "locked"
+    await override(service)
+    const locked = Object.fromEntries(service.db.project_selections.map((row) => [row.id, row.locked_at !== null]))
+    assert.deepEqual(locked, { [id(10)]: false, [id(11)]: false, [id(12)]: true, [id(13)]: true })
+    const audit = service.audits.find((row) => row.entityType === "project_selection_group")
+    assert.equal(audit.after.selections_reopened, 2)
   })
 
   test("a group that is not on this home is not overridden and nothing is recorded", async () => {

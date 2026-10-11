@@ -101,6 +101,7 @@ export async function recomputeProjectSelectionCutoffs(projectId: string, orgId:
       .eq("org_id", orgId)
       .eq("id", instance.id)
     if (error) throw new Error(`Failed to update selection cutoff: ${error.message}`)
+    if (reopen) await reopenSweptSelections(supabase, { orgId, projectId, groupId: instance.group_id })
     changed += 1
     if (!derived.cutoffDate) {
       unresolved += 1
@@ -135,6 +136,26 @@ export async function recomputeProjectSelectionCutoffs(projectId: string, orgId:
     }
   }
   return { changed, unresolved }
+}
+
+/**
+ * The sweep stamps `locked_at` on every choice in a group it locks. When the
+ * deadline moves forward the group reopens, so the choices the sweep closed
+ * must reopen with it or the extension does nothing. Confirmed choices stay
+ * locked: the buyer already signed those off.
+ */
+async function reopenSweptSelections(supabase: SupabaseClient, input: { orgId: string; projectId: string; groupId: string }) {
+  const { data, error } = await supabase
+    .from("project_selections")
+    .update({ locked_at: null })
+    .eq("org_id", input.orgId)
+    .eq("project_id", input.projectId)
+    .eq("group_id", input.groupId)
+    .in("status", ["pending", "selected"])
+    .not("locked_at", "is", null)
+    .select("id")
+  if (error) throw new Error(`Failed to reopen group selections: ${error.message}`)
+  return data?.length ?? 0
 }
 
 export async function recomputeCommunityCutoffs(communityId: string, orgId: string) {
@@ -222,6 +243,8 @@ export async function overrideGroupCutoff(raw: CutoffOverrideInput) {
   const input = cutoffOverrideSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("selections.cutoff.override", context)
+  const today = new Date().toISOString().slice(0, 10)
+  const extended = input.cutoffDate >= today
   const { data, error } = await context.supabase
     .from("project_selection_groups")
     .update({
@@ -229,8 +252,8 @@ export async function overrideGroupCutoff(raw: CutoffOverrideInput) {
       cutoff_source: "manual_override",
       override_reason: input.reason,
       overridden_by: context.userId,
-      status: input.cutoffDate >= new Date().toISOString().slice(0, 10) ? "open" : "locked",
-      locked_at: input.cutoffDate >= new Date().toISOString().slice(0, 10) ? null : new Date().toISOString(),
+      status: extended ? "open" : "locked",
+      locked_at: extended ? null : new Date().toISOString(),
     })
     .eq("org_id", context.orgId)
     .eq("project_id", input.projectId)
@@ -238,9 +261,10 @@ export async function overrideGroupCutoff(raw: CutoffOverrideInput) {
     .select("id")
     .single()
   if (error || !data) throw new Error(`Failed to override cutoff: ${error?.message ?? "missing group"}`)
+  const reopened = extended ? await reopenSweptSelections(createServiceSupabaseClient(), { orgId: context.orgId, projectId: input.projectId, groupId: input.groupId }) : 0
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "selection_cutoff_overridden", entityType: "project_selection_group", entityId: data.id, payload: input }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: data.id, after: { cutoff_date: input.cutoffDate, cutoff_source: "manual_override", override_reason: input.reason } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: data.id, after: { cutoff_date: input.cutoffDate, cutoff_source: "manual_override", override_reason: input.reason, selections_reopened: reopened } }),
   ])
 }
 

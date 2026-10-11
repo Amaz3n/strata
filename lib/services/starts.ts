@@ -901,7 +901,7 @@ export async function setProjectSuperintendent(projectId: string, userId: string
   }
   const { error } = await context.supabase.from("projects").update({ superintendent_id: userId }).eq("org_id", context.orgId).eq("id", projectId)
   if (error) throw new Error(`Failed to assign superintendent: ${error.message}`)
-  const { data: fieldRole } = await context.supabase.from("roles").select("id").eq("key", "field").eq("scope", "project").maybeSingle()
+  const { data: fieldRole } = await startsWriter().from("roles").select("id").eq("key", "field").eq("scope", "project").maybeSingle()
   if (!fieldRole) throw new Error("Field project role is missing.")
   // The outgoing super loses the project_members row this function gave them.
   // Without this an "assigned" member keeps seeing houses they handed off, and
@@ -1100,7 +1100,7 @@ export async function retryStartTradeNotice(packageId: string, noticeId: string,
   }).eq("org_id", context.orgId).eq("id", noticeId).eq("job_type", "start_release_trade_notice")
     .eq("payload->>start_package_id", packageId).eq("status", "failed").select("id")
   if (error || updated?.length !== 1) throw new Error(`Unable to retry trade delivery: ${error?.message ?? "Notice state changed; refresh and try again"}`)
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_trade_notice", entityId: noticeId, before, after: { status: "pending", actor_id: context.userId, start_package_id: packageId } })
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_trade_notice", entityId: packageId, before: { ...before, notice_id: noticeId }, after: { status: "pending", actor_id: context.userId, start_package_id: packageId, notice_id: noticeId } })
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.trade_notice_retried", entityType: "start_package", entityId: packageId, payload: { notice_id: noticeId, company_id: relation(before.payload)?.company_id } })
   void triggerStartsPipeline()
 }

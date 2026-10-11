@@ -145,7 +145,7 @@ export async function sellLotToAffiliate(input: z.input<typeof lotSaleSchema>) {
   const { data, error } = await service.rpc("sell_books_lot_to_affiliate", { p_org_id: context.orgId, p_lot_id: lot.id, p_date: parsed.date, p_price_cents: parsed.priceCents, p_evidence_url: parsed.evidenceUrl, p_actor_id: context.userId })
   if (error) throw new Error(error.message)
   const result = z.object({ saleId: z.string().uuid(), journalEntryId: z.string().uuid() }).parse(data)
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.intercompany_lot_sold", entityType: "project", entityId: parsed.projectId, payload: { sale_id: result.saleId, journal_entry_id: result.journalEntryId } })
+  await recordEvent({ idempotencyId: result.saleId, orgId: context.orgId, actorId: context.userId, eventType: "books.intercompany_lot_sold", entityType: "project", entityId: parsed.projectId, payload: { sale_id: result.saleId, journal_entry_id: result.journalEntryId } })
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "books_intercompany_sale", entityId: result.saleId, after: parsed, source: "books.intercompany" })
   return result
 }

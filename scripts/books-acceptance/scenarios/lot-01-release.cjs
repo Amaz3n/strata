@@ -402,6 +402,10 @@ async function noticeWorkerClaims(kit, spec, check) {
   const seen = await lifecycle(kit)
   const home = seen.home
   const out = {}
+  // The shared release job was claimed for 20 minutes when the fixture was built. A whole-scenario run is
+  // longer than that, so by now recovery or this subcase's own pipeline drain may have taken it and finished
+  // the release. Hand the job back to a live claim before anything below runs.
+  const releaseJob = { id: seen.job.id, token: kit.sql(`update public.outbox set status='processing', updated_at=clock_timestamp(), start_claim_token=gen_random_uuid(), start_job_lease_expires_at=clock_timestamp()+interval '20 minutes' where id=${seen.job.id} returning start_claim_token::text`) }
   // The worker itself: a notice for a release still running is deferred, not failed and not sent.
   const deferJob = addNotice(kit, home)
   await runPipeline(kit)
@@ -432,8 +436,8 @@ async function noticeWorkerClaims(kit, spec, check) {
   const ended = startsRow(kit, job)
   out.afterThirdFailure = { status: ended.status, retryCount: ended.retry_count, claimed: ended.claimed }
   // A release job cannot be completed by its worker unless the package durably released.
-  out.releaseJobCompletionNeedsAReleasedPackage = refusedAs(startsTransition(kit, home.orgId, seen.job.id, seen.job.token, "complete"), /durably released package/)
-  out.releaseJobStillClaimed = startsRow(kit, seen.job.id).status
+  out.releaseJobCompletionNeedsAReleasedPackage = refusedAs(startsTransition(kit, home.orgId, releaseJob.id, releaseJob.token, "complete"), /durably released package/)
+  out.releaseJobStillClaimed = startsRow(kit, releaseJob.id).status
   equal(check, "a notice worker owns its job only while its claim is live: strangers, other organisations and stale claims cannot move it, expired claims are recovered, retries back off and end after three, and a release job cannot complete before the package is released", spec.expected, out)
   return { orgId: home.orgId, jobs: [deferJob, job] }
 }

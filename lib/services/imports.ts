@@ -12,6 +12,7 @@ import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createOrgMemberInvite } from "@/lib/services/team"
@@ -35,6 +36,8 @@ import {
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 const MAX_ROWS = 10_000
 const INSERT_CHUNK = 500
+/** Row-result writes in flight at once; 500 simultaneous requests exhaust the connection pool. */
+const IMPORT_ROW_WRITE_CONCURRENCY = 10
 
 export interface ImportAccess {
   orgId?: string
@@ -761,6 +764,28 @@ async function loadImportCommitRows(context: ResolvedImportContext, batchIds: st
   return rows
 }
 
+type PublishedWipHome = {
+  projectId: string
+  lot: { id: string; status: string | null; house_plan_id: string | null; house_plan_version_id: string | null; house_plan_elevation_id: string | null }
+}
+
+/** Template items store `start_offset_days`; fall back to list position for templates without offsets. */
+function templateOffset(item: { start_offset_days?: unknown }, index: number) {
+  return typeof item.start_offset_days === "number" ? item.start_offset_days : index
+}
+
+/** Compensates a failed Open-WIP commit: frees each lot it started and removes the home it created. */
+async function unpublishWipHomes(context: ResolvedImportContext, published: PublishedWipHome[]) {
+  const failures: string[] = []
+  for (const home of [...published].reverse()) {
+    const { error: lotError } = await context.supabase.from("lots").update({ project_id: null, status: home.lot.status, house_plan_id: home.lot.house_plan_id, house_plan_version_id: home.lot.house_plan_version_id, house_plan_elevation_id: home.lot.house_plan_elevation_id }).eq("org_id", context.orgId).eq("id", home.lot.id).eq("project_id", home.projectId)
+    if (lotError) { failures.push(`lot ${home.lot.id}: ${lotError.message}`); continue }
+    const { error: projectError } = await context.supabase.from("projects").delete().eq("org_id", context.orgId).eq("id", home.projectId)
+    if (projectError) failures.push(`project ${home.projectId}: ${projectError.message}`)
+  }
+  if (failures.length) throw new Error(`Open-WIP rollback incomplete; reconcile before retrying: ${failures.join("; ")}`)
+}
+
 async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportContext, batchId: string, batchContext: Record<string, unknown>, fileKind: string, onboardingRunId: string | null = null) {
   const results = new Map<string, { id: string; action: string }>()
   if (fileKind !== "houses") {
@@ -777,14 +802,15 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
   ])
   const budgetsByHouse = groupOpenWipCompanions(budgetItems)
   const posByHouse = groupOpenWipCompanions(poItems)
-  for (const row of rows) {
+  const published: PublishedWipHome[] = []
+  const publishHouse = async (row: ImportRowRecord) => {
     const houseKey = openWipHouseKey(row.parsed)
     const budgetRows = budgetsByHouse.get(houseKey) ?? []
     const poRows = posByHouse.get(houseKey) ?? []
     const budgetSum = budgetRows.reduce((sum, item) => sum + Number(item.parsed?.budget_cents ?? 0), 0)
     if (budgetSum !== Number(row.parsed.budget_total_cents)) throw new Error(`Lot ${row.parsed.lot_number}: budget lines total does not match the house total`)
     const { data: community, error: communityError } = await context.supabase.from("communities").select("id,name,division_id").eq("org_id", context.orgId).eq("id", row.parsed.community_id).single()
-    let lotQuery = context.supabase.from("lots").select("id,project_id").eq("org_id", context.orgId).eq("community_id", row.parsed.community_id).eq("lot_number", row.parsed.lot_number)
+    let lotQuery = context.supabase.from("lots").select("id,project_id,status,house_plan_id,house_plan_version_id,house_plan_elevation_id").eq("org_id", context.orgId).eq("community_id", row.parsed.community_id).eq("lot_number", row.parsed.lot_number)
     lotQuery = row.parsed.block ? lotQuery.eq("block", row.parsed.block) : lotQuery.is("block", null)
     const { data: lot, error: lotError } = await lotQuery.single()
     if (communityError || !community) throw new Error(`Unable to resolve the Open-WIP community: ${communityError?.message}`)
@@ -795,7 +821,7 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
         throw new Error(`Lot ${row.parsed.lot_number} already has a project; reconcile it before importing`)
       }
       results.set(row.id, { id: lot.project_id, action: "skipped_existing" })
-      continue
+      return
     }
     let projectId: string | null = null
     try {
@@ -823,7 +849,7 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
         const anchorIndex = items.findIndex((item) => normalizeKey(item.name) === normalizeKey(row.parsed.stage_task))
         if (anchorIndex < 0) throw new Error(`Schedule task ${row.parsed.stage_task} was not found in the plan template`)
         const stageDate = typeof row.parsed.stage_date === "string" ? row.parsed.stage_date : asOfDate
-        const { error: scheduleError } = await context.supabase.from("schedule_items").insert(items.map((item, index) => ({ org_id: context.orgId, project_id: projectId, name: item.name, item_type: item.item_type ?? "task", status: index < anchorIndex ? "completed" : index === anchorIndex ? "in_progress" : "planned", start_date: addDays(stageDate, (Number(item.offset_days ?? index) - Number(items[anchorIndex].offset_days ?? anchorIndex))), end_date: addDays(stageDate, (Number(item.offset_days ?? index) - Number(items[anchorIndex].offset_days ?? anchorIndex)) + Math.max(0, Number(item.duration_days ?? 1) - 1)), progress: index < anchorIndex ? 100 : index === anchorIndex ? 10 : 0, sort_order: index, metadata: { imported_open_wip: true, completed_at_cutover: index < anchorIndex ? asOfDate : null } })))
+        const { error: scheduleError } = await context.supabase.from("schedule_items").insert(items.map((item, index) => ({ org_id: context.orgId, project_id: projectId, name: item.name, item_type: item.item_type ?? "task", status: index < anchorIndex ? "completed" : index === anchorIndex ? "in_progress" : "planned", start_date: addDays(stageDate, (templateOffset(item, index) - templateOffset(items[anchorIndex], anchorIndex))), end_date: addDays(stageDate, (templateOffset(item, index) - templateOffset(items[anchorIndex], anchorIndex)) + Math.max(0, Number(item.duration_days ?? 1) - 1)), progress: index < anchorIndex ? 100 : index === anchorIndex ? 10 : 0, sort_order: index, metadata: { imported_open_wip: true, completed_at_cutover: index < anchorIndex ? asOfDate : null } })))
         if (scheduleError) throw new Error(`Failed to create WIP schedule: ${scheduleError.message}`)
       }
       if (row.parsed.sold) {
@@ -848,6 +874,7 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
       // Publish the completed home only if this lot is still unassigned.
       const { data: linked, error: linkError } = await context.supabase.from("lots").update({ project_id: projectId, status: "started", house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id }).eq("org_id", context.orgId).eq("id", lot.id).is("project_id", null).select("id").maybeSingle()
       if (linkError || !linked) throw new Error(`Unable to attach imported home: ${linkError?.message ?? "Lot was assigned during import"}`)
+      published.push({ projectId: project.id, lot })
       results.set(row.id, { id: project.id, action: "created" })
     } catch (error) {
       if (projectId) {
@@ -856,6 +883,14 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
       }
       throw error
     }
+  }
+  // One bad house must not leave the houses before it published: a retry would
+  // then skip them as "existing" and the cutover would look complete.
+  try {
+    for (const row of rows) await publishHouse(row)
+  } catch (error) {
+    await unpublishWipHomes(context, published)
+    throw error
   }
   return results
 }
@@ -881,11 +916,11 @@ export async function commitImportBatch(batchId: string, access: ImportAccess = 
     else results = await commitOpenWip(rows, context, batchId, claimed.context ?? {}, fileKind, claimed.onboarding_run_id ?? null)
     for (let index = 0; index < rows.length; index += INSERT_CHUNK) {
       const chunk = rows.slice(index, index + INSERT_CHUNK)
-      const savedRows = await Promise.all(chunk.map((row) => {
+      const savedRows = await mapWithConcurrency(chunk, IMPORT_ROW_WRITE_CONCURRENCY, async (row) => {
         const result = results.get(row.id)
         if (!result) throw new Error(`No commit result for import row ${row.row_number}`)
         return context.supabase.from("import_rows").update({ status: result.action === "skipped_existing" ? "skipped" : "committed", target_entity_type: importer, target_entity_id: result.id, action: result.action }).eq("org_id", context.orgId).eq("id", row.id)
-      }))
+      })
       const failedRow = savedRows.find((result) => result.error)
       if (failedRow?.error) throw new Error(`Failed to save import row results: ${failedRow.error.message}`)
     }
