@@ -258,8 +258,12 @@ async function releaseHome(kit, org, { packageId, projectId, startInDays = 0, ad
   if (adoptInventory) await adopt().catch(async (error) => {
     if (!/earn revenue differently|recognizes revenue at sale/.test(error.message)) throw error
     policyRepairedByHand = true
-    for (const contract of kit.rows(`select id, contract_type from public.contracts where project_id=${kit.q(projectId)} and status='active'`)) {
-      const proposal = await kit.as(org.owner, () => policies.proposeRevenuePolicy({ projectId, contractId: contract.id, method: "closing", billingMethod: contract.contract_type === "purchase_agreement" ? "purchase_agreement" : "fixed_price", effectiveFrom: "2026-06-01", rationale: "A home earns its revenue at closing; the placeholder contract carries none." }))
+    // A home with one contract earns under its project-level policy: the baseline recorded at
+    // reservation (before any agreement existed) reads as percentage of completion and a
+    // contract-scoped policy is ignored beside it (defect D16).
+    const contracts = kit.rows(`select id, contract_type from public.contracts where project_id=${kit.q(projectId)} and status='active'`)
+    for (const contract of contracts) {
+      const proposal = await kit.as(org.owner, () => policies.proposeRevenuePolicy({ projectId, contractId: contracts.length === 1 ? null : contract.id, method: "closing", billingMethod: contract.contract_type === "purchase_agreement" ? "purchase_agreement" : "fixed_price", effectiveFrom: "2026-06-01", rationale: "A home earns its revenue at closing; the placeholder contract carries none." }))
       await kit.as(org.reviewer, () => policies.reviewRevenuePolicy({ policyId: proposal.policyId, approve: true }))
     }
     await adopt()
@@ -287,12 +291,14 @@ function purchaseOrdersByVendor(kit, projectId) {
 /** Approves each purchase order and bills it in full against the order. */
 async function buildHome(kit, org, { projectId, billDate = isoDay(7) }) {
   const commitments = app("commitments"), bills = app("vendor-bills")
+  org.bookkeeper ??= kit.addMember(org, "org_office_admin")
   const orders = kit.rows(`select id, company_id, contract_number, total_cents from public.commitments where project_id=${kit.q(projectId)} and commitment_type='purchase_order' and status='draft' order by contract_number`)
   for (const order of orders) {
     await kit.as(org.owner, () => commitments.updateCommitment({ commitmentId: order.id, input: { status: "approved", prequal_override_note: "Acceptance trade: no prequalification on file for this vendor." } }))
     const lines = kit.rows(`select cost_code_id, description, round(quantity*unit_cost_cents)::bigint cents from public.commitment_lines where commitment_id=${kit.q(order.id)} order by sort_order`)
-    const bill = await kit.as(org.owner, () => bills.createProjectVendorBill({ projectId, input: { company_id: order.company_id, commitment_id: order.id, bill_number: `B-${order.contract_number}`, bill_date: billDate, due_date: isoDay(37),
+    const bill = await kit.as(org.bookkeeper, () => bills.createProjectVendorBill({ projectId, input: { company_id: order.company_id, commitment_id: order.id, bill_number: `B-${order.contract_number}`, bill_date: billDate, due_date: isoDay(37),
       total_cents: Number(order.total_cents), actual_lines: lines.map((line) => ({ cost_code_id: line.cost_code_id, description: line.description, amount_cents: Number(line.cents), project_id: projectId })) } }))
+    // Whoever enters a payable cannot approve it: the bookkeeper enters, the owner approves.
     await kit.as(org.owner, () => bills.approveVendorBillsAtomic([{ id: bill.id }]))
   }
   await kit.drainOutbox(org.orgId)

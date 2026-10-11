@@ -372,23 +372,42 @@ async function closingCompletesWithoutRepair(kit, expected, check) {
   return { orgId: seen.org.orgId }
 }
 
-module.exports = {
-  subcases: {
-    "land-takedown": landTakedown,
-    "reservation-and-deposit": reservationAndDeposit,
-    "agreement-priced-and-signed": agreementPricedAndSigned,
-    "selections-by-cutoff": selectionsByCutoff,
-    "start-gates-and-roles": startGatesAndRoles,
-    "release-creates-the-house": releaseCreatesTheHouse,
-    "built-and-billed": builtAndBilled,
-    "completion-and-closing": completionAndClosing,
-    "warranty-enrolled": warrantyEnrolled,
-    "design-choices-open-after-signing": designChoicesOpenAfterSigning,
-    "purchasing-manager-reaches-a-house": purchasingManagerReachesAHouse,
-    "preview-matches-release": previewMatchesRelease,
-    "agreed-options-reach-purchase-orders": agreedOptionsReachPurchaseOrders,
-    "presold-home-adopts-inventory-without-repair": presoldHomeAdoptsInventoryWithoutRepair,
-    "deposit-invoice-reaches-the-buyer": depositInvoiceReachesTheBuyer,
-    "closing-completes-without-repair": closingCompletesWithoutRepair,
-  },
+const subcases = {
+  "land-takedown": landTakedown,
+  "reservation-and-deposit": reservationAndDeposit,
+  "agreement-priced-and-signed": agreementPricedAndSigned,
+  "selections-by-cutoff": selectionsByCutoff,
+  "start-gates-and-roles": startGatesAndRoles,
+  "release-creates-the-house": releaseCreatesTheHouse,
+  "built-and-billed": builtAndBilled,
+  "completion-and-closing": completionAndClosing,
+  "warranty-enrolled": warrantyEnrolled,
+  "design-choices-open-after-signing": designChoicesOpenAfterSigning,
+  "purchasing-manager-reaches-a-house": purchasingManagerReachesAHouse,
+  "preview-matches-release": previewMatchesRelease,
+  "agreed-options-reach-purchase-orders": agreedOptionsReachPurchaseOrders,
+  "presold-home-adopts-inventory-without-repair": presoldHomeAdoptsInventoryWithoutRepair,
+  "deposit-invoice-reaches-the-buyer": depositInvoiceReachesTheBuyer,
+  "closing-completes-without-repair": closingCompletesWithoutRepair,
 }
+
+// Production workflow proof (EP03-EP13): one module per area, each adding subcases that act as the
+// owning role through the real services, on top of this chain. They take what they need from `helpers`.
+const AREAS = ["config", "sales", "starts", "release", "purchasing", "completion"]
+// Each area builds its own organisation, so one area's homes and lots never use up another's:
+// the chain is cached per kit, and an area runs on a derived kit of its own.
+const areaKits = new WeakMap()
+const areaKit = (kit, area) => {
+  const kits = areaKits.get(kit) ?? (areaKits.set(kit, new Map()), areaKits.get(kit))
+  if (!kits.has(area)) kits.set(area, Object.create(kit))
+  return kits.get(area)
+}
+// The race checks (two independent sessions per case) belong to RACE-02.
+for (const area of AREAS) for (const [name, run] of Object.entries(require(`./lot-01-${area}.cjs`).subcases))
+  if (!name.startsWith("race-")) subcases[name] = async (kit, expected, check) => {
+    // Cancelled and parked release jobs from an earlier case would be claimed by this one's workers or fail its drain.
+    kit.sql("update public.outbox set status='completed' where status in ('pending','processing','failed') and job_type in ('start_release','start_release_trade_notice','process_drawing_set','trade_schedule_change_notice')")
+    return run(areaKit(kit, area), expected, check)
+  }
+
+module.exports = { subcases, helpers: { stage, refusal, sum, total, equal, canonical, orgNet, houseNet, lotStatus } }

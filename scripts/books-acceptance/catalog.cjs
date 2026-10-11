@@ -29,6 +29,7 @@ const IMPLEMENTED = {
   "GREEN-01": "./scenarios/green-01.cjs",
   "STORE-01": "./scenarios/store-01.cjs",
   "LOT-01": "./scenarios/lot-01.cjs",
+  "RACE-02": "./scenarios/race-02.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -51,7 +52,7 @@ const NOT_IMPLEMENTED = {
  * as open with its reason, so the scenario is INCOMPLETE rather than FAILED. An
  * incomplete production scenario does not fail an all-scenarios run; a failed one does.
  */
-const PRODUCTION = { "LOT-01": { checklist: "EP14-01" } }
+const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" } }
 
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {
@@ -59,6 +60,14 @@ const OPEN_SUBCASES = {
     "purchasing-manager-reaches-a-house": "EP14-01",
     "agreement-signs-through-an-envelope": "EP14-01",
     "release-copies-the-plan-set": "EP14-01",
+    "picker-page-past-the-end-is-empty": "EP08-02",
+    "addendum-can-be-issued-on-an-open-package": "EP08-01",
+    "purchasing-manager-runs-the-bid-workbench": "EP08-01",
+    "purchasing-manager-reads-the-history-of-awarded-homes": "EP08-04",
+    "purchasing-manager-resolves-an-exception-on-a-house": "EP08-06",
+    "purchasing-manager-requests-a-variance-order-on-a-house": "EP08-06",
+    "division-scoped-variance-report-matches-the-organisation-report": "EP08-12",
+    "variance-report-labels-the-superintendent": "EP08-12",
   },
 }
 

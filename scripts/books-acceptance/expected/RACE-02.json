@@ -1,0 +1,691 @@
+{
+  "scenario": "RACE-02",
+  "reviewedFrom": "EP03-02, EP05-09, EP07-10, EP07-11, EP07-12, EP07-15, EP07-16, EP07-17 and EP10-01 (docs/enterprise-production/completion-checklist.json, verificationRequired multi_session); the RACE-01 pattern: independent database sessions released together, every outcome serial-equivalent or a clean refusal.",
+  "subcases": {
+    "race-option-rule-authoring": {
+      "derivation": "EP03-02 multi_session (serializes the authoring of #0 and the rejection of contradictions in #1): rules are serialized per organisation by the writer lock row. Two concurrent saves X requires Y / Y excludes X are each valid and together impossible, so exactly one saves and one is refused (one rule stored). The same rule twice: one saved, one duplicate refusal, one row. The same pair as requires and excludes: one saved, the other refused, one row. Three authors closing the triangle X>Y requires, Y>Z requires, Z excludes X: serial-equivalent outcome is two saved and one refused, two rows stored. The database-level race (two independent backends as service_role) must give the same winner/refusal for the contradictory pair. Three rounds each, with fresh options per round.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": {
+          "contradictoryPair": [
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            }
+          ],
+          "duplicateRule": [
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            }
+          ],
+          "oppositeKinds": [
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            }
+          ],
+          "transitiveTriangle": [
+            {
+              "outcomes": {
+                "saved": 2,
+                "refused": 1
+              },
+              "stored": 2
+            },
+            {
+              "outcomes": {
+                "saved": 2,
+                "refused": 1
+              },
+              "stored": 2
+            },
+            {
+              "outcomes": {
+                "saved": 2,
+                "refused": 1
+              },
+              "stored": 2
+            }
+          ],
+          "sqlContradictoryPair": [
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            },
+            {
+              "outcomes": {
+                "saved": 1,
+                "refused": 1
+              },
+              "stored": 1
+            }
+          ]
+        }
+      }
+    },
+    "race-plan-drawing-copy-reserve-and-publish": {
+      "derivation": "EP07-15 #0/#1 under contention (multi_session). Two workers of one release reserve the same plan-drawing copy from two independent sessions: with identical evidence both receive the one attempt (stable ownership, no second attempt); with conflicting source versions exactly one reservation wins and the other is refused. Then two workers publish with the winning evidence together with a third carrying another source version: exactly one publishes (replayed=false) and the other replays the same verified receipt (replayed=true), the third is refused, and the project ends with exactly one file, one set, one revision and one processor job and a published manifest holding that receipt. Three rounds on three fresh homes.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "variant": "same-evidence",
+            "reservations": {
+              "succeeded": 2,
+              "oneAttempt": true,
+              "manifestIsThatAttempt": true,
+              "refusedConflicting": 0
+            },
+            "publications": {
+              "succeeded": 2,
+              "replayedFlags": [
+                false,
+                true
+              ],
+              "sameReceipt": true,
+              "refusedAnotherVersion": 1
+            },
+            "rows": {
+              "files": 1,
+              "drawingSets": 1,
+              "revisions": 1,
+              "processorJobs": 1
+            },
+            "manifest": {
+              "status": "published",
+              "receiptMatches": true
+            }
+          },
+          {
+            "variant": "conflicting-evidence",
+            "reservations": {
+              "succeeded": 1,
+              "oneAttempt": true,
+              "manifestIsThatAttempt": true,
+              "refusedConflicting": 1
+            },
+            "publications": {
+              "succeeded": 2,
+              "replayedFlags": [
+                false,
+                true
+              ],
+              "sameReceipt": true,
+              "refusedAnotherVersion": 1
+            },
+            "rows": {
+              "files": 1,
+              "drawingSets": 1,
+              "revisions": 1,
+              "processorJobs": 1
+            },
+            "manifest": {
+              "status": "published",
+              "receiptMatches": true
+            }
+          },
+          {
+            "variant": "conflicting-evidence",
+            "reservations": {
+              "succeeded": 1,
+              "oneAttempt": true,
+              "manifestIsThatAttempt": true,
+              "refusedConflicting": 1
+            },
+            "publications": {
+              "succeeded": 2,
+              "replayedFlags": [
+                false,
+                true
+              ],
+              "sameReceipt": true,
+              "refusedAnotherVersion": 1
+            },
+            "rows": {
+              "files": 1,
+              "drawingSets": 1,
+              "revisions": 1,
+              "processorJobs": 1
+            },
+            "manifest": {
+              "status": "published",
+              "receiptMatches": true
+            }
+          }
+        ]
+      }
+    },
+    "race-stale-worker-claims-and-copy-cleanup": {
+      "derivation": "EP07-16 #0/#1 under contention (multi_session). A worker whose lease already expired tries to complete its job while recovery (and a new claim) runs in another session: the stale completion is always refused, the job is never completed by the stale token and the recovery counts exactly one retry, for both a notice-worker job and a drawing-processor job. Cleanup (claim then clear) races a publication of the same reservation from another session: exactly one of them wins - if the publication wins the file names the path, the manifest is published and cleanup does not clear it; if cleanup wins the manifest is cleared, no file exists and the publication was refused. Three rounds.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "round": 1,
+            "notice": {
+              "staleCompletionRefused": true,
+              "notCompletedByStaleClaim": true,
+              "status": "owned by the new claim or queued",
+              "retryCountedOnce": true
+            },
+            "drawing": {
+              "staleCompletionRefused": true,
+              "status": "pending",
+              "retryCountedOnce": true,
+              "claimed": false
+            },
+            "cleanup": {
+              "oneWinner": true,
+              "referencedObjectKept": true,
+              "clearedOnlyWhenUnreferenced": true,
+              "publicationRefusedWhenCleaned": true,
+              "rowsConsistent": true
+            }
+          },
+          {
+            "round": 2,
+            "notice": {
+              "staleCompletionRefused": true,
+              "notCompletedByStaleClaim": true,
+              "status": "owned by the new claim or queued",
+              "retryCountedOnce": true
+            },
+            "drawing": {
+              "staleCompletionRefused": true,
+              "status": "pending",
+              "retryCountedOnce": true,
+              "claimed": false
+            },
+            "cleanup": {
+              "oneWinner": true,
+              "referencedObjectKept": true,
+              "clearedOnlyWhenUnreferenced": true,
+              "publicationRefusedWhenCleaned": true,
+              "rowsConsistent": true
+            }
+          },
+          {
+            "round": 3,
+            "notice": {
+              "staleCompletionRefused": true,
+              "notCompletedByStaleClaim": true,
+              "status": "owned by the new claim or queued",
+              "retryCountedOnce": true
+            },
+            "drawing": {
+              "staleCompletionRefused": true,
+              "status": "pending",
+              "retryCountedOnce": true,
+              "claimed": false
+            },
+            "cleanup": {
+              "oneWinner": true,
+              "referencedObjectKept": true,
+              "clearedOnlyWhenUnreferenced": true,
+              "publicationRefusedWhenCleaned": true,
+              "rowsConsistent": true
+            }
+          }
+        ]
+      }
+    },
+    "race-release-finalize-cancel-retry": {
+      "derivation": "EP07-17 #0/#1 under contention (multi_session). (A) The worker's publication, duplicated, races the coordinator's cancel on a release whose steps all settled: exactly one side wins; if publication wins the package is released, the lot started, the home in delivery, with exactly one start.released event and audit and no cancel event; if cancel wins the package is ready, lot still assigned and home still in precon, one cancelled event and audit, no live job and no release event, and the publishers are refused. (B) The coordinator cancels while another request retries the same parked release: either order ends ready and idle with the cancellation recorded once, the retry recorded only if it ran, never released. (C) Two retries together queue exactly one job and record one retry. Three rounds each.",
+      "inputs": {
+        "rounds": 9
+      },
+      "expected": {
+        "rounds": [
+          {
+            "kind": "publish-vs-cancel",
+            "exactlyOneSideWon": true,
+            "loserRefusedCleanly": true,
+            "finalState": "one consistent outcome: released with its one event and audit, or cancelled and idle"
+          },
+          {
+            "kind": "publish-vs-cancel",
+            "exactlyOneSideWon": true,
+            "loserRefusedCleanly": true,
+            "finalState": "one consistent outcome: released with its one event and audit, or cancelled and idle"
+          },
+          {
+            "kind": "publish-vs-cancel",
+            "exactlyOneSideWon": true,
+            "loserRefusedCleanly": true,
+            "finalState": "one consistent outcome: released with its one event and audit, or cancelled and idle"
+          },
+          {
+            "kind": "cancel-vs-retry",
+            "cancel": "fulfilled",
+            "retry": "retried and then cancelled, or refused cleanly",
+            "finalState": "ready and idle, cancelled once",
+            "retryRecordedOnlyIfItRan": true
+          },
+          {
+            "kind": "cancel-vs-retry",
+            "cancel": "fulfilled",
+            "retry": "retried and then cancelled, or refused cleanly",
+            "finalState": "ready and idle, cancelled once",
+            "retryRecordedOnlyIfItRan": true
+          },
+          {
+            "kind": "cancel-vs-retry",
+            "cancel": "fulfilled",
+            "retry": "retried and then cancelled, or refused cleanly",
+            "finalState": "ready and idle, cancelled once",
+            "retryRecordedOnlyIfItRan": true
+          },
+          {
+            "kind": "retry-vs-retry",
+            "retried": 1,
+            "refusedCleanly": 1,
+            "finalPackage": "releasing",
+            "queuedJobs": 1,
+            "retriedEvents": 1,
+            "retriedAudits": 1
+          },
+          {
+            "kind": "retry-vs-retry",
+            "retried": 1,
+            "refusedCleanly": 1,
+            "finalPackage": "releasing",
+            "queuedJobs": 1,
+            "retriedEvents": 1,
+            "retriedAudits": 1
+          },
+          {
+            "kind": "retry-vs-retry",
+            "retried": 1,
+            "refusedCleanly": 1,
+            "finalPackage": "releasing",
+            "queuedJobs": 1,
+            "retriedEvents": 1,
+            "retriedAudits": 1
+          }
+        ]
+      }
+    },
+    "race-concurrent-settlement": {
+      "derivation": "Proves EP05-09 #0 (concurrent; multi_session). Two closing-desk members settle the same cleared closing in the same instant, three times, each round on a fresh home with a fresh deposit (1,001,000 / 1,002,000 / 1,003,000). Serial-equivalent policy: the closing is settled once. At least one session finishes; any other either resumes harmlessly or is refused with the already-being-settled / recorded-closing-date message (or the duplicate-invoice-number refusal when both sessions mint the same millisecond number), never a raw database error. After a serial finishing retry each round has exactly one closing invoice, one deposit application of that round's deposit, one balance receipt, receipts and invoice equal to the final price, one posted entry per invoice, application and receipt, one closed closing, one settled event, one warranty enrollment and no deposit left held.",
+      "inputs": {
+        "rounds": 3,
+        "depositCents": 1000000
+      },
+      "expected": [
+        {
+          "sessionsThatFinished": true,
+          "everyOtherSessionRefusedCleanly": true,
+          "finishingRetry": "completed",
+          "closing": "closed",
+          "invoices": 1,
+          "depositApplications": [
+            1001000
+          ],
+          "balanceReceipts": 1,
+          "receiptsEqualFinalPrice": true,
+          "postedOncePerSource": true,
+          "settledEvents": 1,
+          "closedClosings": 1,
+          "warrantyEnrollments": 1,
+          "homeDepositsHeldCents": 0
+        },
+        {
+          "sessionsThatFinished": true,
+          "everyOtherSessionRefusedCleanly": true,
+          "finishingRetry": "completed",
+          "closing": "closed",
+          "invoices": 1,
+          "depositApplications": [
+            1002000
+          ],
+          "balanceReceipts": 1,
+          "receiptsEqualFinalPrice": true,
+          "postedOncePerSource": true,
+          "settledEvents": 1,
+          "closedClosings": 1,
+          "warrantyEnrollments": 1,
+          "homeDepositsHeldCents": 0
+        },
+        {
+          "sessionsThatFinished": true,
+          "everyOtherSessionRefusedCleanly": true,
+          "finishingRetry": "completed",
+          "closing": "closed",
+          "invoices": 1,
+          "depositApplications": [
+            1003000
+          ],
+          "balanceReceipts": 1,
+          "receiptsEqualFinalPrice": true,
+          "postedOncePerSource": true,
+          "settledEvents": 1,
+          "closedClosings": 1,
+          "warrantyEnrollments": 1,
+          "homeDepositsHeldCents": 0
+        }
+      ]
+    },
+    "race-intercompany-lot-sale": {
+      "derivation": "Proves EP10-01 #1 (multi_session). Two members of the books desk sell the same lot from the land company to the same home at the same instant, three times on fresh homes. The sale is recorded once per lot (a unique sale and one posting key): when the two sessions offer different prices exactly one sale stands and the other is told the lot was already sold on different terms; when they offer the identical terms both calls see the same sale and nothing is posted twice. In every round there is one sale row at one of the offered prices, costed at the land basis of 7,200,000, one posted ledger entry, both companies still balance and both sides agree what is owed.",
+      "inputs": {
+        "rounds": [
+          {
+            "pricesCents": [
+              8000000,
+              8100000
+            ]
+          },
+          {
+            "pricesCents": [
+              8200000,
+              8200000
+            ]
+          },
+          {
+            "pricesCents": [
+              8300000,
+              8400000
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {
+          "sessionsThatSold": 1,
+          "refusal": [
+            "refused: already sold on different terms"
+          ],
+          "sameSaleReturned": true,
+          "saleRows": 1,
+          "ledgerEntries": 1,
+          "entriesPosted": true,
+          "priceIsOneOfTheOffers": true,
+          "costIsTheLandBasis": true,
+          "landCompanyBalanced": true,
+          "builderBalanced": true,
+          "companiesAgreeWhatIsOwed": true
+        },
+        {
+          "sessionsThatSold": 2,
+          "refusal": [],
+          "sameSaleReturned": true,
+          "saleRows": 1,
+          "ledgerEntries": 1,
+          "entriesPosted": true,
+          "priceIsOneOfTheOffers": true,
+          "costIsTheLandBasis": true,
+          "landCompanyBalanced": true,
+          "builderBalanced": true,
+          "companiesAgreeWhatIsOwed": true
+        },
+        {
+          "sessionsThatSold": 1,
+          "refusal": [
+            "refused: already sold on different terms"
+          ],
+          "sameSaleReturned": true,
+          "saleRows": 1,
+          "ledgerEntries": 1,
+          "entriesPosted": true,
+          "priceIsOneOfTheOffers": true,
+          "costIsTheLandBasis": true,
+          "landCompanyBalanced": true,
+          "builderBalanced": true,
+          "companiesAgreeWhatIsOwed": true
+        }
+      ]
+    },
+    "race-claim-same-job": {
+      "derivation": "Proves the multi_session requirement of EP07-10 (and EP07-10 #0 under contention). In each of three rounds: two independent Postgres sessions call claim_starts_jobs at the same moment for one pending job: exactly one gets it and the stored token is the winner's. Two sessions holding the same token race complete against retry: exactly one transition is true and the row is consistent with the winner (completed with no retry counted, or pending with one retry). After a re-claim, the previous token and the new token complete at the same moment: only the live token wins; the job ends completed, the lost claim having been counted by the reaper. No duplicate rows.",
+      "inputs": {
+        "rounds": 3,
+        "sessions": "psql sessions as service_role released by an advisory-lock barrier"
+      },
+      "expected": {
+        "rounds": [
+          {
+            "claim": {
+              "winners": 1,
+              "errors": 0,
+              "dbTokenIsTheWinners": true,
+              "status": "processing"
+            },
+            "sameToken": {
+              "winners": 1,
+              "consistentWithTheWinner": true
+            },
+            "reclaim": {
+              "stale": "f",
+              "live": "t",
+              "status": "completed",
+              "reaperCountedTheLostClaim": true
+            },
+            "rows": 3
+          },
+          {
+            "claim": {
+              "winners": 1,
+              "errors": 0,
+              "dbTokenIsTheWinners": true,
+              "status": "processing"
+            },
+            "sameToken": {
+              "winners": 1,
+              "consistentWithTheWinner": true
+            },
+            "reclaim": {
+              "stale": "f",
+              "live": "t",
+              "status": "completed",
+              "reaperCountedTheLostClaim": true
+            },
+            "rows": 3
+          },
+          {
+            "claim": {
+              "winners": 1,
+              "errors": 0,
+              "dbTokenIsTheWinners": true,
+              "status": "processing"
+            },
+            "sameToken": {
+              "winners": 1,
+              "consistentWithTheWinner": true
+            },
+            "reclaim": {
+              "stale": "f",
+              "live": "t",
+              "status": "completed",
+              "reaperCountedTheLostClaim": true
+            },
+            "rows": 3
+          }
+        ]
+      }
+    },
+    "race-release-and-home-creation-yield-one-home": {
+      "derivation": "Proves the multi_session requirement of EP07-11. Three rounds, each with two concurrent requests from two coordinators: (a) releasing one ready package queues (twice over: through the service, and as two sessions calling queue_start_release together) exactly one start_release job and one eight-step ledger with one audit and one event, the package is releasing and the other request is a clean 'not ready' refusal; (b) opening a start package on one developed lot creates exactly one home, one package on that home and one set of gates; the loser is a clean 'already has an active start package' refusal and no orphan home exists.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "release": {
+              "winners": 1,
+              "loserRefused": "not ready",
+              "queuedJobs": 1,
+              "package": "releasing",
+              "steps": 8,
+              "audits": 1,
+              "events": 1,
+              "databaseRace": {
+                "queued": 1,
+                "loserRefused": "not ready",
+                "pendingJobs": 1
+              }
+            },
+            "creation": {
+              "winners": 1,
+              "loserRefused": "active package exists",
+              "homesForTheLot": 1,
+              "lotLinkedToThatHome": true,
+              "packages": 1,
+              "packageOnTheLotsHome": true,
+              "gatesAreOneSet": true
+            }
+          },
+          {
+            "release": {
+              "winners": 1,
+              "loserRefused": "not ready",
+              "queuedJobs": 1,
+              "package": "releasing",
+              "steps": 8,
+              "audits": 1,
+              "events": 1,
+              "databaseRace": {
+                "queued": 1,
+                "loserRefused": "not ready",
+                "pendingJobs": 1
+              }
+            },
+            "creation": {
+              "winners": 1,
+              "loserRefused": "active package exists",
+              "homesForTheLot": 1,
+              "lotLinkedToThatHome": true,
+              "packages": 1,
+              "packageOnTheLotsHome": true,
+              "gatesAreOneSet": true
+            }
+          },
+          {
+            "release": {
+              "winners": 1,
+              "loserRefused": "not ready",
+              "queuedJobs": 1,
+              "package": "releasing",
+              "steps": 8,
+              "audits": 1,
+              "events": 1,
+              "databaseRace": {
+                "queued": 1,
+                "loserRefused": "not ready",
+                "pendingJobs": 1
+              }
+            },
+            "creation": {
+              "winners": 1,
+              "loserRefused": "active package exists",
+              "homesForTheLot": 1,
+              "lotLinkedToThatHome": true,
+              "packages": 1,
+              "packageOnTheLotsHome": true,
+              "gatesAreOneSet": true
+            }
+          }
+        ]
+      }
+    },
+    "race-stale-worker-after-reclaim": {
+      "derivation": "Proves the multi_session requirement of EP07-12. Three rounds: the release job is re-claimed (the previous claim expires and is reaped, a new token claims it and takes the package lease). Then the previous worker and the new owner insert a generated schedule row for the home at the same moment from two independent sessions. The stale worker's write is refused (worker lease lost) and its row does not exist; the live owner's write succeeds and its row exists exactly once.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "staleWriter": "worker lease lost",
+            "liveWriter": "allowed",
+            "rowsThatLanded": [
+              "round 1 live"
+            ]
+          },
+          {
+            "staleWriter": "worker lease lost",
+            "liveWriter": "allowed",
+            "rowsThatLanded": [
+              "round 2 live"
+            ]
+          },
+          {
+            "staleWriter": "worker lease lost",
+            "liveWriter": "allowed",
+            "rowsThatLanded": [
+              "round 3 live"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

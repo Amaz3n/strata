@@ -49,8 +49,8 @@ ${org.homes.map((home) => `insert into public.contacts(id,org_id,full_name,email
 insert into public.projects(id,org_id,name,property_type,created_by,client_id) values(${q(home.projectId)},${q(org.orgId)},${q(home.name)},'production',${q(org.owner.userId)},${q(home.buyerId)});
 insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(home.projectId)}) on conflict do nothing;
 insert into public.lots(id,org_id,community_id,lot_number,status) values(${q(home.lotId)},${q(org.orgId)},${q(org.communityId)},${q(home.lotNumber)},'controlled');
-insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date,signed_at,snapshot)
-  values(${q(home.contractId)},${q(org.orgId)},${q(home.projectId)},'Purchase agreement','active',${home.priceCents},'usd','purchase_agreement',0,'2026-06-01','2026-06-01T12:00:00Z',
+insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date,signed_at,buyer_contact_id,snapshot)
+  values(${q(home.contractId)},${q(org.orgId)},${q(home.projectId)},'Purchase agreement','active',${home.priceCents},'usd','purchase_agreement',0,'2026-06-01','2026-06-01T12:00:00Z',${q(home.buyerId)},
   jsonb_build_object('purchase_agreement',jsonb_build_object('version',1,'pricing',jsonb_build_object('basePriceCents',${home.priceCents},'lotPremiumCents',0,'structuralOptions','[]'::jsonb,'designSelections','[]'::jsonb,'incentives','[]'::jsonb,'structuralOptionsCents',0,'designSelectionsCents',0,'incentivesCents',0,'totalCents',${home.priceCents}))));`).join("\n")}
 commit;`)
   } })

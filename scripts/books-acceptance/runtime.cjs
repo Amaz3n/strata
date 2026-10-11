@@ -29,6 +29,7 @@ const GOLDEN_SCENARIOS = [
   "CAP-01",
   "AUTH-01",
   "LOT-01",
+  "RACE-02",
 ];
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 function parseArgs(args) {
