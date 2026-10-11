@@ -191,7 +191,7 @@ async function loadVarianceFacts({
   const orderProjectIds = Array.from(new Set(orders.map((row) => String(row.project_id))))
   const [lots, projects, superintendentByProject] = await Promise.all([
     readReferenceRows<Record<string, unknown>>(orderProjectIds, "Failed to load variance lots", (ids, from, to) => supabase
-      .from("lots").select("id,project_id,community_id,house_plan_id,division_id,community:communities(name),house_plan:house_plans(name)")
+      .from("lots").select("id,project_id,community_id,house_plan_id,division_id,community:communities(name),house_plan:house_plans(name),division:divisions(name)")
       .eq("org_id", orgId).in("project_id", ids).order("id").range(from, to)),
     readReferenceRows<Record<string, unknown>>(orderProjectIds, "Failed to load variance projects", (ids, from, to) => supabase
       .from("projects").select("id,division_id,division:divisions(name)")
@@ -219,7 +219,8 @@ async function loadVarianceFacts({
       house_plan_id: (lot?.house_plan_id as string | null) ?? null,
       plan_name: relationField(lot?.house_plan, "name"),
       division_id: divisionId,
-      division_name: relationField(project?.division, "name"),
+      // The name comes from the same row as the id: the lot when it names a division, else the project.
+      division_name: lot?.division_id ? relationField(lot?.division, "name") : relationField(project?.division, "name"),
       company_id: (row.company_id as string | null) ?? null,
       company_name: relationField(row.company, "name"),
       superintendent_id: superintendent?.userId ?? null,

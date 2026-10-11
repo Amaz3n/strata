@@ -1,5 +1,7 @@
 import "server-only"
 
+import { createHash } from "node:crypto"
+
 import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
@@ -128,6 +130,12 @@ export async function listLegalEntityChoices() {
 
 const lotSaleSchema = z.object({ projectId: z.string().uuid(), date: z.string().date(), priceCents: z.number().int().safe().positive(), evidenceUrl: z.string().url().startsWith("https://") })
 
+/** A versioned, domain-separated UUID for one person's record of one inter-company lot sale. */
+function lotSaleEventId(orgId: string, saleId: string, actorId: string) {
+  const hex = createHash("sha256").update(JSON.stringify(["arc.books.intercompany_lot_sold.v1", orgId, saleId, actorId])).digest("hex")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
 /**
  * Sells the home's lot to it from the affiliated company that holds the lot's
  * land: the seller earns the price and relieves the lot's cost, the home takes
@@ -145,7 +153,9 @@ export async function sellLotToAffiliate(input: z.input<typeof lotSaleSchema>) {
   const { data, error } = await service.rpc("sell_books_lot_to_affiliate", { p_org_id: context.orgId, p_lot_id: lot.id, p_date: parsed.date, p_price_cents: parsed.priceCents, p_evidence_url: parsed.evidenceUrl, p_actor_id: context.userId })
   if (error) throw new Error(error.message)
   const result = z.object({ saleId: z.string().uuid(), journalEntryId: z.string().uuid() }).parse(data)
-  await recordEvent({ idempotencyId: result.saleId, orgId: context.orgId, actorId: context.userId, eventType: "books.intercompany_lot_sold", entityType: "project", entityId: parsed.projectId, payload: { sale_id: result.saleId, journal_entry_id: result.journalEntryId } })
+  // The receipt is scoped to the actor, so a replay by the same person records one event and a
+  // concurrent identical sale by someone else records its own.
+  await recordEvent({ idempotencyId: lotSaleEventId(context.orgId, result.saleId, context.userId), orgId: context.orgId, actorId: context.userId, eventType: "books.intercompany_lot_sold", entityType: "project", entityId: parsed.projectId, payload: { sale_id: result.saleId, journal_entry_id: result.journalEntryId } })
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "books_intercompany_sale", entityId: result.saleId, after: parsed, source: "books.intercompany" })
   return result
 }
