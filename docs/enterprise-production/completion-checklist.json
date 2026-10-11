@@ -30831,7 +30831,14 @@
       "status": "proposed_awaiting_user_approval"
     }
   ],
-  "scopeChanges": [],
+  "scopeChanges": [
+    {
+      "date": "2026-10-11",
+      "approvedBy": "owner",
+      "change": "Verification rule switched from per-item tiers to the Arc Books scenario rule (verificationRule).",
+      "denominatorChanged": false
+    }
+  ],
   "handoff": {
     "threadId": "01a0ff22-3252-7eb1-a261-e239144ff71a",
     "title": "Review Arc Production features",
@@ -33329,5 +33336,12 @@
         "existingSupport": "CAP-01 request/row meter, isolated stack, upgrade-seed"
       }
     ]
+  },
+  "verificationRule": {
+    "mode": "scenario",
+    "approvedBy": "owner",
+    "date": "2026-10-11",
+    "rule": "An item is verified when every golden scenario it maps to (scenarioIds) passed on the isolated acceptance stack with current evidence, and its source review is current. Same rule as the Arc Books readiness tracker. Per-criterion tests remain as regression protection, not a gate; race proof comes from race scenarios.",
+    "replaces": "Per-item verificationRequired tiers with explicit coverage of every criterion."
   }
 }

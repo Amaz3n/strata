@@ -57,16 +57,31 @@ for (const item of checklist.items) {
     errors.push(`${item.id}: implemented without source or engineering artifact.`)
   }
   if (verified.has(item.status)) {
-    for (const tier of item.verificationRequired) {
-      if (!item.evidence.some((proof) => proof.tier === tier && proof.result === "passed" && proof.freshness === "current")) {
-        errors.push(`${item.id}: ${item.status} without current passing ${tier} evidence.`)
+    if (checklist.verificationRule?.mode === "scenario") {
+      // The Arc Books rule (owner decision 2026-10-11): verified when every golden scenario
+      // the item maps to passed on the isolated acceptance stack, with a current source review.
+      const scenarios = item.scenarioIds ?? []
+      if (!scenarios.length) errors.push(`${item.id}: verified without a mapped golden scenario.`)
+      for (const scenario of scenarios) {
+        if (!item.evidence.some((proof) => proof.kind === "acceptance_run" && proof.scenario === scenario && proof.result === "passed" && proof.freshness === "current")) {
+          errors.push(`${item.id}: verified without a current passing ${scenario} run.`)
+        }
       }
-    }
-    if (!item.evidence.some((proof) => {
-      const covered = new Set(proof.criteriaCovered ?? [])
-      return covered.size === item.acceptanceCriteria.length && item.acceptanceCriteria.every((_, index) => covered.has(index))
-    })) {
-      errors.push(`${item.id}: verified without explicit coverage of every criterion.`)
+      if (!item.evidence.some((proof) => proof.tier === "source_review" && proof.result === "passed" && proof.freshness === "current")) {
+        errors.push(`${item.id}: verified without a current passing source review.`)
+      }
+    } else {
+      for (const tier of item.verificationRequired) {
+        if (!item.evidence.some((proof) => proof.tier === tier && proof.result === "passed" && proof.freshness === "current")) {
+          errors.push(`${item.id}: ${item.status} without current passing ${tier} evidence.`)
+        }
+      }
+      if (!item.evidence.some((proof) => {
+        const covered = new Set(proof.criteriaCovered ?? [])
+        return covered.size === item.acceptanceCriteria.length && item.acceptanceCriteria.every((_, index) => covered.has(index))
+      })) {
+        errors.push(`${item.id}: verified without explicit coverage of every criterion.`)
+      }
     }
   }
   if (item.status === "accepted") {
