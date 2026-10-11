@@ -35,10 +35,16 @@ export async function instantiatePlanDevAction(input: unknown) {
   })
 }
 
-export async function recordPlanOfferingOverrideAction(projectId: string, input: unknown) {
+/**
+ * The override belongs to a lot, which may not have a home yet, so the caller
+ * names whichever workbench it is standing on and that is the page refreshed.
+ */
+export async function recordPlanOfferingOverrideAction(scope: { projectId?: string; communityId?: string }, input: unknown) {
   return run(async () => {
+    const parsed = z.object({ projectId: z.string().uuid().optional(), communityId: z.string().uuid().optional() }).parse(scope)
     const result = await recordPlanOfferingOverride(input)
-    revalidatePath(`/projects/${z.string().uuid().parse(projectId)}`)
+    if (parsed.projectId) revalidatePath(`/projects/${parsed.projectId}`)
+    if (parsed.communityId) revalidatePath(`/communities/${parsed.communityId}`)
     return result
   })
 }

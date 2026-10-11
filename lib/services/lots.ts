@@ -13,7 +13,7 @@ import {
 import { readLotDimensions, storeLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
 import { readAllRows } from "@/lib/land/paging"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
-import { isPlanOffered, offeringOverrideFor } from "@/lib/sales/plan-offering"
+import { isPlanOffered, offeringOverrideFor, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering"
 import { resolveDivisionScope } from "@/lib/land/scope"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
@@ -489,7 +489,7 @@ export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInp
   if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
   const offered = isPlanOffered(offering ?? [], { elevationId: parsed.elevationId, onDate: new Date().toISOString().slice(0, 10) })
   if (!offered && !offeringOverrideFor(lot.metadata, version.data.house_plan_id)) {
-    throw new Error("This plan or elevation is not offered in the lot's community. Offer it there, or record an offering override with a reason.")
+    throw new Error(PLAN_OFFERING_REFUSAL)
   }
 
   const { data, error } = await context.supabase.from("lots")
@@ -510,6 +510,72 @@ export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInp
     payload: { community_id: lot.community_id, house_plan_id: version.data.house_plan_id },
   })
   return mapLot(data as LotRow)
+}
+
+export interface PlanAssignmentOption {
+  planId: string
+  code: string
+  name: string
+  /** Released versions, newest first. */
+  versions: Array<{ id: string; versionNumber: number }>
+  elevations: Array<{ id: string; code: string; name: string | null; swingApplicable: boolean; offered: boolean }>
+}
+
+/** More plans than this and the picker would be a search problem, not a select. */
+export const PLAN_ASSIGNMENT_OPTION_CAP = 200
+
+/**
+ * Every plan a lot could be pinned to, offered in its community or not. The
+ * unoffered ones are listed on purpose: the refusal and its override path are
+ * the point of showing them, so the answer per elevation is computed with the
+ * same `isPlanOffered` the assignment itself uses.
+ */
+export async function listPlanAssignmentOptions(
+  communityId: string,
+  orgId?: string,
+): Promise<{ plans: PlanAssignmentOption[]; truncated: boolean }> {
+  const context = await requireOrgContext(orgId)
+  await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
+  await requireCommunityScope(communityId, context)
+  const { data: plans, error } = await context.supabase.from("house_plans")
+    .select("id, code, name")
+    .eq("org_id", context.orgId).eq("status", "active").order("code").limit(PLAN_ASSIGNMENT_OPTION_CAP + 1)
+  if (error) throw new Error(`Failed to load plans: ${error.message}`)
+  const shown = (plans ?? []).slice(0, PLAN_ASSIGNMENT_OPTION_CAP)
+  if (shown.length === 0) return { plans: [], truncated: false }
+  const planIds = shown.map((plan) => plan.id)
+  const [versions, elevations, offering] = await Promise.all([
+    context.supabase.from("house_plan_versions").select("id, house_plan_id, version_number")
+      .eq("org_id", context.orgId).eq("status", "released").in("house_plan_id", planIds).order("version_number", { ascending: false }),
+    context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable")
+      .eq("org_id", context.orgId).eq("is_active", true).in("house_plan_id", planIds).order("sort_order"),
+    context.supabase.from("community_plan_availability").select("house_plan_id, is_available, elevation_id, effective_start, effective_end")
+      .eq("org_id", context.orgId).eq("community_id", communityId).in("house_plan_id", planIds),
+  ])
+  for (const result of [versions, elevations, offering]) {
+    if (result.error) throw new Error(`Failed to load plan options: ${result.error.message}`)
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  const options = shown.flatMap((plan): PlanAssignmentOption[] => {
+    const planVersions = (versions.data ?? []).filter((version) => version.house_plan_id === plan.id)
+    const planElevations = (elevations.data ?? []).filter((elevation) => elevation.house_plan_id === plan.id)
+    if (planVersions.length === 0 || planElevations.length === 0) return []
+    const rows = (offering.data ?? []).filter((row) => row.house_plan_id === plan.id)
+    return [{
+      planId: plan.id,
+      code: plan.code,
+      name: plan.name,
+      versions: planVersions.map((version) => ({ id: version.id, versionNumber: Number(version.version_number) })),
+      elevations: planElevations.map((elevation) => ({
+        id: elevation.id,
+        code: elevation.code,
+        name: elevation.name,
+        swingApplicable: Boolean(elevation.swing_applicable),
+        offered: isPlanOffered(rows, { elevationId: elevation.id, onDate: today }),
+      })),
+    }]
+  })
+  return { plans: options, truncated: (plans ?? []).length > PLAN_ASSIGNMENT_OPTION_CAP }
 }
 
 /**

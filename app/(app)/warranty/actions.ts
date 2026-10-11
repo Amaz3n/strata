@@ -5,6 +5,7 @@ import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import type { SearchPickerPage } from "@/components/ui/search-picker"
 import { listCommunityOptions } from "@/lib/services/communities"
+import { listCostCodes } from "@/lib/services/cost-codes"
 import { listDirectoryPage } from "@/lib/services/directory"
 import {
   acknowledgeWarrantyRequest,
@@ -53,7 +54,7 @@ import {
   warrantyVisitRescheduleSchema,
   warrantyVisitScheduleSchema,
 } from "@/lib/validation/warranty"
-import type { WarrantyRequest } from "@/lib/types"
+import type { CostCode, WarrantyRequest } from "@/lib/types"
 
 function revalidateWarranty(projectId?: string) {
   revalidatePath("/warranty")
@@ -267,9 +268,9 @@ export async function deleteWarrantyRoutingRuleAction(ruleId: string): Promise<A
 }
 
 /** The rule editor loads on demand — it is a sheet, not part of the desk's first paint. */
-export async function loadWarrantyRoutingEditorAction(): Promise<ActionResult<{ rules: WarrantyRoutingRule[]; communities: Array<{ id: string; name: string }> }>> {
+export async function loadWarrantyRoutingEditorAction(): Promise<ActionResult<{ rules: WarrantyRoutingRule[]; communities: Array<{ id: string; name: string }>; costCodes: CostCode[] }>> {
   try {
-    const [rules, communities] = await Promise.all([listWarrantyRoutingRules(), listCommunityOptions()])
-    return { success: true, data: { rules, communities: communities.map((community) => ({ id: community.id, name: community.name })) } }
+    const [rules, communities, costCodes] = await Promise.all([listWarrantyRoutingRules(), listCommunityOptions(), listCostCodes()])
+    return { success: true, data: { rules, costCodes, communities: communities.map((community) => ({ id: community.id, name: community.name })) } }
   } catch (error) { return actionError(error) }
 }

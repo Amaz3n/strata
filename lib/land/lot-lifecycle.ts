@@ -117,10 +117,13 @@ export function lotDeliveryException(metadata: unknown): LotDeliveryException | 
   return parsed.success ? parsed.data.delivery_exception : null
 }
 
+export const LOT_DELIVERY_REFUSAL =
+  "This lot has not been delivered by land development. Record a delivery exception with a reason to build on it."
+
 /** Why a lot cannot take a house yet because its land is undelivered, or null when it can. */
 export function lotDeliveryRefusal(lot: { deliveredAt: string | null; metadata: unknown }): string | null {
   if (lot.deliveredAt || lotDeliveryException(lot.metadata)) return null
-  return "This lot has not been delivered by land development. Record a delivery exception with a reason to build on it."
+  return LOT_DELIVERY_REFUSAL
 }
 
 /** Why a lot cannot take a vertical start, or null when it can. */

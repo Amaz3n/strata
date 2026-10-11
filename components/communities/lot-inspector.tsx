@@ -9,15 +9,18 @@ import {
   attachProjectToLotAction,
   deleteLotAction,
   detachProjectFromLotAction,
+  recordLotDeliveryExceptionAction,
   setLotStatusAction,
   updateLotAction,
 } from "@/app/(app)/communities/actions"
+import { LotPlanAssignmentDialog } from "@/components/communities/lot-plan-assignment"
+import { LotReasonDialog } from "@/components/communities/lot-reason-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { unwrapAction } from "@/lib/action-result"
-import { LAND_SETTABLE_LOT_STATUSES, LOT_STATUS_META, type LotStatus } from "@/lib/land/lot-lifecycle"
+import { LAND_SETTABLE_LOT_STATUSES, LOT_STATUS_META, MIN_DELIVERY_EXCEPTION_REASON_LENGTH, type LotStatus } from "@/lib/land/lot-lifecycle"
 import type { CommunityDetailDTO } from "@/lib/services/communities"
 import type { InventoryLotDTO } from "@/lib/services/community-inventory"
 import { cn } from "@/lib/utils"
@@ -29,6 +32,20 @@ export interface LotMoney {
   vpoCents: number
   projectedMarginCents: number
   projectedMarginPercent: number
+}
+
+/**
+ * What this person may do beyond editing land facts. Each is a distinct
+ * authority the services enforce, so the inspector names the missing one rather
+ * than hiding the control and leaving the lot looking stuck.
+ */
+export interface LotCapabilities {
+  /** lot.write and plan.instantiate */
+  canAssignPlan: boolean
+  /** plan.release */
+  canOverrideOffering: boolean
+  /** lot.write and community.write */
+  canRecordDeliveryException: boolean
 }
 
 const NONE = "none"
@@ -82,6 +99,7 @@ export function LotInspector({
   projects,
   projectsTruncated,
   canWrite,
+  capabilities,
   onOpenChange,
 }: {
   lot: InventoryLotDTO | null
@@ -92,6 +110,7 @@ export function LotInspector({
   /** True when more free homes exist than this list shows. Said out loud below. */
   projectsTruncated: boolean
   canWrite: boolean
+  capabilities: LotCapabilities
   onOpenChange: (open: boolean) => void
 }) {
   const router = useRouter()
@@ -102,6 +121,8 @@ export function LotInspector({
   const [costBasis, setCostBasis] = useState("")
   const [width, setWidth] = useState("")
   const [depth, setDepth] = useState("")
+  const [assigningPlan, setAssigningPlan] = useState(false)
+  const [recordingException, setRecordingException] = useState(false)
 
   useEffect(() => {
     setAttachTo(NONE)
@@ -143,6 +164,13 @@ export function LotInspector({
   // explicit confirmation, so the button says what it is about to undo.
   const reversingDetach = lot != null && (lot.status === "started" || lot.status === "closed")
   const reversingAttach = lot != null && lot.status === "closed"
+
+  // A plan is pinned to a lot only while nothing else speaks for it: a home owns
+  // its own plan, a buyer's agreement owns the sold lot's, and a settled lot is
+  // history. The service enforces the same list; this just keeps the control honest.
+  const planAssignable =
+    lot != null && !lot.projectId && !lot.buyer && lot.status !== "started" && lot.status !== "closed"
+  const deliveryOpen = lot != null && !lot.projectId && lot.status !== "started" && lot.status !== "closed"
 
   return (
     <Sheet open={Boolean(lot)} onOpenChange={onOpenChange}>
@@ -347,7 +375,38 @@ export function LotInspector({
                       (SWINGS.find((entry) => entry.value === lot.swing)?.label ?? "Either")
                     )}
                   </Row>
+                  <Row label="Delivery">
+                    {lot.deliveryRefusal ? (
+                      <span className="text-warning">Not delivered</span>
+                    ) : lot.deliveryExceptionReason ? (
+                      "Exception recorded"
+                    ) : (
+                      "Delivered"
+                    )}
+                  </Row>
                 </dl>
+                {lot.deliveryExceptionReason ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground">Exception: {lot.deliveryExceptionReason}</p>
+                ) : null}
+                {lot.deliveryRefusal && deliveryOpen ? (
+                  <div className="mt-2 space-y-2 border border-warning/40 bg-warning/10 px-3 py-2.5">
+                    <p className="text-xs text-warning">{lot.deliveryRefusal}</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-none text-xs"
+                      disabled={isPending || !capabilities.canRecordDeliveryException}
+                      onClick={() => setRecordingException(true)}
+                    >
+                      Record delivery exception
+                    </Button>
+                    {capabilities.canRecordDeliveryException ? null : (
+                      <p className="text-xs text-muted-foreground">
+                        Recording an exception needs lot.write and community.write.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
               </Section>
 
               <Section title="Price">
@@ -408,14 +467,28 @@ export function LotInspector({
                     )}
                   </Row>
                   <Row label="Plan">
-                    {lot.planName ? (
-                      <>
-                        {lot.planName}
-                        {lot.elevationName ? ` · ${lot.elevationName}` : ""}
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">Not assigned</span>
-                    )}
+                    <span className="flex items-center justify-end gap-2">
+                      {lot.planName ? (
+                        <span>
+                          {lot.planName}
+                          {lot.elevationName ? ` · ${lot.elevationName}` : ""}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Not assigned</span>
+                      )}
+                      {planAssignable ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 rounded-none px-2 text-xs"
+                          disabled={isPending || !capabilities.canAssignPlan}
+                          title={capabilities.canAssignPlan ? undefined : "Assigning a plan needs lot.write and plan.instantiate"}
+                          onClick={() => setAssigningPlan(true)}
+                        >
+                          {lot.planName ? "Change" : "Assign plan"}
+                        </Button>
+                      ) : null}
+                    </span>
                   </Row>
                 </dl>
               </Section>
@@ -594,6 +667,26 @@ export function LotInspector({
                 </Button>
               ) : null}
             </div>
+            <LotPlanAssignmentDialog
+              lot={lot}
+              communityId={community.id}
+              open={assigningPlan}
+              onOpenChange={setAssigningPlan}
+              canOverrideOffering={capabilities.canOverrideOffering}
+            />
+            <LotReasonDialog
+              open={recordingException}
+              onOpenChange={setRecordingException}
+              title={`Delivery exception · Lot ${lotLabel(lot)}`}
+              description="Lets a house start on a lot land development has not delivered. The reason stays on the lot as the evidence the start gate reads back."
+              minLength={MIN_DELIVERY_EXCEPTION_REASON_LENGTH}
+              submitLabel="Record exception"
+              success="Delivery exception recorded"
+              onSubmit={async (reason) => {
+                unwrapAction(await recordLotDeliveryExceptionAction(lot.id, community.id, { reason }))
+                router.refresh()
+              }}
+            />
           </>
         ) : null}
       </SheetContent>

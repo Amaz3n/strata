@@ -29,6 +29,7 @@ import {
   createLots,
   deleteLot,
   detachProjectFromLot,
+  listPlanAssignmentOptions,
   recordLotDeliveryException,
   setLotPlatPositions,
   setLotStatus,
@@ -162,6 +163,10 @@ export async function bulkUpdateLotsAction(communityId: string, input: unknown) 
 
 export async function recordLotDeliveryExceptionAction(id: string, communityId: string, input: unknown) {
   return run(() => recordLotDeliveryException(z.string().uuid().parse(id), lotDeliveryExceptionSchema.parse(input)), [`/communities/${communityId}`])
+}
+
+export async function listPlanAssignmentOptionsAction(communityId: string) {
+  return run(() => listPlanAssignmentOptions(z.string().uuid().parse(communityId)))
 }
 
 export async function assignPlanToLotAction(lotId: string, communityId: string, input: unknown) {

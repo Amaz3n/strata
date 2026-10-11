@@ -22,7 +22,7 @@ import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { createInspectionFromSnapshot } from "@/lib/services/inspections";
 import { requirePermission } from "@/lib/services/permissions";
-import { isPlanOffered, offeringOverrideFor, MIN_OFFERING_OVERRIDE_REASON_LENGTH } from "@/lib/sales/plan-offering";
+import { isPlanOffered, offeringOverrideFor, MIN_OFFERING_OVERRIDE_REASON_LENGTH, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering";
 import { applyScheduleTemplateSnapshot } from "@/lib/services/schedule";
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs";
 import {
@@ -576,7 +576,7 @@ async function loadInstantiationContext(
       );
     else
       throw new Error(
-        "This plan or elevation is not offered in the lot's community. Offer it there, or record an offering override with a reason.",
+        PLAN_OFFERING_REFUSAL,
       );
   }
   const orgCostCodesDefault = await getOrgCostCodesEnabled(context.supabase, context.orgId);

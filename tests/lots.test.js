@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, recordLotDeliveryException, setLotStatus } = freshRequire("lib/services/lots.ts")
+const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, listPlanAssignmentOptions, recordLotDeliveryException, setLotStatus } = freshRequire("lib/services/lots.ts")
 
 const COMMUNITY = id(1)
 const LOT = id(2)
@@ -138,6 +138,30 @@ describe("assignPlanToLot", () => {
     await assert.rejects(assign(planHarness({ lot: { project_id: HOME } })), /already has a home/)
     await assert.rejects(assign(planHarness({ reservations: [hold(BUYER)] })), /held or sold/)
     await assert.rejects(assign(planHarness({ versionStatus: "draft" })), /released plan version/)
+  })
+
+  test("the picker lists unoffered plans too, flagged per elevation, and skips plans with nothing releasable", async () => {
+    const OTHER_PLAN = id(70)
+    const service = planHarness({ offered: false })
+    service.db.house_plans = [
+      { id: PLAN, org_id: ORG, code: "A100", name: "Aspen", status: "active" },
+      { id: OTHER_PLAN, org_id: ORG, code: "B200", name: "Birch", status: "active" },
+    ]
+    service.db.house_plan_versions[0].version_number = 2
+    service.db.house_plan_elevations[0].code = "A"
+    service.db.house_plan_elevations[0].swing_applicable = true
+    service.db.community_plan_availability = [
+      { org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, is_available: false, elevation_id: null, effective_start: null, effective_end: null },
+    ]
+    const { plans, truncated } = await service.run(() => listPlanAssignmentOptions(COMMUNITY))
+    assert.equal(truncated, false)
+    assert.deepEqual(plans.map((plan) => plan.code), ["A100"])
+    assert.deepEqual(plans[0].versions, [{ id: VERSION, versionNumber: 2 }])
+    assert.equal(plans[0].elevations[0].offered, false)
+
+    service.db.community_plan_availability[0].is_available = true
+    const offered = await service.run(() => listPlanAssignmentOptions(COMMUNITY))
+    assert.equal(offered.plans[0].elevations[0].offered, true)
   })
 
   test("assigning a plan takes plan authority as well as lot authority", async () => {

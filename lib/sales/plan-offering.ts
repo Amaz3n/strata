@@ -47,3 +47,12 @@ export function offeringOverrideFor(metadata: unknown, housePlanId: string): Off
   const parsed = z.object({ offering_override: offeringOverrideSchema }).safeParse(metadata)
   return parsed.success && parsed.data.offering_override.house_plan_id === housePlanId ? parsed.data.offering_override : null
 }
+
+export const PLAN_OFFERING_REFUSAL =
+  "This plan or elevation is not offered in the lot's community. Offer it there, or record an offering override with a reason."
+
+/** The plan a lot carries an offering override for, if it carries one. */
+export function offeringOverridePlanId(metadata: unknown): string | null {
+  const parsed = z.object({ offering_override: offeringOverrideSchema }).safeParse(metadata)
+  return parsed.success ? parsed.data.offering_override.house_plan_id : null
+}

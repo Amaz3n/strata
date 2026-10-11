@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
+import { LOT_DELIVERY_REFUSAL } from "@/lib/land/lot-lifecycle"
 import type { StartsDesk } from "@/lib/services/starts-desk"
 import type { StartPackageListItemDTO } from "@/lib/services/starts"
 import { mondayOfIsoWeek, releaseSlotVariance } from "@/lib/starts/even-flow-math"
@@ -128,7 +129,14 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     router.refresh()
   }
 
-  function runAction(operation: () => Promise<unknown>, success: string, failure: string, after?: () => void) {
+  function runAction(
+    operation: () => Promise<unknown>,
+    success: string,
+    failure: string,
+    after?: () => void,
+    /** Where the person who can clear a refusal goes to do it. */
+    recovery?: { lotId: string; communityId: string },
+  ) {
     startTransition(async () => {
       try {
         await operation()
@@ -136,7 +144,17 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
         after?.()
         refresh()
       } catch (error) {
-        toast.error(failure, { description: error instanceof Error ? error.message : undefined })
+        const message = error instanceof Error ? error.message : undefined
+        toast.error(failure, {
+          description: message,
+          action:
+            recovery && message === LOT_DELIVERY_REFUSAL
+              ? {
+                  label: "Record exception",
+                  onClick: () => router.push(`/communities/${recovery.communityId}?lot=${recovery.lotId}`),
+                }
+              : undefined,
+        })
       }
     })
   }
@@ -237,11 +255,13 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
 
   function openPackage() {
     if (!openLotId) return
+    const candidate = desk.candidates.find((entry) => entry.lotId === openLotId)
     runAction(
       async () => { unwrapAction(await openStartPackageAction(openLotId, { isFinanced: openFinanced, targetWeek: openWeek })) },
       "Start package opened",
       "Unable to open start package",
       () => { setOpenLotId(null); setOpenWeek(null) },
+      candidate ? { lotId: candidate.lotId, communityId: candidate.communityId } : undefined,
     )
   }
 

@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from "react"
 import { Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
+import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,6 +13,7 @@ import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-pick
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import type { CostCode } from "@/lib/types"
 import type { WarrantyRoutingRule } from "@/lib/services/warranty/domain"
 import { deleteWarrantyRoutingRuleAction, loadWarrantyRoutingEditorAction, saveWarrantyRoutingRuleAction, searchWarrantyCompaniesAction } from "./actions"
 
@@ -30,6 +32,7 @@ export function WarrantyRoutingRulesSheet({ open, onOpenChange, technicians }: {
 }) {
   const [rules, setRules] = useState<WarrantyRoutingRule[]>([])
   const [communities, setCommunities] = useState<Array<{ id: string; name: string }>>([])
+  const [costCodes, setCostCodes] = useState<CostCode[]>([])
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle")
   const [loadError, setLoadError] = useState("")
   const [pending, startTransition] = useTransition()
@@ -38,6 +41,7 @@ export function WarrantyRoutingRulesSheet({ open, onOpenChange, technicians }: {
   const [severity, setSeverity] = useState(ANY)
   const [communityId, setCommunityId] = useState(ANY)
   const [category, setCategory] = useState("")
+  const [costCodeId, setCostCodeId] = useState(ANY)
   const [assigneeKind, setAssigneeKind] = useState<"tech" | "trade">("tech")
   const [techId, setTechId] = useState("")
   const [company, setCompany] = useState<SearchPickerItem | null>(null)
@@ -50,11 +54,17 @@ export function WarrantyRoutingRulesSheet({ open, onOpenChange, technicians }: {
       if (!result.success) { setLoadError(result.error); setLoadState("error"); return }
       setRules(result.data.rules)
       setCommunities(result.data.communities)
+      setCostCodes(result.data.costCodes)
       setLoadState("ready")
     })
   }, [open, loadState])
 
   const communityName = (id: string | null) => communities.find((item) => item.id === id)?.name ?? "Any community"
+  const costCodeLabel = (id: string | null) => {
+    if (!id) return "Any responsibility"
+    const code = costCodes.find((item) => item.id === id)
+    return code ? `${code.code} ${code.name}` : "Inactive cost code"
+  }
   const ownerName = (rule: WarrantyRoutingRule) => rule.assignee_kind === "tech" ? technicians.find((item) => item.id === rule.assigned_user_id)?.name ?? "Technician" : "Trade"
   const ready = name.trim() && (assigneeKind === "tech" ? techId : company)
 
@@ -63,13 +73,14 @@ export function WarrantyRoutingRulesSheet({ open, onOpenChange, technicians }: {
       name: name.trim(), priority: Number(priority) || 0,
       severity: severity === ANY ? null : severity, category: category.trim() || null,
       community_id: communityId === ANY ? null : communityId,
+      cost_code_id: costCodeId === ANY ? null : costCodeId,
       assignee_kind: assigneeKind,
       assigned_user_id: assigneeKind === "tech" ? techId : null,
       assigned_company_id: assigneeKind === "trade" ? company?.id ?? null : null,
     })
     if (!result.success) { toast.error(result.error); return }
     setRules((rows) => [...rows, result.data].sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id)))
-    setName(""); setCategory(""); setSeverity(ANY); setCommunityId(ANY); setTechId(""); setCompany(null)
+    setName(""); setCategory(""); setSeverity(ANY); setCommunityId(ANY); setCostCodeId(ANY); setTechId(""); setCompany(null)
     toast.success("Routing rule saved")
   })
 
@@ -89,7 +100,7 @@ export function WarrantyRoutingRulesSheet({ open, onOpenChange, technicians }: {
                 <div className="min-w-0">
                   <p className="truncate font-medium">{rule.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {rule.severity ? SEVERITY_LABEL[rule.severity] : "Any severity"} · {communityName(rule.community_id)} · {rule.category ?? "Any category"} → {ownerName(rule)}
+                    {rule.severity ? SEVERITY_LABEL[rule.severity] : "Any severity"} · {communityName(rule.community_id)} · {rule.category ?? "Any category"} · {costCodeLabel(rule.cost_code_id)} → {ownerName(rule)}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -127,7 +138,16 @@ export function WarrantyRoutingRulesSheet({ open, onOpenChange, technicians }: {
                 </SelectContent>
               </Select>
             </div>
-            <Input aria-label="Category" value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Category, e.g. HVAC (blank matches any)" />
+            <div className="grid grid-cols-2 gap-2">
+              <Input aria-label="Category" value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Category, e.g. HVAC (blank matches any)" />
+              <Select value={costCodeId} onValueChange={setCostCodeId}>
+                <SelectTrigger aria-label="Responsibility cost code"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Any responsibility</SelectItem>
+                  <CostCodeSelectItems costCodes={costCodes} />
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <Select value={assigneeKind} onValueChange={(value) => { setAssigneeKind(value === "trade" ? "trade" : "tech"); setTechId(""); setCompany(null) }}>
                 <SelectTrigger aria-label="Owner type"><SelectValue /></SelectTrigger>
