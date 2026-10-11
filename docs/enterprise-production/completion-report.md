@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 23.2% — a documented lower bound, not an ETA |
-| Fully verified | 21.8% |
+| Implemented | 23.5% — a documented lower bound, not an ETA |
+| Fully verified | 22.1% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 77 items |
+| Partially implemented | 76 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
@@ -56,7 +56,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | --- | --- | --- | --- |
 | EP01-01 | Role navigation | verified | Apply migration 20261010200000_purchasing_manager_baseline_reads (pending approval) so the purchasing manager role holds its read keys in production. |
 | EP01-02 | Complete desk queues | verified | Apply migration 20261011110000_bill_search_text (pending approval) together with the code, or payables text search errors. |
-| EP01-03 | Searchable operator pickers | partial | Apply migrations 20261011120000_sellable_lot_inventory_view and 20261011130000_directory_buyer_roles_on_org_create (pending approval) with the code; Find-a-home reads the view. |
+| EP01-03 | Searchable operator pickers | verified | Apply migrations 20261011120000_sellable_lot_inventory_view and 20261011130000_directory_buyer_roles_on_org_create (pending approval) with the code; Find-a-home reads the view. |
 | EP01-04 | Shared scope across desks | verified | Accepted; no required work remains. |
 | EP01-05 | Desk states and recovery | verified | Accepted; no required work remains. |
 | EP01-06 | Home and lot drill-down | verified | Accepted; no required work remains. |

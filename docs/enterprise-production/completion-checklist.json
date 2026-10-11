@@ -3291,7 +3291,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Lot-hold now searches lots on the server and says when it shows the first 500; Find-a-home says when it shows only the newest 250; design-studio booking searches homes by lot number on the server; warranty trade pickers use a shared server-searched picker (SearchPicker, which the purchasing picker now also uses) (56b76687). Find-a-home is still a client-filtered list, the tasks project picker is unchanged, and there is no buyer lookup on new inquiries.",
       "remainingWork": [
         "Apply migrations 20261011120000_sellable_lot_inventory_view and 20261011130000_directory_buyer_roles_on_org_create (pending approval) with the code; Find-a-home reads the view."
@@ -3474,7 +3474,7 @@
         {
           "kind": "source_review",
           "tier": "source_review",
-          "result": "incomplete",
+          "result": "passed",
           "freshness": "current",
           "runIds": [
             "REVIEW-EP01-03-R2"
@@ -3482,16 +3482,19 @@
           "date": "2026-10-11",
           "head": "ae8d4b37",
           "confidence": "medium-high",
-          "criteriaCovered": [],
+          "criteriaCovered": [
+            0,
+            1
+          ],
           "criteriaVerdicts": [
             {
               "index": 0,
-              "verdict": "passed",
+              "verdict": "met",
               "evidence": "Home/lot/plan/buyer/vendor/project pickers page and search server-side. readPageOrEmpty (lib/land/paging.ts:44-54) turns PGRST103 into an empty page with a true count; it is used in directory.ts:208, sales-inquiries.ts:130, projects.ts:553, community-sales.ts:294 and :1045, purchasing-workspace.ts:46. readAllRows treats PGRST103 as end (paging.ts:80). The earlier gaps (lot-label search, stuck Load more, quote sanitising, tasks filter, empty last page) are addressed in ce617df2/3f0bb656. The view's lot_label is concat_ws('-', block, lot_number) and matches the TS label. Lots plan pin now uses neq retired (lib/services/lots.ts:544)."
             },
             {
               "index": 1,
-              "verdict": "passed",
+              "verdict": "met",
               "evidence": "Pickers replace raw-ID entry. Buyer-role seed migration 20261011130000 is correct: same return type (void) and signature as 20261006112832, so create or replace is valid; search_path '' with fully qualified names; on conflict do nothing, so it is idempotent and keeps renamed labels; revoked from public/anon/authenticated; the backfill covers all orgs; no deletes."
             }
           ],
