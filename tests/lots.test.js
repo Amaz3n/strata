@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, listPlanAssignmentOptions, recordLotDeliveryException, setLotStatus } = freshRequire("lib/services/lots.ts")
+const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, listPlanAssignmentOptions, recordLotDeliveryException, setLotStatus, updateLot, bulkUpdateLots } = freshRequire("lib/services/lots.ts")
 
 const COMMUNITY = id(1)
 const LOT = id(2)
@@ -248,5 +248,22 @@ describe("lot status and home association", () => {
     const service = harness({ status: "developed" })
     await assert.rejects(service.run(() => setLotStatus(LOT, "controlled")), /only one step/i)
     assert.equal(lotRow(service).status, "developed")
+  })
+
+  test("a homeless lot cannot be closed by any status writer", async () => {
+    const service = harness({ status: "assigned" })
+    await assert.rejects(service.run(() => setLotStatus(LOT, "closed")), /without a home/i)
+    await assert.rejects(service.run(() => updateLot(LOT, { status: "closed" })), /without a home/i)
+    await assert.rejects(service.run(() => bulkUpdateLots(COMMUNITY, { lotIds: [LOT], patch: { status: "closed" } })), /without a home/i)
+    assert.equal(lotRow(service).status, "assigned")
+    assert.deepEqual(service.writes("lots"), [])
+  })
+
+  test("a lot with a home cannot be edited back into a land state", async () => {
+    const service = harness({ status: "assigned" })
+    service.db.lots[0].project_id = HOME
+    await assert.rejects(service.run(() => updateLot(LOT, { status: "developed" })), /detach the home first/i)
+    await assert.rejects(service.run(() => bulkUpdateLots(COMMUNITY, { lotIds: [LOT], patch: { status: "owned" } })), /detach the home first/i)
+    assert.deepEqual(service.writes("lots"), [])
   })
 })

@@ -52,6 +52,7 @@ export async function loadSelectionsAction(token: string) {
         items: effective.map((option) => ({ optionId: option.parent_option_id ?? option.id })),
         housePlanVersionId: lot?.house_plan_version_id ?? undefined,
         communityId: lot?.community_id ?? undefined,
+        requirePlanVersion: Boolean(lot?.community_id),
       }) : []
       return [categoryId, effective.map((option, index) => ({
         ...option,
@@ -80,6 +81,7 @@ export async function loadSelectionsAction(token: string) {
         items: packageRows.map((item) => ({ packageId: item.id })),
         housePlanVersionId: lot?.house_plan_version_id ?? undefined,
         communityId: lot?.community_id ?? undefined,
+        requirePlanVersion: Boolean(lot?.community_id),
       })
     : []
 

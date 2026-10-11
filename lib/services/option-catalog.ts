@@ -106,6 +106,8 @@ export type ResolvedOptionPricing = {
   leadTimeDays: number | null
   available: boolean
   source: "plan_community" | "plan" | "option_community" | "option_base"
+  /** Why the base option price applies when no plan price was consulted; null when plan pricing was in scope. */
+  baseReason: "no_plan_version" | null
 }
 
 export type SelectionGroupDto = {
@@ -633,9 +635,12 @@ export async function resolveOptionPricing(opts: {
   items: Array<{ optionId?: string; packageId?: string }>
   housePlanVersionId?: string
   communityId?: string
+  /** Set for a home that sells from a community price sheet: pricing without its plan version would silently quote base prices. */
+  requirePlanVersion?: boolean
 }): Promise<ResolvedOptionPricing[]> {
   const supabase = createServiceSupabaseClient()
   if (opts.items.some((item) => Boolean(item.optionId) === Boolean(item.packageId))) throw new Error("Choose exactly one option or package for each pricing item")
+  if (opts.requirePlanVersion && !opts.housePlanVersionId) throw new Error("This home is in a community but has no pinned plan version; pin the plan version before pricing its options")
   const optionIds = [...new Set(opts.items.map((item) => item.optionId).filter((value): value is string => Boolean(value)))]
   const packageIds = [...new Set(opts.items.map((item) => item.packageId).filter((value): value is string => Boolean(value)))]
   type CatalogRow = { id: string; category_id?: string; parent_option_id?: string | null; community_id: string | null; price_cents: number; cost_cents: number | null; cost_code_id?: string | null; vendor?: string | null; sku?: string | null; lead_time_days?: number | null; is_available: boolean; is_archived: boolean }
@@ -742,10 +747,14 @@ export async function resolveOptionPricing(opts: {
       planPrice: pickPrice(null) ?? null,
       isCommunityOption: Boolean(option?.community_id ?? selectionPackage?.community_id),
     })
+    const priceCents = Number(chosen.price_cents)
+    const costCents = chosen.cost_cents == null ? null : Number(chosen.cost_cents)
+    if (!Number.isInteger(priceCents) || priceCents < 0) throw new Error("A resolved option price is not a non-negative whole number of cents; reconcile the catalog before proceeding")
+    if (costCents !== null && (!Number.isInteger(costCents) || costCents < 0)) throw new Error("A resolved option cost is not a non-negative whole number of cents; reconcile the catalog before proceeding")
     return {
       ...(item.optionId ? { optionId: option?.id ?? item.optionId } : { packageId: selectionPackage?.id ?? item.packageId }),
-      priceCents: Number(chosen.price_cents),
-      costCents: chosen.cost_cents == null ? null : Number(chosen.cost_cents),
+      priceCents,
+      costCents,
       costCodeId: option?.cost_code_id ?? null,
       vendor: option?.vendor ?? null,
       sku: option?.sku ?? null,
@@ -755,6 +764,7 @@ export async function resolveOptionPricing(opts: {
       available: chosen.is_available && (!option || Boolean(effectiveCategory && !effectiveCategory.is_archived && (!effectiveCategory.community_id || effectiveCategory.community_id === opts.communityId))) && !(option?.is_archived ?? selectionPackage?.is_archived ?? false)
         && (!(option?.community_id ?? selectionPackage?.community_id) || (option?.community_id ?? selectionPackage?.community_id) === opts.communityId),
       source: chosen.source,
+      baseReason: opts.housePlanVersionId ? null : "no_plan_version",
     }
   })
 }

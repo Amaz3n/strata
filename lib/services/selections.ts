@@ -240,6 +240,7 @@ async function prepareSingleSelection(input: SingleSelectionInput) {
     items: [{ optionId: input.optionId }],
     housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined,
     communityId: mutation.lot?.community_id ?? undefined,
+    requirePlanVersion: Boolean(mutation.lot?.community_id),
   })
   if (!pricing.available) throw new Error("This option is not available for the lot's plan or community")
   if (!pricing.categoryIds.includes(mutation.selection.category_id)) throw new Error("This option belongs to a different selection category")
@@ -347,10 +348,10 @@ export async function selectProjectPackage(input: {
   })
   const { data: lot, error: lotError } = await supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
   if (lotError) throw new Error(`Failed to load package home: ${lotError.message}`)
-  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined })
+  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined, requirePlanVersion: Boolean(lot?.community_id) })
   if (!pricing.available) throw new Error("This package is not available for the lot's plan")
 
-  const memberPrices = await resolveOptionPricing({ orgId: input.orgId, items: plan.members.map((member) => ({ optionId: member.optionId })), housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined })
+  const memberPrices = await resolveOptionPricing({ orgId: input.orgId, items: plan.members.map((member) => ({ optionId: member.optionId })), housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined, requirePlanVersion: Boolean(lot?.community_id) })
   for (const [index, member] of plan.members.entries()) {
     const resolved = memberPrices[index]
     if (!resolved?.available) throw new Error("A package option is no longer available for this home. Review the package before applying it.")
@@ -418,7 +419,7 @@ export async function confirmSelection(input: { orgId: string; projectId: string
   const mutation = await loadSelectionMutationContext(input)
   await assertSelectionMutable(mutation, { portal: Boolean(input.portalAccess) })
   if (!mutation.selection.selected_option_id) throw new Error("Choose an option before confirming")
-  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ optionId: mutation.selection.selected_option_id }], housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined, communityId: mutation.lot?.community_id ?? undefined })
+  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ optionId: mutation.selection.selected_option_id }], housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined, communityId: mutation.lot?.community_id ?? undefined, requirePlanVersion: Boolean(mutation.lot?.community_id) })
   if (!pricing.available) throw new Error("This option is no longer available for this home. Choose an available option before confirming.")
   if (!pricing.categoryIds.includes(mutation.selection.category_id)) throw new Error("This option belongs to a different selection category")
   await assertProjectConfiguration(input.orgId, input.projectId)

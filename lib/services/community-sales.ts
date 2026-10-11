@@ -1599,7 +1599,7 @@ async function recordAgreementStructuralSelections(supabase: SupabaseClient, inp
   // prices first. Availability is not re-checked; the buyer has signed for it.
   const items = pricing.structuralOptions.flatMap((item) => item.optionId ? [{ optionId: item.optionId, name: item.label }] : [])
   const resolved = items.length ? await resolveOptionPricing({ orgId: input.orgId, items: items.map(({ optionId }) => ({ optionId })),
-    housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined }) : []
+    housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined, requirePlanVersion: Boolean(lot?.community_id) }) : []
   const selections = agreementStructuralSelections(pricing, resolved.flatMap((row, index) => row.categoryId
     ? [{ id: items[index].optionId, name: items[index].name, categoryId: row.categoryId, costCents: row.costCents }] : []))
   const { error: writeError } = await supabase.from("project_selections").upsert(selections.map((selection) => ({

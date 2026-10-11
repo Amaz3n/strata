@@ -21,6 +21,7 @@ import {
 import { PoGenerationDialog } from "@/components/purchasing/po-generation-dialog"
 import { AgreementChoiceDialog } from "@/components/purchasing/agreement-choice-dialog"
 import { ManualPriceDialog } from "@/components/purchasing/manual-price-dialog"
+import { PurchasingEntityPicker, type PurchasingEntity } from "@/components/purchasing/entity-picker"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -50,10 +51,7 @@ interface PurchasingClientProps {
   vpoCount: number
   completions: CompletionRow[]
   variance: { rows: VarianceAnalysisRow[]; summary: { totalAbsoluteCents: number; totalNetCents: number; incidence: number; directCostBudgetCents: number; varianceRate: number; benchmarkLow: number; benchmarkHigh: number } } | null
-  companies: Lookup[]
   costCodes: Lookup[]
-  communities: Lookup[]
-  plans: Lookup[]
 }
 
 const money = (cents: number | null | undefined) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format((cents ?? 0) / 100)
@@ -71,6 +69,10 @@ export function PurchasingClient(props: PurchasingClientProps) {
     startTransition(() => router.push(`/purchasing?${query}`, { scroll: false }))
   }
   const [showAgreementForm, setShowAgreementForm] = useState(false)
+  const [vendor, setVendor] = useState<PurchasingEntity | null>(null)
+  const [community, setCommunity] = useState<PurchasingEntity | null>(null)
+  const [plan, setPlan] = useState<PurchasingEntity | null>(null)
+  const closeAgreementForm = () => { setShowAgreementForm(false); setVendor(null); setCommunity(null); setPlan(null) }
   const [dimension, setDimension] = useState<VarianceAnalysisRow["dimension"]>("reason")
   const varianceRows = useMemo(() => props.variance?.rows.filter((row) => row.dimension === dimension) ?? [], [dimension, props.variance])
   const exportVariance = () => {
@@ -94,16 +96,17 @@ export function PurchasingClient(props: PurchasingClientProps) {
   })
 
   const createAgreement = (form: HTMLFormElement) => {
+    if (!vendor) { toast.error("Choose a vendor"); return }
     const data = new FormData(form)
     const kind = String(data.get("pricing_kind"))
     const amount = Math.round(Number(data.get("price")) * 100)
     mutate(() => createPriceAgreementAction({
-      company_id: data.get("company_id"), cost_code_id: data.get("cost_code_id"),
-      community_id: data.get("community_id") || null, house_plan_id: data.get("house_plan_id") || null,
+      company_id: vendor.id, cost_code_id: data.get("cost_code_id"),
+      community_id: community?.id ?? null, house_plan_id: plan?.id ?? null,
       pricing_kind: kind, uom: kind === "unit" ? data.get("uom") : null,
       unit_cost_cents: kind === "unit" ? amount : null, lump_sum_cents: kind === "lump_sum" ? amount : null,
       scope_of_work: data.get("scope_of_work") || null, effective_from: data.get("effective_from"), status: "active", source: "manual",
-    }), "Price agreement created", () => setShowAgreementForm(false))
+    }), "Price agreement created", closeAgreementForm)
   }
 
   const reprice = (agreement: PriceAgreement) => {
@@ -138,7 +141,7 @@ export function PurchasingClient(props: PurchasingClientProps) {
       </div>
 
       {props.health && <TabsContent value="price-book" className="m-0">
-        <SectionHeader title="Vendor price agreements" detail={`${props.agreementCount} agreements · ${props.health.ambiguousOverlaps} ambiguous overlaps · ${props.health.coverageGapCount} uncovered cost codes`} actions={<Button size="sm" onClick={() => setShowAgreementForm((value) => !value)}><Plus /> New agreement</Button>} />
+        <SectionHeader title="Vendor price agreements" detail={`${props.agreementCount} agreements · ${props.health.ambiguousOverlaps} ambiguous overlaps · ${props.health.coverageGapCount} uncovered cost codes`} actions={<Button size="sm" onClick={() => showAgreementForm ? closeAgreementForm() : setShowAgreementForm(true)}><Plus /> New agreement</Button>} />
         {props.health.coverageGaps.length > 0 && <div className="border-b bg-warning/5 p-4">
           <p className="text-sm font-medium">Cost codes with no active price in a selling community</p>
           <p className="mt-1 text-xs text-muted-foreground">A start released against these produces a price-book exception instead of a purchase order. {props.health.coverageGapCount > props.health.coverageGaps.length ? `Showing ${props.health.coverageGaps.length} of ${props.health.coverageGapCount}.` : null}</p>
@@ -151,16 +154,16 @@ export function PurchasingClient(props: PurchasingClientProps) {
           </ul>
         </div>}
         {showAgreementForm && <form className="grid gap-3 border-b bg-muted/20 p-4 lg:grid-cols-4" onSubmit={(event) => { event.preventDefault(); createAgreement(event.currentTarget) }}>
-          <Field label="Vendor"><NativeSelect name="company_id" required options={props.companies} /></Field>
+          <PurchasingEntityPicker kind="vendor" value={vendor} onChange={setVendor} disabled={pending} />
           <Field label="Cost code"><NativeSelect name="cost_code_id" required options={props.costCodes} code /></Field>
-          <Field label="Community"><NativeSelect name="community_id" options={props.communities} empty="Org-wide" /></Field>
-          <Field label="Plan"><NativeSelect name="house_plan_id" options={props.plans} empty="Any plan" /></Field>
+          <div><PurchasingEntityPicker kind="community" value={community} onChange={setCommunity} disabled={pending} /><p className="mt-1 text-xs text-muted-foreground">{community ? "" : "None chosen: org-wide."}</p></div>
+          <div><PurchasingEntityPicker kind="plan" value={plan} onChange={setPlan} disabled={pending} /><p className="mt-1 text-xs text-muted-foreground">{plan ? "" : "None chosen: any plan."}</p></div>
           <Field label="Price kind"><select name="pricing_kind" className="h-9 border bg-background px-2 text-sm"><option value="unit">Unit</option><option value="lump_sum">Plan lump sum</option></select></Field>
           <Field label="UOM"><Input name="uom" defaultValue="ea" /></Field>
           <Field label="Price (dollars)"><Input name="price" type="number" min="0" step="0.01" required /></Field>
           <Field label="Effective from"><Input name="effective_from" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required /></Field>
           <div className="lg:col-span-3"><Field label="Scope of work"><Textarea name="scope_of_work" rows={2} /></Field></div>
-          <div className="flex items-end justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setShowAgreementForm(false)}>Cancel</Button><Button disabled={pending}>Create</Button></div>
+          <div className="flex items-end justify-end gap-2"><Button type="button" variant="ghost" onClick={closeAgreementForm}>Cancel</Button><Button disabled={pending}>Create</Button></div>
         </form>}
         <Table><TableHeader><TableRow><TableHead>Vendor</TableHead><TableHead>Cost code</TableHead><TableHead>Scope</TableHead><TableHead>Kind</TableHead><TableHead className="text-right">Price</TableHead><TableHead>Effective</TableHead><TableHead>Source</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader><TableBody>
           {props.agreements.map((row) => <TableRow key={row.id}><TableCell className="font-medium">{row.company_name}</TableCell><TableCell><span className="font-mono text-xs">{row.cost_code_code}</span> {row.cost_code_name}</TableCell><TableCell className="max-w-72 whitespace-normal"><div>{[row.division_name,row.community_name,row.house_plan_name].filter(Boolean).join(" / ") || "Org-wide"}</div><div className="line-clamp-1 text-xs text-muted-foreground">{row.scope_of_work || "No scope note"}</div></TableCell><TableCell>{row.pricing_kind === "unit" ? `Unit / ${row.uom}` : "Lump sum"}</TableCell><TableCell className="text-right tabular-nums">{money(row.pricing_kind === "unit" ? row.unit_cost_cents : row.lump_sum_cents)}</TableCell><TableCell className="text-xs tabular-nums">{row.effective_from} → {row.effective_to || "open"}</TableCell><TableCell><Badge variant="outline" className="rounded-none">{row.source.replace("_", " ")}</Badge></TableCell><TableCell><StateBadge value={row.status} /></TableCell><TableCell className="text-right"><Button size="sm" variant="ghost" onClick={() => reprice(row)} disabled={pending}>Reprice</Button><Button size="sm" variant="ghost" onClick={() => mutate(() => voidPriceAgreementAction(row.id), "Agreement voided")} disabled={pending}>Void</Button></TableCell></TableRow>)}
@@ -184,6 +187,6 @@ export function PurchasingClient(props: PurchasingClientProps) {
 function Stat({ label, value, detail, warning }: { label: string; value: string; detail?: string; warning?: boolean }) { return <div className="border-b px-4 py-3 sm:border-b-0 sm:border-r"><div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div><div className={`mt-1 text-xl font-semibold tabular-nums ${warning ? "text-destructive" : ""}`}>{value}</div>{detail && <div className="text-xs text-muted-foreground">{detail}</div>}</div> }
 function SectionHeader({ title, detail, actions }: { title: string; detail: string; actions?: React.ReactNode }) { return <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-b px-4 py-2"><div><h2 className="font-semibold">{title}</h2><p className="text-xs text-muted-foreground">{detail}</p></div>{actions}</div> }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <Label className="grid gap-1.5 text-xs">{label}{children}</Label> }
-function NativeSelect({ name, options, required, empty, code }: { name: string; options: Lookup[]; required?: boolean; empty?: string; code?: boolean }) { return <select name={name} required={required} className="h-9 min-w-0 border bg-background px-2 text-sm">{empty !== undefined && <option value="">{empty}</option>}{options.map((option) => <option key={option.id} value={option.id}>{code && option.code ? `${option.code} — ` : ""}{option.name}</option>)}</select> }
+function NativeSelect({ name, options, required, code }: { name: string; options: Lookup[]; required?: boolean; code?: boolean }) { return <select name={name} required={required} className="h-9 min-w-0 border bg-background px-2 text-sm">{options.map((option) => <option key={option.id} value={option.id}>{code && option.code ? `${option.code} — ` : ""}{option.name}</option>)}</select> }
 function StateBadge({ value }: { value: string }) { const active = ["active","approved","verified","billed","awarded"].includes(value); return <Badge variant={active ? "secondary" : value === "rejected" || value === "void" ? "destructive" : "outline"} className="rounded-none capitalize">{value.replaceAll("_", " ")}</Badge> }
 function EmptyRow({ columns, icon, text }: { columns: number; icon: React.ReactNode; text: string }) { return <TableRow><TableCell colSpan={columns} className="h-36 text-center"><div className="mx-auto flex max-w-md flex-col items-center gap-2 text-muted-foreground"><span className="[&_svg]:size-5">{icon}</span><span>{text}</span></div></TableCell></TableRow> }

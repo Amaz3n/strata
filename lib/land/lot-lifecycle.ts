@@ -46,6 +46,9 @@ export function isLotStatus(value: string | undefined | null): value is LotStatu
 export const ATTACHED_LOT_STATUS: LotStatus = "started"
 export const DETACHED_LOT_STATUS: LotStatus = "assigned"
 
+/** States a lot only holds while no home stands on it. */
+const HOMELESS_LOT_STATUSES: readonly LotStatus[] = ["controlled", "owned", "developed"]
+
 const STATUS_INDEX = new Map<LotStatus, number>(LOT_STATUSES.map((status, index) => [status, index]))
 
 export function assertLotStatusTransition({
@@ -62,6 +65,12 @@ export function assertLotStatusTransition({
   if (from === to) return
   if (to === "started" && !hasProject) {
     throw new Error("A project must be attached before a lot can be marked started.")
+  }
+  if (to === "closed" && !hasProject) {
+    throw new Error("A lot cannot be closed without a home; attach the home that settled first.")
+  }
+  if (hasProject && HOMELESS_LOT_STATUSES.includes(to)) {
+    throw new Error(`A lot with a home attached cannot be set to ${to}; detach the home first.`)
   }
   if ((from === "started" || from === "closed") && !force) {
     throw new Error(`Moving a lot out of ${from} requires an explicit force confirmation.`)

@@ -75,6 +75,7 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
       items: [{ packageId: selectionPackage.id }],
       housePlanVersionId: lot.house_plan_version_id ?? undefined,
       communityId: lot.community_id,
+      requirePlanVersion: Boolean(lot.community_id),
     })
     if (!packagePrice.available) throw new Error(`${selectionPackage.name} is not available for this lot's plan`)
     const priceAllocations = allocatePackageTotal(packagePrice.priceCents, packageItems.length)
@@ -119,6 +120,7 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
     items: direct.map((change) => ({ optionId: change.optionId })),
     housePlanVersionId: lot.house_plan_version_id ?? undefined,
     communityId: lot.community_id,
+    requirePlanVersion: Boolean(lot.community_id),
   }) : []
   if (directPricing.some((price) => !price.available)) throw new Error("One or more options are not available for this lot's plan")
   const directPriceBySelection = new Map(direct.map((change, index) => [change.selectionId, directPricing[index]]))

@@ -7,11 +7,8 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { PurchasingClient } from "@/components/purchasing/purchasing-client"
 import { listProductionBidQueue } from "@/lib/services/production-bid-queue"
-import { listCompanies } from "@/lib/services/companies"
 import { listVarianceOrders } from "@/lib/services/commitment-change-orders"
-import { listCommunities } from "@/lib/services/communities"
 import { listCostCodes } from "@/lib/services/cost-codes"
-import { listHousePlans } from "@/lib/services/house-plans"
 import { listPoCompletions } from "@/lib/services/po-completions"
 import { listPoExceptions } from "@/lib/services/po-generation"
 import { getPriceBookHealth, listPriceAgreements } from "@/lib/services/price-book"
@@ -38,7 +35,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
   const ambient = await getAmbientDeskContext()
   const today = new Date()
   const monthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)).toISOString().slice(0, 10)
-  const [agreements, health, bids, exceptions, vpos, completions, variance, companies, costCodes, communities, plans] = await Promise.all([
+  const [agreements, health, bids, exceptions, vpos, completions, variance, costCodes] = await Promise.all([
     tab === "price-book" ? listPriceAgreements({ page, pageSize, divisionId: ambient.divisionId }) : emptyPage,
     tab === "price-book" ? getPriceBookHealth({ divisionId: ambient.divisionId }) : null,
     tab === "bids" ? listProductionBidQueue({ page, pageSize, divisionId: ambient.divisionId, communityId: ambient.communityId, search, status: bidStatus }) : emptyPage,
@@ -46,10 +43,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
     tab === "vpos" ? listVarianceOrders({ status: "pending", projectId: params.project, divisionId: ambient.divisionId, communityId: ambient.communityId, page, pageSize }) : emptyPage,
     tab === "completions" ? listPoCompletions({ projectId: params.project, divisionId: ambient.divisionId, communityId: ambient.communityId, page, pageSize }) : emptyPage,
     tab === "variance" ? getVarianceAnalysis({ startDate: monthStart, endDate: today.toISOString().slice(0, 10), divisionId: ambient.divisionId }) : null,
-    tab === "price-book" ? listCompanies() : [],
     tab === "price-book" ? listCostCodes() : [],
-    tab === "price-book" ? listCommunities() : [],
-    tab === "price-book" ? listHousePlans() : [],
   ])
 
   const total = tab === "bids" ? bids.count : tab === "price-book" ? agreements.count : tab === "exceptions" ? exceptions.count : tab === "vpos" ? vpos.count : tab === "completions" ? completions.count : null
@@ -79,10 +73,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
     vpoCount={vpos.count}
     completions={completions.items.map((row) => ({ id: row.id, project: relationName(row.project, "Project"), po: relationName(row.commitment, "Purchase order"), status: row.status, amountCents: row.amount_cents ?? null, reportedAt: row.reported_at }))}
     variance={variance}
-    companies={companies.map((row) => ({ id: row.id, name: row.name }))}
     costCodes={costCodes.map((row) => ({ id: row.id, name: row.name, code: row.code }))}
-    communities={communities.map((row) => ({ id: row.id, name: row.name, code: row.code }))}
-    plans={plans.map((row) => ({ id: row.id, name: row.name, code: row.code }))}
   />{total !== null && <QueuePagination page={page} pageSize={pageSize} total={total} href={`/purchasing?${paginationParams}`} />}</PageLayout>
 }
 

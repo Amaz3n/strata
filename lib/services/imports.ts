@@ -392,6 +392,14 @@ async function loadOpenWipCompanionRows(context: ResolvedImportContext, batches:
 
 async function validateOpenWipCompanions(rows: ImportRowRecord[], context: ResolvedImportContext, batchContext: Record<string, unknown>, onboardingRunId: string | null = null) {
   if (batchContext.file_kind !== "houses") return rows
+  for (const row of rows) {
+    if (row.parsed.house_plan_version_id && !row.parsed.schedule_template_id) {
+      withIssue(row, { level: "error", code: "missing_schedule_template", message: `Plan ${row.parsed.plan_code} has no schedule template, so the current stage ${row.parsed.stage_task} cannot be placed; attach a template to the plan version before importing`, column: "plan_code" })
+    }
+    if (row.parsed.sold && !row.parsed.buyer_email) {
+      withIssue(row, { level: "error", code: "missing_buyer", message: "A sold home needs a buyer email so the buyer is kept on the home", column: "buyer_email" })
+    }
+  }
   const asOfDate = typeof batchContext.as_of_date === "string" ? batchContext.as_of_date : null
   if (!asOfDate) {
     rows.forEach((row) => { withIssue(row, { level: "error", code: "missing_as_of_date", message: "Open-WIP houses require an as-of date" }); settleRowStatus(row) })
@@ -842,32 +850,28 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
         const { error: lineError } = await context.supabase.from("commitment_lines").insert({ org_id: context.orgId, commitment_id: commitment.id, cost_code_id: item.parsed?.cost_code_id, description: item.parsed?.description, quantity: 1, unit: "remaining", unit_cost_cents: item.parsed?.remaining_cents, metadata: { imported_open_wip: true } })
         if (lineError) throw new Error(`Failed to create imported PO lines: ${lineError.message}`)
       }
-      if (row.parsed.schedule_template_id) {
-        const { data: template, error: templateError } = await context.supabase.from("schedule_templates").select("items").eq("org_id", context.orgId).eq("id", row.parsed.schedule_template_id).maybeSingle()
-        if (templateError || !template) throw new Error(`Unable to load WIP schedule template: ${templateError?.message ?? "Template not found"}`)
-        const items = Array.isArray(template?.items) ? template.items : []
-        const anchorIndex = items.findIndex((item) => normalizeKey(item.name) === normalizeKey(row.parsed.stage_task))
-        if (anchorIndex < 0) throw new Error(`Schedule task ${row.parsed.stage_task} was not found in the plan template`)
-        const stageDate = typeof row.parsed.stage_date === "string" ? row.parsed.stage_date : asOfDate
-        const { error: scheduleError } = await context.supabase.from("schedule_items").insert(items.map((item, index) => ({ org_id: context.orgId, project_id: projectId, name: item.name, item_type: item.item_type ?? "task", status: index < anchorIndex ? "completed" : index === anchorIndex ? "in_progress" : "planned", start_date: addDays(stageDate, (templateOffset(item, index) - templateOffset(items[anchorIndex], anchorIndex))), end_date: addDays(stageDate, (templateOffset(item, index) - templateOffset(items[anchorIndex], anchorIndex)) + Math.max(0, Number(item.duration_days ?? 1) - 1)), progress: index < anchorIndex ? 100 : index === anchorIndex ? 10 : 0, sort_order: index, metadata: { imported_open_wip: true, completed_at_cutover: index < anchorIndex ? asOfDate : null } })))
-        if (scheduleError) throw new Error(`Failed to create WIP schedule: ${scheduleError.message}`)
-      }
+      if (!row.parsed.schedule_template_id) throw new Error(`Lot ${row.parsed.lot_number}: the plan has no schedule template, so the current stage cannot be placed`)
+      const { data: template, error: templateError } = await context.supabase.from("schedule_templates").select("items").eq("org_id", context.orgId).eq("id", row.parsed.schedule_template_id).maybeSingle()
+      if (templateError || !template) throw new Error(`Unable to load WIP schedule template: ${templateError?.message ?? "Template not found"}`)
+      const items = Array.isArray(template?.items) ? template.items : []
+      const anchorIndex = items.findIndex((item) => normalizeKey(item.name) === normalizeKey(row.parsed.stage_task))
+      if (anchorIndex < 0) throw new Error(`Schedule task ${row.parsed.stage_task} was not found in the plan template`)
+      const stageDate = typeof row.parsed.stage_date === "string" ? row.parsed.stage_date : asOfDate
+      const { error: scheduleError } = await context.supabase.from("schedule_items").insert(items.map((item, index) => ({ org_id: context.orgId, project_id: projectId, name: item.name, item_type: item.item_type ?? "task", status: index < anchorIndex ? "completed" : index === anchorIndex ? "in_progress" : "planned", start_date: addDays(stageDate, (templateOffset(item, index) - templateOffset(items[anchorIndex], anchorIndex))), end_date: addDays(stageDate, (templateOffset(item, index) - templateOffset(items[anchorIndex], anchorIndex)) + Math.max(0, Number(item.duration_days ?? 1) - 1)), progress: index < anchorIndex ? 100 : index === anchorIndex ? 10 : 0, sort_order: index, metadata: { imported_open_wip: true, completed_at_cutover: index < anchorIndex ? asOfDate : null } })))
+      if (scheduleError) throw new Error(`Failed to create WIP schedule: ${scheduleError.message}`)
       if (row.parsed.sold) {
-        let contactId: string | null = null
-        if (row.parsed.buyer_email) {
-          const { data: existingContact, error: contactLookupError } = await context.supabase.from("contacts").select("id").eq("org_id", context.orgId).ilike("email", String(row.parsed.buyer_email)).limit(1).maybeSingle()
-          if (contactLookupError) throw new Error(`Unable to resolve imported buyer: ${contactLookupError.message}`)
-          if (existingContact) contactId = existingContact.id
-          else {
-            const { data: contact, error: contactError } = await context.supabase.from("contacts").insert({ org_id: context.orgId, full_name: row.parsed.buyer_name, email: row.parsed.buyer_email, contact_type: "client", metadata: { imported_open_wip: true } }).select("id").single()
-            if (contactError || !contact) throw new Error(`Failed to create imported buyer: ${contactError?.message}`)
-            contactId = contact.id
-          }
+        if (!row.parsed.buyer_email) throw new Error(`Lot ${row.parsed.lot_number}: a sold home needs a buyer email`)
+        let contactId: string | null
+        const { data: existingContact, error: contactLookupError } = await context.supabase.from("contacts").select("id").eq("org_id", context.orgId).ilike("email", String(row.parsed.buyer_email).replace(/[\\%_]/g, "\\$&")).limit(1).maybeSingle()
+        if (contactLookupError) throw new Error(`Unable to resolve imported buyer: ${contactLookupError.message}`)
+        if (existingContact) contactId = existingContact.id
+        else {
+          const { data: contact, error: contactError } = await context.supabase.from("contacts").insert({ org_id: context.orgId, full_name: row.parsed.buyer_name, email: row.parsed.buyer_email, contact_type: "client", metadata: { imported_open_wip: true } }).select("id").single()
+          if (contactError || !contact) throw new Error(`Failed to create imported buyer: ${contactError?.message}`)
+          contactId = contact.id
         }
-        if (contactId) {
-          const { error } = await context.supabase.from("projects").update({ client_id: contactId }).eq("org_id", context.orgId).eq("id", projectId)
-          if (error) throw new Error(`Failed to associate imported buyer: ${error.message}`)
-        }
+        const { error: buyerError } = await context.supabase.from("projects").update({ client_id: contactId }).eq("org_id", context.orgId).eq("id", projectId)
+        if (buyerError) throw new Error(`Failed to associate imported buyer: ${buyerError.message}`)
         const { error: contractError } = await context.supabase.from("contracts").insert({ org_id: context.orgId, project_id: projectId, number: `WIP-${String(row.parsed.community).slice(0, 3).toUpperCase()}-${row.parsed.lot_number}`, title: `Imported purchase agreement — Lot ${row.parsed.lot_number}`, status: "active", signed_at: row.parsed.sale_date ? `${row.parsed.sale_date}T00:00:00Z` : null, contract_type: "purchase_agreement", total_cents: row.parsed.sale_price_cents, currency: "usd", effective_date: row.parsed.sale_date ?? asOfDate, snapshot: { imported_open_wip: true, as_of_date: asOfDate, agreement_total_only: true } })
         if (contractError) throw new Error(`Failed to create imported purchase agreement: ${contractError.message}`)
       }

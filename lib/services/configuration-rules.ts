@@ -138,7 +138,7 @@ export async function assertProjectConfiguration(orgId: string, projectId: strin
     .eq("org_id", orgId).eq("project_id", projectId).maybeSingle()
   if (lotError) throw new Error(`Unable to verify home configuration scope: ${lotError.message}`)
   const resolved = await resolveOptionPricing({ orgId, items: optionIds.map((optionId) => ({ optionId })),
-    communityId: lot?.community_id ?? undefined, housePlanVersionId: lot?.house_plan_version_id ?? undefined })
+    communityId: lot?.community_id ?? undefined, requirePlanVersion: Boolean(lot?.community_id), housePlanVersionId: lot?.house_plan_version_id ?? undefined })
   if (resolved.length !== optionIds.length) throw new Error("Unable to resolve the complete home configuration")
   const byRequestedId = new Map(optionIds.map((id, index) => [id, resolved[index]]))
   const changed = new Set(changes.map((change) => change.selectionId))
@@ -174,7 +174,7 @@ export async function assertSalesConfiguration(orgId: string, items: Array<{ opt
     optionIds.push(...rows.map((row) => row.option_id))
   }
   const uniqueIds = [...new Set(optionIds)]
-  const resolved = await resolveOptionPricing({ orgId, items: uniqueIds.map((optionId) => ({ optionId })), ...scope })
+  const resolved = await resolveOptionPricing({ orgId, items: uniqueIds.map((optionId) => ({ optionId })), ...scope, requirePlanVersion: Boolean(scope.communityId) })
   if (resolved.length !== uniqueIds.length || resolved.some((item) => !item.optionId)) throw new Error("Unable to resolve the complete sales configuration")
   if (resolved.some((item) => !item.available)) throw new Error("A configured package contains unavailable options")
   await validateOptionSet(orgId, [...new Set(resolved.map((item) => item.optionId!))])

@@ -12,7 +12,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { listAppointments, upsertAppointment, upsertPackage } = freshRequire("lib/services/option-catalog.ts")
+const { listAppointments, resolveOptionPricing, upsertAppointment, upsertPackage } = freshRequire("lib/services/option-catalog.ts")
 
 const MINE = id(1)
 const THEIRS = id(2)
@@ -154,5 +154,56 @@ describe("upsertPackage", () => {
     const { service, saves } = packageHarness({ permissions: ["selections.catalog.manage", "financials.margin.read"] })
     await service.run(() => upsertPackage({ ...request, costCents: null }))
     assert.equal(saves[0].p_fields.cost_cents, null)
+  })
+})
+
+describe("resolveOptionPricing context and money", () => {
+  const OPTION = id(31)
+  const CATEGORY = id(32)
+  const VERSION = id(33)
+  const option = (overrides = {}) => ({
+    id: OPTION, org_id: ORG, category_id: CATEGORY, parent_option_id: null, community_id: null,
+    price_cents: 5000, cost_cents: 3000, is_available: true, is_archived: false, ...overrides,
+  })
+  function pricing(rows) {
+    return createServiceHarness({
+      tables: {
+        selection_options: rows,
+        selection_packages: [],
+        selection_categories: [{ id: CATEGORY, org_id: ORG, parent_category_id: null, community_id: null, is_archived: false }],
+        selection_catalog_prices: [],
+      },
+    })
+  }
+
+  test("a community home without a pinned plan version is refused, not priced at the base price", async () => {
+    const service = pricing([option()])
+    await assert.rejects(
+      service.run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], communityId: COMMUNITY, requirePlanVersion: true })),
+      /no pinned plan version/,
+    )
+  })
+
+  test("a home with neither community nor plan version gets the base price and says why", async () => {
+    const service = pricing([option()])
+    const [row] = await service.run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }] }))
+    assert.equal(row.priceCents, 5000)
+    assert.equal(row.baseReason, "no_plan_version")
+  })
+
+  test("a plan-scoped price carries no base-price reason", async () => {
+    const service = pricing([option()])
+    const [row] = await service.run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], housePlanVersionId: VERSION }))
+    assert.equal(row.baseReason, null)
+  })
+
+  test("resolved money must be non-negative whole cents", async () => {
+    for (const bad of [{ price_cents: -1 }, { price_cents: 10.5 }, { cost_cents: -5 }, { cost_cents: 1.25 }]) {
+      const service = pricing([option(bad)])
+      await assert.rejects(
+        service.run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }] })),
+        /non-negative whole number of cents/,
+      )
+    }
   })
 })

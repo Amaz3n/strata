@@ -60,6 +60,16 @@ test("lot lifecycle requires projects for started and force for leaving terminal
   )
 })
 
+test("a lot closes only with a home, and a home never sits on a lot in a land state", () => {
+  assert.throws(() => assertLotStatusTransition({ from: "assigned", to: "closed", hasProject: false }), /cannot be closed without a home/i)
+  assert.throws(() => assertLotStatusTransition({ from: "controlled", to: "closed", hasProject: false }), /cannot be closed without a home/i)
+  assert.doesNotThrow(() => assertLotStatusTransition({ from: "started", to: "closed", hasProject: true, force: true }))
+  for (const to of ["controlled", "owned", "developed"]) {
+    assert.throws(() => assertLotStatusTransition({ from: "started", to, hasProject: true, force: true }), /detach the home first/i)
+  }
+  assert.doesNotThrow(() => assertLotStatusTransition({ from: "controlled", to: "developed", hasProject: false }))
+})
+
 test("forward imports may skip states while backward corrections are single-step", () => {
   assert.doesNotThrow(() =>
     assertLotStatusTransition({ from: "controlled", to: "assigned", hasProject: false }),
