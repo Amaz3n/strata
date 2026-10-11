@@ -3,6 +3,7 @@ import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { isPlatformAdminId } from "@/lib/auth/platform"
+import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
 import { permissionDeniedDigest } from "@/lib/permission-denied"
@@ -416,7 +417,9 @@ async function logAuthorizationDecision(
       context: {
         scopes_evaluated: decision.scopesEvaluated,
       },
-      request_id: input.requestId ?? null,
+      // The column predates correlation ids and holds exactly that: the id the
+      // audit and event rows of the same unit of work carry.
+      request_id: input.requestId ?? (await correlationId()),
     })
   } catch (error) {
     console.error("Failed to write authorization audit log", error)

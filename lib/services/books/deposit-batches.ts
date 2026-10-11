@@ -149,7 +149,7 @@ export async function createDepositBatch(input: {
   if (error) throw new Error(`Failed to post deposit batch: ${error.message}`);
   const result = z.object({ id: z.string().uuid(), duplicate: z.boolean() }).parse(data);
   await Promise.all([
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "deposit_batch", entityId: result.id, after: { payment_ids: input.paymentIds, bank_transaction_id: input.bankTransactionId, fee_cents: feeCents }, source: "books.deposit_batch" }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "deposit_batch", entityId: result.id, after: { payment_ids: input.paymentIds, bank_transaction_id: input.bankTransactionId, fee_cents: feeCents }, source: "books.deposit_batch", critical: !result.duplicate }),
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.deposit_batch_posted", entityType: "deposit_batch", entityId: result.id, payload: { receipt_count: input.paymentIds.length, fee_cents: feeCents } }),
   ]);
   return result;

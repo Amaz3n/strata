@@ -1762,7 +1762,9 @@ export async function approveChangeOrder({
     action: "update",
     entityType: "change_order",
     entityId: data.id,
+    before: { status: existing.status, total_cents: existing.total_cents },
     after: data,
+    critical: true,
   })
 
   return mapChangeOrderRow(data as ChangeOrderRow)

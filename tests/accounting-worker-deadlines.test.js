@@ -14,6 +14,7 @@ function load(file, stubs = {}, extra = "") {
   mod.require = (name) => {
     if (Object.hasOwn(stubs, name)) return stubs[name]
     if (name === "server-only") return {}
+    if (name === "@/lib/observability/correlation") return { correlatedFetch: (fetchRequest = globalThis.fetch) => fetchRequest, correlationId: async () => "worker-test" }
     if (["@/lib/integrations/accounting/qbo/cdc", "@/lib/integrations/accounting/qbo/cdc-recovery", "@/lib/integrations/accounting/qbo/webhook"].includes(name)) return require("./fixtures/qbo-cdc-runtime").load(`${name.slice(2)}.ts`, stubs)
     if (
       [

@@ -40,6 +40,7 @@ then the reference docs below.
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
 | [`reference/pipeline.md`](reference/pipeline.md) | The one-screen pipeline: whose move it is, price firmness, the document that hardens from budget to agreement, client questions, and Start building. |
 | [`reference/drawings-workspace.md`](reference/drawings-workspace.md) | The modeless drawings workspace: item-first measuring, one-click room fill, the takeoff ledger and estimate handoff, and the 3D model as a view of the sheets. |
+| [`reference/audit-trail.md`](reference/audit-trail.md) | Evidence rows and correlation ids, which money mutations are transactional vs critical-audited, and the separation-of-duties rules and their refusal log. |
 | [`reference/payable-waivers.md`](reference/payable-waivers.md) | Incoming waiver preparation, review, payment/closeout integration, and migration/QA status. |
 | [`report-export-api.md`](report-export-api.md) | Report export route contract. |
 | [`repository-health.md`](repository-health.md) | Continuous reachability, deletion, dependency, and plan-lifecycle rules. |

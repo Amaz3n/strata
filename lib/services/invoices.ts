@@ -2119,16 +2119,6 @@ export async function issueInvoiceWithContext(
     throw new Error(`Failed to issue invoice: ${issueError?.message ?? "unknown error"}`)
   }
 
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "invoice",
-    entityId: invoiceId,
-    before: { status: existing.status, client_visible: existing.client_visible, sent_at: existing.sent_at },
-    after: { status: "sent", client_visible: true, sent_at: sentAt },
-  })
-
   await deliverIssuedInvoice({
     orgId: resolvedOrgId,
     invoiceId,
@@ -2137,6 +2127,18 @@ export async function issueInvoiceWithContext(
     totalCents: Number(issued.total_cents ?? existing.total_cents ?? 0),
     dueDate: (issued.due_date as string | null) ?? existing.due_date ?? null,
     recipients: sentTo,
+  })
+
+  // Critical, so last: a pending audit row must not also cost the invoice its delivery.
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: { status: existing.status, client_visible: existing.client_visible, sent_at: existing.sent_at },
+    after: { status: "sent", client_visible: true, sent_at: sentAt },
+    critical: true,
   })
 }
 
@@ -2354,6 +2356,9 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     entityId: invoiceId,
     payload: { invoice_number: existing.invoice_number, project_id: existing.project_id },
   })
+  if (hasAccountingExternalId(existingAccountingState)) {
+    await enqueueInvoiceSync(invoiceId, resolvedOrgId)
+  }
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -2362,10 +2367,8 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     entityId: invoiceId,
     before: existing,
     after: data,
+    critical: true,
   })
-  if (hasAccountingExternalId(existingAccountingState)) {
-    await enqueueInvoiceSync(invoiceId, resolvedOrgId)
-  }
 
   return mapInvoiceRow(data as InvoiceRow, existingAccountingState)
 }

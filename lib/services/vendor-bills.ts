@@ -48,8 +48,8 @@ import { readEvenFlowAssessment, type EvenFlowPriceAssessment } from "@/lib/fina
 import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { assertPayableApprovalPeriodOpen, notifyPayableApprovalDecision } from "@/lib/services/payable-approval-gate"
-import { BILL_SELF_APPROVAL_MESSAGE } from "@/lib/financials/payable-separation"
-import { refuseSelfApprovedBills } from "@/lib/services/payable-separation"
+import { BILL_SELF_APPROVAL_MESSAGE } from "@/lib/financials/separation-of-duties"
+import { refuseSelfApprovedBills } from "@/lib/services/separation-of-duties"
 import { createCompany, getCompany, saveCompanyAccountingVendorLink } from "@/lib/services/companies"
 import { assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 

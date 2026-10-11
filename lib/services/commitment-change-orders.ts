@@ -7,6 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
+import { refuseSeparationOfDuties } from "@/lib/services/separation-of-duties"
 import { recordEvent } from "@/lib/services/events"
 import { createPrimeCoFromCommitmentCos, fetchChangeOrder, recomputeChangeOrderCost } from "@/lib/services/change-orders"
 import {
@@ -720,14 +721,25 @@ export async function approveCommitmentChangeOrder({
   const existing = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
 
-  const blocked = vpoApprovalBlockReason({
-    status: existing.status,
-    isVariance: Boolean(existing.reason_code_id),
-    requestedBy: existing.requested_by,
-    approverId: userId,
-  })
+  const approval = { status: existing.status, isVariance: Boolean(existing.reason_code_id), approverId: userId }
+  const blocked = vpoApprovalBlockReason({ ...approval, requestedBy: null })
   if (blocked) throw new Error(blocked)
   if (!PENDING_STATUSES.includes(existing.status)) throw new Error("This change order is already approved.")
+  // With the status settled, a remaining block is the requester approving
+  // their own variance order: refused and audited.
+  const selfApproval = vpoApprovalBlockReason({ ...approval, requestedBy: existing.requested_by })
+  if (selfApproval) {
+    await refuseSeparationOfDuties({
+      orgId: resolvedOrgId,
+      userId,
+      actionKey: "vpo.approve",
+      resourceType: "commitment_change_order",
+      resourceId: commitmentChangeOrderId,
+      projectId: existing.project_id,
+      rule: "variance_order.requester_cannot_approve",
+      message: selfApproval,
+    })
+  }
 
   let approvalPermission = "commitment.write"
   if (existing.reason_code_id) {
@@ -786,16 +798,6 @@ export async function approveCommitmentChangeOrder({
   const approved = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
   if (!approved) throw new Error("Failed to reload commitment change order")
 
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "commitment_change_order",
-    entityId: commitmentChangeOrderId,
-    before: existing as any,
-    after: approved as any,
-  })
-
   await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -807,6 +809,18 @@ export async function approveCommitmentChangeOrder({
       commitment_id: approved.commitment_id,
       total_cents: approved.total_cents,
     },
+  })
+
+  // Last, so a pending audit row cannot also cost the approval its event.
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "commitment_change_order",
+    entityId: commitmentChangeOrderId,
+    before: existing as any,
+    after: approved as any,
+    critical: true,
   })
 
   return approved

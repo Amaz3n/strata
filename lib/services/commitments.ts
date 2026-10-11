@@ -588,6 +588,8 @@ export async function updateCommitment({
     entityId: data.id as string,
     before: existing,
     after: data,
+    // Approving is what issues the commitment to the vendor.
+    critical: parsed.status === "approved" && existing.status !== "approved",
   })
 
   const [composed] = await enrichCommitments(supabase, resolvedOrgId, [mapCommitment(data)])
@@ -647,6 +649,14 @@ async function applyCommitmentExecution({
     throw new Error(`Failed to mark commitment executed: ${error?.message}`)
   }
 
+  await recordEvent({
+    orgId,
+    eventType: "commitment_executed",
+    entityType: "commitment",
+    entityId: existing.id as string,
+    payload: { project_id: existing.project_id, ...eventPayload },
+  })
+
   await recordAudit({
     orgId,
     actorId,
@@ -655,14 +665,7 @@ async function applyCommitmentExecution({
     entityId: existing.id as string,
     before: existing,
     after: data,
-  })
-
-  await recordEvent({
-    orgId,
-    eventType: "commitment_executed",
-    entityType: "commitment",
-    entityId: existing.id as string,
-    payload: { project_id: existing.project_id, ...eventPayload },
+    critical: true,
   })
 
   const [composed] = await enrichCommitments(supabase, orgId, [mapCommitment(data)])

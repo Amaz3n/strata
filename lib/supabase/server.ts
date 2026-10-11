@@ -9,6 +9,7 @@ import { createServerClient } from "@supabase/ssr"
 import { createClient as createBrowserlessClient, type SupabaseClient } from "@supabase/supabase-js"
 import { createWorkerDatabaseFetch, hasWorkerDatabaseScope } from "@/lib/supabase/worker-request-context"
 import { getScopedServiceSupabaseClient } from "@/lib/supabase/service-client-context"
+import { correlatedFetch } from "@/lib/observability/correlation"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -41,7 +42,7 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
     if (forwardedFor) forwardedHeaders["X-Forwarded-For"] = forwardedFor
 
     return createServerClient(url, anonKey, {
-      global: { headers: forwardedHeaders, ...(hasWorkerDatabaseScope() ? { fetch: createWorkerDatabaseFetch() } : {}) },
+      global: { headers: forwardedHeaders, fetch: correlatedFetch(hasWorkerDatabaseScope() ? createWorkerDatabaseFetch() : undefined) },
       cookies: {
         getAll: () => {
           return cookieStore.getAll()
@@ -66,7 +67,7 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
     // If cookies fail, create a client without cookies (for server-side operations)
     console.warn('Cookies not available, creating client without cookies:', error)
     return createBrowserlessClient(url, anonKey, {
-      ...(hasWorkerDatabaseScope() ? { global: { fetch: createWorkerDatabaseFetch() } } : {}),
+      global: { fetch: correlatedFetch(hasWorkerDatabaseScope() ? createWorkerDatabaseFetch() : undefined) },
       auth: {
         autoRefreshToken: false,
         persistSession: false,
@@ -88,6 +89,7 @@ export function createServiceSupabaseClient(): SupabaseClient {
     const serviceRoleKey = requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY")
 
     serviceClient = createBrowserlessClient(url, serviceRoleKey, {
+      global: { fetch: correlatedFetch() },
       auth: {
         autoRefreshToken: false,
         persistSession: false,
@@ -122,6 +124,6 @@ export function createAccountingWorkerSupabaseClient(): SupabaseClient {
   return createBrowserlessClient(requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL"),
     requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY"), {
       auth: { autoRefreshToken: false, persistSession: false },
-      global: { fetch: createWorkerDatabaseFetch() },
+      global: { fetch: correlatedFetch(createWorkerDatabaseFetch()) },
     })
 }

@@ -253,6 +253,9 @@ async function postBooksJournalEntryInternal(input: {
         entry_kind: draft.entryKind,
       },
       source: "books.post",
+      // A person's posting is evidence the journal cannot go without; a job's
+      // posting is receipted by its fact and posting key.
+      critical: actorId !== null,
     }),
   ]);
   return { id: entryId, created: true };
@@ -448,6 +451,7 @@ export async function reverseBooksJournalEntry(input: {
     reversalDate: input.reversalDate,
     reason: input.reason,
     orgId: context.orgId,
+    actorId: context.userId,
   });
 }
 
@@ -470,6 +474,7 @@ async function reverseJournalEntryInternal(input: {
   reversalDate: string;
   reason: string;
   orgId: string;
+  actorId?: string;
 }) {
   const context = { orgId: input.orgId };
   const service = createServiceSupabaseClient();
@@ -597,12 +602,14 @@ async function reverseJournalEntryInternal(input: {
       }),
       recordAudit({
         orgId: context.orgId,
+        actorId: input.actorId,
         action: "update",
         entityType: "journal_entry",
         entityId: entry.id,
         before: { status: "posted" },
         after: { status: "reversed", reversal_entry_id: result.id },
         source: "books.reverse",
+        critical: input.actorId !== undefined,
       }),
     ]);
   }

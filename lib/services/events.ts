@@ -1,5 +1,6 @@
 import { insertImmutableRecord } from "@/lib/services/immutable-record"
 import { afterResponse } from "@/lib/observability/after-response"
+import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
@@ -178,7 +179,14 @@ export async function recordEvent(input: EventInput) {
     data = { id: receipt.record.id, created_at: receipt.record.created_at }
     if (!receipt.created) return data
   } else {
-    const result = await supabase.from("events").insert(eventValues).select("id, created_at").single()
+    // An idempotent receipt above is compared column by column on replay, so it
+    // takes its correlation id from the database default instead: a retry from
+    // another request must not read as a different event.
+    const result = await supabase
+      .from("events")
+      .insert({ ...eventValues, correlation_id: await correlationId() })
+      .select("id, created_at")
+      .single()
     if (result.error || !result.data) throw new Error(`Failed to record event: ${result.error?.message ?? "Record unavailable"}`)
     data = result.data
   }

@@ -32,6 +32,7 @@ import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimat
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { normalizeProductTier } from "@/lib/product-tier"
 import { recordAudit } from "@/lib/services/audit"
+import { refuseSeparationOfDuties } from "@/lib/services/separation-of-duties"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -835,14 +836,26 @@ export async function decidePaymentRun(
   const stepUpVerifiedAt = await (options.resolveStepUp ?? requireRecentPaymentStepUp)()
   const supabase = createServiceSupabaseClient()
   const material = await loadRunHashMaterial(parsed.run_id, context.orgId)
-  if (material.contentHash !== parsed.content_hash || material.run.content_hash !== parsed.content_hash) throw new Error("Payment run changed after review; reload it before deciding")
-  if (parsed.decision === "approved") await assertRunPayablesStillCurrent(material.run, material.items, context.orgId)
+  // Checked before anything else about the run, so every attempt by its
+  // preparer is refused and audited, not only one against a current run.
   if (
     material.run.requested_by === context.userId &&
     !requesterMayApprovePaymentRun(material.run.control_snapshot)
   ) {
-    throw new Error("You prepared this payment, so someone else has to approve it")
+    await refuseSeparationOfDuties({
+      orgId: context.orgId,
+      userId: context.userId,
+      actionKey: "payment.approve_run",
+      resourceType: "payment_run",
+      resourceId: parsed.run_id,
+      projectId: null,
+      rule: "payment_run.preparer_cannot_approve",
+      message: "You prepared this payment, so someone else has to approve it",
+      context: { decision: parsed.decision },
+    })
   }
+  if (material.contentHash !== parsed.content_hash || material.run.content_hash !== parsed.content_hash) throw new Error("Payment run changed after review; reload it before deciding")
+  if (parsed.decision === "approved") await assertRunPayablesStillCurrent(material.run, material.items, context.orgId)
   // Permission says you *can* approve; the roster says the org designated you to,
   // and for which work — a division-scoped approver cannot release a run that
   // reaches outside their division.
@@ -907,7 +920,7 @@ export async function decidePaymentRun(
     // every case. The date and the blocking reason ride along so the copy can
     // say which, without a second read.
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "payment_run", entityId: parsed.run_id, payload: { content_hash: parsed.content_hash, status: decisionStatus, total_debit_cents: Number(material.run.total_debit_cents), reason: parsed.reason ?? null, release: release.kind, release_scheduled_for: release.kind === "scheduled" ? release.scheduledFor : null, release_reason: release.kind === "queued" || release.kind === "blocked" ? release.reason : null, ...summary } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "payment_run_approval", entityId: parsed.run_id, after: { decision: parsed.decision, content_hash: parsed.content_hash, release: release.kind } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "payment_run_approval", entityId: parsed.run_id, before: { status: material.run.status }, after: { status: decisionStatus, decision: parsed.decision, content_hash: parsed.content_hash, release: release.kind }, critical: true }),
   ])
   return { status: typeof decisionStatus === "string" ? decisionStatus : "pending_approval", release }
 }

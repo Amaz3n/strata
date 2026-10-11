@@ -57,6 +57,8 @@ import { runVendorBillApprovalProjection } from "@/lib/services/vendor-bills"
 import { BOOKS_EXPORT_JOB_TYPE, runBooksExportJob } from "@/lib/services/books/exports"
 import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceIssuance, runScheduledInvoiceSend } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
+import { AUDIT_RETRY_JOB_TYPE, writeDeferredAudit } from "@/lib/services/audit"
+import { withCorrelation } from "@/lib/observability/correlation"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
@@ -165,6 +167,7 @@ const OUTBOX_JOB_TYPES = [
   INVOICE_ISSUANCE_JOB_TYPE,
   SCHEDULED_INVOICE_SEND_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
+  AUDIT_RETRY_JOB_TYPE,
 ]
 
 // Create a VISIBLE test image for the tiled viewer
@@ -537,116 +540,126 @@ async function processOutboxQueue(request: NextRequest) {
 
   for (const job of jobs as any[]) {
     try {
-      if (job.job_type === "finish_pay_application_certification") {
-        await finishPayApplicationCertification(job.org_id, job.payload)
-      } else if (job.job_type === "deliver_notification") {
-        await deliverNotificationJob(supabase, job)
-      } else if (job.job_type === "deliver_push") {
-        await deliverNotificationPush(supabase, job)
-      } else if (job.job_type === "send_daily_log_mention_email") {
-        await sendDailyLogMentionEmailJob(supabase, job)
-      } else if (job.job_type === "finalize_document_signing") {
-        await finalizeDocumentSigning(job.org_id, job.payload.signing_request_id)
-      } else if (job.job_type === "send_esign_invitation") {
-        await deliverSigningInvitation({ orgId: job.org_id, requestId: job.payload.signing_request_id })
-      } else if (job.job_type === "send_esign_reminder") {
-        await deliverAutomaticSigningReminder({ orgId: job.org_id, requestId: job.payload.signing_request_id, deliveryKey: job.payload.delivery_key })
-      } else if (job.job_type === "send_esign_executed_email") {
-        await sendESignExecutedEmailJob(supabase, job)
-      } else if (job.job_type === "send_bid_email") {
-        await sendBidEmailJob(supabase, job)
-      } else if (job.job_type === "process_esign_execution_side_effects") {
-        await processESignExecutionSideEffectsJob(supabase, job)
-      } else if (job.job_type === "refresh_drawing_sheets_list") {
-        await refreshDrawingSheetsListJob(supabase)
-      } else if (job.job_type === "index_file") {
-        await indexFileJob(supabase, job)
-      } else if (job.job_type === "delete_file_blob") {
-        await processFileBlobCleanup(job.org_id, job.payload ?? {})
-      } else if (job.job_type === "export_documents") {
-        await processDocumentExport(job.org_id, job.payload ?? {}, (job.retry_count ?? 0) + 1 >= MAX_RETRIES)
-      } else if (job.job_type === "cleanup_document_export") {
-        await processDocumentExportCleanup(job.org_id, job.payload ?? {})
-      } else if (job.job_type === "cleanup_document_transfer") {
-        await processDocumentTransferCleanup(job.org_id, job.payload ?? {})
-      } else if (job.job_type === "generate_file_preview") {
-        await generateFilePreviewJob(supabase, job)
-      } else if (job.job_type === "reindex_search") {
-        await reindexSearchJob(supabase, job)
-      } else if (job.job_type === "remove_search_index") {
-        await removeSearchIndexJob(supabase, job)
-      } else if (job.job_type === "process_inbound_bill_email") {
-        await processInboundBillEmailJob(job)
-      } else if (job.job_type === "selection_cutoff_recompute") {
-        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
-        if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
-        await recomputeProjectSelectionCutoffs(projectId, job.org_id)
-      } else if (job.job_type === "warranty_enroll_coverage") {
-        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
-        const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
-        if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
-        const source = job.payload?.source === "completion" ? "completion" : "closing"
-        await enrollProjectWarrantyCoverageFromSystem({ orgId: job.org_id, projectId, effectiveDate, source })
-      } else if (job.job_type === "reanchor_takeoff_markups") {
-        const revisionId = typeof job.payload?.revision_id === "string" ? job.payload.revision_id : null
-        if (!revisionId) throw new Error("Reanchor job is missing revision_id")
-        await reanchorRevisionMeasurements(revisionId, job.org_id, supabase)
-      } else if (job.job_type === "process_payable_intake") {
-        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
-        if (!billId) throw new Error("Invoice intake is missing bill_id")
-        await processPayableIntake(billId, job.org_id)
-      } else if (job.job_type === "process_quick_capture") {
-        const draftId = typeof job.payload?.draft_id === "string" ? job.payload.draft_id : null
-        if (!draftId) throw new Error("Quick-capture job is missing draft_id")
-        await processQuickCaptureDraft(draftId, job.org_id)
-      } else if (job.job_type === "caption_photo") {
-        const photoId = typeof job.payload?.photo_id === "string" ? job.payload.photo_id : null
-        if (!photoId) throw new Error("Photo-caption job is missing photo_id")
-        await processPhotoCaption(photoId, job.org_id)
-      } else if (job.job_type === "process_inbound_project_email") {
-        const emailId = typeof job.payload?.email_id === "string" ? job.payload.email_id : null
-        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
-        if (!emailId || !projectId) throw new Error("Project-email ingest job is missing email_id or project_id")
-        await processInboundProjectEmail({
-          orgId: job.org_id,
-          projectId,
-          emailId,
-          receivedAt: typeof job.payload?.received_at === "string" ? job.payload.received_at : null,
-        })
-      } else if (job.job_type === "classify_project_email") {
-        const projectEmailId = typeof job.payload?.project_email_id === "string" ? job.payload.project_email_id : null
-        if (!projectEmailId) throw new Error("Project-email classification job is missing project_email_id")
-        await classifyProjectEmail({ orgId: job.org_id, projectEmailId, body: typeof job.payload?.body === "string" ? job.payload.body : undefined })
-      } else if (job.job_type === "chase_vendor_bill_waiver") {
-        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
-        if (!billId) throw new Error("Waiver chase is missing bill_id")
-        await sendVendorBillWaiverChase(job.org_id, billId, {
-          kind: job.payload?.waiver_kind === "unconditional" ? "unconditional" : "signature",
-          attempt: typeof job.payload?.attempt === "number" ? job.payload.attempt : 1,
-        })
-      } else if (job.job_type === "extract_coi_facts") {
-        const fileId = typeof job.payload?.file_id === "string" ? job.payload.file_id : null
-        if (!fileId) throw new Error("Certificate-of-insurance extraction is missing file_id")
-        // Returns its outcome as data — an unreadable certificate completes the
-        // job and leaves the payment hold on the stored expiry.
-        await extractCoiFacts(fileId, job.org_id)
-      } else if (job.job_type === INVOICE_ISSUANCE_JOB_TYPE) {
-        await runInvoiceIssuance(job.org_id, job.payload ?? {})
-      } else if (job.job_type === SCHEDULED_INVOICE_SEND_JOB_TYPE) {
-        await runScheduledInvoiceSend(job.org_id, job.payload ?? {})
-      } else if (job.job_type === "project_vendor_bill_approval") {
-        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
-        if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
-        await runVendorBillApprovalProjection(job.org_id, billId)
-      } else if (job.job_type === BOOKS_EXPORT_JOB_TYPE) {
-        const exportId = typeof job.payload?.export_id === "string" ? job.payload.export_id : null
-        if (!exportId) throw new Error("Books export job is missing export_id")
-        await runBooksExportJob(job.org_id, exportId)
-      } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
-        const target = floorplanTargetSchema.safeParse(job.payload?.target)
-        if (!target.success) throw new Error("Floorplan interpretation has no valid target")
-        await runFloorplanInterpretation({ orgId: job.org_id, target: target.data, generationId: typeof job.payload?.generationId === "string" ? job.payload.generationId : undefined })
-      } else {
+      // Every row a job writes (audit, events, authorization decisions) carries
+      // the job as its correlation id, so one job's effects can be read together.
+      const known = await withCorrelation(`outbox:${job.id}`, async () => {
+        if (job.job_type === "finish_pay_application_certification") {
+          await finishPayApplicationCertification(job.org_id, job.payload)
+        } else if (job.job_type === "deliver_notification") {
+          await deliverNotificationJob(supabase, job)
+        } else if (job.job_type === "deliver_push") {
+          await deliverNotificationPush(supabase, job)
+        } else if (job.job_type === "send_daily_log_mention_email") {
+          await sendDailyLogMentionEmailJob(supabase, job)
+        } else if (job.job_type === "finalize_document_signing") {
+          await finalizeDocumentSigning(job.org_id, job.payload.signing_request_id)
+        } else if (job.job_type === "send_esign_invitation") {
+          await deliverSigningInvitation({ orgId: job.org_id, requestId: job.payload.signing_request_id })
+        } else if (job.job_type === "send_esign_reminder") {
+          await deliverAutomaticSigningReminder({ orgId: job.org_id, requestId: job.payload.signing_request_id, deliveryKey: job.payload.delivery_key })
+        } else if (job.job_type === "send_esign_executed_email") {
+          await sendESignExecutedEmailJob(supabase, job)
+        } else if (job.job_type === "send_bid_email") {
+          await sendBidEmailJob(supabase, job)
+        } else if (job.job_type === "process_esign_execution_side_effects") {
+          await processESignExecutionSideEffectsJob(supabase, job)
+        } else if (job.job_type === "refresh_drawing_sheets_list") {
+          await refreshDrawingSheetsListJob(supabase)
+        } else if (job.job_type === "index_file") {
+          await indexFileJob(supabase, job)
+        } else if (job.job_type === "delete_file_blob") {
+          await processFileBlobCleanup(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "export_documents") {
+          await processDocumentExport(job.org_id, job.payload ?? {}, (job.retry_count ?? 0) + 1 >= MAX_RETRIES)
+        } else if (job.job_type === "cleanup_document_export") {
+          await processDocumentExportCleanup(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "cleanup_document_transfer") {
+          await processDocumentTransferCleanup(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "generate_file_preview") {
+          await generateFilePreviewJob(supabase, job)
+        } else if (job.job_type === "reindex_search") {
+          await reindexSearchJob(supabase, job)
+        } else if (job.job_type === "remove_search_index") {
+          await removeSearchIndexJob(supabase, job)
+        } else if (job.job_type === "process_inbound_bill_email") {
+          await processInboundBillEmailJob(job)
+        } else if (job.job_type === "selection_cutoff_recompute") {
+          const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+          if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
+          await recomputeProjectSelectionCutoffs(projectId, job.org_id)
+        } else if (job.job_type === "warranty_enroll_coverage") {
+          const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+          const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
+          if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
+          const source = job.payload?.source === "completion" ? "completion" : "closing"
+          await enrollProjectWarrantyCoverageFromSystem({ orgId: job.org_id, projectId, effectiveDate, source })
+        } else if (job.job_type === "reanchor_takeoff_markups") {
+          const revisionId = typeof job.payload?.revision_id === "string" ? job.payload.revision_id : null
+          if (!revisionId) throw new Error("Reanchor job is missing revision_id")
+          await reanchorRevisionMeasurements(revisionId, job.org_id, supabase)
+        } else if (job.job_type === "process_payable_intake") {
+          const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+          if (!billId) throw new Error("Invoice intake is missing bill_id")
+          await processPayableIntake(billId, job.org_id)
+        } else if (job.job_type === "process_quick_capture") {
+          const draftId = typeof job.payload?.draft_id === "string" ? job.payload.draft_id : null
+          if (!draftId) throw new Error("Quick-capture job is missing draft_id")
+          await processQuickCaptureDraft(draftId, job.org_id)
+        } else if (job.job_type === "caption_photo") {
+          const photoId = typeof job.payload?.photo_id === "string" ? job.payload.photo_id : null
+          if (!photoId) throw new Error("Photo-caption job is missing photo_id")
+          await processPhotoCaption(photoId, job.org_id)
+        } else if (job.job_type === "process_inbound_project_email") {
+          const emailId = typeof job.payload?.email_id === "string" ? job.payload.email_id : null
+          const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+          if (!emailId || !projectId) throw new Error("Project-email ingest job is missing email_id or project_id")
+          await processInboundProjectEmail({
+            orgId: job.org_id,
+            projectId,
+            emailId,
+            receivedAt: typeof job.payload?.received_at === "string" ? job.payload.received_at : null,
+          })
+        } else if (job.job_type === "classify_project_email") {
+          const projectEmailId = typeof job.payload?.project_email_id === "string" ? job.payload.project_email_id : null
+          if (!projectEmailId) throw new Error("Project-email classification job is missing project_email_id")
+          await classifyProjectEmail({ orgId: job.org_id, projectEmailId, body: typeof job.payload?.body === "string" ? job.payload.body : undefined })
+        } else if (job.job_type === "chase_vendor_bill_waiver") {
+          const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+          if (!billId) throw new Error("Waiver chase is missing bill_id")
+          await sendVendorBillWaiverChase(job.org_id, billId, {
+            kind: job.payload?.waiver_kind === "unconditional" ? "unconditional" : "signature",
+            attempt: typeof job.payload?.attempt === "number" ? job.payload.attempt : 1,
+          })
+        } else if (job.job_type === "extract_coi_facts") {
+          const fileId = typeof job.payload?.file_id === "string" ? job.payload.file_id : null
+          if (!fileId) throw new Error("Certificate-of-insurance extraction is missing file_id")
+          // Returns its outcome as data — an unreadable certificate completes the
+          // job and leaves the payment hold on the stored expiry.
+          await extractCoiFacts(fileId, job.org_id)
+        } else if (job.job_type === INVOICE_ISSUANCE_JOB_TYPE) {
+          await runInvoiceIssuance(job.org_id, job.payload ?? {})
+        } else if (job.job_type === SCHEDULED_INVOICE_SEND_JOB_TYPE) {
+          await runScheduledInvoiceSend(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "project_vendor_bill_approval") {
+          const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+          if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
+          await runVendorBillApprovalProjection(job.org_id, billId)
+        } else if (job.job_type === BOOKS_EXPORT_JOB_TYPE) {
+          const exportId = typeof job.payload?.export_id === "string" ? job.payload.export_id : null
+          if (!exportId) throw new Error("Books export job is missing export_id")
+          await runBooksExportJob(job.org_id, exportId)
+        } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
+          const target = floorplanTargetSchema.safeParse(job.payload?.target)
+          if (!target.success) throw new Error("Floorplan interpretation has no valid target")
+          await runFloorplanInterpretation({ orgId: job.org_id, target: target.data, generationId: typeof job.payload?.generationId === "string" ? job.payload.generationId : undefined })
+        } else if (job.job_type === AUDIT_RETRY_JOB_TYPE) {
+          await writeDeferredAudit(job.org_id, job.payload)
+        } else {
+          return false
+        }
+        return true
+      })
+      if (!known) {
         await supabase
           .from("outbox")
           .update({ status: "failed", last_error: "Unknown job type" })
