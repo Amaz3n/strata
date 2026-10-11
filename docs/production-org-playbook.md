@@ -414,3 +414,33 @@ an assignable role preset in the RBAC catalog — `org_sales_agent`,
 `org_starts_coordinator`, `org_purchasing_manager`,
 `org_design_studio_coordinator`, `org_warranty_manager`, `org_land_manager`,
 and `org_superintendent`. The earlier "no role presets" entry was stale.
+
+## Provisioning and deprovisioning
+
+**Provisioning never escalates.** Inviting someone is refused unless the inviter
+already holds every permission the target role and any granted overrides carry
+(org administrators are exempt), and a division-limited inviter can only invite
+into a subset of their own divisions. Inviting an email that is already an
+active or suspended member is refused; role and status change through the
+role-change and reactivate actions. Resetting a member's second factor follows
+the same rule against that member's role. Refusals land in
+`authorization_audit_log`.
+
+**Deprovisioning (suspend or remove) takes effect as follows:**
+
+- **Authority ends on the next request.** Membership is read from the database
+  on every authorization and there is no authority cache, so a suspended or
+  removed member is refused immediately.
+- **Sessions are revoked in the same call** (`revoke_user_sessions`), unless the
+  person is still active in another organization. Then this org's access still
+  ends per request; only the other org keeps the session.
+- **Queued authority is cancelled in the same call:** recurring invoice
+  schedules and scheduled reports they created are deactivated, pending outbox
+  jobs acting as them (scheduled invoice sends) are failed with a reason, their
+  payment approver roster rows are deleted, and their push device tokens are
+  removed. The counts are recorded in the `member_suspended` / `member_removed`
+  event. Reactivation does not resurrect any of it.
+- **The only caches** are the 600-second MFA gate proof cookies
+  (`MFA_GATE_TTL_SECONDS`), which carry no authority.
+- A member's MFA reset revokes all of their sessions, in every org, because the
+  factor is theirs and not the org's.

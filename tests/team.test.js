@@ -13,7 +13,7 @@ const {
 
 stubModule("@/lib/services/mailer", { sendInviteEmail: async () => {} })
 
-const { suspendMember, reactivateMember } = freshRequire("lib/services/team.ts")
+const { suspendMember, reactivateMember, removeMember, inviteTeamMember, resetMemberMfa } = freshRequire("lib/services/team.ts")
 const { getOrgSecurityPolicy, setOrgRequireMfa } = freshRequire("lib/services/org-security.ts")
 
 const ADMIN_ROLE = id(1)
@@ -119,6 +119,220 @@ test("reactivating a member does not touch sessions", async () => {
   assert.equal(statusOf(service, TARGET_MEMBERSHIP), "active")
   assert.deepEqual(revocations, [])
   assert.ok(service.events.some((entry) => entry.eventType === "member_reactivated"))
+})
+
+const OFFICE_ROLE = id(3)
+const OWNER_ROLE = id(4)
+const DIVISION_A = id(21)
+const DIVISION_B = id(22)
+
+/** An actor holding `members.manage` (not org.admin) inviting into an org with real role rows. */
+function inviteOrg({ permissions = ["members.manage", "invoice.read"], divisions, appUsers = [], extraMemberships = [] } = {}) {
+  const service = createServiceHarness({
+    permissions,
+    divisions,
+    tables: {
+      roles: [
+        { id: ADMIN_ROLE, key: "org_admin", scope: "org" },
+        { id: USER_ROLE, key: "org_user", scope: "org" },
+        { id: OFFICE_ROLE, key: "org_office_admin", scope: "org" },
+        { id: OWNER_ROLE, key: "org_owner", scope: "org" },
+      ],
+      role_permissions: [
+        { role_id: ADMIN_ROLE, permission_key: "org.admin" },
+        { role_id: OWNER_ROLE, permission_key: "org.admin" },
+        { role_id: OFFICE_ROLE, permission_key: "members.manage" },
+        { role_id: USER_ROLE, permission_key: "invoice.read" },
+      ],
+      app_users: appUsers,
+      orgs: [{ id: ORG, name: "Acme", slug: "acme" }],
+      project_members: [],
+      divisions: [
+        { id: DIVISION_A, org_id: ORG },
+        { id: DIVISION_B, org_id: ORG },
+      ],
+    },
+    rpc: { get_org_member_mfa_status: () => ({ data: [], error: null }) },
+  })
+  service.db.memberships.push(...extraMemberships)
+  return service
+}
+
+const invite = (overrides) => ({ email: "new@example.com", role: "org_user", ...overrides })
+const newUser = { id: id(30), email: "new@example.com", full_name: null }
+const memberRows = (service) => service.db.memberships.filter((row) => row.user_id !== ACTOR)
+
+test("an inviter without org.admin cannot invite an administrator or owner, and the denial is logged", async () => {
+  const service = inviteOrg({ appUsers: [newUser] })
+
+  for (const role of ["org_admin", "org_owner"]) {
+    await assert.rejects(service.run(() => inviteTeamMember({ input: invite({ role }) })), /cannot grant access you do not hold/)
+  }
+
+  assert.deepEqual(memberRows(service), [])
+  assert.ok(service.db.authorization_audit_log.some((row) => row.decision === "deny" && row.action_key === "org.admin"))
+})
+
+test("an inviter cannot grant a permission override they do not hold", async () => {
+  const service = inviteOrg({ appUsers: [newUser] })
+  const permissionOverrides = [{ permission_key: "invoice.send", effect: "grant" }]
+
+  await assert.rejects(service.run(() => inviteTeamMember({ input: invite({ permissionOverrides }) })), /cannot grant access/)
+  assert.deepEqual(memberRows(service), [])
+})
+
+test("an inviter can invite a role made only of permissions they hold", async () => {
+  const service = inviteOrg({ appUsers: [newUser] })
+
+  await service.run(() => inviteTeamMember({ input: invite() }))
+
+  assert.equal(memberRows(service)[0].status, "invited")
+  assert.equal(memberRows(service)[0].role_id, USER_ROLE)
+})
+
+test("an org administrator can invite an administrator", async () => {
+  const service = inviteOrg({ permissions: ["org.admin", "members.manage"], appUsers: [newUser] })
+
+  await service.run(() => inviteTeamMember({ input: invite({ role: "org_admin" }) }))
+
+  assert.equal(memberRows(service)[0].role_id, ADMIN_ROLE)
+})
+
+test("a division-limited inviter can only invite into their own divisions", async () => {
+  const service = inviteOrg({ divisions: [DIVISION_A], appUsers: [newUser] })
+
+  await assert.rejects(service.run(() => inviteTeamMember({ input: invite({ divisionScope: "all" }) })), /limited to your own divisions/)
+  await assert.rejects(
+    service.run(() => inviteTeamMember({ input: invite({ divisionScope: "assigned", divisionIds: [DIVISION_B] }) })),
+    /only assign divisions you belong to/,
+  )
+  assert.deepEqual(memberRows(service), [])
+
+  await service.run(() => inviteTeamMember({ input: invite({ divisionScope: "assigned", divisionIds: [DIVISION_A] }) }))
+  const invited = memberRows(service)[0]
+  assert.deepEqual(service.db.membership_divisions.filter((row) => row.membership_id === invited.id).map((row) => row.division_id), [DIVISION_A])
+})
+
+test("inviting an active or suspended member again is refused and changes nothing", async () => {
+  for (const status of ["active", "suspended"]) {
+    const service = inviteOrg({
+      appUsers: [newUser],
+      extraMemberships: [member({ user_id: newUser.id, status, role_id: OFFICE_ROLE })],
+    })
+
+    await assert.rejects(service.run(() => inviteTeamMember({ input: invite() })), /already/)
+
+    const row = memberRows(service)[0]
+    assert.equal(row.status, status)
+    assert.equal(row.role_id, OFFICE_ROLE)
+  }
+})
+
+test("suspending a member cancels what they queued to run as them", async () => {
+  const otherUser = id(40)
+  const { service } = orgWith({ members: [member()] })
+  Object.assign(service.db, {
+    invoice_schedules: [
+      { id: id(50), org_id: ORG, created_by: TARGET_USER, active: true },
+      { id: id(51), org_id: ORG, created_by: otherUser, active: true },
+    ],
+    report_schedules: [{ id: id(52), org_id: ORG, created_by: TARGET_USER, is_active: true }],
+    outbox: [
+      { id: 1, org_id: ORG, status: "pending", job_type: "issue_invoice_scheduled", payload: { actor_id: TARGET_USER } },
+      { id: 2, org_id: ORG, status: "pending", job_type: "issue_invoice_scheduled", payload: { actor_id: otherUser } },
+      { id: 3, org_id: OTHER_ORG, status: "pending", job_type: "issue_invoice_scheduled", payload: { actor_id: TARGET_USER } },
+    ],
+    payment_run_approvers: [
+      { org_id: ORG, user_id: TARGET_USER },
+      { org_id: ORG, user_id: otherUser },
+    ],
+    device_tokens: [{ id: id(53), org_id: ORG, user_id: TARGET_USER, token: "t" }],
+  })
+
+  await service.run(() => suspendMember(TARGET_MEMBERSHIP))
+
+  assert.deepEqual(service.db.invoice_schedules.map((row) => row.active), [false, true])
+  assert.deepEqual(service.db.report_schedules.map((row) => row.is_active), [false])
+  assert.deepEqual(service.db.outbox.map((row) => row.status), ["failed", "pending", "pending"])
+  assert.match(service.db.outbox[0].last_error, /Cancelled/)
+  assert.deepEqual(service.db.payment_run_approvers.map((row) => row.user_id), [otherUser])
+  assert.deepEqual(service.db.device_tokens, [])
+  const event = service.events.find((entry) => entry.eventType === "member_suspended")
+  assert.deepEqual(event.payload.queued, {
+    invoice_schedules: 1,
+    report_schedules: 1,
+    outbox_jobs: 1,
+    payment_approver_rows: 1,
+    device_tokens: 1,
+    failed: [],
+  })
+})
+
+test("removing a member sweeps too, and a person active elsewhere keeps their other devices", async () => {
+  const { service } = orgWith({ members: [member(), member({ id: id(15), org_id: OTHER_ORG })] })
+  Object.assign(service.db, {
+    invoice_schedules: [{ id: id(50), org_id: ORG, created_by: TARGET_USER, active: true }],
+    device_tokens: [
+      { id: id(53), org_id: ORG, user_id: TARGET_USER, token: "a" },
+      { id: id(54), org_id: OTHER_ORG, user_id: TARGET_USER, token: "b" },
+    ],
+  })
+
+  await service.run(() => removeMember(TARGET_MEMBERSHIP))
+
+  assert.equal(service.db.invoice_schedules[0].active, false)
+  assert.deepEqual(service.db.device_tokens.map((row) => row.token), ["b"])
+  assert.equal(service.events.find((entry) => entry.eventType === "member_removed").payload.queued.device_tokens, 1)
+})
+
+function mfaOrg({ permissions, targetRole }) {
+  const service = inviteOrg({
+    permissions,
+    extraMemberships: [member({ role_id: targetRole })],
+  })
+  const deleted = []
+  service.client.auth = {
+    admin: {
+      mfa: {
+        listFactors: async () => ({ data: { factors: [{ id: "f1", status: "verified" }] }, error: null }),
+        deleteFactor: async ({ id: factorId }) => {
+          deleted.push(factorId)
+          return { error: null }
+        },
+      },
+    },
+  }
+  const revocations = []
+  const rpc = service.client.rpc.bind(service.client)
+  service.client.rpc = (name, args) => {
+    if (name === "revoke_user_sessions") {
+      revocations.push(args.p_user_id)
+      return Promise.resolve({ data: 2, error: null })
+    }
+    return rpc(name, args)
+  }
+  return { service, deleted, revocations }
+}
+
+test("an MFA reset is refused for a member whose role carries permissions the actor lacks", async () => {
+  const { service, deleted, revocations } = mfaOrg({ permissions: ["members.manage"], targetRole: ADMIN_ROLE })
+
+  await assert.rejects(service.run(() => resetMemberMfa(TARGET_MEMBERSHIP)), /cannot grant access/)
+
+  assert.deepEqual(deleted, [])
+  assert.deepEqual(revocations, [])
+})
+
+test("an MFA reset removes the factor, ends every session of the member and is announced", async () => {
+  const { service, deleted, revocations } = mfaOrg({ permissions: ["members.manage", "invoice.read"], targetRole: USER_ROLE })
+
+  const result = await service.run(() => resetMemberMfa(TARGET_MEMBERSHIP))
+
+  assert.deepEqual(result, { reset: true, deletedFactors: 1 })
+  assert.deepEqual(deleted, ["f1"])
+  assert.deepEqual(revocations, [TARGET_USER])
+  const event = service.events.find((entry) => entry.eventType === "member_mfa_reset")
+  assert.deepEqual(event.payload.sessions, { revoked: true, count: 2 })
 })
 
 function policyOrg({ permissions = ["org.admin"], require_mfa } = {}) {

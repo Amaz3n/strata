@@ -18,7 +18,12 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { sendInviteEmail } from "@/lib/services/mailer"
-import { authorize, requireAuthorization } from "@/lib/services/authorization"
+import {
+  authorize,
+  getDivisionAccessForUser,
+  getEffectiveOrgPermissions,
+  requireAuthorization,
+} from "@/lib/services/authorization"
 import { logger } from "@/lib/logging/logger"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
@@ -781,6 +786,75 @@ export async function updateMemberProfile({
   return data
 }
 
+async function rolePermissionKeys(client: SupabaseClient, roleId: string): Promise<string[]> {
+  const { data, error } = await client.from("role_permissions").select("permission_key").eq("role_id", roleId)
+  if (error) throw new Error(`Failed to resolve role permissions: ${error.message}`)
+  return (data ?? []).map((row) => row.permission_key as string)
+}
+
+/**
+ * Nobody hands out authority they do not hold. An org administrator holds the
+ * whole tenant by definition and is exempt; everyone else must already hold
+ * every key the target role (or explicit grant) carries. A refusal is written
+ * to authorization_audit_log through authorize(), like every other denial.
+ */
+async function assertActorHoldsPermissions({
+  orgId,
+  userId,
+  supabase,
+  required,
+  resourceId,
+}: {
+  orgId: string
+  userId: string
+  supabase: SupabaseClient
+  required: string[]
+  resourceId: string
+}) {
+  const held = new Set(await getEffectiveOrgPermissions(orgId, userId))
+  if (held.has("org.admin")) return
+  const missing = Array.from(new Set(required)).filter((key) => !held.has(key))
+  if (missing.length === 0) return
+
+  const decision = await authorize({
+    permission: missing[0],
+    userId,
+    orgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId,
+  })
+  // Platform operators hold every key through their platform membership.
+  if (decision.allowed) return
+  throw new Error(
+    `You cannot grant access you do not hold yourself (${missing.slice(0, 3).join(", ")}). Ask an organization administrator.`,
+  )
+}
+
+/** A division-limited inviter can only hand out a subset of their own divisions. */
+async function assertDivisionGrantWithinReach({
+  orgId,
+  userId,
+  divisionScope,
+  divisionIds,
+}: {
+  orgId: string
+  userId: string
+  divisionScope: "all" | "assigned"
+  divisionIds: string[]
+}) {
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!access.assignedOnly) return
+  if (divisionScope !== "assigned") {
+    throw new Error("You are limited to your own divisions, so you can only invite people into divisions you hold.")
+  }
+  const reachable = new Set(access.divisionIds)
+  if (divisionIds.some((divisionId) => !reachable.has(divisionId))) {
+    throw new Error("You can only assign divisions you belong to.")
+  }
+}
+
 export async function inviteTeamMember({
   input,
   orgId,
@@ -801,6 +875,25 @@ export async function inviteTeamMember({
   })
   const serviceClient = createServiceSupabaseClient()
 
+  // Escalation is refused before the invite creates a user, a membership or an email.
+  const roleId = await resolveRoleId(serviceClient, parsed.role)
+  const grantedOverrides = normalizePermissionOverrides(parsed.permissionOverrides)
+    .filter((override) => override.effect === "grant")
+    .map((override) => override.permission_key)
+  await assertActorHoldsPermissions({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+    required: [...(await rolePermissionKeys(serviceClient, roleId)), ...grantedOverrides],
+    resourceId: roleId,
+  })
+  await assertDivisionGrantWithinReach({
+    orgId: resolvedOrgId,
+    userId,
+    divisionScope: parsed.divisionScope,
+    divisionIds: parsed.divisionIds,
+  })
+
   const { data: existingUser } = await serviceClient
     .from("app_users")
     .select("id, email, full_name, avatar_url")
@@ -808,6 +901,26 @@ export async function inviteTeamMember({
     .maybeSingle()
 
   let targetUserId = existingUser?.id as string | undefined
+
+  // The membership upsert below would silently overwrite a live member's role and
+  // status. Changing a member goes through the role-change and reactivate actions.
+  if (targetUserId) {
+    const { data: current, error: currentError } = await serviceClient
+      .from("memberships")
+      .select("id, status")
+      .eq("org_id", resolvedOrgId)
+      .eq("user_id", targetUserId)
+      .in("status", ["active", "suspended"])
+      .maybeSingle()
+    if (currentError) throw new Error(`Failed to check existing membership: ${currentError.message}`)
+    if (current) {
+      throw new Error(
+        current.status === "suspended"
+          ? "This person is already a suspended member. Reactivate them instead of inviting them again."
+          : "This person is already an active member. Change their role from the team list instead of inviting them again.",
+      )
+    }
+  }
 
   // Create user if they don't exist
   if (!targetUserId) {
@@ -831,8 +944,6 @@ export async function inviteTeamMember({
     console.error("Failed to create user profile for invite", profileError)
     throw new Error("Failed to create invited user profile")
   }
-
-  const roleId = await resolveRoleId(serviceClient, parsed.role)
 
   // Generate invite token
   const inviteToken = generateInviteToken()
@@ -1087,17 +1198,21 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
   })
 
   if (status !== existing.status && (status === "suspended" || existing.status === "suspended")) {
-    const sessions =
+    const serviceClient = createServiceSupabaseClient()
+    const [sessions, queued] =
       status === "suspended"
-        ? await revokeSessionsOfDepartedMember(createServiceSupabaseClient(), resolvedOrgId, existing.user_id as string)
-        : null
+        ? await Promise.all([
+            revokeSessionsOfDepartedMember(serviceClient, resolvedOrgId, existing.user_id as string),
+            sweepQueuedAuthority(serviceClient, resolvedOrgId, existing.user_id as string),
+          ])
+        : [null, null]
     await recordEvent({
       orgId: resolvedOrgId,
       actorId: userId,
       eventType: status === "suspended" ? "member_suspended" : "member_reactivated",
       entityType: "membership",
       entityId: data.id as string,
-      payload: { user_id: existing.user_id, ...(sessions ? { sessions } : {}) },
+      payload: { user_id: existing.user_id, ...(sessions ? { sessions, queued } : {}) },
     })
   }
 
@@ -1107,9 +1222,18 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
   return mapTeamMember(data, projectCounts, mfaEnabledByUser)
 }
 
-type SuspensionSessionOutcome =
+type SessionRevocation =
   | { revoked: true; count: number }
-  | { revoked: false; reason: "other_active_memberships" | "revocation_failed" }
+  | { revoked: false; reason: "other_active_memberships" | "revocation_failed" | "own_account" }
+
+async function revokeAllSessions(client: SupabaseClient, userId: string): Promise<SessionRevocation> {
+  const { data, error } = await client.rpc("revoke_user_sessions", { p_user_id: userId })
+  if (error) {
+    logger.error("team.session_revocation_failed", { error: new Error(error.message), domain: "team", userId })
+    return { revoked: false, reason: "revocation_failed" }
+  }
+  return { revoked: true, count: typeof data === "number" ? data : 0 }
+}
 
 /**
  * End the suspended member's Supabase sessions (and, by cascade, their refresh
@@ -1127,7 +1251,7 @@ async function revokeSessionsOfDepartedMember(
   client: SupabaseClient,
   orgId: string,
   memberUserId: string,
-): Promise<SuspensionSessionOutcome> {
+): Promise<SessionRevocation> {
   const { count, error: othersError } = await client
     .from("memberships")
     .select("id", { count: "exact", head: true })
@@ -1137,12 +1261,100 @@ async function revokeSessionsOfDepartedMember(
   if (othersError) return { revoked: false, reason: "revocation_failed" }
   if ((count ?? 0) > 0) return { revoked: false, reason: "other_active_memberships" }
 
-  const { data, error } = await client.rpc("revoke_user_sessions", { p_user_id: memberUserId })
-  if (error) {
-    logger.error("team.session_revocation_failed", { error: new Error(error.message), domain: "team", userId: memberUserId })
-    return { revoked: false, reason: "revocation_failed" }
+  return revokeAllSessions(client, memberUserId)
+}
+
+type QueuedAuthorityOutcome = {
+  invoice_schedules: number
+  report_schedules: number
+  outbox_jobs: number
+  payment_approver_rows: number
+  device_tokens: number
+  failed: string[]
+}
+
+/**
+ * Cancel everything the departed member queued up to run later as them: a
+ * recurring invoice, a scheduled report, a delayed send waiting in the outbox
+ * and their seat on the payment approver roster. These run on cron without
+ * re-reading their membership, so leaving them in place would keep their
+ * authority alive after the sessions are gone.
+ *
+ * Reactivation deliberately does not resurrect any of it: a returning member
+ * re-creates what they still want, so nothing resumes on their behalf unseen.
+ * A step that fails is named in `failed` and never undoes the suspension.
+ */
+async function sweepQueuedAuthority(
+  client: SupabaseClient,
+  orgId: string,
+  memberUserId: string,
+): Promise<QueuedAuthorityOutcome> {
+  const outcome: QueuedAuthorityOutcome = {
+    invoice_schedules: 0,
+    report_schedules: 0,
+    outbox_jobs: 0,
+    payment_approver_rows: 0,
+    device_tokens: 0,
+    failed: [],
   }
-  return { revoked: true, count: typeof data === "number" ? data : 0 }
+  const step = async (name: keyof Omit<QueuedAuthorityOutcome, "failed">, run: () => Promise<{ data: unknown[] | null; error: { message: string } | null }>) => {
+    const { data, error } = await run()
+    if (error) {
+      logger.error("team.queued_authority_sweep_failed", { error: new Error(error.message), domain: "team", userId: memberUserId, step: name })
+      outcome.failed.push(name)
+      return
+    }
+    outcome[name] = data?.length ?? 0
+  }
+
+  const { count: otherActive, error: othersError } = await client
+    .from("memberships")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", memberUserId)
+    .eq("status", "active")
+    .neq("org_id", orgId)
+
+  await Promise.all([
+    step("invoice_schedules", async () =>
+      client
+        .from("invoice_schedules")
+        .update({ active: false, updated_at: new Date().toISOString() })
+        .eq("org_id", orgId)
+        .eq("created_by", memberUserId)
+        .eq("active", true)
+        .select("id"),
+    ),
+    step("report_schedules", async () =>
+      client
+        .from("report_schedules")
+        .update({ is_active: false, delivery_claimed_until: null, delivery_payload: null })
+        .eq("org_id", orgId)
+        .eq("created_by", memberUserId)
+        .eq("is_active", true)
+        .select("id"),
+    ),
+    step("outbox_jobs", async () =>
+      client
+        .from("outbox")
+        .update({ status: "failed", last_error: "Cancelled: the member who queued this job left the organization." })
+        .eq("org_id", orgId)
+        .eq("status", "pending")
+        .eq("payload->>actor_id", memberUserId)
+        .select("id"),
+    ),
+    step("payment_approver_rows", async () =>
+      client.from("payment_run_approvers").delete().eq("org_id", orgId).eq("user_id", memberUserId).select("user_id"),
+    ),
+    // Push tokens are per device, not per org: they go only when no other org
+    // still has a reason to notify this person; otherwise just this org's.
+    step("device_tokens", async () => {
+      const removal = client.from("device_tokens").delete().eq("user_id", memberUserId)
+      return othersError || (otherActive ?? 0) > 0
+        ? removal.eq("org_id", orgId).select("id")
+        : removal.select("id")
+    }),
+  ])
+  return outcome
 }
 
 export function suspendMember(membershipId: string, orgId?: string) {
@@ -1212,14 +1424,18 @@ export async function removeMember(membershipId: string, orgId?: string) {
     after: null,
   })
 
-  const sessions = await revokeSessionsOfDepartedMember(createServiceSupabaseClient(), resolvedOrgId, membership.user_id as string)
+  const serviceClient = createServiceSupabaseClient()
+  const [sessions, queued] = await Promise.all([
+    revokeSessionsOfDepartedMember(serviceClient, resolvedOrgId, membership.user_id as string),
+    sweepQueuedAuthority(serviceClient, resolvedOrgId, membership.user_id as string),
+  ])
   await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
     eventType: "member_removed",
     entityType: "membership",
     entityId: membershipId,
-    payload: { user_id: membership.user_id, sessions },
+    payload: { user_id: membership.user_id, sessions, queued },
   })
 
   return true
@@ -1309,7 +1525,7 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
 
   const { data: membership, error: membershipError } = await serviceClient
     .from("memberships")
-    .select("id, org_id, user_id")
+    .select("id, org_id, user_id, role_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .maybeSingle()
@@ -1317,6 +1533,24 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
   if (membershipError || !membership?.user_id) {
     throw new Error("Membership not found")
   }
+
+  // Resetting a second factor lets whoever holds the password enroll their own,
+  // so it is a path to impersonating the member: only someone who already holds
+  // everything the member holds may do it.
+  const [targetRolePermissions, targetOverrides] = await Promise.all([
+    rolePermissionKeys(serviceClient, membership.role_id as string),
+    mapPermissionOverrides(serviceClient, [membershipId]),
+  ])
+  await assertActorHoldsPermissions({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+    required: [
+      ...targetRolePermissions,
+      ...(targetOverrides[membershipId] ?? []).filter((o) => o.effect === "grant").map((o) => o.permission_key),
+    ],
+    resourceId: membershipId,
+  })
 
   const { data: factorData, error: factorError } = await serviceClient.auth.admin.mfa.listFactors({
     userId: membership.user_id,
@@ -1349,6 +1583,24 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
     entityId: membershipId,
     before: { mfa_factor_count: factors.length },
     after: { mfa_factor_count: 0 },
+  })
+
+  // The factor is global to the person, not to this org, so every session that
+  // proved the old one is revoked regardless of other memberships. Your own
+  // session is kept: you are resetting yourself and would only be signed out
+  // of the screen you are using.
+  const sessions: SessionRevocation =
+    membership.user_id === userId
+      ? { revoked: false, reason: "own_account" }
+      : await revokeAllSessions(serviceClient, membership.user_id as string)
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "member_mfa_reset",
+    entityType: "membership",
+    entityId: membershipId,
+    payload: { user_id: membership.user_id, deleted_factors: factors.length, sessions },
   })
 
   return { reset: true, deletedFactors: factors.length }
