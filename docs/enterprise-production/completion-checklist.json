@@ -20311,7 +20311,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -20347,6 +20347,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA5-20261011"
+          ],
+          "head": "5d3b3493",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "LOT-01 variance subcases.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -22417,7 +22431,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -22456,6 +22470,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA5-20261011"
+          ],
+          "head": "5d3b3493",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "RACE-02 three consecutive passes.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
