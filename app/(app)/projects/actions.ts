@@ -14,6 +14,7 @@ import {
 import { getProjectScheduleSummaries, listScheduleItemsByProject } from "@/lib/services/schedule"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
+import { listDivisions } from "@/lib/services/divisions"
 import { accountingProviderLabel, DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { requireAccountingConnectionForOrg } from "@/lib/services/accounting-connections"
@@ -174,6 +175,11 @@ export async function createProjectQboCustomerAction(input: {
         postalCode: input.postalCode ?? null,
       } })
   })
+}
+
+export async function listProjectDivisionChoicesAction(): Promise<Array<{ id: string; name: string }>> {
+  const divisions = await listDivisions()
+  return divisions.filter((division) => !division.archived).map((division) => ({ id: division.id, name: division.name }))
 }
 
 export async function createProjectAction(input: unknown) {

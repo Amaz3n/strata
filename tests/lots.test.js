@@ -20,7 +20,7 @@ const BUYER = id(4)
 const OTHER_BUYER = id(5)
 const DELIVERED = "2026-06-01T00:00:00+00:00"
 
-function harness({ delivered = true, status = "developed", client = null, reservations = [], permissions = ["lot.write", "project.manage", "community.write", "community.read"] } = {}) {
+function harness({ homeDivision = null, delivered = true, status = "developed", client = null, reservations = [], permissions = ["lot.write", "project.manage", "community.write", "community.read"] } = {}) {
   return createServiceHarness({
     permissions,
     tables: {
@@ -31,7 +31,7 @@ function harness({ delivered = true, status = "developed", client = null, reserv
         acquired_date: null, project_id: null, notes: null, delivered_at: delivered ? DELIVERED : null, metadata: {},
         updated_at: "2026-10-01T00:00:00+00:00",
       }],
-      projects: [{ id: HOME, org_id: ORG, name: "Lot 12", property_type: "production", division_id: null, client_id: client }],
+      projects: [{ id: HOME, org_id: ORG, name: "Lot 12", property_type: "production", division_id: homeDivision, client_id: client }],
       lot_reservations: reservations,
     },
   })
@@ -226,6 +226,22 @@ describe("lot status and home association", () => {
     assert.equal(unstarted.db.lots[0].project_id, null)
 
     await assert.rejects(unstarted.run(() => detachProjectFromLot(LOT)), /does not have a project/)
+  })
+
+  test("detaching keeps the home in its division, so a division-scoped member can still reach it", async () => {
+    const division = id(8)
+    const service = harness({ status: "assigned", homeDivision: division })
+    withHome(service)
+    await service.run(() => detachProjectFromLot(LOT))
+    assert.equal(service.db.projects[0].division_id, division)
+    assert.deepEqual(service.writes("projects"), [])
+  })
+
+  test("a lot with no division does not strip the division from the home attached to it", async () => {
+    const division = id(8)
+    const service = harness({ homeDivision: division })
+    await attach(service)
+    assert.equal(service.db.projects[0].division_id, division)
   })
 
   test("a lot's status moves one step back at a time", async () => {

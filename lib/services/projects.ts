@@ -19,7 +19,8 @@ import {
   upsertProjectFinancialSettingsFromProjectInput,
 } from "@/lib/services/project-financial-setup"
 import { getDefaultProjectPropertyType, getProjectPosture, isProductionProjectPosture, type ProjectPosture } from "@/lib/product-tier"
-import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
+import { getDivisionAccessForUser, getDivisionScopedProjectIds, getProjectReadScopeForUser } from "@/lib/services/authorization"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -596,6 +597,46 @@ export function prepareProjectCreation({ input, orgId, userId, productTier }: {
   return { input: normalizedInput, project: payload }
 }
 
+/**
+ * The division a new project is filed under. A member limited to some divisions
+ * may only create inside them: with one they get it, with several they choose.
+ */
+async function resolveNewProjectDivision({ supabase, orgId, requested, access }: {
+  supabase: SupabaseClient
+  orgId: string
+  requested: string | null
+  access: { assignedOnly: boolean; divisionIds: string[] }
+}): Promise<string | null> {
+  if (access.assignedOnly) {
+    if (access.divisionIds.length === 0) throw new Error("You are not assigned to any division, so you cannot create a project. Ask an admin to assign you to one.")
+    if (!requested) {
+      if (access.divisionIds.length === 1) return access.divisionIds[0]
+      throw new Error(`Choose a division for this project: you are assigned to ${access.divisionIds.length} divisions.`)
+    }
+    if (!access.divisionIds.includes(requested)) throw new Error("You can only create projects in the divisions you are assigned to.")
+  }
+  if (!requested) return null
+  const { data, error } = await supabase.from("divisions").select("id").eq("org_id", orgId).eq("id", requested).maybeSingle()
+  if (error) throw new Error(`Failed to verify the division: ${error.message}`)
+  if (!data) throw new Error("Division not found")
+  return requested
+}
+
+async function addCreatorToProject({ supabase, orgId, userId, projectId }: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  projectId: string
+}) {
+  const { data: role, error: roleError } = await supabase.from("roles").select("id").eq("key", "pm").eq("scope", "project").maybeSingle()
+  if (roleError || !role) throw new Error("Project manager role is missing, so the new project could not be assigned to you.")
+  const { error } = await supabase.from("project_members").upsert(
+    { org_id: orgId, project_id: projectId, user_id: userId, role_id: role.id, status: "active" },
+    { onConflict: "project_id,user_id" },
+  )
+  if (error) throw new Error(`Failed to add you to the new project: ${error.message}`)
+}
+
 export async function createProject({
   input,
   orgId,
@@ -614,14 +655,33 @@ export async function createProject({
     input, orgId: resolvedOrgId, userId, productTier,
   })
 
-  const { data, error } = await supabase
+  const [divisionAccess, readScope] = await Promise.all([
+    getDivisionAccessForUser({ orgId: resolvedOrgId, userId }),
+    getProjectReadScopeForUser({ orgId: resolvedOrgId, userId }),
+  ])
+  const divisionId = await resolveNewProjectDivision({
+    supabase, orgId: resolvedOrgId, requested: normalizedInput.division_id ?? null, access: divisionAccess,
+  })
+
+  // The database hides a division- or assignment-restricted member's own client
+  // from a project outside their scope, and a new project is outside it until
+  // its division and project_members row exist, so INSERT ... RETURNING cannot
+  // read it back. The authorization above is the gate; the write is the service
+  // client's, and the creator is made a member in the same flow.
+  const scopedCreator = divisionAccess.assignedOnly || readScope.projectMembershipRequired
+  const writer = scopedCreator ? createServiceSupabaseClient() : supabase
+  const { data, error } = await writer
     .from("projects")
-    .insert(payload)
+    .insert({ ...payload, division_id: divisionId })
     .select(PROJECT_SELECT)
     .single()
 
   if (error) {
     throw new Error(`Failed to create project: ${error.message}`)
+  }
+
+  if (readScope.projectMembershipRequired) {
+    await addCreatorToProject({ supabase: writer, orgId: resolvedOrgId, userId, projectId: data.id as string })
   }
 
   await recordEvent({

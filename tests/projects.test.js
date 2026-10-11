@@ -8,7 +8,7 @@
 const assert = require("node:assert/strict")
 const { describe, test } = require("node:test")
 
-const { createServiceHarness } = require("./support/service")
+const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
 const { createProject, prepareProjectOpeningContract } = freshRequire("lib/services/projects.ts")
@@ -42,6 +42,67 @@ describe("createProject", () => {
       assert.equal(service.db.contracts.length, 1, property_type)
       assert.equal(service.db.contracts[0].status, "active", property_type)
     }
+  })
+})
+
+describe("createProject under a restricted membership", () => {
+  const NORTH = id(701)
+  const SOUTH = id(702)
+  const OTHER = id(703)
+  const PM_ROLE = id(710)
+  const scoped = (access) =>
+    createServiceHarness({
+      permissions: ["project.manage"],
+      ...access,
+      tables: {
+        projects: [], contracts: [], project_financial_settings: [], accounting_entity_map: [], orgs: [],
+        divisions: [NORTH, SOUTH].map((divisionId) => ({ id: divisionId, org_id: ORG })),
+        roles: [{ id: PM_ROLE, key: "pm", scope: "project" }],
+        project_members: [],
+      },
+    })
+  const create = (service, input = {}) =>
+    service.run(() => createProject({ input: { name: "Lot 12", status: "planning", property_type: "production", ...input } }))
+
+  test("a member held to one division files the project there without choosing", async () => {
+    const service = scoped({ divisions: [NORTH] })
+    const project = await create(service)
+    assert.equal(project.division_id, NORTH)
+    assert.equal(service.db.projects[0].division_id, NORTH)
+  })
+
+  test("a member held to several divisions must choose one of theirs", async () => {
+    const service = scoped({ divisions: [NORTH, SOUTH] })
+    await assert.rejects(create(service), /choose a division.*2 divisions/i)
+    await assert.rejects(create(service, { division_id: OTHER }), /only create projects in the divisions you are assigned to/i)
+    assert.equal(service.db.projects.length, 0)
+    assert.equal((await create(service, { division_id: SOUTH })).division_id, SOUTH)
+  })
+
+  test("a member assigned to no division cannot create a project", async () => {
+    const service = scoped({ divisions: [] })
+    await assert.rejects(create(service), /not assigned to any division/i)
+    assert.equal(service.db.projects.length, 0)
+  })
+
+  test("an org-wide member may file under any division of the org, but not one that is not the org's", async () => {
+    const service = scoped({})
+    assert.equal((await create(service, { division_id: SOUTH })).division_id, SOUTH)
+    await assert.rejects(create(service, { division_id: OTHER }), /division not found/i)
+    assert.equal((await create(service)).division_id, null)
+  })
+
+  test("a member who only reaches assigned projects is made a member of the one they create", async () => {
+    const service = scoped({ projects: [id(799)] })
+    const project = await create(service)
+    const member = service.db.project_members.find((row) => row.project_id === project.id)
+    assert.deepEqual([member.user_id, member.role_id, member.status], [service.userId, PM_ROLE, "active"])
+  })
+
+  test("an org-wide member gets no project_members row", async () => {
+    const service = scoped({})
+    await create(service)
+    assert.equal(service.db.project_members.length, 0)
   })
 })
 

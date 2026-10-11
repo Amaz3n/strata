@@ -55,6 +55,7 @@ import {
   createProjectAction,
   updateProjectAction,
   listProjectQboClassesAction,
+  listProjectDivisionChoicesAction,
   searchProjectQboCustomersAction,
   createProjectQboCustomerAction,
 } from "./actions";
@@ -150,6 +151,7 @@ export function ProjectEditor({
     project: Project | null;
     contacts: Contact[];
     classes: QBOClassOption[];
+    divisions: DivisionChoice[];
     costCodes: boolean;
   } | null>(null);
   const [error, setError] = useState(false);
@@ -161,14 +163,16 @@ export function ProjectEditor({
       projectId ? getProjectDirectoryEditorAction(projectId) : null,
       listProjectClientContactsAction(),
       listProjectQboClassesAction(),
+      projectId ? [] : listProjectDivisionChoicesAction(),
       getCostCodingSettingsAction(),
     ])
-      .then(([project, contacts, classes, settings]) => {
+      .then(([project, contacts, classes, divisions, settings]) => {
         if (!cancelled)
           setData({
             project,
             contacts,
             classes,
+            divisions,
             costCodes: settings.costCodesEnabled,
           });
       })
@@ -214,6 +218,7 @@ function LoadedProjectEditor({
   project,
   contacts,
   classes,
+  divisions,
   costCodes,
   productTier,
   onClose,
@@ -222,6 +227,7 @@ function LoadedProjectEditor({
   project: Project | null;
   contacts: Contact[];
   classes: QBOClassOption[];
+  divisions: DivisionChoice[];
   costCodes: boolean;
   productTier: ProductTier;
   onClose: () => void;
@@ -305,6 +311,7 @@ function LoadedProjectEditor({
       onSubmit={save}
       clientContacts={contacts}
       qboClasses={classes}
+      divisions={divisions}
       financialSetup={financialSetup}
       onFinancialSetupChange={setFinancialSetup}
       productTier={productTier}
@@ -313,6 +320,8 @@ function LoadedProjectEditor({
     />
   );
 }
+type DivisionChoice = { id: string; name: string };
+
 interface ProjectFormSheetProps {
   mode: "create" | "edit";
   open: boolean;
@@ -324,6 +333,7 @@ interface ProjectFormSheetProps {
   onSubmit: (values: ProjectInput) => Promise<void>;
   clientContacts: Contact[];
   qboClasses: QBOClassOption[];
+  divisions: DivisionChoice[];
   financialSetup: FinancialSetupValue;
   onFinancialSetupChange: (value: FinancialSetupValue) => void;
   productTier: ProductTier;
@@ -342,6 +352,7 @@ function ProjectFormSheet({
   onSubmit,
   clientContacts,
   qboClasses,
+  divisions,
   financialSetup,
   onFinancialSetupChange,
   productTier,
@@ -629,6 +640,38 @@ function ProjectFormSheet({
                     </FormItem>
                   )}
                 />
+                {divisions.length > 0 ? (
+                  <FormField
+                    control={form.control}
+                    name="division_id"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Division</FormLabel>
+                        <Select
+                          value={field.value ?? "none"}
+                          onValueChange={(value) =>
+                            field.onChange(value === "none" ? null : value)
+                          }
+                        >
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder="Select division" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="none">Not set</SelectItem>
+                            {divisions.map((division) => (
+                              <SelectItem key={division.id} value={division.id}>
+                                {division.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                ) : null}
                 {/* Client — one field. The contact drives portal invites & signatures; */}
                 {/* the accounting customer (the sync target) is shown beneath as an overridable detail. */}
                 <FormField

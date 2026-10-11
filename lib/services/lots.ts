@@ -621,7 +621,7 @@ export async function attachProjectToLot(
   const { data: existingLink, error: linkError } = await context.supabase.from("lots").select("id").eq("org_id", context.orgId).eq("project_id", projectId).neq("id", lotId).maybeSingle()
   if (linkError) throw new Error(`Failed to validate project link: ${linkError.message}`)
   if (existingLink) throw new Error("This project is already attached to another lot.")
-  const { error: projectUpdateError } = await context.supabase.from("projects").update({ property_type: "production", division_id: before.division_id }).eq("org_id", context.orgId).eq("id", projectId)
+  const { error: projectUpdateError } = await context.supabase.from("projects").update({ property_type: "production", division_id: before.division_id ?? project.division_id }).eq("org_id", context.orgId).eq("id", projectId)
   if (projectUpdateError) throw new Error(`Failed to prepare project: ${projectUpdateError.message}`)
   const { data, error } = await context.supabase.from("lots").update({ project_id: projectId, status: ATTACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
   if (error) {
@@ -663,7 +663,9 @@ export async function recordLotDeliveryException(
 }
 
 /**
- * Unlink a home from its dirt and return the lot to inventory.
+ * Unlink a home from its dirt and return the lot to inventory. The home keeps
+ * its division: that belongs to the project, and clearing it would take the
+ * house out of every division-scoped member's reach.
  *
  * A started lot moving back to `assigned` is exactly the backward step the
  * lifecycle asks for an explicit confirmation on, so detaching a house that is
@@ -683,18 +685,8 @@ export async function detachProjectFromLot(
   if (!before.project_id) throw new Error("This lot does not have a project attached.")
   assertLotDetachTransition({ from: before.status, force })
   const projectId = before.project_id
-  const restoreDivisionId = before.division_id
-  if (restoreDivisionId) {
-    const { error: projectError } = await context.supabase.from("projects").update({ division_id: null }).eq("org_id", context.orgId).eq("id", projectId).eq("division_id", restoreDivisionId)
-    if (projectError) throw new Error(`Failed to clear project division: ${projectError.message}`)
-  }
   const { data, error } = await context.supabase.from("lots").update({ project_id: null, status: DETACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
-  if (error) {
-    if (restoreDivisionId) {
-      await context.supabase.from("projects").update({ division_id: restoreDivisionId }).eq("org_id", context.orgId).eq("id", projectId)
-    }
-    throw new Error(`Failed to detach project: ${error.message}`)
-  }
+  if (error) throw new Error(`Failed to detach project: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_detached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, force } })
   return mapLot(data as LotRow)
 }
