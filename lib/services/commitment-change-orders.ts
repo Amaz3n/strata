@@ -475,7 +475,7 @@ export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   if (scope.divisionIds) {
     // Only the homes that have a matching order can appear, so the division lens resolves over those.
     const candidates = await readAllRows<{ project_id: string }>((rangeFrom, rangeTo) => orders("project_id", false, null)
-      .order("id").range(rangeFrom, rangeTo), { cap: 100001, pageSize: 1000, label: "Failed to scope variance orders" })
+      .order("id").range(rangeFrom, rangeTo).returns<{ project_id: string }[]>(), { cap: 100001, pageSize: 1000, label: "Failed to scope variance orders" })
     if (candidates.truncated) throw new Error("Too many variance orders to scope; narrow the division or community lens")
     projectIds = await projectIdsInDivisions(reader, resolvedOrgId, [...new Set(candidates.rows.map((row) => row.project_id))], scope.divisionIds)
     if (projectIds.length > DIVISION_LENS_PROJECT_LIMIT) throw new Error("Too many homes have variance orders for this division; narrow the community lens or filter by status")
