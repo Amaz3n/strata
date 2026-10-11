@@ -8,6 +8,7 @@ import { listMyHouses, listMyHouseWork, type MyHouseDTO, type MyHouseTaskGroupDT
 import { hasPermission } from "@/lib/services/permissions"
 import { listStartPackages } from "@/lib/services/starts"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { readAllRows } from "@/lib/land/paging"
 
 const STALLED_DAYS = 7
 
@@ -43,6 +44,8 @@ export interface NextItemDTO {
  */
 export type ProductionHomeData = {
   hasCommunities: boolean
+  /** The house scope hit its ceiling, so the stat tiles cover the first homes only. */
+  scopeTruncated: boolean
   /** Present when the viewer carries houses. Drives the personal tile + its roster sheet. */
   assigned: {
     houseCount: number
@@ -140,7 +143,7 @@ export async function getProductionHomeData(
     .flatMap((lane) => lane.homes.filter((home) => home.state === "overdue").map((home) => ({ lane, home })))
     .sort((a, b) => (a.home.daysToCutoff ?? 0) - (b.home.daysToCutoff ?? 0))
 
-  const scopedProjectIds = await resolveScopedProjectIds(context, filters, authorizedIds)
+  const { ids: scopedProjectIds, truncated: scopeTruncated } = await resolveScopedProjectIds(context, filters, authorizedIds)
   const scopedCommunityIds = await resolveScopedCommunityIds(
     context,
     filters,
@@ -224,6 +227,7 @@ export async function getProductionHomeData(
     : backlog
   return {
     hasCommunities: (communitiesResult.count ?? 0) > 0,
+    scopeTruncated,
     assigned,
     // A superintendent's "act on this" is one activity across many lots; an
     // office role's is a ranked queue of blocked things. Never both — that
@@ -306,23 +310,33 @@ function scopedCommunityQuery(
   return query
 }
 
+/** Houses a Home rollup can scope to; past this the stats are flagged, not silently partial. */
+const HOME_SCOPE_PROJECT_CAP = 5_000
+
 async function resolveScopedProjectIds(
   context: Awaited<ReturnType<typeof requireOrgContext>>,
   filters: { divisionId?: string; communityId?: string },
   authorizedIds: string[] | null,
-) {
-  let query = context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("phase", "delivery").eq("property_type", "production").eq("status", "active")
-  if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
-  if (authorizedIds) query = query.in("id", authorizedIds.length ? authorizedIds : ["00000000-0000-0000-0000-000000000000"])
-  const { data, error } = await query.limit(500)
-  if (error) throw new Error(`Failed to scope production Home projects: ${error.message}`)
-  let ids = (data ?? []).map((row) => row.id as string)
-  if (filters.communityId && ids.length) {
-    const { data: lots, error: lotsError } = await context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", filters.communityId).in("project_id", ids)
-    if (lotsError) throw new Error(`Failed to scope production Home lots: ${lotsError.message}`)
-    ids = (lots ?? []).flatMap((row) => row.project_id ? [row.project_id] : [])
-  }
-  return ids
+): Promise<{ ids: string[]; truncated: boolean }> {
+  const { rows, truncated } = await readAllRows(
+    (from, to) => {
+      // The lens is part of the query: a cap applied before it would cut homes
+      // that belong to the community and keep homes that do not.
+      let query = context.supabase
+        .from("projects")
+        .select(filters.communityId ? "id, lots!inner(community_id)" : "id")
+        .eq("org_id", context.orgId)
+        .eq("phase", "delivery")
+        .eq("property_type", "production")
+        .eq("status", "active")
+      if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
+      if (filters.communityId) query = query.eq("lots.community_id", filters.communityId)
+      if (authorizedIds) query = query.in("id", authorizedIds.length ? authorizedIds : ["00000000-0000-0000-0000-000000000000"])
+      return query.order("id").range(from, to)
+    },
+    { cap: HOME_SCOPE_PROJECT_CAP, label: "Failed to scope production Home projects" },
+  )
+  return { ids: rows.map((row) => (row as unknown as { id: string }).id), truncated }
 }
 
 async function resolveScopedCommunityIds(

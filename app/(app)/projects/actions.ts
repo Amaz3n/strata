@@ -42,9 +42,9 @@ export async function listProjectsAction() {
       return listProjects(undefined, context)
 }
 
-export async function listProjectSummariesAction() {
+export async function listProjectSummariesAction(options?: { projectIds?: readonly string[] | null }) {
       const context = await requireOrgContext()
-      return listProjectSummaries(undefined, context)
+      return listProjectSummaries(undefined, context, options)
 }
 
 export async function listProjectBillingOptionsAction() {

@@ -705,11 +705,9 @@ async function SchedulePageContent({
   const zoom: Zoom = zoomParam === "day" || zoomParam === "month" ? zoomParam : "week"
 
   const scope = await resolveProductionDeskScope({ communityId: community })
-  const allProjects = await listProjectSummariesAction()
-  const allowedProjectIds = scope.projectIds === null ? null : new Set(scope.projectIds)
-  const projects = allowedProjectIds
-    ? allProjects.filter((project) => allowedProjectIds.has(project.id))
-    : allProjects
+  const { projects, total: projectTotal, truncated: projectsTruncated } = await listProjectSummariesAction({
+    projectIds: scope.projectIds,
+  })
   const today = startOfDay(new Date())
 
   const ACTIVE_STATUSES = new Set(["planning", "bidding", "active", "on_hold"])
@@ -825,6 +823,11 @@ async function SchedulePageContent({
     <PageLayout title="Schedule" fullBleed>
       <div className="desk-root flex h-[calc(100vh-56px)] flex-col overflow-hidden">
         <DeskScopeFilters communities={scope.communities} communityId={scope.communityId} className="border-b px-4 py-2.5 sm:px-6" />
+        {projectsTruncated ? (
+          <p className="border-b px-4 py-2 text-[11px] text-muted-foreground sm:px-6">
+            Showing the first {projects.length} of {projectTotal} projects. Narrow the community lens to see the rest.
+          </p>
+        ) : null}
         {/* ── Context + zoom + legend ── */}
         <div className="desk-rise flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b px-4 py-2.5 sm:px-6">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">

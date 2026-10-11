@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function TakeoffSettingsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function TakeoffSettingsError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="The condition library"
       backHref="/settings"
       backLabel="Back to settings"

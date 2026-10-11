@@ -34050,7 +34050,7 @@
         "route": "/bids",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "residential-commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP08"
         ],
@@ -34058,8 +34058,8 @@
         "checklistIds": [
           "EP08-01"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Org bids desk is shown only with custom-build navigation; production reaches bidding through Purchasing.",
+        "assessment": "exposed",
+        "assessmentNote": "Org bids desk. Shown whenever the org runs active custom or commercial jobs, so a production org with a custom home or commercial job reaches it; a pure production org reaches bidding through Purchasing.",
         "exposureEvidence": "components/layout/app-sidebar.tsx:184-186"
       },
       {
@@ -34945,8 +34945,8 @@
           "EP01-05"
         ],
         "assessment": "excluded",
-        "assessmentNote": "Email template preview tool with no navigation entry or permission guard. Low confidence: confirm it should be reachable by customer roles.",
-        "exposureEvidence": "app/(app)/emails/preview/page.tsx:1"
+        "assessmentNote": "Email template preview tool with no navigation entry. Guarded by getCurrentPlatformAccess: callers without platform access are redirected to /unauthorized, so customer roles cannot reach it.",
+        "exposureEvidence": "app/(app)/emails/preview/page.tsx:101"
       },
       {
         "path": "app/(app)/estimates/page.tsx",
@@ -35139,7 +35139,7 @@
         "route": "/pipeline/[dealId]/files",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "residential-commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP05",
           "EP01"
@@ -35149,8 +35149,8 @@
           "EP05-01",
           "EP01-01"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "assessment": "exposed",
+        "assessmentNote": "Custom-build pipeline. The layout sends a pure production org to Sales, but a production org with an active custom or commercial job keeps it (mixed orgs are the design case).",
         "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
@@ -35158,7 +35158,7 @@
         "route": "/pipeline/[dealId]",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "residential-commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP05",
           "EP01"
@@ -35168,8 +35168,8 @@
           "EP05-01",
           "EP01-01"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "assessment": "exposed",
+        "assessmentNote": "Custom-build pipeline. The layout sends a pure production org to Sales, but a production org with an active custom or commercial job keeps it (mixed orgs are the design case).",
         "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
@@ -35177,7 +35177,7 @@
         "route": "/pipeline/[dealId]/plans",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "residential-commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP05",
           "EP01"
@@ -35187,8 +35187,8 @@
           "EP05-01",
           "EP01-01"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "assessment": "exposed",
+        "assessmentNote": "Custom-build pipeline. The layout sends a pure production org to Sales, but a production org with an active custom or commercial job keeps it (mixed orgs are the design case).",
         "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
@@ -35196,7 +35196,7 @@
         "route": "/pipeline/[dealId]/quotes/[packageId]",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "residential-commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP05",
           "EP01"
@@ -35206,8 +35206,8 @@
           "EP05-01",
           "EP01-01"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "assessment": "exposed",
+        "assessmentNote": "Custom-build pipeline. The layout sends a pure production org to Sales, but a production org with an active custom or commercial job keeps it (mixed orgs are the design case).",
         "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
@@ -35215,7 +35215,7 @@
         "route": "/pipeline",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "residential-commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP05",
           "EP01"
@@ -35225,8 +35225,8 @@
           "EP05-01",
           "EP01-01"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Custom-build pipeline; the layout sends production orgs to Sales unless they also run non-production projects.",
+        "assessment": "exposed",
+        "assessmentNote": "Custom-build pipeline. The layout sends a pure production org to Sales, but a production org with an active custom or commercial job keeps it (mixed orgs are the design case).",
         "exposureEvidence": "app/(app)/pipeline/layout.tsx:26-27"
       },
       {
@@ -36368,7 +36368,7 @@
         "route": "/safety",
         "surface": "builder_authenticated",
         "audience": "org desk",
-        "productionExposure": "commercial-only",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP09"
         ],
@@ -36376,9 +36376,9 @@
         "checklistIds": [
           "EP09-04"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Org safety desk is added to the sidebar for the commercial tier only; production uses the per-home Safety tab.",
-        "exposureEvidence": "components/layout/app-sidebar.tsx:229-236"
+        "assessment": "exposed",
+        "assessmentNote": "Org safety desk. Added to the sidebar for the commercial tier and for any org with an active commercial job, so a production org with a commercial project reaches it; production houses use the per-home Safety tab.",
+        "exposureEvidence": "components/layout/app-sidebar.tsx:230-237"
       },
       {
         "path": "app/(app)/sales/[dealId]/page.tsx",
@@ -37113,8 +37113,8 @@
         "path": "app/dither-lab/page.tsx",
         "route": "/dither-lab",
         "surface": "public",
-        "audience": "public",
-        "productionExposure": "staff-only",
+        "audience": "any signed-in user (direct URL only)",
+        "productionExposure": "yes",
         "candidateWorkstreams": [
           "EP01"
         ],
@@ -37122,9 +37122,9 @@
         "checklistIds": [
           "EP01-05"
         ],
-        "assessment": "excluded",
-        "assessmentNote": "Animation design lab with no navigation entry or product use.",
-        "exposureEvidence": "app/dither-lab/page.tsx:1"
+        "assessment": "exposed",
+        "assessmentNote": "Animation design lab with no navigation entry and no org data. Not in PUBLIC_ROUTES, so proxy.ts sends signed-out visitors to sign-in (and requires aal2), but any signed-in user, production roles included, can open it by URL. The page inventory's 'public' surface label comes from the path, not from access.",
+        "exposureEvidence": "proxy.ts:209-212"
       },
       {
         "path": "app/e/[token]/page.tsx",

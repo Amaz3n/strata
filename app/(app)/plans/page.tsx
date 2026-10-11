@@ -3,7 +3,7 @@ import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { PlanLibraryClient } from "@/components/plans/plan-library-client"
-import { Skeleton } from "@/components/ui/skeleton"
+import { PlansSkeleton } from "@/components/layout/desk-skeletons"
 import { listDivisions } from "@/lib/services/divisions"
 import { listFloorplanModelStatuses } from "@/lib/services/floorplan-models"
 import { getPlanLadder } from "@/lib/services/house-plans"
@@ -45,16 +45,7 @@ async function PlanLibraryData() {
 export default function PlansPage() {
   return (
     <PageLayout title="Plans" fullBleed>
-      <Suspense
-        fallback={
-          <div className="space-y-4 p-4">
-            <Skeleton className="h-16 w-full" />
-            {Array.from({ length: 4 }).map((_, index) => (
-              <Skeleton key={index} className="h-20 w-full" />
-            ))}
-          </div>
-        }
-      >
+      <Suspense fallback={<PlansSkeleton />}>
         <PlanLibraryData />
       </Suspense>
     </PageLayout>

@@ -1,5 +1,5 @@
 import { connection } from "next/server"
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { BidsSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { listOrgBidPackages } from "@/lib/services/bids"
@@ -32,7 +32,7 @@ async function BidsDeskPageContent() {
 
 export default function BidsDeskPage() {
   return (
-    <Suspense fallback={<PageLayout title="Bids" fullBleed><PageLoadingSkeleton /></PageLayout>}>
+    <Suspense fallback={<PageLayout title="Bids" fullBleed><BidsSkeleton /></PageLayout>}>
       <BidsDeskPageContent />
     </Suspense>
   )

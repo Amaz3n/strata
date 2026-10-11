@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function SelectionSheetError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function SelectionSheetError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="This selection sheet"
       backHref="/design-studio"
       backLabel="Back to Design Studio"

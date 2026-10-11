@@ -1005,6 +1005,8 @@ export async function cloneOrgGroupsToCommunity(communityId: string) {
 
 interface AppointmentFilter {
   communityId?: string
+  /** Narrows to appointments on this division's homes. */
+  divisionId?: string
   from?: string
   to?: string
   status?: AppointmentDto["status"]
@@ -1025,8 +1027,12 @@ export async function countAppointments(opts: AppointmentFilter = {}): Promise<n
   await requirePermission("selections.read", context)
   const visibleProjectIds = await visibleAppointmentProjects(context)
   if (visibleProjectIds?.length === 0) return 0
-  let query = context.supabase.from("design_studio_appointments").select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
+  let query = context.supabase
+    .from("design_studio_appointments")
+    .select("id, project:projects!inner(division_id)", { count: "exact", head: true })
+    .eq("org_id", context.orgId)
   if (visibleProjectIds) query = query.in("project_id", visibleProjectIds)
+  if (opts.divisionId) query = query.eq("project.division_id", opts.divisionId)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.from) query = query.gte("scheduled_at", opts.from)
   if (opts.to) query = query.lte("scheduled_at", opts.to)
@@ -1046,11 +1052,12 @@ export async function listAppointments(opts: AppointmentFilter & { limit?: numbe
   if (visibleProjectIds?.length === 0) return []
   let query = context.supabase
     .from("design_studio_appointments")
-    .select("id, community_id, project_id, contact_id, coordinator_user_id, scheduled_at, duration_minutes, location, status, group_ids, notes, project:projects(name), community:communities(name), buyer:contacts(full_name), coordinator:app_users(full_name)")
+    .select("id, community_id, project_id, contact_id, coordinator_user_id, scheduled_at, duration_minutes, location, status, group_ids, notes, project:projects!inner(name, division_id), community:communities(name), buyer:contacts(full_name), coordinator:app_users(full_name)")
     .eq("org_id", context.orgId)
     .order("scheduled_at")
     .limit(Math.min(opts.limit ?? 50, 100))
   if (visibleProjectIds) query = query.in("project_id", visibleProjectIds)
+  if (opts.divisionId) query = query.eq("project.division_id", opts.divisionId)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.from) query = query.gte("scheduled_at", opts.from)
   if (opts.to) query = query.lte("scheduled_at", opts.to)

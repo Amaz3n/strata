@@ -39,7 +39,7 @@ async function CompanyContactsContent({ id }: { id: string }) {
   // People do not have a contacts roster of their own; their own account is it.
   if (account.kind !== "company") redirect(`/directory/${id}`);
 
-  const [projects, access] = await Promise.all([
+  const [{ projects }, access] = await Promise.all([
     listProjectSummariesAction(),
     // Reachability decorates the roster; it must never be the reason the roster
     // fails to render. An empty map reads as "nobody has access" — which the UI

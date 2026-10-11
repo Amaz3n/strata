@@ -223,11 +223,10 @@ test("the directory owns a local-swap, prefetched instant-navigation contract", 
   assert.match(detailLayout, /await loadDirectoryPartyHeader\(id\)/)
   assert.match(detailData, /getDirectoryEntry\(partyId\)/)
 
-  // Identity is the same at any hour; only the ledger's aging math reads today.
-  // Holding `connection()` at the top of the header made the whole account
-  // header request-bound, so it could never arrive with the click.
+  // The ledger's aging math reads today, so its own boundary holds the request.
+  // The header data component also takes the request (abf88776) and sits behind
+  // Suspense, so the account shell still paints with the click.
   assert.match(detailLayout, /await connection\(\);\n  const \[ledger/)
-  assert.doesNotMatch(detailLayout, /await connection\(\);\n  const \{ id \} = await params/)
 
   // `params`-dependent data can never sit in a static shell, so the header has
   // to be reachable by runtime prefetching instead — which only reads cached

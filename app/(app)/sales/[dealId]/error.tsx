@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function DealFileError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function DealFileError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="This buyer file"
       backHref="/sales"
       backLabel="Back to Sales"

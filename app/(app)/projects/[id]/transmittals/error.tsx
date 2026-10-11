@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function TransmittalsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function TransmittalsError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="Transmittals"
       backHref="/projects"
       backLabel="Back to projects"

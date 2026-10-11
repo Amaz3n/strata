@@ -58,7 +58,7 @@ import { getLatestPrequalificationWithClient } from "@/lib/services/prequalifica
 import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { readCertification, readSentToOwner } from "@/lib/financials/pay-app-lifecycle"
-import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
 import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
 
 /** Posted: the owner never sees a draft, a return in progress, or a void. */
@@ -1752,8 +1752,9 @@ export async function loadClientPortalData({
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [aboutData, scheduleItems, dailyLogs, documentsData, defaultFinancialSummary] = await Promise.all([
+  const [aboutData, orgTierRow, scheduleItems, dailyLogs, documentsData, defaultFinancialSummary] = await Promise.all([
     loadClientPortalAboutDataWithClient(supabase, { orgId, projectId }),
+    supabase.from("orgs").select("product_tier").eq("id", orgId).single(),
     permissions.can_view_schedule ? listProjectScheduleItemsWithClient(supabase, orgId, projectId) : Promise.resolve([]),
     permissions.can_view_daily_logs ? fetchSharedDailyLogsForPortal(supabase, orgId, projectId) : Promise.resolve([]),
     permissions.can_view_documents
@@ -1762,7 +1763,10 @@ export async function loadClientPortalData({
     permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
   ])
 
-  const isProductionBuyerPortal = aboutData.project.property_type === "production"
+  if (orgTierRow.error) throw new Error(`Failed to load org tier for portal: ${orgTierRow.error.message}`)
+  const isProductionBuyerPortal = isProductionProjectPosture(
+    getProjectPosture(aboutData.project.property_type, normalizeProductTier(orgTierRow.data?.product_tier)),
+  )
   const financialSummary = isProductionBuyerPortal
     ? await loadProductionPortalFinancialSummary({ orgId, projectId })
     : defaultFinancialSummary
@@ -2426,7 +2430,7 @@ export async function loadClientPortalShellContext({
     },
     hasInvoices: (invoiceCount.count ?? 0) > 0,
     hasPayApplications: payApplications.length > 0,
-    roadmapLabel: projectResult.data?.property_type === "production" ? "Milestones" : "Roadmap",
+    roadmapLabel: isProductionProjectPosture(posture) ? "Milestones" : "Roadmap",
   }
 }
 

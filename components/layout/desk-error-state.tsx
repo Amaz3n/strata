@@ -7,7 +7,7 @@ import { parsePermissionDenied, permissionLabel } from "@/lib/permission-denied"
 
 interface DeskErrorStateProps {
   error: Error & { digest?: string }
-  reset: () => void
+  retry: () => void
   /** What failed to load, as the user names it: "The Tasks desk", "This house". */
   subject: string
   /** Where "Back to ..." goes, so a failure is never a dead end. */
@@ -26,7 +26,7 @@ interface DeskErrorStateProps {
  * error's digest, because Next replaces the message of a thrown error with a
  * hash in production.
  */
-export function DeskErrorState({ error, reset, subject, backHref, backLabel, hint }: DeskErrorStateProps) {
+export function DeskErrorState({ error, retry, subject, backHref, backLabel, hint }: DeskErrorStateProps) {
   const denied = parsePermissionDenied(error)
 
   if (denied) {
@@ -62,7 +62,7 @@ export function DeskErrorState({ error, reset, subject, backHref, backLabel, hin
       </p>
       {error.digest ? <p className="font-mono text-[11px] text-muted-foreground">Reference {error.digest}</p> : null}
       <div className="flex items-center gap-2">
-        <Button variant="outline" size="sm" onClick={reset}>
+        <Button variant="outline" size="sm" onClick={retry}>
           Try again
         </Button>
         <Button variant="ghost" size="sm" asChild>

@@ -333,7 +333,7 @@ function startOfWeekIso(now: Date): { from: string; to: string } {
  * the desk, not the least.
  */
 export async function getStudioRunway(
-  opts: { communityId?: string; divisionId?: string; horizonDays?: number } = {},
+  opts: { communityId?: string; divisionId?: string; horizonDays?: number; refused?: boolean } = {},
 ): Promise<StudioRunway> {
   const context = await requireOrgContext()
   await requirePermission("selections.read", context)
@@ -342,7 +342,6 @@ export async function getStudioRunway(
   const today = now.toISOString().slice(0, 10)
   const horizonDate = new Date(now.getTime() + horizonDays * DAY_MS).toISOString().slice(0, 10)
 
-  const scope = await resolveStudioScope(context, opts)
   const emptyRunway: StudioRunway = {
     horizonDays,
     lanes: [],
@@ -351,6 +350,9 @@ export async function getStudioRunway(
     blockedStarts: [],
     truncatedAt: null,
   }
+  // A community the caller may not pin is an empty desk, never a widened one.
+  if (opts.refused) return emptyRunway
+  const scope = await resolveStudioScope(context, opts)
   if (scope.empty) return emptyRunway
 
   const scopeBatches: Array<string[] | null> = scope.projectIds
@@ -378,8 +380,8 @@ export async function getStudioRunway(
   if (!instances.length) {
     const week = startOfWeekIso(now)
     const [appointments, sessionsThisWeek] = await Promise.all([
-      listAppointments({ communityId: opts.communityId, from: week.from, to: week.to, limit: 50 }),
-      countAppointments({ communityId: opts.communityId, from: week.from, to: week.to }),
+      listAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to, limit: 50 }),
+      countAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to }),
     ])
     return { ...emptyRunway, appointments, counters: { ...emptyRunway.counters, sessionsThisWeek } }
   }
@@ -397,9 +399,9 @@ export async function getStudioRunway(
         .order("id")
         .range(from, to),
     ),
-    listAppointments({ communityId: opts.communityId, from: week.from, to: week.to, limit: 50 }),
-    countAppointments({ communityId: opts.communityId, from: week.from, to: week.to }),
-    listAppointments({ communityId: opts.communityId, from: now.toISOString(), status: "scheduled", limit: 100 }),
+    listAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to, limit: 50 }),
+    countAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to }),
+    listAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: now.toISOString(), status: "scheduled", limit: 100 }),
     readForIds<{ id: string; project_id: string; target_week: string | null }>("start packages", projectIds, (batch, from, to) =>
       context.supabase
         .from("start_packages")

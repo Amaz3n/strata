@@ -4,7 +4,7 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { RunwayBoard } from "@/components/design-studio/runway-board"
 import { getStudioRunway } from "@/lib/services/design-studio"
-import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 
@@ -15,16 +15,11 @@ interface PageProps {
 
 async function DesignStudioPageContent({ searchParams }: PageProps) {
   await connection()
-  const [{ community }, ambient, context] = await Promise.all([
-    searchParams,
-    getAmbientDeskContext(),
-    requireOrgContext(),
-  ])
-  const communityId = community || ambient.communityId
-  const scope = { communityId, divisionId: ambient.divisionId }
+  const [{ community }, context] = await Promise.all([searchParams, requireOrgContext()])
+  const scope = await resolveProductionDeskScope({ communityId: community })
 
   const [runway, canManage] = await Promise.all([
-    getStudioRunway(scope),
+    getStudioRunway({ communityId: scope.communityId, divisionId: scope.divisionId, refused: scope.refused }),
     hasPermission("design_studio.manage", context),
   ])
 
@@ -32,7 +27,7 @@ async function DesignStudioPageContent({ searchParams }: PageProps) {
     <PageLayout title="Design Studio" fullBleed>
       <RunwayBoard
         runway={runway}
-        communityId={communityId}
+        communityId={scope.communityId}
         canManage={canManage}
       />
     </PageLayout>

@@ -1,7 +1,7 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function PlansError({ reset }: { reset: () => void }) {
-  return <div className="p-12 text-center"><p className="font-medium">Plans could not be loaded.</p><Button className="mt-4" variant="outline" onClick={reset}>Try again</Button></div>
+export default function PlansError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
+  return <DeskErrorState error={error} retry={retry} subject="The Plans desk" backHref="/" backLabel="Back to home" />
 }

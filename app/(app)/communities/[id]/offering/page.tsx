@@ -8,7 +8,8 @@ import { getCommunityLane } from "@/lib/services/community-portfolio"
 import { getCommunityOfferingCosts, getCommunityPriceSheet, listOfferablePlans, listSpecInventory } from "@/lib/services/community-sales"
 import { listCommunityTraffic } from "@/lib/services/community-traffic"
 import { listPlansWithPublishedModels } from "@/lib/services/floorplan-models"
-import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getCurrentUserPermissions, hasPermission } from "@/lib/services/permissions"
+import { permissionLabel } from "@/lib/permission-denied"
 import { grossMarginPct } from "@/lib/plans/margin"
 import { isIncentiveLive, offeringPrice, type OfferingIncentive } from "@/lib/sales/offering"
 
@@ -35,6 +36,22 @@ const canManagePlans = (granted: readonly string[]) =>
 export default async function CommunityOfferingPage({ params }: { params: Promise<{ id: string }> }) {
   await connection()
   const { id } = await params
+  // The offer is the sales team's document (price sheet, incentives, traffic,
+  // spec inventory). The land manager shares this community's tabs but not its
+  // sales read, so say so here instead of letting the first read refuse.
+  if (!(await hasPermission("sales.read"))) {
+    return (
+      <div className="flex min-h-64 flex-col items-center justify-center gap-2 p-6 text-center" role="note">
+        <p className="text-sm font-medium">The offering is limited to sales.</p>
+        <p className="max-w-md text-xs text-muted-foreground">
+          Pricing, incentives, traffic and spec inventory need{" "}
+          <span className="font-medium">{permissionLabel("sales.read")}</span>{" "}
+          <span className="font-mono text-muted-foreground">sales.read</span>. An organization admin can grant it from
+          Settings, Team. Lots and takedowns are on the Inventory and Land tabs.
+        </p>
+      </div>
+    )
+  }
   const sheetPromise = getCommunityPriceSheet(id)
   const modelsPromise = sheetPromise.then((sheet) =>
     listPlansWithPublishedModels([...new Set(sheet.rows.map((row) => row.planId))])

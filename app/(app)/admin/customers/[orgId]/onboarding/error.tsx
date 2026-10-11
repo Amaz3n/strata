@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function OnboardingError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function OnboardingError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="Onboarding"
       backHref="/admin"
       backLabel="Back to admin"

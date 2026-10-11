@@ -5,7 +5,7 @@ import { getBooksUiAccess } from "@/lib/services/books/ui-access"
 import { Suspense } from "react"
 import { connection } from "next/server"
 import { PageLayout } from "@/components/layout/page-layout"
-import { Skeleton } from "@/components/ui/skeleton"
+import { WarrantySkeleton } from "@/components/layout/desk-skeletons"
 import { getWarrantyDeskTimeZone, isWarrantyAnalyticsAvailable, getWarrantyCostSummary, getWarrantyDefectAnalysis, listWarrantyBackcharges, listWarrantyRequestsForOrg, listWarrantyTechnicians, listWarrantyVisitsForDispatch, listWarrantyVisitsPendingVerification } from "@/lib/services/warranty"
 import { WarrantyDeskClient } from "./warranty-desk-client"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
@@ -13,11 +13,7 @@ import { DEFAULT_WARRANTY_TIME_ZONE } from "@/lib/services/warranty/visit-time"
 
 
 export default function WarrantyDeskPage(props: { searchParams: Promise<{ tab?: string; page?: string; week?: string; [key: string]: string | string[] | undefined }> }) {
-  return <PageLayout title="Warranty & service" breadcrumbs={[{ label: "Warranty" }]}><Suspense fallback={<WarrantyDeskLoading />}><WarrantyDeskData {...props} /></Suspense></PageLayout>
-}
-
-function WarrantyDeskLoading() {
-  return <div aria-label="Loading warranty desk" aria-busy="true" className="space-y-3">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div>
+  return <PageLayout title="Warranty & service" breadcrumbs={[{ label: "Warranty" }]}><Suspense fallback={<WarrantySkeleton />}><WarrantyDeskData {...props} /></Suspense></PageLayout>
 }
 
 async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?: string; page?: string; week?: string; [key: string]: string | string[] | undefined }> }) {

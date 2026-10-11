@@ -21,6 +21,8 @@ import {
 import { getDefaultProjectPropertyType, getProjectPosture, isProductionProjectPosture, type ProjectPosture } from "@/lib/product-tier"
 import { getDivisionAccessForUser, getDivisionScopedProjectIds, getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { readAllRows } from "@/lib/land/paging"
+import { chunk } from "@/lib/utils"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -372,11 +374,28 @@ export async function listBillingDeskProjects(
   return (data ?? []).map((row) => mapProject(row))
 }
 
+/** Most projects the summary list reads; a bigger org sees a visible "first N of M". */
+export const PROJECT_SUMMARY_CAP = 2_000
+const PROJECT_SUMMARY_ID_CHUNK = 100
+
+export interface ProjectSummaryPage {
+  projects: Project[]
+  /** Projects the caller may see, counted whether or not they were all read. */
+  total: number
+  truncated: boolean
+}
+
+/**
+ * Project identity rows for pickers and the schedule desk, newest first. Reads
+ * past PostgREST's row cap and stops at PROJECT_SUMMARY_CAP, reporting the cut.
+ * `projectIds` narrows to a caller-resolved scope (a community lens); it is
+ * intersected with what the caller may see, never widened.
+ */
 export async function listProjectSummaries(
   orgId?: string,
   context?: OrgServiceContext,
-  options?: { includePrecon?: boolean },
-): Promise<Project[]> {
+  options?: { includePrecon?: boolean; projectIds?: readonly string[] | null },
+): Promise<ProjectSummaryPage> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
   const includePrecon = options?.includePrecon ?? false
   const visibleProjectIds = await resolveVisibleProjectIds({
@@ -385,18 +404,53 @@ export async function listProjectSummaries(
     userId,
     includePrecon,
   })
-  if (visibleProjectIds?.length === 0) return []
+  const requested = options?.projectIds ?? null
+  let scopedIds: string[] | null = visibleProjectIds
+  if (requested) {
+    const visible = visibleProjectIds ? new Set(visibleProjectIds) : null
+    scopedIds = requested.filter((id) => !visible || visible.has(id))
+  }
+  if (scopedIds?.length === 0) return { projects: [], total: 0, truncated: false }
 
-  let query = supabase
-    .from("projects")
-    .select(PROJECT_IDENTITY_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
-  if (!includePrecon) query = query.eq("phase", "delivery")
-  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to list project summaries: ${error.message}`)
-  return (data ?? []).map((row) => mapProject(row))
+  const base = () => {
+    let query = supabase.from("projects").select(PROJECT_IDENTITY_SELECT).eq("org_id", resolvedOrgId)
+    if (!includePrecon) query = query.eq("phase", "delivery")
+    return query
+  }
+
+  if (scopedIds) {
+    const batches = await Promise.all(
+      chunk(scopedIds, PROJECT_SUMMARY_ID_CHUNK).map(async (ids) => {
+        const { data, error } = await base().in("id", ids).order("created_at", { ascending: false }).order("id")
+        if (error) throw new Error(`Failed to list project summaries: ${error.message}`)
+        return data ?? []
+      }),
+    )
+    const rows = batches
+      .flat()
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.id < b.id ? -1 : 1))
+    return {
+      projects: rows.slice(0, PROJECT_SUMMARY_CAP).map((row) => mapProject(row)),
+      total: rows.length,
+      truncated: rows.length > PROJECT_SUMMARY_CAP,
+    }
+  }
+
+  const { rows, truncated } = await readAllRows(
+    (from, to) => base().order("created_at", { ascending: false }).order("id").range(from, to),
+    { cap: PROJECT_SUMMARY_CAP, label: "Failed to list project summaries" },
+  )
+  let total = rows.length
+  if (truncated) {
+    const { count, error } = await supabase
+      .from("projects")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .match(includePrecon ? {} : { phase: "delivery" })
+    if (error) throw new Error(`Failed to count project summaries: ${error.message}`)
+    total = count ?? rows.length
+  }
+  return { projects: rows.map((row) => mapProject(row)), total, truncated: truncated && total > rows.length }
 }
 
 export interface ProjectBillingOption {

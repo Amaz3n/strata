@@ -1,3 +1,5 @@
+import { shouldShowSafetyNavigation } from "@/lib/product-tier";
+import { orgHasActiveCommercialProjects } from "@/lib/services/production-desk-scope";
 import { connection } from "next/server"
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -159,9 +161,10 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
   );
   const companyPagePromise = initialPagesPromise.then((pages) => pages.company);
   const vendorData = loadVendorData(companyPagePromise, context);
-  const [initialPages, permissionResult] = await Promise.all([
+  const [initialPages, permissionResult, hasActiveCommercialProjects] = await Promise.all([
     initialPagesPromise,
     getCurrentUserPermissions(orgId),
+    productTier === "commercial" ? Promise.resolve(true) : orgHasActiveCommercialProjects(orgId),
   ]);
   const directoryPage = initialPages[kind];
 
@@ -198,7 +201,7 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
       }}
       vendorData={vendorData}
       terms={terminology(productTier)}
-      showPrequalTrades={productTier === "commercial"}
+      showPrequalTrades={shouldShowSafetyNavigation(productTier, hasActiveCommercialProjects)}
       canCreate={canEdit}
       canArchive={canEdit}
       kind={kind}

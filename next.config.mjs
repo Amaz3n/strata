@@ -177,6 +177,21 @@ const nextConfig = {
         destination: '/projects/:id/documents',
         permanent: true,
       },
+      // Legacy project routes that only ever forwarded. A config redirect never
+      // renders a segment, so the dev instant validator has nothing to choke on.
+      ...[
+        ['commitments', 'financials/budget'],
+        ['budget', 'financials/budget'],
+        ['cost-inbox', 'financials/cost-inbox'],
+        ['payables', 'financials/payables'],
+        ['proposals', 'signatures'],
+        ['financials/cost-plus', 'financials/cost-inbox'],
+        ['financials/review', 'financials/cost-inbox'],
+      ].map(([from, to]) => ({
+        source: `/projects/:id/${from}`,
+        destination: `/projects/:id/${to}`,
+        permanent: false,
+      })),
       {
         source: '/starts/pipeline/:id',
         destination: '/starts/:id',

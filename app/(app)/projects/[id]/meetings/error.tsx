@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function MeetingsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function MeetingsError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="Meeting minutes"
       backHref="/projects"
       backLabel="Back to projects"

@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function ProjectWaiverRegisterError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function ProjectWaiverRegisterError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="The waiver register"
       backHref="/projects"
       backLabel="Back to projects"

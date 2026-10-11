@@ -219,3 +219,95 @@ export function ReportsSkeleton() {
     </DeskStatus>
   )
 }
+
+/** Billing: scope bar, then the book's Up next and Open bands as dense rows. */
+export function BillingSkeleton() {
+  return (
+    <DeskStatus label="billing">
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-8 w-28" />
+        </div>
+        <Skeleton className="h-8 w-32" />
+      </div>
+      <div className="border-b px-4 py-2">
+        <Skeleton className="h-3 w-24" />
+      </div>
+      <TableSkeleton columns="2fr_1.2fr_1fr_1fr_.8fr" rows={3} />
+      <div className="border-b border-t px-4 py-2">
+        <Skeleton className="h-3 w-16" />
+      </div>
+      <TableSkeleton columns="1fr_2fr_1fr_1fr_.8fr_.8fr" rows={8} />
+    </DeskStatus>
+  )
+}
+
+/** Bids: the 14-day strip, the filter row, then the banded package table. */
+export function BidsSkeleton() {
+  return (
+    <DeskStatus label="bids">
+      <div className="border-b px-4 py-3 sm:px-6">
+        <Skeleton className="mb-2 h-3 w-24" />
+        <div className="flex gap-1">
+          {Array.from({ length: 14 }, (_, index) => (
+            <Skeleton key={index} className="h-14 min-w-[64px] flex-1" />
+          ))}
+        </div>
+      </div>
+      <div className="border-b px-4 py-2.5 sm:px-6">
+        <div className="grid gap-2 sm:grid-cols-[minmax(200px,1fr)_180px_180px]">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      </div>
+      <TableSkeleton columns="2fr_1.4fr_1fr_.8fr_.8fr_.8fr" rows={10} />
+    </DeskStatus>
+  )
+}
+
+/** Warranty: the tab strip with its action, then the queue table. */
+export function WarrantySkeleton() {
+  return (
+    <DeskStatus label="warranty">
+      <div className="flex items-center justify-between gap-3 pb-4">
+        <div className="flex items-center gap-1">
+          {Array.from({ length: 5 }, (_, index) => (
+            <Skeleton key={index} className="h-8 w-20" />
+          ))}
+        </div>
+        <Skeleton className="h-8 w-44" />
+      </div>
+      <div className="border">
+        <TableSkeleton columns=".8fr_1.4fr_2fr_.8fr_.8fr_1.2fr_1.2fr_1fr_.8fr" rows={10} />
+      </div>
+    </DeskStatus>
+  )
+}
+
+/** Plans: the filter row, then the plan ladder as thumbnail rows. */
+export function PlansSkeleton() {
+  return (
+    <DeskStatus label="plans">
+      <div className="flex items-center gap-2 border-b px-4 py-2.5">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-8 w-32" />
+        <Skeleton className="h-8 w-32" />
+        <Skeleton className="h-8 w-40" />
+      </div>
+      <div className="divide-y">
+        {Array.from({ length: 8 }, (_, index) => (
+          <div key={index} className="flex items-center gap-4 px-4 py-3">
+            <Skeleton className="h-12 w-16 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-4 w-48" />
+              <Skeleton className="h-3 w-72" />
+            </div>
+            <Skeleton className="hidden h-8 w-64 md:block" />
+          </div>
+        ))}
+      </div>
+    </DeskStatus>
+  )
+}

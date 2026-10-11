@@ -2,6 +2,6 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function DirectoryAccountError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
-  return <DeskErrorState error={error} reset={reset} subject="This account" backHref="/directory" backLabel="Back to directory" />
+export default function DirectoryAccountError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
+  return <DeskErrorState error={error} retry={retry} subject="This account" backHref="/directory" backLabel="Back to directory" />
 }

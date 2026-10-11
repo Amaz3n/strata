@@ -2,11 +2,11 @@
 
 import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function PaymentRunError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function PaymentRunError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
     <DeskErrorState
       error={error}
-      reset={reset}
+      retry={retry}
       subject="This payment run"
       backHref="/payables"
       backLabel="Back to payables"

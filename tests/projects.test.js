@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { createProject, prepareProjectOpeningContract } = freshRequire("lib/services/projects.ts")
+const { createProject, listProjectSummaries, prepareProjectOpeningContract } = freshRequire("lib/services/projects.ts")
 
 describe("createProject", () => {
   const harness = () =>
@@ -120,5 +120,36 @@ describe("prepareProjectOpeningContract", () => {
     assert.equal(open("production", { property_type: "production", billing_model: "cost_plus_percent" }).contract_type, "cost_plus")
     assert.equal(open("production", { property_type: "residential" }).project_id, "project")
     assert.equal(open("residential", { property_type: "commercial" }).project_id, "project")
+  })
+})
+
+describe("listProjectSummaries", () => {
+  const projects = (count) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: id(1000 + index),
+      org_id: ORG,
+      name: `Lot ${index}`,
+      status: "active",
+      phase: "delivery",
+      property_type: "production",
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+    }))
+  const harness = (count) =>
+    createServiceHarness({ permissions: ["project.read"], tables: { projects: projects(count) }, maxRows: 1000 })
+
+  test("reads past PostgREST's row cap instead of stopping silently at it", async () => {
+    const page = await harness(1500).run(() => listProjectSummaries())
+    assert.equal(page.projects.length, 1500)
+    assert.equal(page.truncated, false)
+  })
+
+  test("a caller-resolved scope is read in id chunks and never widens past what the caller may see", async () => {
+    const service = harness(250)
+    const scope = projects(250).map((row) => row.id)
+    const page = await service.run(() => listProjectSummaries(undefined, undefined, { projectIds: [...scope, id(9999)] }))
+    assert.equal(page.projects.length, 250)
+    assert.equal(page.total, 250)
+    const empty = await service.run(() => listProjectSummaries(undefined, undefined, { projectIds: [] }))
+    assert.deepEqual(empty, { projects: [], total: 0, truncated: false })
   })
 })

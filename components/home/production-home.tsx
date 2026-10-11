@@ -78,6 +78,13 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
         </Link>
       )}
 
+      {data.scopeTruncated && (
+        <p className="border-b px-5 py-2 text-[11px] text-muted-foreground">
+          This scope has more active houses than Home can total. The figures cover the first houses only. Narrow the
+          division or community to see them all.
+        </p>
+      )}
+
       {tiles.length > 0 && (
         <section
           className={cn("desk-rise grid border-b", COLUMNS[Math.min(tiles.length, TILE_CAP)])}

@@ -20,7 +20,7 @@ function denial(keys) {
   })
 }
 
-const props = (error, reset = () => {}) => ({ error, reset, subject: "The Starts desk", backHref: "/starts", backLabel: "Back to Starts" })
+const props = (error, retry = () => {}) => ({ error, retry, subject: "The Starts desk", backHref: "/starts", backLabel: "Back to Starts" })
 
 test("a refused desk names the missing permission and who can grant it, and offers no retry", () => {
   const tree = mount(DeskErrorState, props(denial(["schedule.read", "project.read"]))).render()
@@ -33,12 +33,12 @@ test("a refused desk names the missing permission and who can grant it, and offe
   assert.equal(find(tree, (node) => node.type === "Link").props.href, "/starts")
 })
 
-test("a failed load retries through Next's reset, shows the reference and never the private message", () => {
-  let resets = 0
+test("a failed load retries through Next's retry, shows the reference and never the private message", () => {
+  let retries = 0
   const error = Object.assign(new Error("relation house_plans private detail"), { digest: "1234567" })
-  const tree = mount(DeskErrorState, props(error, () => resets++)).render()
+  const tree = mount(DeskErrorState, props(error, () => retries++)).render()
   button(tree, "Try again").props.onClick()
-  assert.equal(resets, 1)
+  assert.equal(retries, 1)
   assert.match(text(tree), /could not be loaded/)
   assert.match(text(tree), /Reference 1234567/)
   assert.doesNotMatch(text(tree), /private detail/)
