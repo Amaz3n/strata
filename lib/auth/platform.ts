@@ -78,8 +78,17 @@ export const getPlatformPermissions = cache(async (userId: string) => {
  * support grant is also required. Org context (`requireOrgMembership`) and
  * permission decisions (`hasPlatformOrgContext`) both ask this one question.
  */
+// A superadmin may be configured by email alone; a caller that knows only the
+// user id (authorize()) resolves the email so both gates decide alike.
+const superadminEmailOf = cache(async (userId: string): Promise<string | null> => {
+  if (!process.env.SUPERADMIN_EMAILS?.trim()) return null
+  const { data, error } = await createServiceSupabaseClient().from("app_users").select("email").eq("id", userId).maybeSingle()
+  if (error) throw new Error(`Unable to resolve platform staff: ${error.message}`)
+  return (data?.email as string | undefined) ?? null
+})
+
 export async function holdsPlatformOrgAccess(userId: string, email?: string | null) {
-  if (isPlatformAdminId(userId, email)) return true
+  if (isPlatformAdminId(userId, email ?? (await superadminEmailOf(userId)))) return true
   const { permissions } = await getPlatformPermissions(userId)
   return permissions.includes("*") || permissions.includes("platform.org.access")
 }

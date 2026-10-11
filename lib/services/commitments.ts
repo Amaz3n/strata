@@ -632,6 +632,7 @@ async function applyCommitmentExecution({
   evidence,
   actorId,
   eventPayload,
+  approvesDraft,
 }: {
   supabase: SupabaseClient
   orgId: string
@@ -643,11 +644,18 @@ async function applyCommitmentExecution({
   evidence: Record<string, unknown>
   actorId?: string
   eventPayload: Record<string, unknown>
+  /**
+   * Only a person who passed the approval checks turns a draft into an approved
+   * commitment. A counterparty's signature records execution but approves
+   * nothing: a draft that went back to draft after it was sent still needs a
+   * person to approve it.
+   */
+  approvesDraft: boolean
 }): Promise<CommitmentSummary> {
   const { data, error } = await supabase
     .from("commitments")
     .update({
-      status: existing.status === "draft" ? "approved" : existing.status,
+      status: existing.status === "draft" && approvesDraft ? "approved" : existing.status,
       executed_at: executedAt,
       executed_file_id: executedFileId,
       source_document_id: documentId ?? existing.source_document_id ?? null,
@@ -721,6 +729,7 @@ export async function markCommitmentExecutedFromEnvelope(input: {
     executedFileId: input.executedFileId,
     documentId: input.documentId,
     envelopeId: input.envelopeId,
+    approvesDraft: false,
     evidence: {
       method: "esign",
       signer_name: input.signerName ?? null,
@@ -830,6 +839,7 @@ export async function executeCommitment({
     existing,
     executedAt: parsed.executed_at,
     executedFileId: parsed.executed_file_id,
+    approvesDraft: true,
     evidence: {
       method: "recorded",
       executed_at: parsed.executed_at,

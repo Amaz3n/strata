@@ -202,7 +202,7 @@ test("the requester of a variance order cannot approve it, and the attempt is au
   assert.equal(service.db.commitment_change_orders[0].status, "draft")
 })
 
-const { updateCommitment } = freshRequire("lib/services/commitments.ts")
+const { updateCommitment, markCommitmentExecutedFromEnvelope } = freshRequire("lib/services/commitments.ts")
 const { assertCommitmentExecutable } = freshRequire("lib/services/subcontract-execution.ts")
 
 const COMMITMENT = id(70)
@@ -289,4 +289,15 @@ test("a commitment cannot be sent for signature until it is approved, so its cre
 
   service.db.commitments[0].status = "approved"
   await sendForSignature()
+})
+
+test("a vendor's signature on a commitment that went back to draft records execution but approves nothing", async () => {
+  const service = commitmentOrg({ createdBy: ACTOR, other: commitmentApprover() })
+
+  await service.run(() =>
+    markCommitmentExecutedFromEnvelope({ orgId: ORG, commitmentId: COMMITMENT, envelopeId: id(72), documentId: id(73), executedFileId: id(74), signerName: "Vendor" }),
+  )
+
+  assert.equal(service.db.commitments[0].status, "draft")
+  assert.ok(service.db.commitments[0].executed_at)
 })
