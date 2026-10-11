@@ -60,7 +60,7 @@ test("a company's receivables and payables are its jobs' documents, company-leve
   db.rpc = async () => ({ data: PRIMARY, error: null })
   const original = Module._load
   let ar, ap
-  for (const module of ["reports/ar-aging", "reports/ap-aging", "books/legal-entities"]) delete require.cache[require.resolve(`../lib/services/${module}`)]
+  for (const service of ["reports/ar-aging", "reports/ap-aging", "books/legal-entities"]) delete require.cache[require.resolve(`../lib/services/${service}`)]
   try {
     Module._load = function(name, ...args) {
       if (name === "@/lib/services/context") return { requireOrgContext: async () => ({ supabase: db, orgId: "org", userId: "user" }) }

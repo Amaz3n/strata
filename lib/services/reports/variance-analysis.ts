@@ -85,7 +85,7 @@ export async function getVarianceAnalysis({
     ])
     if (projects.truncated || lots.truncated) throw new Error("Variance analysis exceeds the supported project scope; narrow the division filter")
     const projectIds = [...new Set([...projects.rows.map((row) => row.id), ...lots.rows.map((row) => row.project_id)])]
-    return getScopedVarianceAnalysis({ supabase, orgId: resolvedOrgId, projectIds, divisionIds: scope.divisionIds, startDate, endDate })
+    return getScopedVarianceAnalysis({ supabase: createServiceSupabaseClient(), orgId: resolvedOrgId, projectIds, divisionIds: scope.divisionIds, startDate, endDate })
   }
   const aggregate = await readAllRows<Record<string, unknown>>((from, to) => supabase.rpc("get_variance_analysis", {
     p_org_id: resolvedOrgId, p_start_date: startDate, p_end_date: endDate,
@@ -108,6 +108,12 @@ export async function getVarianceAnalysis({
 /**
  * The division-scoped report, aggregated in TypeScript because the RPC takes
  * no project filter.
+ *
+ * `supabase` is the service client, because the caller already passed the report's
+ * authorization and division resolution and `projectIds` is exactly what that decided.
+ * Reading the project rows as the member would hide a home whose project carries no
+ * division (RLS division backstop) even though its lot puts it in the member's division,
+ * and the consistency check below would then fail the whole report.
  *
  * It must produce the same numbers the RPC does or a purchasing manager with
  * one division sees a different report from the org admin looking at the same
