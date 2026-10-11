@@ -110,7 +110,9 @@ export async function loadRevenuePolicyResolver(orgId: string) {
     const scopes = primaries.length > 1 ? primaries : [null]
     const applied: Record<string, AppliedRevenuePolicy> = {}
     for (const contract of scopes) {
-      const record = policyInForce(policies, projectId, contract?.id ?? null, date)
+      // A job with one contract earns under one policy, but a policy approved for
+      // that contract is still the policy in force: scope the lookup to it.
+      const record = policyInForce(policies, projectId, contract?.id ?? primaries[0]?.id ?? null, date)
       if (record) {
         applied[contract?.id ?? ""] = { method: record.method, billingMethod: record.billing_method, source: record.status === "approved" ? "approved" : "inferred", policyId: record.id }
         continue

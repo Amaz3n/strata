@@ -33,8 +33,12 @@ test("conflicting primary postures block instead of depending on contract order"
     assert.throws(() => resolveProjectRevenueBasis(project, ordered, "2026-09-30"), /Project project has conflicting primary contract revenue bases/)
   }
   assert.equal(resolveProjectRevenueBasis(project, [contract(), contract({ id: "second-sale" })], "2026-09-30"), "closing")
-  assert.equal(resolveProjectRevenueBasis(project, [], "2026-09-30"), "percentage_of_completion")
-  assert.equal(resolveProjectRevenueBasis(project, [contract({ status: "draft" })], "2026-09-30"), "percentage_of_completion")
+  // A production home is a sale before its agreement is signed: it earns at closing, not over time.
+  assert.equal(resolveProjectRevenueBasis(project, [], "2026-09-30"), "closing")
+  assert.equal(resolveProjectRevenueBasis(project, [contract({ status: "draft" })], "2026-09-30"), "closing")
+  for (const property_type of ["residential", "commercial"]) {
+    assert.equal(resolveProjectRevenueBasis({ ...project, property_type }, [], "2026-09-30"), "percentage_of_completion")
+  }
   assert.equal(resolveProjectRevenueBasis({ ...project, financial_settings: { billing_model: "time_and_materials" } }, [contract()], "2026-09-30"), "percentage_of_completion")
   assert.throws(() => resolveProjectRevenueBasis(project, [contract(), contract({ id: "later", effective_date: "2026-10-01", contract_type: "fixed_price" })], "2026-10-31"), /conflicting/)
 })
@@ -87,6 +91,12 @@ test("paged revenue basis reads every primary contract and applies the accountin
   assert.deepEqual(await load("org", "2026-09-30"), [{ projectId: "project", status: "active", basis: "closing", contractIds: ["contract"],
     policies: { "": { method: "closing", billingMethod: "purchase_agreement", source: "unrecorded", policyId: null } } }])
   assert.deepEqual(pages, [0, 500, 1000])
+  // With one contract, a policy approved for that contract outranks the project's inferred baseline.
+  const inferredProject = { id: "00000009-0000-4000-8000-000000000000", project_id: "project", contract_id: null, method: "percentage_of_completion", billing_method: "fixed_price", effective_from: "1900-01-01", status: "inferred", reviewed_at: null }
+  const approvedContract = { id: "00000008-0000-4000-8000-000000000000", project_id: "project", contract_id: "contract", method: "closing", billing_method: "purchase_agreement", effective_from: "2026-01-01", status: "approved", reviewed_at: "2026-09-01T00:00:00Z" }
+  policies = [inferredProject, approvedContract]
+  assert.deepEqual((await load("org", "2026-09-30"))[0].policies, { "": { method: "closing", billingMethod: "purchase_agreement", source: "approved", policyId: approvedContract.id } })
+  policies = []
   // In October a fixed-price contract earning over time joins the sale: unreviewed, that is refused.
   await assert.rejects(load("org", "2026-10-31"), /contracts that earn revenue differently .* Approve a revenue policy for each of its contracts/)
   // Approved per contract, the job earns each way and has no single method.

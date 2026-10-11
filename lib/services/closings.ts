@@ -481,10 +481,13 @@ export async function settleClosing(input: unknown, orgId?: string) {
     customer_id: buyer?.id ?? null, customer_name: buyer?.full_name ?? null, sent_to_emails: buyer?.email ? [buyer.email] : undefined,
     lines: invoiceLines.map((line) => ({ description: line.description, quantity: 1, unit: "closing", unit_cost: line.amountCents / 100, taxable: false })),
     metadata: { invoice_kind: "closing", source_closing_id: closing.id, settlement },
-  }, orgId: context.orgId, context, authorizationPermission: "closing.manage", sendAuthorizationPermission: "closing.manage" }).catch((createError: unknown) => {
-    if (createError instanceof Error && createError.message.includes(CLOSING_INVOICE_FENCE)) {
-      throw new Error("This closing is already being settled. Refresh, then retry to resume that settlement.")
-    }
+  }, orgId: context.orgId, context, authorizationPermission: "closing.manage", sendAuthorizationPermission: "closing.manage" }).catch(async (createError: unknown) => {
+    // Racing settlements can trip the invoice-number constraint before the
+    // closing fence, so the loser is identified by the winner's invoice, not by
+    // which constraint it happened to hit.
+    const raced = (createError instanceof Error && createError.message.includes(CLOSING_INVOICE_FENCE)) ||
+      Boolean((await context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "closing", source_closing_id: closing.id }).maybeSingle()).data)
+    if (raced) throw new Error("This closing is already being settled. Refresh, then retry to resume that settlement.")
     throw createError
   })
   const { data: issuedInvoice, error: issuedError } = await context.supabase.from("invoices").select("total_cents").eq("org_id", context.orgId).eq("id", invoice.id).single()

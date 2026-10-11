@@ -1904,7 +1904,7 @@ async function applyChangeOrderFinancialImpact({
 }) {
   const { data: contract, error: contractError } = await supabase
     .from("contracts")
-    .select("id, total_cents, gmp_cents, snapshot")
+    .select("id, contract_type, total_cents, gmp_cents, snapshot")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "active")
@@ -1915,7 +1915,10 @@ async function applyChangeOrderFinancialImpact({
   if (contractError) {
     throw new Error(`Failed to load contract: ${contractError.message}`)
   }
-  if (!contract) return
+  // A purchase agreement's total is the signed price. Approved changes are added
+  // to it once, by the closing settlement (buildSettlement); raising the total
+  // here as well counted every change order twice at closing.
+  if (!contract || contract.contract_type === "purchase_agreement") return
 
   const { data: approvedOrders, error: approvedError } = await supabase
     .from("change_orders")

@@ -153,12 +153,14 @@ export function getProjectFinancialFeatureConfig(
     source != null && "property_type" in source && source.property_type === "production"
 
   if (billingModel === "fixed_price") {
-    const isPurchaseAgreement = contract?.contract_type === "purchase_agreement"
-    const productionWithoutContract =
-      source != null &&
-      "property_type" in source &&
-      source.property_type === "production" &&
-      contract == null
+    // A production home is sold through a purchase agreement and earns at the
+    // closing. Before the agreement exists (a spec home, or a reservation still
+    // unsigned) it is the same sale, not a draw job: deciding it from the
+    // contract alone recorded a percentage-of-completion baseline at
+    // reservation that then masked the agreement.
+    const sellsAtClosing =
+      contract?.contract_type === "purchase_agreement" ||
+      (source != null && "property_type" in source && source.property_type === "production" && contract == null)
     const progressBilling =
       source != null &&
       "financial_settings" in source &&
@@ -170,9 +172,9 @@ export function getProjectFinancialFeatureConfig(
       showExpenses: false,
       showGenerateFromCosts: false,
       showOpenBook: false,
-      showDraws: !isPurchaseAgreement && !progressBilling && !productionWithoutContract,
+      showDraws: !sellsAtClosing && !progressBilling,
       requireCostApproval: false,
-      ownerBillingBasis: isPurchaseAgreement ? "closing" : progressBilling ? "progress" : "draws",
+      ownerBillingBasis: sellsAtClosing ? "closing" : progressBilling ? "progress" : "draws",
       lockBudgetLinesAfterBaseline,
     }
   }
