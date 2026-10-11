@@ -36,7 +36,7 @@ function fixture(tier = 'production', propertyType = 'production') {
   const projects = load('lib/services/projects.ts', { ...common, '@/lib/services/project-financial-setup': financial })
   const invoices = load('lib/services/invoices.ts', { ...common,
     'next/server': { after: fn => after.push(fn) },
-    '@/lib/services/authorization': { requireAuthorization: async args => guards.push(args) },
+    '@/lib/services/authorization': { requireAuthorization: async args => guards.push(args), getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }), getProjectReadScopeForUser: async () => ({ divisionIds: null, projectMembershipRequired: false }) },
     '@/lib/supabase/server': { createServiceSupabaseClient: () => ({ rpc: async (name, args) => {
       commits.push({ name, args })
       const invoice = { id: 'invoice-1', ...args.p_invoice, invoice_lines: args.p_lines }
