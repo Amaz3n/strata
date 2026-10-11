@@ -60,7 +60,6 @@ const OPEN_SUBCASES = {
     "purchasing-manager-reaches-a-house": "EP14-01",
     "agreement-signs-through-an-envelope": "EP14-01",
     "release-copies-the-plan-set": "EP14-01",
-    "picker-page-past-the-end-is-empty": "EP08-02",
     "addendum-can-be-issued-on-an-open-package": "EP08-01",
     "purchasing-manager-runs-the-bid-workbench": "EP08-01",
     "purchasing-manager-reads-the-history-of-awarded-homes": "EP08-04",

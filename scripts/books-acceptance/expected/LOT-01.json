@@ -2307,9 +2307,6 @@
       }
     },
     "picker-page-past-the-end-is-empty": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P1",
-      "reason": "Defect: a page past the last row throws 'Requested range not satisfiable' (PostgREST 416) in listProductionBidQueue (lib/services/production-bid-queue.ts, .range) and in the directory page the vendor picker uses (lib/services/directory.ts listDirectoryPageWithClient, .range), so a reader sitting on the last page when rows are removed gets an error instead of an empty page.",
       "derivation": "EP08-02 #0 (stable paging, accurate totals). The queue holds 47 listed packages, so page 4 of 20 is empty but the total is still 47; the vendor picker's page 4 of the 'Vendor' search is empty with more false.",
       "inputs": {},
       "expected": {
