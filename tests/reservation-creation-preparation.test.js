@@ -30,13 +30,14 @@ function fixture(tier = 'production', propertyType = 'production') {
     '@/lib/services/audit': { recordAudit: async input => audits.push(input) },
     '@/lib/services/events': { recordEvent: async input => events.push(input) },
     '@/lib/services/permissions': { requirePermission: async (...args) => guards.push(args) },
+    '@/lib/services/authorization': { requireAuthorization: async args => guards.push(args), getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }), getProjectReadScopeForUser: async () => ({ divisionIds: null, projectMembershipRequired: false }) },
     '@/lib/financials/cost-codes-enabled': { getOrgCostCodesEnabled: async () => true, resolveCostCodesEnabled: (project, org) => project ?? org },
   }
   const financial = load('lib/services/project-financial-setup.ts', common)
   const projects = load('lib/services/projects.ts', { ...common, '@/lib/services/project-financial-setup': financial })
   const invoices = load('lib/services/invoices.ts', { ...common,
     'next/server': { after: fn => after.push(fn) },
-    '@/lib/services/authorization': { requireAuthorization: async args => guards.push(args), getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }), getProjectReadScopeForUser: async () => ({ divisionIds: null, projectMembershipRequired: false }) },
+    '@/lib/services/authorization': { requireAuthorization: async args => guards.push(args) },
     '@/lib/supabase/server': { createServiceSupabaseClient: () => ({ rpc: async (name, args) => {
       commits.push({ name, args })
       const invoice = { id: 'invoice-1', ...args.p_invoice, invoice_lines: args.p_lines }
