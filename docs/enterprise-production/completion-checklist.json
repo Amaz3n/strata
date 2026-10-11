@@ -5880,7 +5880,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -5895,7 +5895,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -5905,6 +5905,34 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -6188,7 +6216,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -6226,6 +6254,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -7049,7 +7091,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -7084,6 +7126,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -8482,7 +8538,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -8516,6 +8572,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -8971,7 +9041,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -8979,6 +9049,20 @@
           "head": "7b76ae4b",
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
         }
       ],
@@ -9629,7 +9713,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -9666,6 +9750,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -10663,7 +10761,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -10700,6 +10798,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -11065,7 +11177,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -11079,7 +11191,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -11116,6 +11228,34 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -11879,7 +12019,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -11916,6 +12056,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -13579,7 +13733,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -13616,6 +13770,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -14529,7 +14697,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -14544,7 +14712,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -14582,6 +14750,34 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -14904,7 +15100,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -14919,7 +15115,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -14954,6 +15150,34 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -15285,7 +15509,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -15300,7 +15524,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -15310,6 +15534,34 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -15756,7 +16008,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -15794,6 +16046,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -16087,7 +16353,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16102,7 +16368,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16112,6 +16378,34 @@
           "scope": "Whole scenario on the isolated acceptance stack.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -16448,7 +16742,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -16462,7 +16756,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -16499,6 +16793,34 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -16818,7 +17140,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16833,7 +17155,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16868,6 +17190,34 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -17329,7 +17679,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -17366,6 +17716,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -17673,7 +18037,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -17707,6 +18071,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -18187,7 +18565,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -18224,6 +18602,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -18701,13 +19093,27 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA3-20261011"
           ],
           "head": "fffc08a7",
           "scope": "LOT-01 variance subcases mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
         }
       ],
@@ -19752,7 +20158,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA3-20261011"
@@ -19762,6 +20168,22 @@
           "failedChecks": [
             "division-scoped-variance-report-matches-the-organisation-report",
             "variance-report-labels-the-superintendent"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "division-scoped-variance-report-matches-the-organisation-report"
           ]
         }
       ],
@@ -20533,7 +20955,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -20568,6 +20990,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -20823,7 +21259,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -20857,6 +21293,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -21529,7 +21979,7 @@
           "kind": "acceptance_run",
           "scenario": "CLOSE-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21544,7 +21994,7 @@
           "kind": "acceptance_run",
           "scenario": "CONSOL-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21559,7 +22009,7 @@
           "kind": "acceptance_run",
           "scenario": "ENTITY-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21574,7 +22024,7 @@
           "kind": "acceptance_run",
           "scenario": "HOME-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21589,7 +22039,7 @@
           "kind": "acceptance_run",
           "scenario": "INTERCO-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21604,7 +22054,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21619,7 +22069,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -21654,6 +22104,118 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CLOSE-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CONSOL-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "ENTITY-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "HOME-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "INTERCO-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": [
+            "race-intercompany-lot-sale"
+          ]
         }
       ],
       "releaseState": "unverified",
@@ -22852,7 +23414,7 @@
           "kind": "acceptance_run",
           "scenario": "CLOSE-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -22867,7 +23429,7 @@
           "kind": "acceptance_run",
           "scenario": "HOME-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -22882,7 +23444,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -22892,6 +23454,48 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CLOSE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "HOME-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -23309,7 +23913,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -23346,6 +23950,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -24690,7 +25308,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -24698,6 +25316,20 @@
           "head": "7b76ae4b",
           "stack": "arc-books-acceptance-0954cf243fce",
           "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
         }
       ],
@@ -24958,7 +25590,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA2-20261011"
@@ -24992,6 +25624,20 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -26362,7 +27008,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -26372,6 +27018,20 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA4-20261011"
+          ],
+          "head": "76477b3d",
+          "stack": "arc-books-acceptance-fc3c48f0dfe4",
+          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -31761,6 +32421,16 @@
       "files": [],
       "sourceHashes": {},
       "notes": "Variance-report subcases fail on a division backstop regression (EP08-06, EP08-12)."
+    },
+    {
+      "id": "QA4-20261011",
+      "date": "2026-10-11",
+      "scope": "Fresh acceptance stack arc-books-acceptance-fc3c48f0dfe4 at 76477b3d: LOT-01 INCOMPLETE; LOT-01 --include-pending FAILED; RACE-02 FAILED; HOME-01 PASSED; ENTITY-01 PASSED; CLOSE-01 PASSED; CONSOL-01 PASSED; INTERCO-01 PASSED",
+      "command": [],
+      "counts": {},
+      "files": [],
+      "sourceHashes": {},
+      "notes": "EP07-14 held: real storage copy not exercised."
     }
   ],
   "deferredBacklog": [

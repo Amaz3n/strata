@@ -9,9 +9,9 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 | Measure | Current result |
 | --- | --- |
 | Implemented | 18.7% — a documented lower bound, not an ETA |
-| Fully verified | 11.1% |
+| Fully verified | 11.4% |
 | Release ready | 0% |
-| Code implemented | 12 items |
+| Code implemented | 11 items |
 | Partially implemented | 84 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
@@ -164,7 +164,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP08-03 | Bid subresource authorization | partial | Route listBidPackages/getProjectBuyoutSummary through assertBidProjectVisibility; scope or delete listCommunityBidPackages. |
 | EP08-04 | Complete bid intelligence | verified | Render an explicit error state instead of .catch(() => null) at app/(app)/purchasing/bids/[packageId]/page.tsx:40. |
 | EP08-05 | Rebid and renewal lifecycle | partial | Make rescind_bid_award void/end the minted agreements and restore superseded predecessors transactionally (migration, needs approval). |
-| EP08-06 | PO preview and exception resolution | implemented | Decide policy for zero-price manual resolutions. |
+| EP08-06 | PO preview and exception resolution | verified | Decide policy for zero-price manual resolutions. |
 | EP08-07 | Transactional PO issuance | partial | Apply migration 20261010111000_po_generation_commit_rejects_stale_prior_run after 20261003048000 (pending approval). |
 | EP08-08 | Vendor PO acknowledgment | partial | Add an issued-version concept and vendor accept/dispute (quantities, dates, scope) with reason, portal permission, events, audit and email allowlist (migration). |
 | EP08-09 | Variance approval controls | partial | Require cost evidence per org policy and validate file ancestry. |
@@ -279,6 +279,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-bid-queue.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-inventory.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/production-bid-queue.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/purchasing-queue-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-query.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/purchasing/entity-picker.tsx
@@ -316,6 +317,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261004000030_agreement_catalog_revisions.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-publication-history-db.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/configuration-rules.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/configuration-rules.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/selections.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/starts.ts
@@ -384,6 +386,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/validation/selections.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selection-cutoffs.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selection-change-orders.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/change-orders.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-gates.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-release.test.js
@@ -396,6 +399,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP07: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003023000_starts_job_claim_leases.sql
+- AUDIT-20261009-EP07: source changed since proof: tests/start-trade-notices.test.js
 - AUDIT-20261009-EP07: source changed since proof: components/schedule/gantt-chart.tsx
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003041000_starts_claim_actor_transitions.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-job-leases-db.test.js
@@ -423,8 +427,11 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/bids.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/production-bid-queue.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: components/purchasing/entity-picker.tsx
+- AUDIT-20261009-EP08-EP09: source changed since proof: app/(app)/purchasing/page.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/production-bid-queue.test.js
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/purchasing-page.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/bid-intelligence.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: components/purchasing/purchasing-client.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/po-generation.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/validation/po-generation.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/po-generation-preview.test.js
@@ -435,6 +442,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/validation/commitment-change-orders.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/mobile/purchasing.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/mobile-purchasing.test.js
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/purchasing-queue-scope.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/reports/variance-analysis.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/variance-analysis.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/production-house-overview.ts
@@ -448,15 +456,22 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/inspections.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/closing-readiness.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/inspection-completion-handoff.test.js
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/inspections.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/punch-lists.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/project-close-readiness.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: app/(app)/projects/[id]/actions.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/closing-readiness.test.js
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/closeout-preparation.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/photo-record-contract.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/legal-entities.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/verifier.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/period-close.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007235500_books_retire_native_entity_ledger.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007235800_books_legal_entities.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007235900_books_intercompany_lot_sales.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261008001000_books_company_opening_balances.sql
+- AUDIT-20261009-EP10-EP11: source changed since proof: docs/books-entities.md
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-acceptance-scenarios.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/starts-pipeline.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/closings.ts
@@ -472,9 +487,12 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/community-portfolio.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/production-house-overview.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/production-reporting.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/close-control-rules.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/reconciliation-rules.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007200000_books_home_inventory_controls.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-close-control-integrity.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-close-review.test.js
+- AUDIT-20261009-EP10-EP11: source changed since proof: tests/arc-books.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty-operations.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty/domain.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: app/(app)/warranty/warranty-desk-client.tsx
@@ -515,15 +533,27 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/reservation-conversion.ts
 - VERIFY-20261010: source changed since proof: tests/catalog-price-validation.test.js
+- VERIFY-20261010: source changed since proof: tests/land-foundation.test.js
 - VERIFY-20261010: source changed since proof: tests/lots.test.js
 - VERIFY-20261010: source changed since proof: tests/community-sales.test.js
 - VERIFY-20261010: source changed since proof: tests/reservation-creation-preparation.test.js
 - VERIFY-20261010: source changed since proof: tests/closings-db.test.js
 - VERIFY-20261010: source changed since proof: tests/selection-cutoffs.test.js
 - VERIFY-20261010: source changed since proof: tests/imports-open-wip.test.js
+- VERIFY-20261010: source changed since proof: tests/start-trade-notices.test.js
+- VERIFY-20261010: source changed since proof: tests/starts-release-actor-db.test.js
+- VERIFY-20261010: source changed since proof: tests/starts-core-write-fences-db.test.js
 - VERIFY-20261010: source changed since proof: tests/drawings-pipeline-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release.test.js
 - VERIFY-20261010: source changed since proof: tests/bids.test.js
 - VERIFY-20261010: source changed since proof: tests/production-bid-queue.test.js
+- VERIFY-20261010: source changed since proof: tests/purchasing-page.test.js
 - VERIFY-20261010: source changed since proof: tests/variance-analysis.test.js
+- VERIFY-20261010: source changed since proof: tests/inspection-completion-handoff.test.js
+- VERIFY-20261010: source changed since proof: tests/inspections.test.js
+- VERIFY-20261010: source changed since proof: tests/closeout-preparation.test.js
+- VERIFY-20261010: source changed since proof: tests/books-legal-entities-db.test.js
+- VERIFY-20261010: source changed since proof: tests/books-historical-aging.test.js
+- VERIFY-20261010: source changed since proof: tests/books-close-control-integrity.test.js
+- VERIFY-20261010: source changed since proof: tests/books-close-review.test.js
 
