@@ -719,3 +719,145 @@ test("every record under a home, a lead, a lot or a community stays in its divis
     await assert.rejects(insertAs("South"), /row-level security|division access/, `${table}: limited insert`)
   }
 })
+
+/**
+ * wallOrg, with rows under the walled records: each child names its parent
+ * only by id. `parent(side)` builds a side's parent; `row(parentId, n)` its child.
+ */
+async function childOrg(t) {
+  const org = await wallOrg(t)
+  const { db, orgId, sides } = org
+  const idOf = async (table, project) =>
+    (await db.query(`select id from ${table} where project_id = $1 limit 1`, [project.id])).rows[0].id
+  const companies = [
+    await insert(db, "companies", { org_id: orgId, name: "Framing Co" }),
+    await insert(db, "companies", { org_id: orgId, name: "Concrete Co" }),
+  ]
+  for (const side of Object.values(sides)) {
+    const sovLines = []
+    for (const lineNumber of [1, 2]) {
+      sovLines.push(await insert(db, "prime_sov_lines", {
+        org_id: orgId, project_id: side.home.id, contract_id: side.contract, line_number: lineNumber, description: `Line ${lineNumber}`,
+      }))
+    }
+    side.parents = {
+      pay_application_lines: { parentId: await idOf("pay_applications", side.home), sovLines },
+      estimate_items: { parentId: await idOf("estimates", side.home) },
+      meeting_attendees: { parentId: await idOf("meetings", side.home) },
+      invoice_lines: { parentId: (await insert(db, "invoices", { org_id: orgId, project_id: side.home.id })).id },
+      closing_checklist_items: {
+        parentId: (await insert(db, "closings", {
+          org_id: orgId, project_id: side.home.id, lot_id: side.lot.id, community_id: side.community.id, status: "scheduled", scheduled_date: "2026-12-01",
+        })).id,
+      },
+      bid_invites: { parentId: (await insert(db, "bid_packages", { org_id: orgId, project_id: side.home.id, title: `${side.name} framing` })).id },
+    }
+  }
+  const children = {
+    pay_application_lines: {
+      label: "scheduled_value_cents",
+      row: (s, p, n) => ({
+        pay_application_id: p.parentId, prime_sov_line_id: p.sovLines[n - 1].id,
+        scheduled_value_cents: (s.name === "North" ? 100 : 200) + n, previous_billed_cents: 0, balance_to_finish_cents: 0,
+      }),
+    },
+    estimate_items: { label: "description", row: (s, p, n) => ({ estimate_id: p.parentId, description: `${s.name} ${n}` }) },
+    bid_invites: {
+      label: "invite_email",
+      row: (s, p, n) => ({ bid_package_id: p.parentId, company_id: companies[n - 1].id, invite_email: `${s.name.toLowerCase()}${n}@trades.test` }),
+    },
+    meeting_attendees: { label: "display_name", row: (s, p, n) => ({ meeting_id: p.parentId, display_name: `${s.name} ${n}` }) },
+    closing_checklist_items: { label: "title", row: (s, p, n) => ({ closing_id: p.parentId, title: `${s.name} ${n}` }) },
+    // Written only by the service role: the wall is on what members read.
+    invoice_lines: { label: "description", readOnly: true, row: (s, p, n) => ({ invoice_id: p.parentId, description: `${s.name} ${n}` }) },
+  }
+  for (const [table, { row }] of Object.entries(children)) {
+    for (const side of Object.values(sides)) await insert(db, table, { org_id: orgId, ...row(side, side.parents[table], 1) })
+  }
+  return { ...org, children }
+}
+
+test("the rows under a walled record stay in its division", async (t) => {
+  const { db, orgId, ownerId, northLead, sides, children } = await childOrg(t)
+  const labelOf = (table, side, n = 1) => String(children[table].row(sides[side], sides[side].parents[table], n)[children[table].label])
+  const read = (userId, table) =>
+    asRole(db, { role: "authenticated", userId }, async (tx) =>
+      (await tx.query(`select ${children[table].label}::text as label from ${table} order by 1`)).rows.map((row) => row.label),
+    )
+
+  for (const [table, { label, readOnly }] of Object.entries(children)) {
+    const north = labelOf(table, "North")
+    const south = labelOf(table, "South")
+    const as = (fn) => asRole(db, { role: "authenticated", userId: northLead.userId }, fn)
+    const where = `org_id = $1 and ${label}::text = $2`
+
+    assert.deepEqual(await read(northLead.userId, table), [north], `${table}: limited read`)
+    assert.deepEqual(await read(ownerId, table), [north, south].sort(), `${table}: all-division read`)
+    if (readOnly) continue
+
+    const insertUnder = (side) => {
+      const row = { org_id: orgId, ...children[table].row(sides.North, sides[side].parents[table], 2) }
+      const columns = Object.keys(row)
+      return as((tx) =>
+        tx.query(`insert into ${table} (${columns.join(", ")}) values (${columns.map((_, i) => `$${i + 1}`).join(", ")})`, Object.values(row)),
+      )
+    }
+    await assert.rejects(insertUnder("South"), /row-level security/, `${table}: insert under a South parent`)
+    await insertUnder("North")
+
+    const touched = await as(async (tx) => ({
+      updatedNorth: (await tx.query(`update ${table} set ${label} = ${label} where ${where}`, [orgId, north])).affectedRows,
+      updatedSouth: (await tx.query(`update ${table} set ${label} = ${label} where ${where}`, [orgId, south])).affectedRows,
+      deletedSouth: (await tx.query(`delete from ${table} where ${where}`, [orgId, south])).affectedRows,
+      deletedNorth: (await tx.query(`delete from ${table} where ${where}`, [orgId, north])).affectedRows,
+    }))
+    assert.deepEqual(touched, { updatedNorth: 1, updatedSouth: 0, deletedSouth: 0, deletedNorth: 1 }, `${table}: limited writes`)
+    assert.deepEqual(await read(ownerId, table), [labelOf(table, "North", 2), south].sort(), `${table}: South untouched`)
+  }
+})
+
+test("a record filed on a lead is found only by its lead's division", async (t) => {
+  const { db, orgId, ownerId, north, pine, seller, leads } = await salesOrg(t)
+  for (const name of ["Oak lead", "Pine lead", "Walk-in"]) {
+    const estimate = await insert(db, "estimates", { org_id: orgId, prospect_id: leads[name].id, title: `${name} estimate` })
+    // Indexed as the outbox indexer writes it: no project, no division named.
+    await insert(db, "search_documents", { org_id: orgId, entity_type: "estimate", entity_id: estimate.id, title: `${name} estimate` })
+  }
+  const found = (userId) =>
+    asRole(db, { role: "authenticated", userId }, async (tx) =>
+      (await tx.query("select title from search_documents where entity_type = 'estimate' order by 1")).rows.map((row) => row.title),
+    )
+
+  assert.deepEqual(await found(seller.userId), ["Oak lead estimate", "Walk-in estimate"])
+  assert.deepEqual(await found(ownerId), ["Oak lead estimate", "Pine lead estimate", "Walk-in estimate"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
+  assert.deepEqual(await found(seller.userId), ["Oak lead estimate", "Pine lead estimate", "Walk-in estimate"])
+
+  await db.query("update prospects set community_id = null where id = $1", [leads["Oak lead"].id])
+  await db.query("update communities set division_id = null where id = $1", [pine.id])
+  assert.deepEqual(await found(seller.userId), ["Oak lead estimate", "Pine lead estimate", "Walk-in estimate"])
+})
+
+test("a bid package bid for a community is found only by that community's division", async (t) => {
+  const { db, orgId, ownerId, north, south, oak, pine, seller } = await salesOrg(t)
+  for (const community of [oak, pine]) {
+    const pkg = await insert(db, "bid_packages", { org_id: orgId, community_id: community.id, award_target: "price_agreement", title: `${community.name} framing`, status: "draft" })
+    // Indexed as the outbox indexer writes it: no project, no division named.
+    await insert(db, "search_documents", { org_id: orgId, entity_type: "bid_package", entity_id: pkg.id, title: `${community.name} framing` })
+  }
+  const found = (userId) =>
+    asRole(db, { role: "authenticated", userId }, async (tx) =>
+      (await tx.query("select title from search_documents where entity_type = 'bid_package' order by 1")).rows.map((row) => row.title),
+    )
+
+  assert.deepEqual(await found(seller.userId), ["Oak framing"])
+  assert.deepEqual(await found(ownerId), ["Oak framing", "Pine framing"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
+  assert.deepEqual(await found(seller.userId), ["Oak framing", "Pine framing"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, south.id])
+  await db.query("update bid_packages set community_id = $2 where community_id = $1", [oak.id, pine.id])
+  assert.deepEqual(await found(seller.userId), [])
+})
