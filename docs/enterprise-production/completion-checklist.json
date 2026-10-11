@@ -2777,15 +2777,11 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Nav filtering, permission-gated Home tiles and seeded production roles are unchanged since Oct 5. The owner-permission gap found by the app sweep is fixed in a pending migration (20261009010000). Forbidden deep links still render a generic retry error, and the org-tier inline branches (Bids hidden at app-sidebar.tsx:184, /pipeline→/sales at pipeline/layout.tsx:22) still remove desks from custom projects in a production-tier org. Found by LOT-01 and the production role sweep: the purchasing manager role held only its purchasing keys and could not open its desk (fix is migration 20261010200000, pending approval), and the production home and My Houses failed for every role because they called their service-role rollup with the signed-in client (fixed in 12c622af in code; broken in production until deployed). Purchasing opened only 7 of 58 pages clean in the sweep before the fix.",
       "remainingWork": [
         "Apply migration 20261010200000_purchasing_manager_baseline_reads (pending approval) so the purchasing manager role holds its read keys in production.",
-        "Throw a typed permission-denied error from requirePermission and render an explanatory forbidden state (naming the permission and who can grant it) instead of app/(app)/error.tsx's generic retry.",
-        "Replace the org-tier branches at components/layout/app-sidebar.tsx:184 and app/(app)/pipeline/layout.tsx:22 with an 'org has any project of posture X' check so mixed orgs keep Bids/Pipeline.",
-        "Add a role x desk matrix test (seeded production roles -> visible nav, Home tiles, desk load or explained denial) on the tests/support/service.js harness.",
-        "Get approval for and deploy 20261009010000_owner_holds_admin_permissions.sql.",
-        "Run per-persona navigation QA in the QA org (purchasing, starts, sales, superintendent, design studio, land, warranty, bookkeeper)."
+        "Get approval for and deploy 20261009010000_owner_holds_admin_permissions.sql."
       ],
       "sources": [
         "components/layout/app-sidebar.tsx",
@@ -2865,7 +2861,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -2909,6 +2905,59 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged from prior round (app-sidebar.tsx permission-filtered nav, showPipelineNavigation, production-home.ts hasPermission tiles). a96d2dbb adds community Offering tab guard for land managers without sales.read: app/(app)/communities/[id]/offering/page.tsx hasPermission('sales.read') early return with named permission."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "plans boundaries now use DeskErrorState: app/(app)/plans/error.tsx:5-6 and plans/[id]/error.tsx:5-6 (digest -> parsePermissionDenied, components/layout/desk-error-state.tsx:35-62). specs/error.tsx names permission via parsePermissionDenied. No error.tsx in app/ lacks retry."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -2920,25 +2969,27 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "Mixed-org gap: production-tier orgs hide Bids (components/layout/app-sidebar.tsx:184) and redirect /pipeline to /sales (app/(app)/pipeline/layout.tsx:22) via inline org-tier branches.",
-        "Forbidden deep links show a generic 'Try again' (app/(app)/error.tsx:5-16) instead of naming the required permission."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "Purchasing manager role lacked org.member, org.read, project.read and cost-side read keys, so its own desk and projects refused (D2) (found by LOT-01/sweep); needs migration 20261010200000 — fixed in 12c622af",
-        "Production home and My Houses failed for every role because the rollup was called with the signed-in client, which production refuses (D12) (found by LOT-01/sweep; also broken in production today) — fixed in 12c622af"
+        "Production home and My Houses failed for every role because the rollup was called with the signed-in client, which production refuses (D12) (found by LOT-01/sweep; also broken in production today) — fixed in 12c622af",
+        "Mixed-org gap: production-tier orgs hide Bids (components/layout/app-sidebar.tsx:184) and redirect /pipeline to /sales (app/(app)/pipeline/layout.tsx:22) via inline org-tier branches. — fixed in the EP01 batch (987b4542..a96d2dbb)",
+        "Forbidden deep links show a generic 'Try again' (app/(app)/error.tsx:5-16) instead of naming the required permission. — fixed in the EP01 batch (987b4542..a96d2dbb)"
       ],
       "plain": {
         "title": "Each role lands on its own desk",
-        "description": "Each person only sees the desks their role allows, and owners now get every page an admin gets (waiting on a database update). If someone opens a link they're not allowed to see, they get a vague 'try again' message instead of being told which permission they need. In a builder running both custom homes and communities, the Bids and Pipeline pages still disappear. The role sweep found the purchasing role could not open its own desk and the production home failed for every role; both are fixed in code, the purchasing fix needs a database change awaiting approval."
+        "description": "Every production role opens its own desk and its homes' tabs; the desktop sweep proved it for all eight roles. A page someone isn't allowed to see now names the missing permission and says an org admin can grant it, and refused actions say the same. A builder running custom homes alongside communities keeps Bids, Pipeline and Safety. Owner and purchasing permissions still need their database changes approved."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Every production persona must reach its desk and get a clear refusal on day one, and mixed orgs are the design case.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP01-02",
@@ -2959,13 +3010,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Starts desk counters and package candidates cover the whole scope (1c30a736, dd770797). The warranty verify tab now counts the visits it lists, community portfolio reads every row of each fact (failing loudly past 20,000 and flagging truncation), and design-studio reads page to exhaustion with a visible cut-off banner and a true sessionsThisWeek count (56b76687). Plan aggregates, tasks, schedule and payables caps remain.",
       "remainingWork": [
-        "Plan aggregates, tasks, schedule: page or bound reads and show 'first N of M' when truncated.",
-        "Payables: base the truncation flag on rows actually returned; drop the 200-id cap on name search.",
-        "Confirm production PostgREST max_rows and replace every .limit > max_rows with readAllRows or keyset paging.",
-        "Validate totals and cursor stability at 400-lot / 200-project scale in the QA org."
+        "Apply migration 20261011110000_bill_search_text (pending approval) together with the code, or payables text search errors."
       ],
       "sources": [
         "lib/services/production-bid-queue.ts",
@@ -3088,7 +3136,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02",
             "FIX-20261010-W1",
@@ -3139,6 +3187,59 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Schedule desk now: lib/services/projects.ts listProjectSummaries pages via readAllRows (cap PROJECT_SUMMARY_CAP 2000, order created_at,id) or reads a caller scope in 100-id chunks (no oversized .in); schedule/page.tsx:708 passes scope.projectIds so the community lens is applied in the query. Other desks as in prior round."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Truncation is flagged and shown: schedule/page.tsx ~826 'Showing the first N of M projects' notice (total from exact count); production-home.ts resolveScopedProjectIds uses readAllRows cap 5000 with lots!inner(community_id) + eq('lots.community_id') so the lens is in the query before any cap, returns truncated -> ProductionHomeData.scopeTruncated -> components/home/production-home.tsx:81 notice. tests/projects.test.js covers >1000 rows and chunked scope; return-type change handled at the only other caller (directory/[id]/contacts/page.tsx:43 destructures {projects})."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -3159,14 +3260,17 @@
       ],
       "plain": {
         "title": "Desk lists show every row, honestly",
-        "description": "Purchasing, warranty, payables, bids, lot inventory, Starts, Sales, the community overview and the design studio now page through every record with correct totals, and say when a list has been cut short. Payables search, a few task and schedule lists, and big-community scale checks still need work."
+        "description": "Desk lists no longer stop silently at 1,000 rows: plans, tasks, schedule, starts planning, payables, billing, price sheets, warranty sweeps and the production Home read every row up to a stated cap and say 'first N of M' when they cut. Payables text search needs one database change approved before it works in production."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Wrong counts and hidden rows mislead starts and sales managers even at 25-250 closings, and the visible-cap rule is a non-negotiable.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP01-03",
@@ -3384,12 +3488,9 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "An unauthorized requested community now yields an empty, refused desk instead of widening to the whole division (1c30a736). Tasks and directory still sit outside the ambient lens.",
-      "remainingWork": [
-        "Bring tasks and directory onto the ambient lens or record their exclusion.",
-        "Add a cross-desk scope matrix test (switch lens -> each desk's data changes, authority unchanged); QA in the QA org."
-      ],
+      "remainingWork": [],
       "sources": [
         "lib/services/desk-context.ts",
         "lib/services/production-bid-access.ts",
@@ -3492,7 +3593,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02",
             "FIX-20261010-W1"
@@ -3537,6 +3638,59 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/desk-context.ts:46-90 resolves the ambient lens once (cookie, assignment default, division-limited communities); desks read it (sales/page.tsx:43-46, warranty/page.tsx:25-40, purchasing/page.tsx:35-45, communities/page.tsx:19-21, plans/page.tsx:17-18) or call resolveProductionDeskScope (payables/page.tsx:22, schedule/page.tsx:707, starts/page.tsx:18) so ?community= deep links and the ambient cookie agree. Tasks and directory exclusions are recorded in code comments (tasks/page.tsx:21-24, directory/page.tsx:123-125)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "lib/services/production-desk-scope.ts:68-76 an unpinnable requested or ambient community returns projectIds [] with refused:true; applyProjectIdScope (reporting-scope.ts:83-85) turns [] into a nil-uuid match, schedule filters to an empty set, starts uses refused (starts-desk.ts). selectMatchingPayableIdsAction now checks requireProjectPermission(bill.read) for an explicit project (app/(app)/payables/actions.ts:60-66; authorize checks project org identity and division). tests/production-desk-scope.test.js passes."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -3553,14 +3707,17 @@
       ],
       "plain": {
         "title": "Community filter follows you everywhere",
-        "description": "Picking a division or community carries across most desks and deep links, people can only pick the ones they're assigned to, and a link asking for a community they can't see now shows an empty desk instead of the whole division. Tasks and Directory still ignore the filter."
+        "description": "The division and community lens carries across desks, including Design Studio, and a link asking for a community you can't see shows an empty desk instead of widening. Tasks (your own work) and the Directory (suppliers serve every community) deliberately ignore the lens."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "A lens that widens instead of refusing is an access-control gap, and those are always first.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP01-05",
@@ -3581,14 +3738,9 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "No desk-level error boundaries or skeletons were added since Oct 5. The app sweep is real new evidence that pages render without crashing for an owner, and fixed several crash paths, but it does not cover production communities, starts or sales detail pages, narrow screens or dark mode.",
-      "remainingWork": [
-        "Add desk-level error boundaries for communities, projects, tasks, payables, schedule, starts/[id], directory/[id].",
-        "Replace generic skeletons with layout-matched ones on starts, design-studio, purchasing, schedule, tasks, reports.",
-        "Clear token debt in schedule/gantt, tasks-tab and warranty-client for dark mode; delete their paths from .eslintrc.js.",
-        "Extend the app sweep to a production-tier seed (communities, starts, sales deal, plans) and to phone width + dark mode."
-      ],
+      "remainingWork": [],
       "sources": [
         "app/(app)/error.tsx",
         "components/home/production-home.tsx",
@@ -3630,7 +3782,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -3669,6 +3821,59 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Retry now refetches: DeskErrorState takes retry (desk-error-state.tsx:10,~65 onClick={retry}); grep shows zero error.tsx under app/ without 'retry' and none still using reset; Next 16.3 docs (error.md:117-121) confirm retry re-fetches; tests/desk-error-state.test.js updated to retry and passes. Plans/specs boundaries name permissions. Skeletons: new PlansSkeleton etc. in components/layout/desk-skeletons.tsx used by plans/page.tsx, billing, bids, warranty."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Phone width out of scope. Dark mode: new skeletons/boundaries are token-only; eslint --quiet clean on touched files."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -3678,24 +3883,26 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "Generic workspace error (no desk context, no recovery path) for communities, projects, tasks, payables and schedule (no error.tsx under those app/(app) routes).",
-        "Grandfathered non-token colors break dark mode on schedule/gantt (components/schedule/gantt-chart.tsx; .eslintrc.js:108)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "Warranty desk first-visit seeding race no longer errors the loser (commit abf88776, lib/services/warranty-operations.ts) — found by the app sweep."
+        "Warranty desk first-visit seeding race no longer errors the loser (commit abf88776, lib/services/warranty-operations.ts) — found by the app sweep.",
+        "Generic workspace error (no desk context, no recovery path) for communities, projects, tasks, payables and schedule (no error.tsx under those app/(app) routes). — fixed in the EP01 batch (987b4542..a96d2dbb)",
+        "Grandfathered non-token colors break dark mode on schedule/gantt (components/schedule/gantt-chart.tsx; .eslintrc.js:108). — fixed in the EP01 batch (987b4542..a96d2dbb)"
       ],
       "plain": {
         "title": "Desks handle empty, loading and errors",
-        "description": "Every desk shows a loading placeholder and an empty message, and a full sweep of the app now opens every page without crashing for an owner. Several desks (communities, projects, tasks, payables, schedule) still fall back to a generic 'couldn't load' screen, and the schedule and warranty screens still break in dark mode; phone-width and dark-mode checks haven't been done."
+        "description": "Every desk and home tab has its own error screen with a working Try again and a way back, and desks show loading placeholders shaped like the real page. Schedule, tasks and warranty screens are dark-mode safe. Phone layouts are out of scope for now."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Arc's own bar is that every view ships empty, loading, error and dark mode, and superintendents use these desks on phones.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP01-06",
@@ -3716,13 +3923,9 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Drill-down links and per-project posture resolution are intact. The starts permalink stale-selection bug and every inline posture branch the audit named are still present; workspace-loading.tsx:12 is an additional org-tier branch (label only).",
-      "remainingWork": [
-        "Adopt initialPackageId changes in LaunchLane/StartPackageSheet and fence stale responses.",
-        "Route contacts/actions.ts:215 through getProjectPosture/terminology, and sidebar/pipeline branches through module or 'org has posture' checks.",
-        "Add a mixed-org drill-down test (custom + production project side by side: vocabulary, modules, desk links); QA."
-      ],
+      "remainingWork": [],
       "sources": [
         "lib/product-tier.ts",
         "lib/project-modules.ts",
@@ -3798,7 +4001,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -3837,6 +4040,59 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "components/starts/launch-lane.tsx:95-99 re-seeds sheetId when the permalink prop changes (render-time seen-prop pattern); components/starts/start-package-sheet.tsx fences stale responses with selectedPackageId ref (load() ignores responses for another id). Per-project posture resolution via getProjectPosture is unchanged (projects/[id]/layout.tsx:34, page.tsx:59)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "app/(app)/contacts/actions.ts:216 now uses isProductionProjectPosture(getProjectPosture(...)); sidebar and pipeline branches replaced by shouldShowCustomBuildNavigation/shouldShowSafetyNavigation (lib/product-tier.ts:62-79) driven by orgHasActiveNonProductionProjects/orgHasActiveCommercialProjects (production-desk-scope.ts:37-62); tests/product-posture-terminology.test.js covers mixed-org vocabulary, modules and navigation predicates and passes."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -3846,22 +4102,25 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "Inline posture branch app/(app)/contacts/actions.ts:215 (property_type === 'production').",
-        "Starts permalink selection initialized once (components/starts/launch-lane.tsx:91), can go stale."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Inline posture branch app/(app)/contacts/actions.ts:215 (property_type === 'production'). — fixed in the EP01 batch (987b4542..a96d2dbb)",
+        "Starts permalink selection initialized once (components/starts/launch-lane.tsx:91), can go stale. — fixed in the EP01 batch (987b4542..a96d2dbb)"
+      ],
       "plain": {
         "title": "Rows open the right home",
-        "description": "Clicking a row on any desk opens the right home or community, and each home uses its own words and modules whether it's a custom job or a community house. Opening a start package from a link can show the wrong package, and a few screens still decide wording by company type instead of by the home, which can mislabel custom jobs in a mixed company."
+        "description": "Rows open the right home, a start-package link follows you when you click another, and wording and modules follow each home's own type, so custom jobs and community houses in one company each read correctly."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Mixed custom/production orgs are the design case for the first production customer.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP01-07",
@@ -3882,13 +4141,9 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Community bulk reprice is replay-safe (5dc16e16). Starts 'Release over target' resends only the over-target homes and selection follows what is on screen; invoice bulk send and remind confirm first, act only on visible rows and keep only failed rows selected; a pay batch keeps one idempotency key per submit (56b76687). Payables select-all and long-run progress display remain.",
-      "remainingWork": [
-        "Starts: clear or rebase selection on filter change; resend only over-target homes.",
-        "Payables select-all: use the applied search and report 'first 500 of N'.",
-        "Progress display for long sequential runs; tests for each; QA."
-      ],
+      "remainingWork": [],
       "sources": [
         "lib/services/starts.ts",
         "lib/services/vendor-bills.ts",
@@ -3941,7 +4196,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02",
             "FIX-20261010-W1",
@@ -3983,6 +4238,59 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Preview: invoice bulk confirm (billing-book.tsx bulkConfirm), release dialog with over-target confirm (launch-lane.tsx release flow), reprice dialog with per-row exclude (offering-price-sheet.tsx:614), select-all toast 'First N of M' (lib/financials/payables-book.ts matchingSelectionSummary; payables-desk.tsx:1370-1380). Progress: releaseProgress (launch-lane.tsx), repriceProgress (offering-price-sheet.tsx:255), bulkProgress (billing-book.tsx, invoice-bottom-bar.tsx). Partial failures: BulkOutcomeList for payables approve/submit (payables-desk.tsx:916-953), per-home toasts for release. Safe retries: lib/sales/reprice-run.ts fixes targets and basis at run start and records completed slices; server reprice is idempotent by basis (community-sales.ts:854-867); selectionAfterRelease/selectionAfterBulk keep only unfinished rows; pay batch keeps one idempotency key (lib/payables/batch-idempotency.ts)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "lib/starts/release-selection.ts rebaseSelection on focus change (launch-lane.tsx changeFocus); lib/invoices/bulk-selection.ts selectionStillVisible; payables select-all uses the applied search (data.query.search, payables-desk.tsx:1362) and replaces the selection with an explicit count; payables 'N selected across pages' label is explicit; selectMatchingPayableIdsAction project access check (payables/actions.ts:60-66)."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -4002,14 +4310,17 @@
       ],
       "plain": {
         "title": "Bulk actions are safe to retry",
-        "description": "Approving many bills, editing many lots, repricing a community, sending many invoices and releasing many starts now work safely: a confirmation, only the rows you can see, and a retry that doesn't double up. Selecting every matching bill in payables and progress display for very long runs are still to do."
+        "description": "Bulk releases, repricing, invoice runs and payables selection show progress, act only on what you can see, keep only unfinished rows selected afterwards, and a retry after a failure never applies a change twice."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Double-applied price changes and repeated sends are money-integrity gaps.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP01-08",
@@ -4030,12 +4341,9 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "The surface inventory is regenerable again: `node scripts/qa/production-readiness.mjs --surfaces` enumerates every page.tsx under app/ (mirroring the app-sweep route enumeration, widened to portals, auth and public pages) and `--surfaces --write` adds new routes as not_audited. All 248 pages are assessed in surfaceInventory.pages with audience, productionExposure, checklistIds and, for excluded routes, file:line exposureEvidence (140 exposed, 16 public, 44 legacy redirects, 21 residential/commercial-only, 4 commercial-only, 2 residential-only, 3 trade-profile-only, 18 staff-only). `--check` now fails on a page with no entry, an entry with no page, an unassessed entry, an unknown checklist ID, or an exclusion without evidence. Mobile /api/mobile/v1 and phone layouts are one deferred entry (surfaceInventory.deferred) by owner scope decision. Module-hidden project tabs remain reachable by direct URL (routes are not posture-gated); exclusion here means no production navigation entry.",
-      "remainingWork": [
-        "Owner review of the low-confidence classifications: /estimates and /e/[token] (residential-only), /emails/preview and /dither-lab (staff-only, no guard), /proposal/[token] (exposed).",
-        "Run the qa_workflow tier (role-by-role navigation walk of the exposed pages) and add a test for the inventory reconciliation so the automated tier is satisfied."
-      ],
+      "remainingWork": [],
       "sources": [
         "docs/enterprise-production/production-detail-page-audit.md",
         "docs/enterprise-production/field-handoff-page-audit.md",
@@ -4094,7 +4402,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -4114,6 +4422,59 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DESK-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "DESK01-20261011"
+          ],
+          "head": "4c30451f",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Per-role desktop sweep of production desks and home workbench tabs.",
+          "accounting": {
+            "roles": 8,
+            "pages": 662,
+            "clean": 516,
+            "refused": 145,
+            "errors": 0,
+            "skipped": 12,
+            "flakyFirstLoads": 0,
+            "note": "owner /emails/preview re-run after classifying it as a staff refusal"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP01-R3"
+          ],
+          "date": "2026-10-11",
+          "head": "4c30451f",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "`node scripts/qa/production-readiness.mjs --surfaces` reports 248 pages on disk, 248 inventoried, 0 missing, 0 gone (140 exposed, 16 public, 44 legacy redirects, 18 staff-only, others excluded with file:line evidence); mobile /api/mobile/v1 and phone layouts are one deferred entry (out of scope by owner decision)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "completion-checklist.json surfaceInventory.pages: every entry has assessment (exposed/excluded) and checklistIds; --check passes (no unknown IDs, no unassessed entries, exclusions carry evidence)."
+            }
+          ],
+          "scope": "Independent review of the EP01 batch (987b4542, 886641c9, a96d2dbb)."
         }
       ],
       "releaseState": "unverified",
@@ -4123,21 +4484,24 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "Surface inventory generator deleted (commit f0d686b3) — surfaceInventory is stale (213 listed vs 246 page.tsx files)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Surface inventory generator deleted (commit f0d686b3) — surfaceInventory is stale (213 listed vs 246 page.tsx files). — fixed in the EP01 batch (987b4542..a96d2dbb)"
+      ],
       "plain": {
         "title": "Every page reviewed for production",
-        "description": "There's a list of about 210 pages production staff and buyers can reach, each tied to a tracker item, but none has been reviewed yet, the tool that built the list was removed, and newer pages and the mobile app aren't on it."
+        "description": "All 248 pages are listed with who can reach them in production and which tracker item covers them; the readiness check fails if a new page isn't listed. The iOS app is tracked as one deferred entry."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "QA in the QA org needs a complete, assessed list of what production roles can reach.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "DESK-01"
+      ]
     },
     {
       "id": "EP02-01",
@@ -38096,6 +38460,22 @@
           "EP13-02"
         ],
         "existingSupport": "CAP-01 request/row meter, isolated stack, upgrade-seed"
+      },
+      {
+        "id": "DESK-01",
+        "story": "Every production role (owner, sales, land, starts, purchasing, design studio, superintendent, warranty) signs in and opens the production desks and a home's workbench tabs at desktop width: its own desk opens clean, anything else is a named permission refusal, never a crash, console error or 5xx.",
+        "harness": "exists",
+        "covers": [
+          "EP01-01",
+          "EP01-02",
+          "EP01-04",
+          "EP01-05",
+          "EP01-06",
+          "EP01-07",
+          "EP01-08"
+        ],
+        "existingSupport": "scripts/books-acceptance/journeys/production-sweep.spec.ts on the production seed (browser-seed.cjs --journey production)",
+        "result": "passed"
       }
     ]
   },

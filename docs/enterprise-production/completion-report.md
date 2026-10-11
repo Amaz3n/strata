@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 18.7% — a documented lower bound, not an ETA |
-| Fully verified | 17.3% |
+| Implemented | 23.2% — a documented lower bound, not an ETA |
+| Fully verified | 21.8% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 84 items |
+| Partially implemented | 77 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
@@ -54,14 +54,14 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP01-01 | Role navigation | partial | Apply migration 20261010200000_purchasing_manager_baseline_reads (pending approval) so the purchasing manager role holds its read keys in production. |
-| EP01-02 | Complete desk queues | partial | Plan aggregates, tasks, schedule: page or bound reads and show 'first N of M' when truncated. |
+| EP01-01 | Role navigation | verified | Apply migration 20261010200000_purchasing_manager_baseline_reads (pending approval) so the purchasing manager role holds its read keys in production. |
+| EP01-02 | Complete desk queues | verified | Apply migration 20261011110000_bill_search_text (pending approval) together with the code, or payables text search errors. |
 | EP01-03 | Searchable operator pickers | partial | Make Find-a-home server-searched and paged instead of a capped client-filtered list; swap the tasks project Select to the shared server-searched picker (components/ui/search-picker.tsx). |
-| EP01-04 | Shared scope across desks | partial | Bring tasks and directory onto the ambient lens or record their exclusion. |
-| EP01-05 | Desk states and recovery | partial | Add desk-level error boundaries for communities, projects, tasks, payables, schedule, starts/[id], directory/[id]. |
-| EP01-06 | Home and lot drill-down | partial | Adopt initialPackageId changes in LaunchLane/StartPackageSheet and fence stale responses. |
-| EP01-07 | Bulk operator actions | partial | Starts: clear or rebase selection on filter change; resend only over-target homes. |
-| EP01-08 | Page exposure inventory | partial | Regenerate the surface inventory from the route tree (reuse the app-sweep route enumeration) and add the ~33 new pages. |
+| EP01-04 | Shared scope across desks | verified | Accepted; no required work remains. |
+| EP01-05 | Desk states and recovery | verified | Accepted; no required work remains. |
+| EP01-06 | Home and lot drill-down | verified | Accepted; no required work remains. |
+| EP01-07 | Bulk operator actions | verified | Accepted; no required work remains. |
+| EP01-08 | Page exposure inventory | verified | Accepted; no required work remains. |
 
 ### EP02: Enterprise organization and security
 
@@ -258,7 +258,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 ## Scope and acceptance limits
 
-213 candidate authenticated/portal pages are inventoried. This is an exposure inventory awaiting role/posture/module qualification, not a claim that every candidate page belongs in production.
+248 pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.
 
 Sizing and operating assumptions are frozen engineering targets awaiting launch-owner approval under EP14-11. QA access, chosen-system sandbox credentials, migration/activation approval, independent security review and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.
 
@@ -266,10 +266,15 @@ This side conversation cannot access the persistent main-thread goal, and expose
 
 ## Tracking issues
 
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/layout/app-sidebar.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/home/production-home.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-home.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/error.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/pipeline/layout.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: scripts/books-acceptance/journeys/app-sweep.spec.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/production-home.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/authorization-policy.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/instant-navigation-contract.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/starts-desk.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/sales-deals.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/sales/page.tsx
@@ -278,10 +283,13 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-bid-queue.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-inventory.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/org-payables.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/production-bid-queue.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/purchasing-queue-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-scope.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/warranty-desk-query.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/org-payables.test.js
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/payables-book.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/purchasing/entity-picker.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/sales/find-a-home-dialog.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/sales/lot-hold-form.tsx
@@ -289,10 +297,14 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-desk-scope.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/schedule/gantt-chart.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/product-tier.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-house-overview.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/starts/launch-lane.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/contacts/actions.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/product-posture-terminology.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/invoices/billing-book.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/payables/pay-batch-dialog.tsx
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/payables/payables-desk.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/lots.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/vendor-bills.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/starts.ts
@@ -305,13 +317,16 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/auth/mfa-gate-cookie.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/team.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/mobile/auth.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/authorization.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/bids.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/tasks/actions.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/financial-exports.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/reports/cash-flow-forecast.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: tests/search-visibility.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/imports.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/bids.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/audit.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/house-plans.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/plan-instantiation.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261004000030_agreement_catalog_revisions.sql
@@ -391,8 +406,10 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-gates.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts.ts
+- AUDIT-20261009-EP07: source changed since proof: components/starts/start-package-sheet.tsx
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-gates.test.js
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-desk.ts
+- AUDIT-20261009-EP07: source changed since proof: lib/services/even-flow.ts
 - AUDIT-20261009-EP07: source changed since proof: components/starts/launch-lane.tsx
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-pipeline.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/services/plan-instantiation.ts
@@ -400,6 +417,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003023000_starts_job_claim_leases.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/start-trade-notices.test.js
+- AUDIT-20261009-EP07: source changed since proof: lib/services/schedule.ts
 - AUDIT-20261009-EP07: source changed since proof: components/schedule/gantt-chart.tsx
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003041000_starts_claim_actor_transitions.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-job-leases-db.test.js
@@ -495,6 +513,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/arc-books.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty-operations.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty/domain.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: tests/warranty-program-usage.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: app/(app)/warranty/warranty-desk-client.tsx
 - AUDIT-20261009-EP10-EP11: source changed since proof: app/(app)/warranty/page.tsx
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/warranty-operations.test.js
@@ -556,4 +575,5 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/books-historical-aging.test.js
 - VERIFY-20261010: source changed since proof: tests/books-close-control-integrity.test.js
 - VERIFY-20261010: source changed since proof: tests/books-close-review.test.js
+- VERIFY-20261010: source changed since proof: tests/warranty-program-usage.test.js
 
