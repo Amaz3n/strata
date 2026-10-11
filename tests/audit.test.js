@@ -11,8 +11,27 @@ stubModule("@/lib/logging/logger", {
 })
 stubModule("@/lib/observability/after-response", { afterResponse: () => {} })
 
-const { AUDIT_RETRY_JOB_TYPE, recordAudit, writeDeferredAudit } = freshRequire("lib/services/audit.ts")
+const { AUDIT_RETRY_JOB_TYPE, AuditRecordPendingError, recordAudit, writeDeferredAudit } = freshRequire("lib/services/audit.ts")
 const { withCorrelation } = require("@/lib/observability/correlation")
+
+// A pay application calls into the invoice's critical mutations; the invoice
+// service stands in so a test can make its audit row pend after it committed.
+const invoiceCalls = []
+stubModule("@/lib/services/invoices", {
+  createInvoice: async () => {
+    throw new Error("not used")
+  },
+  runInvoiceIssuance: async () => {},
+  issueInvoice: async (input) => {
+    invoiceCalls.push({ issue: input.invoiceId })
+    throw new AuditRecordPendingError(true)
+  },
+  voidInvoice: async (input) => {
+    invoiceCalls.push({ void: input.invoiceId })
+    throw new AuditRecordPendingError(true)
+  },
+})
+const { sendPayApplication, voidPayApplication } = freshRequire("lib/services/pay-applications.ts")
 
 const BILL = "00000000-0000-4000-8000-000000000101"
 const approval = { orgId: ORG, action: "update", entityType: "vendor_bill", entityId: BILL, after: { status: "approved" } }
@@ -118,4 +137,120 @@ test("only audit readers see the org's history; a member sees only the rows they
 
   assert.deepEqual(await visibleTo(owner.userId), [owner.userId, member.userId].sort())
   assert.deepEqual(await visibleTo(member.userId), [member.userId])
+})
+
+test("a deferred audit row is written only as recordAudit queues it", async () => {
+  const row = {
+    org_id: ORG,
+    actor_user_id: ACTOR,
+    action: "update",
+    entity_type: "vendor_bill",
+    entity_id: BILL,
+    before_data: null,
+    after_data: { status: "approved" },
+    source: null,
+    correlation_id: "req-9",
+    created_at: new Date().toISOString(),
+  }
+  const healthy = createServiceHarness({ tables: { audit_log: [] } })
+
+  await assert.rejects(healthy.run(() => writeDeferredAudit(ORG, { row: { ...row, id: 1 } })))
+  await assert.rejects(healthy.run(() => writeDeferredAudit(ORG, { row: { ...row, created_at: undefined } })))
+  await assert.rejects(
+    healthy.run(() => writeDeferredAudit(ORG, { row: { ...row, created_at: new Date(Date.now() + 3_600_000).toISOString() } })),
+    /dated in the future/,
+  )
+  assert.deepEqual(healthy.db.audit_log, [])
+
+  await healthy.run(() => writeDeferredAudit(ORG, { row }))
+  assert.equal(healthy.db.audit_log.length, 1)
+})
+
+test("only the server can queue, change or remove a deferred audit row", async (t) => {
+  const db = await createDatabase(t)
+  const owner = await seedMember(db)
+  const forged = { row: { org_id: owner.orgId, actor_user_id: owner.userId, action: "update", entity_type: "vendor_bill" } }
+
+  const asMember = (sql, params) =>
+    asRole(db, { role: "authenticated", userId: owner.userId }, (tx) => tx.query(sql, params))
+
+  await assert.rejects(
+    asMember("insert into outbox (org_id, job_type, payload) values ($1, 'audit_retry', $2)", [owner.orgId, forged]),
+    /can only be queued by the server/,
+  )
+
+  // A job type members still enqueue through their own client is unaffected.
+  const { rows: memberJob } = await asMember(
+    "insert into outbox (org_id, job_type, payload) values ($1, 'reindex_search', '{}') returning id",
+    [owner.orgId],
+  )
+  await assert.rejects(
+    asMember("update outbox set job_type = 'audit_retry' where id = $1", [memberJob[0].id]),
+    /can only be queued by the server/,
+  )
+
+  const queued = await insert(db, "outbox", { org_id: owner.orgId, job_type: "audit_retry", payload: forged })
+  for (const sql of ["update outbox set status = 'failed' where id = $1", "delete from outbox where id = $1"]) {
+    await assert.rejects(asMember(sql, [queued.id]), /can only be queued by the server/)
+  }
+  const { rows } = await db.query("select status from outbox where id = $1", [queued.id])
+  assert.equal(rows[0].status, "pending")
+})
+
+const PROJECT = "00000000-0000-4000-8000-000000000201"
+const APPLICATION = "00000000-0000-4000-8000-000000000202"
+const INVOICE = "00000000-0000-4000-8000-000000000203"
+
+function payApplicationHarness(status) {
+  return createServiceHarness({
+    permissions: ["payapp.write", "invoice.read", "invoice.send", "project.read"],
+    rpc: {
+      void_pay_application: (args, store) => {
+        store.pay_applications.find((row) => row.id === args.p_pay_application_id).status = "void"
+        return { data: null, error: null }
+      },
+    },
+    tables: {
+      audit_log: [],
+      outbox: [],
+      orgs: [{ id: ORG, name: "Builder", slug: "builder" }],
+      projects: [{ id: PROJECT, org_id: ORG, name: "House", client_id: null, property_type: "custom_home" }],
+      invoices: [{ id: INVOICE, org_id: ORG, project_id: PROJECT, metadata: {}, total_cents: 100000 }],
+      pay_applications: [
+        { id: APPLICATION, org_id: ORG, project_id: PROJECT, application_number: 1, status, invoice_id: INVOICE, metadata: {} },
+      ],
+    },
+  })
+}
+
+test("a pay application whose invoice issued with a pending audit row still records the send", async () => {
+  invoiceCalls.length = 0
+  const service = payApplicationHarness("invoiced")
+
+  await assert.rejects(
+    service.run(() => sendPayApplication(APPLICATION, { recipients: ["owner@example.com"] })),
+    (error) => error instanceof AuditRecordPendingError,
+  )
+
+  assert.deepEqual(invoiceCalls, [{ issue: INVOICE }])
+  const [application] = service.db.pay_applications
+  assert.equal(application.metadata.send_count, 1)
+  assert.deepEqual(application.metadata.sent_to_owner.recipients, ["owner@example.com"])
+  assert.equal(service.events.some((event) => event.eventType === "pay_application.sent"), true)
+  assert.equal(service.db.audit_log.some((row) => row.entity_id === APPLICATION && row.after_data.sent_to_owner), true)
+})
+
+test("a pay application whose invoice voided with a pending audit row is still recorded as void", async () => {
+  invoiceCalls.length = 0
+  const service = payApplicationHarness("invoiced")
+
+  await assert.rejects(
+    service.run(() => voidPayApplication(APPLICATION)),
+    (error) => error instanceof AuditRecordPendingError,
+  )
+
+  assert.deepEqual(invoiceCalls, [{ void: INVOICE }])
+  assert.equal(service.db.pay_applications[0].status, "void")
+  assert.equal(service.events.some((event) => event.eventType === "pay_application.voided"), true)
+  assert.equal(service.db.audit_log.some((row) => row.entity_id === APPLICATION && row.after_data.status === "void"), true)
 })

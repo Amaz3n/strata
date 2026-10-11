@@ -8,10 +8,10 @@ import {
   AuthorizationError,
   authorize,
   getEffectiveOrgPermissions,
+  hasPlatformOrgContext,
   listAllPermissionKeys,
   requireAuthorization,
 } from "@/lib/services/authorization"
-import { isPlatformAdminId } from "@/lib/auth/platform"
 
 interface PermissionContext extends OrgServiceContext {
   supabase: SupabaseClient
@@ -31,24 +31,11 @@ async function resolveContext(ctx?: Partial<PermissionContext>): Promise<Permiss
 // through the service client — RLS hides role_permissions from user sessions —
 // so there is no caller-supplied client to key on.
 export const getUserPermissions = cache(async (userId: string, orgId: string) => {
-  if (isPlatformAdminId(userId, undefined)) {
-    const client = createServiceSupabaseClient()
-    return ["*", ...(await listAllPermissionKeys(client))]
+  // Staff inside an open support grant (and not a real member) hold every key;
+  // anyone else — staff who belong here included — holds their membership's.
+  if (await hasPlatformOrgContext(orgId, userId)) {
+    return ["*", ...(await listAllPermissionKeys())]
   }
-
-  // Always use service role to bypass restrictive RLS on role_permissions.
-  const client = createServiceSupabaseClient()
-  const platformDecision = await authorize({
-    permission: "platform.org.access",
-    userId,
-    orgId,
-    supabase: client,
-  })
-
-  if (platformDecision.allowed) {
-    return ["*", ...(await listAllPermissionKeys(client))]
-  }
-
   return getEffectiveOrgPermissions(orgId, userId)
 })
 

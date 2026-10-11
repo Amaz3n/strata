@@ -2,7 +2,7 @@ import { readAllRows } from "@/lib/land/paging"
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { isPlatformAdminId } from "@/lib/auth/platform"
+import { hasActivePlatformAccessGrant, isPlatformAdminId } from "@/lib/auth/platform"
 import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
@@ -314,7 +314,9 @@ export async function getDivisionAccessForUser({
   orgId: string
   userId: string
 }): Promise<{ assignedOnly: boolean; divisionIds: string[] }> {
-  if (isPlatformAdminId(userId, undefined)) return { assignedOnly: false, divisionIds: [] }
+  // A non-member (including staff inside a support grant) has no division
+  // assignment to narrow by; a staff member who really belongs is narrowed by
+  // their own membership like anyone else.
   const result = await fetchOrgPermissionsCached(orgId, userId)
   return { assignedOnly: result.divisionAssignedOnly, divisionIds: result.divisionIds }
 }
@@ -323,9 +325,8 @@ export async function getDivisionAccessForUser({
 export async function getProjectReadScopeForUser({ orgId, userId }: { orgId: string; userId: string }): Promise<{
   divisionIds: string[] | null; projectMembershipRequired: boolean
 }> {
-  if (isPlatformAdminId(userId, undefined)) return { divisionIds: null, projectMembershipRequired: false }
-  const [org, platform] = await Promise.all([fetchOrgPermissionsCached(orgId, userId), fetchPlatformPermissionsCached(userId)])
-  if (platform.permissions.includes("*") || platform.permissions.includes("platform.org.access")) return { divisionIds: null, projectMembershipRequired: false }
+  const [org, platformContext] = await Promise.all([fetchOrgPermissionsCached(orgId, userId), hasPlatformOrgContext(orgId, userId)])
+  if (platformContext) return { divisionIds: null, projectMembershipRequired: false }
   return {
     divisionIds: org.divisionAssignedOnly ? org.divisionIds : null,
     projectMembershipRequired: !hasAllProjectAccess([...org.permissions, ...org.grants], org.assignedOnly),
@@ -397,6 +398,28 @@ async function fetchPlatformPermissions({ supabase, userId }: { supabase: Supaba
     hasMembership: (data ?? []).length > 0,
   }
 }
+
+/**
+ * Whether Arc staff stand inside this organization as the platform pseudo-owner:
+ * every permission, no denies, no division or project narrowing.
+ *
+ * Platform standing is not tenant access. It applies only when all three hold:
+ * the user is staff with org access (an environment superadmin, or a platform
+ * role holding `platform.org.access` or `*`); the user is NOT a real active
+ * member here — a staff member who belongs to the organization acts as exactly
+ * that membership, never as the pseudo-owner; and an open, unexpired support
+ * grant exists for this organization. This is the same grant
+ * `requireOrgMembership()` reads, so entering and acting never disagree.
+ */
+export const hasPlatformOrgContext = cache(async (orgId: string, userId: string) => {
+  const [org, platform] = await Promise.all([fetchOrgPermissionsCached(orgId, userId), fetchPlatformPermissionsCached(userId)])
+  if (org.hasMembership) return false
+  const isOperator =
+    isPlatformAdminId(userId, undefined) ||
+    platform.permissions.includes("*") ||
+    platform.permissions.includes("platform.org.access")
+  return isOperator && hasActivePlatformAccessGrant(orgId, userId)
+})
 
 async function logAuthorizationDecision(
   supabase: SupabaseClient,
@@ -523,29 +546,25 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     return decision
   }
 
-  if (isPlatformAdminId(input.userId, undefined)) {
-    const decision: AuthorizationDecision = {
-      allowed: true,
-      reasonCode: "allow_superadmin",
-      permission: input.permission,
-      userId: input.userId,
-      orgId: input.orgId ?? home?.org_id,
-      projectId: input.projectId,
-      permissions: ["*"],
-      scopesEvaluated: ["superadmin"],
-    }
-
-    if (input.logDecision) {
-      await auditAuthorizationDecision(catalogSupabase, input, decision)
-    }
-
-    return decision
-  }
-
-  // Platform authority comes only from active platform memberships. Tenant
-  // wildcards, overrides and platform.org.access's tenant-context expansion
-  // must never grant another platform capability.
+  // Platform authority comes only from an environment superadmin or an active
+  // platform membership. Tenant wildcards, overrides and a support grant's
+  // tenant-context expansion must never grant a platform capability.
   if (input.permission.startsWith("platform.") || input.permission.startsWith("impersonation.")) {
+    if (isPlatformAdminId(input.userId, undefined)) {
+      const decision: AuthorizationDecision = {
+        allowed: true,
+        reasonCode: "allow_superadmin",
+        permission: input.permission,
+        userId: input.userId,
+        orgId: input.orgId ?? home?.org_id,
+        projectId: input.projectId,
+        permissions: ["*"],
+        scopesEvaluated: ["superadmin"],
+      }
+      if (input.logDecision) await auditAuthorizationDecision(catalogSupabase, input, decision)
+      return decision
+    }
+
     const platform = await fetchPlatformPermissionsCached(input.userId)
     const allowed = platform.hasMembership &&
       (platform.permissions.includes(input.permission) || platform.permissions.includes("*"))
@@ -576,12 +595,14 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   let divisionIds: string[] = []
 
   // Read membership grants concurrently inside the verified home organization.
-  const [projectScope, callerOrgResult, platformResult] = await Promise.all([
+  // Platform standing is decided per organization (hasPlatformOrgContext);
+  // a platform role's own keys never count toward a tenant permission.
+  const [projectScope, callerOrgResult, platformOrgContext] = await Promise.all([
     input.projectId
       ? resolveProjectScope({ projectId: input.projectId, userId: input.userId, orgIdHint: home!.org_id })
       : null,
     resolvedOrgId ? fetchOrgPermissionsCached(resolvedOrgId, input.userId) : null,
-    fetchPlatformPermissionsCached(input.userId),
+    resolvedOrgId ? hasPlatformOrgContext(resolvedOrgId, input.userId) : false,
   ])
 
   if (projectScope) {
@@ -606,14 +627,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     deniedPermissions.push(...orgResult.denies)
   }
 
-  if (platformResult.hasMembership) {
-    scopesEvaluated.push("platform")
-    permissionSet.push(...platformResult.permissions)
-  }
-
-  const hasPlatformOrgAccess =
-    platformResult.permissions.includes("*") || platformResult.permissions.includes("platform.org.access")
-  if (hasPlatformOrgAccess && (resolvedOrgId || input.projectId)) {
+  if (platformOrgContext) {
     const allPermissions = await listAllPermissionKeys(supabase)
     scopesEvaluated.push("platform_org_context")
     permissionSet.push("*", ...allPermissions)
@@ -708,7 +722,6 @@ export async function authorizeMany({
   const homes = await readAuthorizationHomes(supabase, uniqueProjectIds)
   const identityMatches = (projectId: string) => homes.get(projectId)?.org_id === orgId
   const settleScoped = () => { for (const projectId of uniqueProjectIds) verdicts.set(projectId, identityMatches(projectId)); return verdicts }
-  if (isPlatformAdminId(userId, undefined)) return settleScoped()
 
   if (permission.startsWith("platform.") || permission.startsWith("impersonation.")) {
     const decision = await authorize({ permission, userId })
@@ -718,15 +731,11 @@ export async function authorizeMany({
     return verdicts
   }
 
-  const [orgResult, platformResult] = await Promise.all([
+  const [orgResult, platformOrgContext] = await Promise.all([
     fetchOrgPermissionsCached(orgId, userId),
-    fetchPlatformPermissionsCached(userId),
+    hasPlatformOrgContext(orgId, userId),
   ])
-
-  const hasPlatformOrgAccess =
-    platformResult.permissions.includes("*") ||
-    platformResult.permissions.includes("platform.org.access")
-  if (hasPlatformOrgAccess) return settleScoped()
+  if (platformOrgContext) return settleScoped()
 
   const data: (ProjectPermissionRow & { project_id?: string })[] = []
   for (let offset = 0; offset < uniqueProjectIds.length; offset += 100) {
@@ -748,7 +757,6 @@ export async function authorizeMany({
   }
 
   const orgPermissionSet = [...orgResult.permissions, ...orgResult.grants]
-  const platformPermissions = platformResult.hasMembership ? platformResult.permissions : []
   const assignedDivisionIds: string[] = orgResult.divisionIds
 
   for (const projectId of uniqueProjectIds) {
@@ -757,7 +765,7 @@ export async function authorizeMany({
       permission,
       hasProjectScope: true,
       hasResolvedOrg: true,
-      permissionSet: [...projectGrants, ...orgPermissionSet, ...platformPermissions],
+      permissionSet: [...projectGrants, ...orgPermissionSet],
       orgPermissionSet,
       deniedPermissions: orgResult.denies,
       hasProjectMembership: projectPermissions.has(projectId),

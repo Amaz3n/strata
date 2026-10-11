@@ -202,6 +202,8 @@ function loadContext({ memberOf = [], grants = [], grantError = null, operator =
     createServerSupabaseClient: async () => supabase,
     createServiceSupabaseClient: () => supabase,
   })
+  // The grant check lives beside the superadmin list; reload it onto this database.
+  freshRequire("lib/auth/platform.ts")
   return freshRequire("lib/auth/context.ts")
 }
 

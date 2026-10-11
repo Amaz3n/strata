@@ -27,7 +27,7 @@ import { getProjectPosture, normalizeProductTier, type ProductTier } from "@/lib
 import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { recordAudit } from "@/lib/services/audit"
+import { recordAudit, settleAuditPending, type AuditRecordPendingError } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createInvoice, issueInvoice, runInvoiceIssuance, voidInvoice } from "@/lib/services/invoices"
 import { voidPendingInvoiceLienWaiversWithClient } from "@/lib/services/invoice-lien-waivers"
@@ -916,7 +916,8 @@ export async function submitPayApplication(payApplicationId: string, orgId?: str
     metadata: { ...((appRow.metadata as Record<string, unknown> | null) ?? {}), submitted_by: userId },
   }
   const report = await buildSovPayApplicationReport(supabase, resolvedOrgId, projectId, payApplicationId, submissionFacts).catch(async (error: unknown) => {
-    await voidInvoice({ invoiceId: invoice.id, orgId: resolvedOrgId })
+    // The submit failed: report that, not the compensating void's pending audit row.
+    await settleAuditPending(() => voidInvoice({ invoiceId: invoice.id, orgId: resolvedOrgId }))
     throw error
   })
 
@@ -1032,9 +1033,9 @@ export async function voidPayApplication(payApplicationId: string, orgId?: strin
     throw new Error(`Failed to void pay application: ${rpcError.message}`)
   }
 
-  if (appRow.invoice_id) {
-    await voidInvoice({ invoiceId: appRow.invoice_id as string, orgId: resolvedOrgId })
-  }
+  const invoiceAuditPending = appRow.invoice_id
+    ? await settleAuditPending(() => voidInvoice({ invoiceId: appRow.invoice_id as string, orgId: resolvedOrgId }))
+    : null
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -1052,6 +1053,7 @@ export async function voidPayApplication(payApplicationId: string, orgId?: strin
     entityId: payApplicationId,
     after: { status: "void" },
   })
+  if (invoiceAuditPending) throw invoiceAuditPending
 
   const freshRow = await loadApplication(supabase, resolvedOrgId, payApplicationId)
   return buildDetail(supabase, resolvedOrgId, freshRow, { productTier })
@@ -1424,6 +1426,9 @@ export async function sendPayApplication(
   const sentAt = new Date().toISOString()
   const sentToOwner = { at: sentAt, recipients, by: userId }
   const metadata = (appRow.metadata as Record<string, unknown> | null) ?? {}
+  // Issuing is the invoice's critical mutation; once it has committed, the send
+  // is recorded here even if its audit row is still pending.
+  let invoiceAuditPending: AuditRecordPendingError | null = null
 
   if (certificationRequired) {
     const service = createServiceSupabaseClient()
@@ -1462,7 +1467,9 @@ export async function sendPayApplication(
     })
     if (!sent) throw new Error("The pay application email could not be sent")
   } else {
-    await issueInvoice({ invoiceId: appRow.invoice_id as string, recipients, orgId: resolvedOrgId })
+    invoiceAuditPending = await settleAuditPending(() =>
+      issueInvoice({ invoiceId: appRow.invoice_id as string, recipients, orgId: resolvedOrgId }),
+    )
   }
 
   const { error: updateError } = await supabase
@@ -1488,6 +1495,7 @@ export async function sendPayApplication(
     entityId: payApplicationId,
     after: { sent_to_owner: sentToOwner },
   })
+  if (invoiceAuditPending) throw invoiceAuditPending
 
   const freshRow = await loadApplication(supabase, resolvedOrgId, payApplicationId)
   return buildDetail(supabase, resolvedOrgId, freshRow, { productTier })

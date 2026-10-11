@@ -2,16 +2,19 @@ require('../scripts/register-ts-node-test')
 const test=require('node:test'),assert=require('node:assert/strict')
 const {createFakeSupabase}=require('./support/fake-supabase')
 const {stubModule,ORG,PROJECT,PACKAGE}=require('./support/starts-harness')
+// Support grants are read through the real SQL function's contract: open,
+// unexpired, for this operator in this organization (expiry is Postgres' clock).
+const activeGrants=({p_operator_user_id,p_org_id},store)=>({error:null,data:(store.platform_access_grants??[]).filter(g=>
+ g.operator_user_id===p_operator_user_id&&g.org_id===p_org_id&&!g.ended_at&&Date.parse(g.expires_at)>Date.now())})
 function harness(){
- let admin=false
  const role={permissions:[{permission_key:'project.read'},{permission_key:'warranty.manage'}]}
- const db=createFakeSupabase({permissions:[{key:'warranty.manage'}],projects:[{id:PROJECT,org_id:ORG,division_id:PACKAGE}],memberships:[{id:PACKAGE,org_id:ORG,user_id:PACKAGE,status:'active',project_scope:'all',division_scope:'assigned',role}],membership_divisions:[{membership_id:PACKAGE,division_id:PACKAGE}]})
+ const db=createFakeSupabase({permissions:[{key:'warranty.manage'},{key:'members.manage'},{key:'platform.org.access'},{key:'platform.billing.manage'}],projects:[{id:PROJECT,org_id:ORG,division_id:PACKAGE}],memberships:[{id:PACKAGE,org_id:ORG,user_id:PACKAGE,status:'active',project_scope:'all',division_scope:'assigned',role}],membership_divisions:[{membership_id:PACKAGE,division_id:PACKAGE}]},{active_platform_access_grants:activeGrants})
  stubModule('@/lib/supabase/server',{createServiceSupabaseClient:()=>db})
- stubModule('@/lib/auth/platform',{isPlatformAdminId:()=>admin})
- delete require.cache[require.resolve('../lib/services/authorization')]
+ delete process.env.SUPERADMIN_IDS
+ for(const m of ['../lib/auth/platform','../lib/services/authorization'])delete require.cache[require.resolve(m)]
  const service=require('../lib/services/authorization')
  const input={permission:'warranty.manage',orgId:ORG,userId:PACKAGE,projectId:PROJECT}
- return {db,service,input,admin:()=>{admin=true}}
+ return {db,service,input,admin:()=>{process.env.SUPERADMIN_IDS=PACKAGE}}
 }
 test('single and batch authorization enforce current division and organization identity',async()=>{
  const h=harness();assert.equal((await h.service.authorize(h.input)).allowed,true)
@@ -83,10 +86,90 @@ test('desk scope includes wildcard, platform and empty division cases and fails 
  h.db.store.memberships[0].project_scope='assigned'
  h.db.store.memberships[0].role.permissions.push({permission_key:'*'})
  assert.deepEqual(await scope(),{divisionIds:[],projectMembershipRequired:false})
+ // Platform standing never widens a real membership's division scope.
  h.db.store.platform_memberships=[{user_id:PACKAGE,status:'active',role:{permissions:[{permission_key:'platform.org.access'}]}}]
- assert.deepEqual(await scope(),{divisionIds:null,projectMembershipRequired:false})
+ assert.deepEqual(await scope(),{divisionIds:[],projectMembershipRequired:false})
  const from=h.db.from.bind(h.db)
  h.db.from=t=>{const q=from(t);if(t==='memberships')q.run=()=>({data:null,error:{message:'Scope unavailable'}});return q}
  await assert.rejects(scope(),/Scope unavailable/)
- h.admin();assert.deepEqual(await scope(),{divisionIds:null,projectMembershipRequired:false})
+ h.admin();await assert.rejects(scope(),/Scope unavailable/)
+})
+
+// --- Arc staff inside a customer organization ---------------------------------
+// Platform standing is not tenant access: staff reach an organization they do
+// not belong to only through an open support grant, and staff who really belong
+// act as exactly their membership.
+
+const OTHER_ORG='00000000-0000-4000-8000-0000000000aa',OTHER_PROJECT='00000000-0000-4000-8000-0000000000ab'
+const HOUR=3600_000
+function operator({platform=['platform.org.access'],grants=[]}={}){
+ const h=harness()
+ h.db.store.projects.push({id:OTHER_PROJECT,org_id:OTHER_ORG,division_id:null})
+ h.db.store.platform_memberships=platform?[{user_id:PACKAGE,status:'active',expires_at:null,role:{permissions:platform.map(k=>({permission_key:k}))}}]:[]
+ h.db.store.platform_access_grants=grants.map(g=>({org_id:OTHER_ORG,operator_user_id:PACKAGE,ended_at:null,expires_at:new Date(Date.now()+HOUR).toISOString(),...g}))
+ const inOther={permission:'members.manage',userId:PACKAGE,orgId:OTHER_ORG}
+ return {...h,inOther,scope:()=>h.service.getProjectReadScopeForUser({orgId:OTHER_ORG,userId:PACKAGE}),
+  many:()=>h.service.authorizeMany({...inOther,projectIds:[OTHER_PROJECT]})}
+}
+
+test('staff who are real limited members hold only their role there, grant or not',async()=>{
+ for(const platform of [['platform.org.access'],['*']]){
+  const h=operator({platform,grants:[{org_id:ORG}]})
+  const manage=await h.service.authorize({permission:'members.manage',userId:PACKAGE,orgId:ORG})
+  assert.equal(manage.allowed,false,platform[0]);assert.ok(!manage.scopesEvaluated.includes('platform_org_context'))
+  assert.equal((await h.service.authorize(h.input)).allowed,true)
+  h.db.store.projects[0].division_id=null
+  assert.equal((await h.service.authorize(h.input)).reasonCode,'deny_division_scope','their division scope still applies')
+  assert.deepEqual(await h.service.getDivisionAccessForUser({orgId:ORG,userId:PACKAGE}),{assignedOnly:true,divisionIds:[PACKAGE]})
+ }
+ const h=operator();h.admin()
+ assert.equal((await h.service.authorize({permission:'members.manage',userId:PACKAGE,orgId:ORG})).allowed,false,'environment superadmin')
+})
+
+test('staff with neither membership nor an open grant are a non-member',async()=>{
+ for(const env of [false,true]){
+  const h=operator();if(env)h.admin()
+  const decision=await h.service.authorize(h.inOther)
+  assert.equal(decision.allowed,false);assert.equal(decision.reasonCode,'deny_no_org_membership')
+  assert.equal((await h.service.authorize({...h.inOther,projectId:OTHER_PROJECT})).allowed,false)
+  assert.equal((await h.many()).get(OTHER_PROJECT),false)
+  assert.deepEqual(await h.scope(),{divisionIds:null,projectMembershipRequired:true})
+ }
+})
+
+test('an open grant puts staff inside the organization as its owner; an ended or expired one does not',async()=>{
+ const h=operator({grants:[{}]})
+ const decision=await h.service.authorize(h.inOther)
+ assert.equal(decision.allowed,true);assert.ok(decision.permissions.includes('*'))
+ assert.ok(decision.scopesEvaluated.includes('platform_org_context'))
+ assert.equal((await h.service.authorize({...h.inOther,projectId:OTHER_PROJECT})).allowed,true)
+ assert.equal((await h.many()).get(OTHER_PROJECT),true)
+ assert.deepEqual(await h.scope(),{divisionIds:null,projectMembershipRequired:false})
+ const env=operator({platform:null,grants:[{}]});env.admin()
+ assert.equal((await env.service.authorize(env.inOther)).allowed,true,'environment superadmin with a grant')
+ for(const grant of [{expires_at:new Date(Date.now()-HOUR).toISOString()},{ended_at:new Date().toISOString()},{org_id:ORG}]){
+  const g=operator({grants:[grant]})
+  assert.equal((await g.service.authorize(g.inOther)).allowed,false,JSON.stringify(grant))
+  assert.equal((await g.many()).get(OTHER_PROJECT),false)
+ }
+ const stranger=operator({platform:['platform.billing.manage'],grants:[{}]})
+ assert.equal((await stranger.service.authorize(stranger.inOther)).allowed,false,'staff without org access')
+})
+
+test('platform capabilities are decided without any grant or organization',async()=>{
+ const h=operator({platform:['platform.org.access']})
+ const calls=[],rpc=h.db.rpc.bind(h.db);h.db.rpc=(name,args)=>{calls.push(name);return rpc(name,args)}
+ assert.equal((await h.service.authorize({permission:'platform.org.access',userId:PACKAGE})).allowed,true)
+ assert.equal((await h.service.authorize({permission:'platform.org.access',userId:PACKAGE,orgId:OTHER_ORG})).allowed,true)
+ assert.equal((await h.service.authorize({permission:'platform.billing.manage',userId:PACKAGE})).allowed,false)
+ h.admin()
+ const env=await h.service.authorize({permission:'platform.billing.manage',userId:PACKAGE})
+ assert.equal(env.allowed,true);assert.equal(env.reasonCode,'allow_superadmin')
+ assert.deepEqual(calls,[])
+})
+
+test('a grant that cannot be read refuses rather than grants',async()=>{
+ const h=operator({grants:[{}]})
+ h.db.rpc=async()=>({data:null,error:{message:'timeout'}})
+ await assert.rejects(h.service.authorize(h.inOther),/Unable to verify support access/)
 })

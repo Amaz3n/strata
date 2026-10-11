@@ -240,13 +240,49 @@ export async function recordAudit(input: AuditInput) {
 }
 
 /**
+ * Run a service's call into another service's critical mutation when the
+ * caller still has its own writes to make afterwards (a pay application issuing
+ * its invoice, then recording that it was sent).
+ *
+ * `AuditRecordPendingError` means the inner change committed; letting it
+ * propagate would strand the caller half-done, and a retry would then be
+ * refused because the inner change already happened. It is returned instead,
+ * so the caller completes its writes and rethrows it last — the caller still
+ * does not report a clean success while the evidence is pending. Any other
+ * error propagates as usual.
+ */
+export async function settleAuditPending(mutation: () => Promise<unknown>): Promise<AuditRecordPendingError | null> {
+  try {
+    await mutation()
+    return null
+  } catch (error) {
+    if (error instanceof AuditRecordPendingError) return error
+    throw error
+  }
+}
+
+/** A queued row may be stamped a little ahead of this clock, never further. */
+const DEFERRED_AUDIT_CLOCK_SKEW_MS = 5 * 60 * 1000
+
+const deferredAuditPayloadSchema = z
+  .object({ row: auditRowSchema.extend({ created_at: z.string().datetime({ offset: true }) }).strict() })
+  .strict()
+
+/**
  * The `audit_retry` worker: write the row a critical mutation queued. Throws on
  * failure so the outbox retries it and, past its attempts, leaves it failed
  * where operations can see it.
+ *
+ * Only the server can queue these jobs (the outbox guard refuses browser
+ * writes), and the row must still be exactly what `recordAudit` queues: no
+ * extra columns, and a time that is not in the future.
  */
 export async function writeDeferredAudit(orgId: string, payload: unknown) {
-  const { row } = z.object({ row: auditRowSchema }).parse(payload)
+  const { row } = deferredAuditPayloadSchema.parse(payload)
   if (row.org_id !== orgId) throw new Error("Deferred audit row belongs to another organization")
+  if (Date.parse(row.created_at) > Date.now() + DEFERRED_AUDIT_CLOCK_SKEW_MS) {
+    throw new Error("Deferred audit row is dated in the future")
+  }
   const { error } = await createServiceSupabaseClient().from("audit_log").insert(row)
   if (error) throw new Error(`Deferred audit write failed: ${error.message}`)
 }

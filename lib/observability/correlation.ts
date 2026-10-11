@@ -44,14 +44,20 @@ export async function correlationId(): Promise<string> {
 }
 
 /**
- * A fetch for Supabase clients that stamps every database request with the
+ * A fetch for Supabase clients that stamps every database write with the
  * current correlation id, so rows written inside database functions (whose
  * columns default to `request_correlation_id()`) join the same unit of work.
  * The id is read per request, not when the client is built: the service client
  * is a singleton shared by every unit of work.
+ *
+ * Reads are not stamped. Nothing a read does lands in an audited table, and a
+ * read may run inside a `"use cache"` scope, where resolving the request id
+ * (`headers()`) is an error that fails the render even when caught.
  */
 export function correlatedFetch(fetchRequest: typeof fetch = globalThis.fetch): typeof fetch {
   return async (input, init) => {
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase()
+    if (method === "GET" || method === "HEAD") return fetchRequest(input, init)
     const stamped = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
     stamped.set("x-correlation-id", await correlationId())
     return fetchRequest(input, { ...init, headers: stamped })
