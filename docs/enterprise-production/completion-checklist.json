@@ -21964,7 +21964,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Oct 5's setup-only native entity registry and per-entity ledger were retired on 2026-10-07 in favour of a legal-entity segment on every journal line. Per-company statements, AR/AP aging, 1099s, openings, intercompany legs, intercompany lot sales, consolidation with eliminations and a blocking intercompany close control are built and proven on the Books acceptance stack (ENTITY-01 8/8, INTERCO-01, CONSOL-01). Close remains one org-wide close that saves each company's statements; minority interests and dated group membership are explicitly out of scope.",
       "remainingWork": [
         "Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together).",
@@ -22404,7 +22404,7 @@
         {
           "kind": "acceptance_run",
           "scenario": "LOT-01",
-          "result": "failed",
+          "result": "passed",
           "freshness": "current",
           "date": "2026-10-11",
           "runIds": [
@@ -22412,10 +22412,8 @@
           ],
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
-          "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
-          "failedChecks": [
-            "race-intercompany-lot-sale"
-          ]
+          "scope": "LOT-01 at 76477b3d: 0 failed subcases (EP10-01 failed only on RACE-02 then).",
+          "failedChecks": []
         },
         {
           "kind": "acceptance_run",
