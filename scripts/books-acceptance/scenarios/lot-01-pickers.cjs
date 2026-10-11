@@ -199,11 +199,15 @@ async function findAHomePriceBandAndSortAgreeWithThePriceSheet(kit, expected, ch
   return { orgId: f.org.orgId }
 }
 
+// The view prices structural options only for a member of the org or the service role (the app's
+// server reads), never for a bare database superuser, so the check reads it the way the app does.
+const asService = (kit, text) => JSON.parse(kit.sql(`set role service_role;\n\\o /dev/null\nselect set_config('request.jwt.claims', '{"role":"service_role"}', false);\n\\o\nselect coalesce(json_agg(t),'[]') from (${text}) t;`) || "[]")
+
 async function viewAskingPriceEqualsTheAppsOwnPrice(kit, expected, check) {
   const f = await fixture(kit)
   const consultant = f.org.team.sales
   const { lots } = await findHomes(kit, f, consultant, {})
-  const view = Object.fromEntries(kit.rows(`select lot_number, asking_price_cents from public.sellable_lot_inventory where org_id=${kit.q(f.org.orgId)} and community_id=${kit.q(f.org.communityId)}`).map((row) => [row.lot_number, row.asking_price_cents == null ? null : Number(row.asking_price_cents)]))
+  const view = Object.fromEntries(asService(kit, `select lot_number, asking_price_cents from public.sellable_lot_inventory where org_id=${kit.q(f.org.orgId)} and community_id=${kit.q(f.org.communityId)}`).map((row) => [row.lot_number, row.asking_price_cents == null ? null : Number(row.asking_price_cents)]))
   const shown = Object.fromEntries(lots.map((row) => [row.lotLabel, row.askingPriceCents]))
   const ownersView = Object.fromEntries((await findHomes(kit, f, f.org.owner, {})).lots.map((row) => [row.lotLabel, row.askingPriceCents]))
   const sheet = await kit.as(f.org.owner, () => app("community-sales").getCommunityPriceSheet(f.org.communityId))
