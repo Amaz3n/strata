@@ -22,6 +22,8 @@ import { buildOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-stora
 
 import { updateDocumentNumbering } from "@/lib/services/document-numbering"
 import { getOrgSecurityPolicy, setOrgRequireMfa } from "@/lib/services/org-security"
+import { listOrgSupportAccess, revokePlatformAccessGrant } from "@/lib/services/platform-session"
+import type { RevokePlatformAccessGrantInput } from "@/lib/validation/platform-access"
 import type { SetOrgRequireMfaInput } from "@/lib/validation/org-security"
 import { documentNumberingSchema } from "@/lib/validation/document-numbering"
 
@@ -938,4 +940,12 @@ export async function setOrgRequireMfaAction(input: SetOrgRequireMfaInput) {
     revalidatePath("/settings")
     return policy
   })
+}
+
+export async function listOrgSupportAccessAction() {
+  return run(() => listOrgSupportAccess())
+}
+
+export async function revokePlatformAccessGrantAction(input: RevokePlatformAccessGrantInput) {
+  return run(() => revokePlatformAccessGrant(input))
 }

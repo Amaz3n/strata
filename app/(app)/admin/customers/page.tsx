@@ -37,11 +37,6 @@ async function updateCustomerSubscription(formData: FormData) {
   unwrapAction(await updateCustomerSubscriptionAction(formData))
 }
 
-async function enterOrgContext(formData: FormData) {
-  "use server"
-  unwrapAction(await enterOrgContextAction(formData))
-}
-
 async function setOrganizationStatus(formData: FormData) {
   "use server"
   unwrapAction(await setOrganizationStatusAction(formData))
@@ -102,7 +97,7 @@ async function CustomersPageContent({
           onExtendTrial={extendCustomerTrial}
           onUpdateCustomer={updateCustomerDetails}
           onUpdateSubscription={updateCustomerSubscription}
-          onEnterContext={enterOrgContext}
+          onEnterContext={enterOrgContextAction}
           onSetStatus={setOrganizationStatus}
         />
       </div>

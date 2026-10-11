@@ -32,6 +32,7 @@ import {
 import { invalidateAiPriceCache } from "@/lib/services/ai/usage"
 import { setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
 import { PRODUCT_TIERS } from "@/lib/product-tier"
+import { enterPlatformOrgSchema, platformAccessReasonSchema } from "@/lib/validation/platform-access"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -44,14 +45,9 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-const enterOrgContextSchema = z.object({
-  orgId: z.string().uuid("Invalid organization id"),
-  reason: z.string().max(300).optional(),
-})
-
 const startImpersonationSchema = z.object({
   targetEmail: z.string().email("Valid user email is required"),
-  reason: z.string().min(8, "Reason must be at least 8 characters"),
+  reason: platformAccessReasonSchema,
   orgId: z.string().uuid().optional(),
   expiresInMinutes: z.coerce.number().min(5).max(240).optional(),
 })
@@ -135,18 +131,18 @@ function parseTeamMembers(formData: FormData) {
 
 export async function enterOrgContextAction(formData: FormData) {
   return run(async () => {
-      const parsed = enterOrgContextSchema.safeParse({
+      const parsed = enterPlatformOrgSchema.safeParse({
         orgId: formData.get("orgId"),
         reason: formData.get("reason"),
+        durationMinutes: formData.get("durationMinutes") || undefined,
       })
 
       if (!parsed.success) {
         throw new Error(parsed.error.errors[0]?.message ?? "Invalid context request")
       }
 
-      const { user } = await requireAuth()
       await requireAnyPlatformPermission(["platform.org.access"])
-      await setPlatformOrgContext(parsed.data.orgId, parsed.data.reason)
+      await setPlatformOrgContext(parsed.data)
 
       revalidatePath("/")
       redirect("/")

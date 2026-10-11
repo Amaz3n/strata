@@ -109,6 +109,11 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
   const { user: authenticatedUser } = await getAuthContext()
   if (!authenticatedUser) return SIGNED_OUT_CHROME
 
+  // No organization is a real state, not only for the signed-out: Arc staff
+  // outside any organization (no membership, no open support grant) still get
+  // the chrome around the platform console.
+  const contextPromise = requireOrgContext().catch(() => null)
+
   const [
     user,
     permissionResult,
@@ -131,14 +136,14 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
       (): PlatformAccessState => ({ canAccessPlatform: false, roles: [], isEnvSuperadmin: false }),
     ),
     getPlatformSessionState().catch(() => NO_PLATFORM_SESSION),
-    requireOrgContext().catch(() => null),
+    contextPromise,
     getAmbientDeskContext().catch(() => EMPTY_AMBIENT),
     orgHasProductionProjects().catch(() => false),
     orgHasActiveNonProductionProjects().catch(() => false),
     orgHasActiveCommercialProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
     isBooksWorkspaceEnabled().catch(() => false),
-    getBusinessProfile(),
+    contextPromise.then((resolved) => (resolved ? getBusinessProfile() : BUILDER_PROFILE)),
   ])
 
   // The switcher's project list used to be a client fetch to /api/projects on

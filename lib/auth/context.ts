@@ -197,6 +197,22 @@ export const hasActivePlatformMembership = cache(async (userId: string) => {
 })
 
 /**
+ * Whether this operator holds an open, unexpired support-access grant in the
+ * organization. Expiry is evaluated by Postgres, so this stays callable from
+ * prerendered and cached scopes. Request-cached only: the next request reads
+ * it again, so ending or expiring a grant takes effect immediately. A failed
+ * read refuses access rather than granting it.
+ */
+const hasActivePlatformAccessGrant = cache(async (orgId: string, userId: string) => {
+  const { data, error } = await createServiceSupabaseClient().rpc("active_platform_access_grants", {
+    p_operator_user_id: userId,
+    p_org_id: orgId,
+  })
+  if (error) throw new Error(`Unable to verify support access: ${error.message}`)
+  return Array.isArray(data) && data.length > 0
+})
+
+/**
  * Last-active is telemetry, so it runs in `after()`: off the render's critical
  * path, and — because requireOrgMembership() is on the path of every page — out
  * of the prerender, where reading the clock to throttle the write would fail.
@@ -267,51 +283,34 @@ export const requireOrgMembership = cache(async (
   // The platform-membership probe and that membership re-read are keyed on the
   // same already-known (user, org) pair and neither decides the other, so they
   // travel together instead of costing two serial round trips on every
-  // authenticated request. A configured superadmin still short-circuits both:
-  // that check is a local env lookup, and neither answer would be used.
+  // authenticated request. A configured superadmin skips the probe: that check
+  // is a local env lookup.
   const ambientOrgId = orgId ?? context.orgId
-  const isSuperAdmin = isPlatformAdminUser(context.user)
-  const [isPlatformOperator, ambientMembership]: [boolean, OrgMembership | null] = isSuperAdmin
-    ? [true, null]
-    : await Promise.all([
-        hasActivePlatformMembership(context.user.id),
-        ambientOrgId ? fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null,
-      ])
-  const isPlatformAdmin = isSuperAdmin || isPlatformOperator
+  const [isPlatformOperator, ambientMembership]: [boolean, OrgMembership | null] = await Promise.all([
+    isPlatformAdminUser(context.user) || hasActivePlatformMembership(context.user.id),
+    ambientOrgId ? fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null,
+  ])
 
-  // Platform admin: allow bypassing membership, use service client, and pick any org.
-  if (isPlatformAdmin) {
-    const resolvedOrgId =
-      orgId ??
-      context.orgId ??
-      (await (async () => {
-        const cookieStore = await cookies()
-        return cookieStore.get("org_id")?.value ?? null
-      })()) ??
-      (await (async () => {
-        const svc = createServiceSupabaseClient()
-        const { data } = await svc
-          .from("orgs")
-          .select("id")
-          .order("created_at", { ascending: true })
-          .limit(1)
-        return data?.[0]?.id ?? null
-      })())
-
-    if (!resolvedOrgId) {
-      throw new Error("No organizations available for platform admin")
-    }
-
+  // Break-glass: Arc staff reach an organization they do not belong to only
+  // through an open, unexpired grant with a stated reason. Being staff is not
+  // access. A staff member who really belongs to the organization always acts
+  // as that membership, never as the pseudo-owner.
+  if (
+    !ambientMembership &&
+    ambientOrgId &&
+    isPlatformOperator &&
+    (await hasActivePlatformAccessGrant(ambientOrgId, context.user.id))
+  ) {
     const svc = createServiceSupabaseClient()
     const { data: platformOrg } = await svc
       .from("orgs")
       .select("product_tier")
-      .eq("id", resolvedOrgId)
+      .eq("id", ambientOrgId)
       .maybeSingle()
 
     const pseudoMembership: OrgMembership = {
       id: "platform-admin",
-      org_id: resolvedOrgId,
+      org_id: ambientOrgId,
       role_id: "platform-admin",
       status: "active",
       role_key: "owner",
@@ -321,7 +320,7 @@ export const requireOrgMembership = cache(async (
     return {
       ...context,
       supabase: svc,
-      orgId: resolvedOrgId,
+      orgId: ambientOrgId,
       membership: pseudoMembership,
     }
   }
