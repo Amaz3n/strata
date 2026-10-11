@@ -15,7 +15,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { createOrgMemberInvite } from "@/lib/services/team"
+import { createOrgMemberInvite, inviteRefusal } from "@/lib/services/team"
 import {
   IMPORTER_DEFINITIONS,
   IMPORTER_KEYS,
@@ -252,6 +252,7 @@ async function validateRows(importer: ImporterKey, rows: ImportRowRecord[], cont
   const divisionByKey = new Map(lookups.divisions.flatMap((row) => [[normalizeKey(row.name), row], ...(row.code ? [[normalizeKey(row.code), row] as const] : [])]))
   const roleByKey = new Map(lookups.roles.map((row) => [normalizeKey(row.key), row]))
   const companyByNormalized = new Map(lookups.companies.map((row) => [normalizeVendorName(row.name), row]))
+  const inviteRefusals = new Map<string, Promise<string | null>>()
 
   for (const row of rows) {
     const parsed = row.parsed
@@ -287,7 +288,18 @@ async function validateRows(importer: ImporterKey, rows: ImportRowRecord[], cont
       if (division) parsed.division_id = division.id
       else withIssue(row, { level: "error", code: "unresolved_division", message: `Division ${parsed.division} was not found`, column: "division" })
     }
-    if (typeof parsed.role === "string" && !roleByKey.has(normalizeKey(parsed.role))) withIssue(row, { level: "error", code: "unresolved_role", message: `Role ${parsed.role} was not found`, column: "role" })
+    if (typeof parsed.role === "string") {
+      const role = roleByKey.get(normalizeKey(parsed.role))
+      if (!role) withIssue(row, { level: "error", code: "unresolved_role", message: `Role ${parsed.role} was not found`, column: "role" })
+      else if (importer === "team") {
+        parsed.role = role.key
+        const divisionId = typeof parsed.division_id === "string" ? parsed.division_id : null
+        const refusalKey = `${role.key}:${divisionId ?? ""}`
+        if (!inviteRefusals.has(refusalKey)) inviteRefusals.set(refusalKey, inviteRefusal({ supabase: context.supabase, orgId: context.orgId, actorUserId: context.userId, role: role.key as Parameters<typeof inviteRefusal>[0]["role"], divisionId }))
+        const refusal = await inviteRefusals.get(refusalKey)
+        if (refusal) withIssue(row, { level: "error", code: "invite_not_permitted", message: refusal, column: "role" })
+      }
+    }
     if (typeof parsed.vendor === "string" && parsed.vendor) {
       const exact = companyByNormalized.get(normalizeVendorName(parsed.vendor))
       if (exact) parsed.company_id = exact.id
@@ -740,11 +752,12 @@ async function commitTeam(rows: ImportRowRecord[], context: ResolvedImportContex
     const email = String(row.parsed.email).toLowerCase()
     const member = byEmail.get(email)
     if (member) { results.set(row.id, { id: member.id, action: "skipped_existing" }); continue }
-    const created = await createOrgMemberInvite({ supabase: context.supabase, orgId: context.orgId, actorUserId: context.userId, email, fullName: String(row.parsed.full_name), role: row.parsed.role as Parameters<typeof createOrgMemberInvite>[0]["role"], sendEmail: false })
-    if (row.parsed.division_id) {
-      await context.supabase.from("memberships").update({ division_scope: "assigned" }).eq("org_id", context.orgId).eq("id", created.id)
-      await context.supabase.from("membership_divisions").upsert({ org_id: context.orgId, membership_id: created.id, division_id: row.parsed.division_id }, { onConflict: "membership_id,division_id" })
-    }
+    const divisionId = typeof row.parsed.division_id === "string" ? row.parsed.division_id : null
+    const created = await createOrgMemberInvite({
+      supabase: context.supabase, orgId: context.orgId, actorUserId: context.userId, email, fullName: String(row.parsed.full_name),
+      role: row.parsed.role as Parameters<typeof createOrgMemberInvite>[0]["role"], sendEmail: false,
+      divisionScope: divisionId ? "assigned" : "all", divisionIds: divisionId ? [divisionId] : [],
+    })
     results.set(row.id, { id: created.id, action: "created" })
   }
   return results

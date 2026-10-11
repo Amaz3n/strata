@@ -15,6 +15,7 @@ export const SEPARATION_OF_DUTIES_REASON_CODE = "deny_separation_of_duties"
 /** Which rule refused the attempt; written to the denial row's `context.rule`. */
 export type SeparationRule =
   | "bill.enterer_cannot_approve"
+  | "commitment.creator_cannot_approve"
   | "payment_run.preparer_cannot_approve"
   | "budget_transfer.requester_cannot_approve"
   | "variance_order.requester_cannot_approve"
@@ -43,4 +44,25 @@ export function billApprovalViolatesSeparation(input: {
   anotherApproverExists: boolean
 }) {
   return input.anotherApproverExists && billEnteredByUserId(input.metadata) === input.approverUserId
+}
+
+export const COMMITMENT_SELF_APPROVAL_MESSAGE =
+  "You created this commitment, so someone else has to approve it."
+
+/**
+ * Who created the commitment, as recorded in its metadata at creation.
+ * Generated, imported and older commitments have none and are never refused.
+ */
+export function commitmentCreatedByUserId(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null
+  const creator = Reflect.get(metadata, "created_by_user_id")
+  return typeof creator === "string" && creator.length > 0 ? creator : null
+}
+
+export function commitmentApprovalViolatesSeparation(input: {
+  creatorUserId: string | null
+  approverUserId: string
+  anotherApproverExists: boolean
+}) {
+  return input.anotherApproverExists && input.creatorUserId === input.approverUserId
 }

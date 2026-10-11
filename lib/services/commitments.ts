@@ -21,6 +21,8 @@ import {
   type CommitmentRegisterRow,
 } from "@/lib/financials/commitment-position"
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, commitmentExecutionSchema, type CommitmentInput, type CommitmentUpdateInput, type CommitmentLineInput, type CommitmentLineUpdateInput, type CommitmentExecutionInput } from "@/lib/validation/commitments"
+import { commitmentCreatedByUserId } from "@/lib/financials/separation-of-duties"
+import { assertCommitmentApprovalSeparated } from "@/lib/services/separation-of-duties"
 import { getCompanyPrequalificationWarning } from "@/lib/services/prequalification"
 import { getComplianceRules } from "@/lib/services/compliance"
 import {
@@ -361,6 +363,7 @@ async function gateCommitmentApproval({
   projectId,
   companyId,
   commitmentId,
+  creatorUserId,
   totalCents,
   overrideNote,
 }: {
@@ -370,6 +373,7 @@ async function gateCommitmentApproval({
   projectId: string
   companyId: string | null
   commitmentId?: string
+  creatorUserId: string | null
   totalCents: number
   overrideNote?: string | null
 }): Promise<string | null> {
@@ -382,6 +386,14 @@ async function gateCommitmentApproval({
     logDecision: true,
     resourceType: commitmentId ? "commitment" : "project",
     resourceId: commitmentId ?? projectId,
+  })
+  await assertCommitmentApprovalSeparated({
+    orgId,
+    userId,
+    creatorUserId,
+    resourceType: commitmentId ? "commitment" : "project",
+    resourceId: commitmentId ?? projectId,
+    projectId,
   })
 
   const warning = await getCompanyPrequalificationWarning({
@@ -421,6 +433,7 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
           userId,
           projectId: parsed.project_id,
           companyId: parsed.company_id,
+          creatorUserId: userId,
           totalCents: parsed.total_cents,
           overrideNote: parsed.prequal_override_note,
         })
@@ -443,12 +456,15 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
       retainage_percent: parsed.retainage_percent ?? 0,
       start_date: parsed.start_date ?? null,
       end_date: parsed.end_date ?? null,
-      metadata: prequalificationWarning
-        ? {
-            prequalification_warning: prequalificationWarning,
-            prequal_override_note: parsed.prequal_override_note?.trim() ?? null,
-          }
-        : {},
+      metadata: {
+        created_by_user_id: userId,
+        ...(prequalificationWarning
+          ? {
+              prequalification_warning: prequalificationWarning,
+              prequal_override_note: parsed.prequal_override_note?.trim() ?? null,
+            }
+          : {}),
+      },
     })
     .select(COMMITMENT_SELECT)
     .single()
@@ -546,6 +562,7 @@ export async function updateCommitment({
       projectId: existing.project_id,
       companyId: existing.company_id,
       commitmentId,
+      creatorUserId: commitmentCreatedByUserId(existing.metadata),
       totalCents: nextTotalCents ?? 0,
       overrideNote: parsed.prequal_override_note,
     })
@@ -767,6 +784,16 @@ export async function executeCommitment({
 
   if (existing.executed_at) {
     throw new Error("This commitment is already executed.")
+  }
+  if (existing.status === "draft") {
+    await assertCommitmentApprovalSeparated({
+      orgId: resolvedOrgId,
+      userId,
+      creatorUserId: commitmentCreatedByUserId(existing.metadata),
+      resourceType: "commitment",
+      resourceId: commitmentId,
+      projectId: existing.project_id,
+    })
   }
   await assertCommitmentExecutable({
     supabase,

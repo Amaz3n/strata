@@ -24,10 +24,10 @@ const TARGET_USER = id(12)
 const TARGET_MEMBERSHIP = id(13)
 
 /** An org whose admin is the acting user, plus the members a test needs. */
-function orgWith({ members = [], revoke } = {}) {
+function orgWith({ members = [], revoke, permissions = ["members.manage"] } = {}) {
   const revocations = []
   const service = createServiceHarness({
-    permissions: ["members.manage"],
+    permissions,
     tables: {
       role_permissions: [{ role_id: ADMIN_ROLE, permission_key: "org.admin" }],
       app_users: [],
@@ -67,11 +67,39 @@ test("the last administrator cannot be suspended", async () => {
 })
 
 test("an administrator can be suspended while another remains", async () => {
-  const { service } = orgWith({ members: [member({ id: id(14), user_id: SECOND_ADMIN, role_id: ADMIN_ROLE })] })
+  const { service } = orgWith({
+    permissions: ["org.admin", "members.manage"],
+    members: [member({ id: id(14), user_id: SECOND_ADMIN, role_id: ADMIN_ROLE })],
+  })
 
   await service.run(() => suspendMember(id(14)))
 
   assert.equal(statusOf(service, id(14)), "suspended")
+})
+
+test("a member manager without org.admin cannot suspend, reactivate or remove an administrator, and the refusal is logged", async () => {
+  const { service } = orgWith({
+    members: [
+      member({ id: id(14), user_id: SECOND_ADMIN, role_id: ADMIN_ROLE }),
+      member({ id: id(16), user_id: id(17), role_id: ADMIN_ROLE, status: "suspended" }),
+    ],
+  })
+
+  await assert.rejects(service.run(() => suspendMember(id(14))), /cannot grant access/)
+  await assert.rejects(service.run(() => reactivateMember(id(16))), /cannot grant access/)
+  await assert.rejects(service.run(() => removeMember(id(14))), /cannot grant access/)
+
+  assert.equal(statusOf(service, id(14)), "active")
+  assert.equal(statusOf(service, id(16)), "suspended")
+  assert.ok(service.db.authorization_audit_log.some((row) => row.decision === "deny" && row.action_key === "org.admin"))
+})
+
+test("a member manager can still suspend an ordinary member", async () => {
+  const { service } = orgWith({ members: [member()] })
+
+  await service.run(() => suspendMember(TARGET_MEMBERSHIP))
+
+  assert.equal(statusOf(service, TARGET_MEMBERSHIP), "suspended")
 })
 
 test("suspending a member ends their sessions and says so in the event", async () => {
@@ -127,10 +155,11 @@ const DIVISION_A = id(21)
 const DIVISION_B = id(22)
 
 /** An actor holding `members.manage` (not org.admin) inviting into an org with real role rows. */
-function inviteOrg({ permissions = ["members.manage", "invoice.read"], divisions, appUsers = [], extraMemberships = [] } = {}) {
+function inviteOrg({ permissions = ["members.manage", "invoice.read"], divisions, projects, appUsers = [], extraMemberships = [] } = {}) {
   const service = createServiceHarness({
     permissions,
     divisions,
+    projects,
     tables: {
       roles: [
         { id: ADMIN_ROLE, key: "org_admin", scope: "org" },
@@ -211,6 +240,27 @@ test("a division-limited inviter can only invite into their own divisions", asyn
   await service.run(() => inviteTeamMember({ input: invite({ divisionScope: "assigned", divisionIds: [DIVISION_A] }) }))
   const invited = memberRows(service)[0]
   assert.deepEqual(service.db.membership_divisions.filter((row) => row.membership_id === invited.id).map((row) => row.division_id), [DIVISION_A])
+})
+
+test("a project-limited inviter cannot invite someone with access to every project", async () => {
+  const service = inviteOrg({ appUsers: [newUser], projects: [id(40)] })
+
+  await assert.rejects(service.run(() => inviteTeamMember({ input: invite({ projectScope: "all" }) })), /assigned projects/)
+  assert.deepEqual(memberRows(service), [])
+
+  await service.run(() => inviteTeamMember({ input: invite({ projectScope: "assigned" }) }))
+  assert.equal(memberRows(service)[0].project_scope, "assigned")
+})
+
+test("an invite created for the importer or provisioning meets the same rank rule", async () => {
+  const service = inviteOrg({ appUsers: [newUser] })
+  const { createOrgMemberInvite, inviteRefusal } = freshRequire("lib/services/team.ts")
+  const base = { supabase: service.client, orgId: ORG, actorUserId: ACTOR, email: "new@example.com", sendEmail: false }
+
+  await assert.rejects(service.run(() => createOrgMemberInvite({ ...base, role: "org_owner" })), /cannot grant access/)
+  assert.deepEqual(memberRows(service), [])
+  assert.match(await service.run(() => inviteRefusal({ ...base, role: "org_owner", divisionId: null })), /cannot grant access/)
+  assert.equal(await service.run(() => inviteRefusal({ ...base, role: "org_user", divisionId: null })), null)
 })
 
 test("inviting an active or suspended member again is refused and changes nothing", async () => {

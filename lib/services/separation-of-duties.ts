@@ -3,6 +3,8 @@ import "server-only"
 import {
   billApprovalViolatesSeparation,
   billEnteredByUserId,
+  COMMITMENT_SELF_APPROVAL_MESSAGE,
+  commitmentApprovalViolatesSeparation,
   SEPARATION_OF_DUTIES_REASON_CODE,
   type SeparationRule,
 } from "@/lib/financials/separation-of-duties"
@@ -90,17 +92,26 @@ export async function refuseSeparationOfDuties(input: {
   throw new SeparationOfDutiesError(input.rule, input.message)
 }
 
+const APPROVER_CHECK_BATCH = 5
+
 /**
- * Whether anyone other than `userId` could approve a bill on this project.
+ * Whether anyone other than `userId` could exercise `permission` on this project.
  *
- * Holding `bill.approve` somewhere in the org is not enough: a division- or
- * project-scoped approver who cannot reach the project cannot approve the bill,
- * and counting them would refuse the only person who can. Candidates are the
- * org's other active members whose role or grant names the key; each is then
- * asked the same `authorize()` question the approval itself asks, so denies,
- * division scope and assigned-project scope all apply exactly as they would.
+ * Holding the key somewhere in the org is not enough: a division- or
+ * project-scoped approver who cannot reach the project cannot approve, and
+ * counting them would refuse the only person who can. Candidates are the org's
+ * other active members whose role or grant names the key; each is then asked
+ * the same `authorize()` question the approval itself asks, so denies, division
+ * scope and assigned-project scope all apply exactly as they would. Candidates
+ * are asked in small concurrent batches, stopping at the first batch with a yes.
  */
-async function anotherBillApproverCanReach(orgId: string, userId: string, projectId: string | null) {
+export async function anotherApproverCanReach(input: {
+  orgId: string
+  permission: string
+  userId: string
+  projectId: string | null
+}) {
+  const { orgId, permission, userId, projectId } = input
   const service = createServiceSupabaseClient()
   const { data: members, error } = await service
     .from("memberships")
@@ -108,23 +119,23 @@ async function anotherBillApproverCanReach(orgId: string, userId: string, projec
     .eq("org_id", orgId)
     .eq("status", "active")
     .neq("user_id", userId)
-  if (error) throw new Error(`Unable to verify payable approvers: ${error.message}`)
+  if (error) throw new Error(`Unable to verify approvers: ${error.message}`)
   if (!members?.length) return false
 
   const roleIds = [...new Set(members.map((member) => member.role_id).filter((id): id is string => Boolean(id)))]
   const [roleResult, grantResult] = await Promise.all([
     roleIds.length > 0
-      ? service.from("role_permissions").select("role_id").in("role_id", roleIds).in("permission_key", ["bill.approve", "*"])
+      ? service.from("role_permissions").select("role_id").in("role_id", roleIds).in("permission_key", [permission, "*"])
       : Promise.resolve({ data: [], error: null }),
     service
       .from("membership_permission_overrides")
       .select("membership_id")
       .in("membership_id", members.map((member) => member.id))
-      .eq("permission_key", "bill.approve")
+      .eq("permission_key", permission)
       .eq("effect", "grant"),
   ])
-  if (roleResult.error) throw new Error(`Unable to verify payable approvers: ${roleResult.error.message}`)
-  if (grantResult.error) throw new Error(`Unable to verify payable approvers: ${grantResult.error.message}`)
+  if (roleResult.error) throw new Error(`Unable to verify approvers: ${roleResult.error.message}`)
+  if (grantResult.error) throw new Error(`Unable to verify approvers: ${grantResult.error.message}`)
 
   const approverRoles = new Set((roleResult.data ?? []).map((row) => row.role_id))
   const grantedMemberships = new Set((grantResult.data ?? []).map((row) => row.membership_id))
@@ -134,16 +145,54 @@ async function anotherBillApproverCanReach(orgId: string, userId: string, projec
       .map((member): string => member.user_id),
   )]
 
-  for (const candidate of candidates) {
-    const decision = await authorize({
-      permission: "bill.approve",
-      userId: candidate,
-      orgId,
-      projectId: projectId ?? undefined,
-    })
-    if (decision.allowed) return true
+  for (let offset = 0; offset < candidates.length; offset += APPROVER_CHECK_BATCH) {
+    const decisions = await Promise.all(
+      candidates.slice(offset, offset + APPROVER_CHECK_BATCH).map((candidate) =>
+        authorize({ permission, userId: candidate, orgId, projectId: projectId ?? undefined }),
+      ),
+    )
+    if (decisions.some((decision) => decision.allowed)) return true
   }
   return false
+}
+
+/**
+ * Refuse a person approving a commitment they created while another approver
+ * who can reach its project exists. A commitment with no recorded creator
+ * (generated, imported, or created before creators were recorded) is never
+ * refused, and a one-person shop can still approve its own.
+ */
+export async function assertCommitmentApprovalSeparated(input: {
+  orgId: string
+  userId: string
+  creatorUserId: string | null
+  resourceType: "commitment" | "project"
+  resourceId: string
+  projectId: string
+}) {
+  if (input.creatorUserId !== input.userId) return
+  const anotherApproverExists = await anotherApproverCanReach({
+    orgId: input.orgId,
+    permission: "commitment.approve",
+    userId: input.userId,
+    projectId: input.projectId,
+  })
+  if (!commitmentApprovalViolatesSeparation({
+    creatorUserId: input.creatorUserId,
+    approverUserId: input.userId,
+    anotherApproverExists,
+  })) return
+  await refuseSeparationOfDuties({
+    orgId: input.orgId,
+    userId: input.userId,
+    actionKey: "commitment.approve",
+    resourceType: input.resourceType,
+    resourceId: input.resourceId,
+    projectId: input.projectId,
+    rule: "commitment.creator_cannot_approve",
+    message: COMMITMENT_SELF_APPROVAL_MESSAGE,
+    context: { created_by_user_id: input.userId },
+  })
 }
 
 /**
@@ -162,7 +211,12 @@ export async function refuseSelfApprovedBills(input: {
 
   const reachByProject = new Map<string | null, boolean>()
   for (const projectId of new Set(enteredByApprover.map((bill) => bill.project_id))) {
-    reachByProject.set(projectId, await anotherBillApproverCanReach(input.orgId, input.userId, projectId))
+    reachByProject.set(projectId, await anotherApproverCanReach({
+      orgId: input.orgId,
+      permission: "bill.approve",
+      userId: input.userId,
+      projectId,
+    }))
   }
   const refused = enteredByApprover.filter((bill) =>
     billApprovalViolatesSeparation({

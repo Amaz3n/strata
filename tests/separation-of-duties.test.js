@@ -201,3 +201,78 @@ test("the requester of a variance order cannot approve it, and the attempt is au
   ])
   assert.equal(service.db.commitment_change_orders[0].status, "draft")
 })
+
+const { updateCommitment } = freshRequire("lib/services/commitments.ts")
+
+const COMMITMENT = id(70)
+
+/** An org with a draft commitment created by `createdBy` (none for a generated one). */
+function commitmentOrg({ createdBy, other } = {}) {
+  const service = createServiceHarness({
+    permissions: ["commitment.write", "commitment.approve", "project.read", "org.member"],
+    tables: {
+      role_permissions: [{ role_id: APPROVER_ROLE, permission_key: "commitment.approve" }],
+      projects: [{ id: PROJECT, org_id: ORG, division_id: DIVISION }],
+      commitments: [
+        {
+          id: COMMITMENT, org_id: ORG, project_id: PROJECT, company_id: id(71), commitment_type: "purchase_order",
+          title: "PO", status: "draft", total_cents: 10_000, currency: "usd",
+          metadata: createdBy ? { created_by_user_id: createdBy } : {},
+        },
+      ],
+      commitment_lines: [],
+      authorization_audit_log: [],
+    },
+  })
+  service.db.memberships[0].role_id = APPROVER_ROLE
+  if (other) {
+    service.db.memberships.push(other.membership)
+    service.db.membership_divisions.push(...other.divisions)
+  }
+  return service
+}
+
+const commitmentApprover = (options) => {
+  const other = otherApprover(options)
+  other.membership.role.permissions = [{ permission_key: "commitment.approve" }, { permission_key: "project.read" }]
+  return other
+}
+
+const approveCommitment = (service) =>
+  service.run(() => updateCommitment({ commitmentId: COMMITMENT, input: { status: "approved", prequal_override_note: "Known vendor" } }))
+
+test("the creator of a commitment cannot approve it when another approver can reach it, and the attempt is audited", async () => {
+  const service = commitmentOrg({ createdBy: ACTOR, other: commitmentApprover() })
+
+  await assert.rejects(approveCommitment(service), /someone else has to approve it/)
+
+  assert.deepEqual(separationDenials(service), [
+    { actor: ACTOR, action: "commitment.approve", resource: COMMITMENT, decision: "deny", rule: "commitment.creator_cannot_approve" },
+  ])
+  assert.equal(service.db.commitments[0].status, "draft")
+})
+
+test("a one-person shop can approve the commitment it created", async () => {
+  const service = commitmentOrg({ createdBy: ACTOR })
+
+  await approveCommitment(service)
+
+  assert.equal(service.db.commitments[0].status, "approved")
+  assert.deepEqual(separationDenials(service), [])
+})
+
+test("a person can approve a commitment nobody created, such as a generated purchase order", async () => {
+  const service = commitmentOrg({ other: commitmentApprover() })
+
+  await approveCommitment(service)
+
+  assert.equal(service.db.commitments[0].status, "approved")
+})
+
+test("an approver outside the commitment's division does not stop its creator approving it", async () => {
+  const service = commitmentOrg({ createdBy: ACTOR, other: commitmentApprover({ divisions: [OTHER_DIVISION] }) })
+
+  await approveCommitment(service)
+
+  assert.equal(service.db.commitments[0].status, "approved")
+})

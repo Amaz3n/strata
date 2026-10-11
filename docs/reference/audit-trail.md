@@ -18,9 +18,13 @@ not make alone.
 `withCorrelation(id, fn)` scope first (the outbox runner wraps each job as
 `outbox:<job id>`), then the request's `x-request-id` / `x-vercel-id`, then a
 fresh uuid. Rows inserted inside a SQL function default to the
-`x-correlation-id` request header (`public.request_correlation_id()`); the
-Supabase clients do not send that header yet, so those rows are null until they
-do. Idempotent event receipts also take the database default, because a replay
+`x-correlation-id` request header (`public.request_correlation_id()`). Every
+Supabase client built in `lib/supabase/server.ts` (the user's, the browserless
+fallback, the service singleton and the worker clients) wraps its fetch in
+`correlatedFetch()`, which stamps that header on writes and RPCs — every method
+but `GET`/`HEAD`, since a read writes no row. A client built elsewhere, or a
+read-only RPC sent as `GET`, leaves the column null; nothing is inferred.
+Idempotent event receipts also take the database default, because a replay
 must compare equal to the original.
 
 ## Critical audit rows
@@ -39,9 +43,26 @@ own transaction, the call passes `critical: true`:
    is not reported as cleanly done while its evidence is missing.
 
 Each critical call is the last write of its mutation, so a pending audit row
-cannot also cost the mutation its event, delivery or sync. A service that calls
-another (a pay application voiding its invoice) stops at that point; the change
-and the queued row both stand.
+cannot also cost the mutation its event, delivery or sync.
+
+**Nesting.** A service that calls another service's critical mutation and still
+has writes of its own afterwards (a pay application issuing or voiding its
+invoice, then recording the send or the void) runs the inner call through
+`settleAuditPending()`. The pending error is returned rather than thrown, the
+outer writes complete, and the outer service rethrows it last — so the caller is
+neither stranded half-done (a retry would be refused because the invoice already
+issued) nor told it cleanly succeeded. A compensating call on a failure path
+(voiding the invoice a failed submit created) settles the pending error and
+reports the original failure. A caller with nothing left to write lets the error
+propagate.
+
+**The queue is server-only.** `audit_retry` jobs are written with the service
+role. The outbox table's member policy is broad, so
+`guard_audit_retry_browser_writes` refuses any browser-role insert, update or
+delete of an `audit_retry` row (or turning another job into one) — otherwise a
+member could queue a forged row for the worker to write as the service role, or
+fail a genuine one. `writeDeferredAudit()` also accepts only the exact row shape
+`recordAudit()` queues, for the job's own org, and never one dated in the future.
 
 | Mutation | Where | Evidence |
 |---|---|---|
@@ -70,6 +91,7 @@ nothing changed.
 | Rule (`context.rule`) | Refused | Exception |
 |---|---|---|
 | `bill.enterer_cannot_approve` | the person who keyed in a bill, or uploaded its invoice, approving it | nobody else who holds `bill.approve` **and can reach the bill's project** (division and assigned-project scope, overrides) — a one-person AP department |
+| `commitment.creator_cannot_approve` | the person who created a commitment (recorded in `metadata.created_by_user_id`) approving it, by update, create-as-approved, or recording its execution | nobody else who holds `commitment.approve` and can reach the project; commitments with no recorded creator (generated, imported) are never refused |
 | `payment_run.preparer_cannot_approve` | the preparer deciding their own run | the org's sole-approval policy allows the requester |
 | `budget_transfer.requester_cannot_approve` | the requester approving their transfer | none (also enforced in `post_budget_transfer`) |
 | `variance_order.requester_cannot_approve` | the requester approving their variance order | none |

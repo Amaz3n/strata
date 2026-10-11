@@ -298,8 +298,28 @@ export async function createOrgMemberInvite(input: {
   role: OrgRole
   fullName?: string | null
   sendEmail?: boolean
+  projectScope?: "all" | "assigned"
+  divisionScope?: "all" | "assigned"
+  divisionIds?: string[]
 }) {
   const email = input.email.trim().toLowerCase()
+  const projectScope = input.projectScope ?? "all"
+  const divisionScope = input.divisionScope ?? "all"
+  const divisionIds = input.divisionIds ?? []
+  // Every path that creates a membership -- the importer, org provisioning and
+  // the team form -- is refused here before a user, a membership or an email exists.
+  const roleId = await resolveRoleId(input.supabase, input.role)
+  await assertInviteWithinReach({
+    orgId: input.orgId,
+    userId: input.actorUserId,
+    supabase: input.supabase,
+    client: input.supabase,
+    roleId,
+    grantedPermissions: [],
+    projectScope,
+    divisionScope,
+    divisionIds,
+  })
   const { data: existingUser } = await input.supabase
     .from("app_users")
     .select("id, email, full_name, avatar_url")
@@ -326,7 +346,6 @@ export async function createOrgMemberInvite(input: {
     throw new Error(`Failed to create invited user profile for ${email}: ${profileError.message}`)
   }
 
-  const roleId = await resolveRoleId(input.supabase, input.role)
   const inviteToken = generateInviteToken()
   const inviteTokenExpiresAt = getInviteTokenExpiry()
 
@@ -337,6 +356,8 @@ export async function createOrgMemberInvite(input: {
       user_id: targetUserId,
       role_id: roleId,
       status: "invited",
+      project_scope: projectScope,
+      division_scope: divisionScope,
       invited_by: input.actorUserId,
       invite_token_hash: hashInviteToken(inviteToken),
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
@@ -353,6 +374,16 @@ export async function createOrgMemberInvite(input: {
 
   if (error || !data) {
     throw new Error(`Failed to create membership for ${email}: ${error?.message}`)
+  }
+
+  if (divisionScope === "assigned") {
+    await replaceMembershipDivisions({
+      client: input.supabase,
+      membershipId: data.id as string,
+      orgId: input.orgId,
+      scope: divisionScope,
+      divisionIds,
+    })
   }
 
   if (input.sendEmail !== false) {
@@ -855,6 +886,100 @@ async function assertDivisionGrantWithinReach({
   }
 }
 
+/**
+ * Everything an invite hands out must be inside the inviter's own reach: the
+ * role and granted overrides they hold, the divisions they belong to, and --
+ * when their own project access is assigned-only -- no wider project scope.
+ */
+async function assertInviteWithinReach({
+  orgId,
+  userId,
+  supabase,
+  client,
+  roleId,
+  grantedPermissions,
+  projectScope,
+  divisionScope,
+  divisionIds,
+}: {
+  orgId: string
+  userId: string
+  supabase: SupabaseClient
+  client: SupabaseClient
+  roleId: string
+  grantedPermissions: string[]
+  projectScope: "all" | "assigned"
+  divisionScope: "all" | "assigned"
+  divisionIds: string[]
+}) {
+  await assertActorHoldsPermissions({
+    orgId,
+    userId,
+    supabase,
+    required: [...(await rolePermissionKeys(client, roleId)), ...grantedPermissions],
+    resourceId: roleId,
+  })
+  if (projectScope === "all" && (await actorProjectScopeIsAssigned(client, orgId, userId))) {
+    throw new Error("Your own project access is limited to assigned projects, so you can only invite people into assigned projects.")
+  }
+  await assertDivisionGrantWithinReach({ orgId, userId, divisionScope, divisionIds })
+}
+
+/**
+ * The refusal an invite of this role (optionally into one division) would meet,
+ * or null. The importer asks at staging so a row the importer may not create is
+ * reported on the row instead of failing the whole commit.
+ */
+export async function inviteRefusal(input: {
+  supabase: SupabaseClient
+  orgId: string
+  actorUserId: string
+  role: OrgRole
+  divisionId: string | null
+}): Promise<string | null> {
+  try {
+    await assertInviteWithinReach({
+      orgId: input.orgId,
+      userId: input.actorUserId,
+      supabase: input.supabase,
+      client: input.supabase,
+      roleId: await resolveRoleId(input.supabase, input.role),
+      grantedPermissions: [],
+      projectScope: "all",
+      divisionScope: input.divisionId ? "assigned" : "all",
+      divisionIds: input.divisionId ? [input.divisionId] : [],
+    })
+    return null
+  } catch (error) {
+    return error instanceof Error ? error.message : "This invite is not allowed."
+  }
+}
+
+/** Mirrors authorization: any active membership marked 'assigned' restricts the user, and org.admin is never restricted. */
+async function actorProjectScopeIsAssigned(client: SupabaseClient, orgId: string, userId: string) {
+  const { data, error } = await client
+    .from("memberships")
+    .select("project_scope")
+    .eq("org_id", orgId)
+    .eq("user_id", userId)
+    .eq("status", "active")
+  if (error) throw new Error(`Failed to check your project access: ${error.message}`)
+  if (!(data ?? []).some((row) => row.project_scope === "assigned")) return false
+  return !(await getEffectiveOrgPermissions(orgId, userId)).includes("org.admin")
+}
+
+/** The authority a member already carries: their role plus granted overrides. */
+async function memberAuthority(client: SupabaseClient, membershipId: string, roleId: string) {
+  const [rolePermissions, overrides] = await Promise.all([
+    rolePermissionKeys(client, roleId),
+    mapPermissionOverrides(client, [membershipId]),
+  ])
+  return [
+    ...rolePermissions,
+    ...(overrides[membershipId] ?? []).filter((o) => o.effect === "grant").map((o) => o.permission_key),
+  ]
+}
+
 export async function inviteTeamMember({
   input,
   orgId,
@@ -877,19 +1002,16 @@ export async function inviteTeamMember({
 
   // Escalation is refused before the invite creates a user, a membership or an email.
   const roleId = await resolveRoleId(serviceClient, parsed.role)
-  const grantedOverrides = normalizePermissionOverrides(parsed.permissionOverrides)
-    .filter((override) => override.effect === "grant")
-    .map((override) => override.permission_key)
-  await assertActorHoldsPermissions({
+  await assertInviteWithinReach({
     orgId: resolvedOrgId,
     userId,
     supabase,
-    required: [...(await rolePermissionKeys(serviceClient, roleId)), ...grantedOverrides],
-    resourceId: roleId,
-  })
-  await assertDivisionGrantWithinReach({
-    orgId: resolvedOrgId,
-    userId,
+    client: serviceClient,
+    roleId,
+    grantedPermissions: normalizePermissionOverrides(parsed.permissionOverrides)
+      .filter((override) => override.effect === "grant")
+      .map((override) => override.permission_key),
+    projectScope: parsed.projectScope,
     divisionScope: parsed.divisionScope,
     divisionIds: parsed.divisionIds,
   })
@@ -1158,6 +1280,18 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     throw new Error("Membership not found")
   }
 
+  // Suspending someone ends their access and reactivating restores it: both are
+  // decisions about authority the actor must already hold themselves.
+  if (existing.user_id !== userId) {
+    await assertActorHoldsPermissions({
+      orgId: resolvedOrgId,
+      userId,
+      supabase,
+      required: await memberAuthority(createServiceSupabaseClient(), membershipId, existing.role_id as string),
+      resourceId: membershipId,
+    })
+  }
+
   // A suspended member holds no authority, so suspending the last administrator
   // strands the org exactly as demoting or removing them would.
   if (status === "suspended") {
@@ -1388,6 +1522,16 @@ export async function removeMember(membershipId: string, orgId?: string) {
     throw new Error("Membership not found")
   }
 
+  if (membership.user_id !== userId) {
+    await assertActorHoldsPermissions({
+      orgId: resolvedOrgId,
+      userId,
+      supabase,
+      required: await memberAuthority(createServiceSupabaseClient(), membershipId, membership.role_id as string),
+      resourceId: membershipId,
+    })
+  }
+
   // Never let the org lose its last admin via a removal.
   await assertNotLastOrgAdmin({
     client: createServiceSupabaseClient(),
@@ -1537,18 +1681,11 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
   // Resetting a second factor lets whoever holds the password enroll their own,
   // so it is a path to impersonating the member: only someone who already holds
   // everything the member holds may do it.
-  const [targetRolePermissions, targetOverrides] = await Promise.all([
-    rolePermissionKeys(serviceClient, membership.role_id as string),
-    mapPermissionOverrides(serviceClient, [membershipId]),
-  ])
   await assertActorHoldsPermissions({
     orgId: resolvedOrgId,
     userId,
     supabase,
-    required: [
-      ...targetRolePermissions,
-      ...(targetOverrides[membershipId] ?? []).filter((o) => o.effect === "grant").map((o) => o.permission_key),
-    ],
+    required: await memberAuthority(serviceClient, membershipId, membership.role_id as string),
     resourceId: membershipId,
   })
 
