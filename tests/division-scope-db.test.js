@@ -308,3 +308,159 @@ test("an assigned-only member reads a project they created once their project_me
   )
   assert.equal(await names(), 1)
 })
+
+/**
+ * dividedOrg, with land under it: a community in each division, a lot in each
+ * holding that division's home, and the field and search rows hanging off the
+ * homes. Lots are inserted without a division: the community supplies it.
+ */
+async function landedOrg(t) {
+  const org = await dividedOrg(t)
+  const { db, orgId, north, south, northHome, southHome } = org
+  const oak = await insert(db, "communities", { org_id: orgId, name: "Oak", division_id: north.id })
+  const pine = await insert(db, "communities", { org_id: orgId, name: "Pine", division_id: south.id })
+  const oakLot = await insert(db, "lots", { org_id: orgId, community_id: oak.id, lot_number: "Oak 1", status: "started", project_id: northHome.id })
+  const pineLot = await insert(db, "lots", { org_id: orgId, community_id: pine.id, lot_number: "Pine 1", status: "started", project_id: southHome.id })
+  for (const [project, number] of [[northHome, 1], [southHome, 2]]) {
+    await insert(db, "search_documents", { org_id: orgId, project_id: project.id, entity_type: "project", entity_id: project.id, title: project.name })
+    await insert(db, "tasks", { org_id: orgId, project_id: project.id, title: `${project.name} walk` })
+    await insert(db, "rfis", { org_id: orgId, project_id: project.id, rfi_number: number, subject: `${project.name} beam`, question: "Size?" })
+  }
+  await insert(db, "tasks", { org_id: orgId, title: "Personal reminder" })
+  return { ...org, oak, pine, oakLot, pineLot }
+}
+
+const LAND_READS = {
+  communities: "select name from communities order by 1",
+  lots: "select lot_number as name from lots order by 1",
+  search_documents: "select title as name from search_documents order by 1",
+  tasks: "select title as name from tasks order by 1",
+  rfis: "select subject as name from rfis order by 1",
+}
+
+async function readLand(db, userId) {
+  return asRole(db, { role: "authenticated", userId }, async (tx) => {
+    const seen = {}
+    for (const [table, sql] of Object.entries(LAND_READS)) {
+      seen[table] = (await tx.query(sql)).rows.map((row) => row.name)
+    }
+    return seen
+  })
+}
+
+async function divisionsOf(db, { communityId, projectId }) {
+  const lots = await db.query("select division_id from lots where community_id = $1", [communityId])
+  const projects = await db.query("select division_id from projects where id = $1", [projectId])
+  return { lots: lots.rows.map((row) => row.division_id), project: projects.rows[0].division_id }
+}
+
+test("moving a community moves its lots and homes in the same statement and keeps the home's history", async (t) => {
+  const { db, ownerId, north, south, oak, northHome } = await landedOrg(t)
+  // The clock moves in milliseconds; keep the moment clear of both writes.
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5))
+  await tick()
+  const { rows: [{ at: beforeMove }] } = await db.query("select clock_timestamp() as at")
+  await tick()
+
+  await asRole(db, { role: "authenticated", userId: ownerId }, (tx) =>
+    tx.query("update communities set division_id = $2 where id = $1", [oak.id, south.id]),
+  )
+
+  assert.deepEqual(await divisionsOf(db, { communityId: oak.id, projectId: northHome.id }), {
+    lots: [south.id],
+    project: south.id,
+  })
+  const history = await db.query(
+    "select division_id, valid_to is null as open, changed_by from project_division_history where project_id = $1 order by valid_from",
+    [northHome.id],
+  )
+  assert.deepEqual(history.rows, [
+    { division_id: north.id, open: false, changed_by: null },
+    { division_id: south.id, open: true, changed_by: ownerId },
+  ])
+  const { rows: [then] } = await db.query(
+    "select project_division_at($1, $2) as past, project_division_at($1, clock_timestamp()) as now",
+    [northHome.id, beforeMove],
+  )
+  assert.deepEqual(then, { past: north.id, now: south.id })
+})
+
+test("a lot always stands in its community's division", async (t) => {
+  const { db, orgId, north, south, oak, pine, oakLot } = await landedOrg(t)
+  const divisionOf = async (id) => (await db.query("select division_id from lots where id = $1", [id])).rows[0].division_id
+
+  const misfiled = await insert(db, "lots", { org_id: orgId, community_id: oak.id, division_id: south.id, lot_number: "Oak 2" })
+  assert.equal(await divisionOf(misfiled.id), north.id)
+
+  await db.query("update lots set division_id = $2 where id = $1", [oakLot.id, south.id])
+  assert.equal(await divisionOf(oakLot.id), north.id)
+
+  await db.query("update lots set community_id = $2 where id = $1", [misfiled.id, pine.id])
+  assert.equal(await divisionOf(misfiled.id), south.id)
+})
+
+test("a division-restricted member reads only their division's communities, lots, search results and field records", async (t) => {
+  const { db, ownerId, northLead } = await landedOrg(t)
+
+  assert.deepEqual(await readLand(db, northLead.userId), {
+    communities: ["Oak"],
+    lots: ["Oak 1"],
+    search_documents: ["North"],
+    // A personal task has no project and stays with its ordinary policy.
+    tasks: ["North walk", "Personal reminder"],
+    rfis: ["North beam"],
+  })
+  assert.deepEqual(await readLand(db, ownerId), {
+    communities: ["Oak", "Pine"],
+    lots: ["Oak 1", "Pine 1"],
+    search_documents: ["North", "South"],
+    tasks: ["North walk", "Personal reminder", "South walk"],
+    rfis: ["North beam", "South beam"],
+  })
+})
+
+test("a home's reach follows its community when the community changes division", async (t) => {
+  const { db, north, south, oak, pine, northLead } = await landedOrg(t)
+
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, north.id])
+  const gained = await readLand(db, northLead.userId)
+  assert.deepEqual(gained.lots, ["Oak 1", "Pine 1"])
+  assert.deepEqual(gained.rfis, ["North beam", "South beam"])
+
+  await db.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])
+  await db.query("update communities set division_id = $2 where id = $1", [pine.id, south.id])
+  assert.deepEqual(await readLand(db, northLead.userId), {
+    communities: [],
+    lots: [],
+    search_documents: [],
+    tasks: ["Personal reminder"],
+    rfis: [],
+  })
+})
+
+test("a division-restricted member cannot pull another division's home onto their lot, or a community out of their division", async (t) => {
+  const { db, orgId, north, south, oak, pine, northLead } = await landedOrg(t)
+  const as = (fn) => asRole(db, { role: "authenticated", userId: northLead.userId }, fn)
+  const emptyLot = await insert(db, "lots", { org_id: orgId, community_id: oak.id, lot_number: "Oak 3" })
+  const southSpec = await insert(db, "projects", { org_id: orgId, name: "South spec", division_id: south.id })
+
+  await assert.rejects(
+    as((tx) => tx.query("update lots set project_id = $2 where id = $1", [emptyLot.id, southSpec.id])),
+    /outside the caller's division access/,
+  )
+  await assert.rejects(
+    as((tx) => tx.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])),
+    /row-level security/,
+  )
+  await assert.rejects(
+    // Naming the lot's division does not help: it is stamped from the community.
+    as((tx) =>
+      tx.query("insert into lots (org_id, community_id, division_id, lot_number) values ($1, $2, $3, 'Pine 9')", [orgId, pine.id, north.id]),
+    ),
+    /row-level security/,
+  )
+
+  const { rows } = await db.query("select division_id from projects where id = $1", [southSpec.id])
+  assert.deepEqual(rows, [{ division_id: south.id }])
+  assert.deepEqual((await db.query("select division_id from communities where id = $1", [oak.id])).rows, [{ division_id: north.id }])
+})

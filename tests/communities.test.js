@@ -26,7 +26,7 @@ stubModule("@/lib/services/permissions", {
 stubModule("@/lib/services/authorization", { getDivisionAccessForUser: async () => member.scope })
 
 const { runWithServiceOrgContext } = freshRequire("lib/services/context.ts")
-const { getCommunityIdentity } = freshRequire("lib/services/communities.ts")
+const { createCommunity, getCommunityIdentity, updateCommunity } = freshRequire("lib/services/communities.ts")
 
 function community(id, overrides = {}) {
   return {
@@ -98,4 +98,36 @@ test("a member without community access is refused", async () => {
   member.permissions = []
 
   await assert.rejects(readIdentity(NORTH_COMMUNITY), /Missing permission: community.read/)
+})
+
+/** Runs a community write as the member against a fresh database, and returns what it left. */
+async function writeAsMember(write) {
+  const supabase = createFakeSupabase({
+    communities: [community(NORTH_COMMUNITY)],
+    divisions: [
+      { id: NORTH, org_id: ORG, name: "North", archived_at: null },
+      { id: SOUTH, org_id: ORG, name: "South", archived_at: null },
+    ],
+  })
+  const outcome = await runWithServiceOrgContext(
+    { supabase, orgId: ORG, userId: USER, productTier: "production" },
+    write,
+  ).then(
+    () => null,
+    (error) => error,
+  )
+  return { outcome, communities: supabase.store.communities }
+}
+
+test("a division-scoped member cannot file a community under a division outside their scope", async () => {
+  member.permissions = ["community.read", "community.write"]
+  member.scope = { assignedOnly: true, divisionIds: [NORTH] }
+
+  const created = await writeAsMember(() => createCommunity({ name: "Ridge", divisionId: SOUTH, status: "planning" }))
+  assert.match(created.outcome?.message ?? "", /Division not found/)
+  assert.deepEqual(created.communities.map((row) => row.id), [NORTH_COMMUNITY])
+
+  const moved = await writeAsMember(() => updateCommunity(NORTH_COMMUNITY, { divisionId: SOUTH }))
+  assert.match(moved.outcome?.message ?? "", /Division not found/)
+  assert.deepEqual(moved.communities.map((row) => row.division_id), [NORTH])
 })

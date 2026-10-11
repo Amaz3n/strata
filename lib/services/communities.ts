@@ -4,7 +4,7 @@ import { cache } from "react"
 import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { assertLotStatusTransition, LOT_STATUSES } from "@/lib/land/lot-lifecycle"
 import { readAllRows } from "@/lib/land/paging"
-import { resolveDivisionScope } from "@/lib/land/scope"
+import { divisionIsInScope, resolveDivisionScope } from "@/lib/land/scope"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
@@ -255,6 +255,32 @@ async function assertDivisionBelongsToOrg(
   if (error || !data) throw new Error("Division not found")
 }
 
+/**
+ * A community may only be filed under a division the caller works in. Without
+ * this a division-scoped `community.write` holder could create a community in,
+ * or move one of theirs into, a division they cannot see, and with it every lot
+ * and home it holds. Refused as not found, like a division outside the org.
+ */
+async function assertDivisionInCallerScope(
+  context: Awaited<ReturnType<typeof requireOrgContext>>,
+  divisionId: string | null | undefined,
+) {
+  const decision = resolveDivisionScope(await allowedDivisionScope(context.orgId, context.userId))
+  if (!divisionIsInScope(decision, divisionId ?? null)) throw new Error("Division not found")
+}
+
+/** Homes standing on the community's lots: what a division move carried with it. */
+async function countCommunityHomes(context: Awaited<ReturnType<typeof requireOrgContext>>, communityId: string) {
+  const { count, error } = await context.supabase
+    .from("lots")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", context.orgId)
+    .eq("community_id", communityId)
+    .not("project_id", "is", null)
+  if (error) throw new Error(`Failed to count the community's homes: ${error.message}`)
+  return count ?? 0
+}
+
 function applyCommunityInput(parsed: Partial<CommunityInput>) {
   const patch: Record<string, unknown> = {}
   if (parsed.name !== undefined) patch.name = parsed.name
@@ -456,7 +482,10 @@ export async function createCommunity(input: CommunityInput, orgId?: string): Pr
   const parsed = communityInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
-  await assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId)
+  await Promise.all([
+    assertDivisionInCallerScope(context, parsed.divisionId),
+    assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId),
+  ])
   const { data, error } = await context.supabase
     .from("communities")
     .insert({ org_id: context.orgId, ...applyCommunityInput(parsed) })
@@ -476,7 +505,12 @@ export async function updateCommunity(
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
   await requireCommunityScope(id, context)
-  if (parsed.divisionId !== undefined) await assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId)
+  if (parsed.divisionId !== undefined) {
+    await Promise.all([
+      assertDivisionInCallerScope(context, parsed.divisionId),
+      assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId),
+    ])
+  }
   const { data: before, error: beforeError } = await context.supabase
     .from("communities")
     .select("*")
@@ -492,30 +526,12 @@ export async function updateCommunity(
     .select("*")
     .single()
   if (error) throw new Error(`Failed to update community: ${error.message}`)
-  if (parsed.divisionId !== undefined && parsed.divisionId !== before.division_id) {
-    const { data: linkedLots, error: lotsError } = await context.supabase
-      .from("lots")
-      .select("project_id")
-      .eq("org_id", context.orgId)
-      .eq("community_id", id)
-    if (lotsError) throw new Error(`Failed to resolve linked projects: ${lotsError.message}`)
-    const projectIds = (linkedLots ?? []).map((row) => row.project_id).filter((value): value is string => Boolean(value))
-    const { error: updateLotsError } = await context.supabase
-      .from("lots")
-      .update({ division_id: parsed.divisionId })
-      .eq("org_id", context.orgId)
-      .eq("community_id", id)
-    if (updateLotsError) throw new Error(`Failed to update lot divisions: ${updateLotsError.message}`)
-    if (projectIds.length > 0) {
-      const { error: updateProjectsError } = await context.supabase
-        .from("projects")
-        .update({ division_id: parsed.divisionId })
-        .eq("org_id", context.orgId)
-        .in("id", projectIds)
-      if (updateProjectsError) throw new Error(`Failed to update project divisions: ${updateProjectsError.message}`)
-    }
-  }
-  await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community.updated", entityType: "community", entityId: id, action: "update", before, after: data, payload: { name: data.name } })
+  // The database moves the community's lots and homes with it, in the same
+  // statement (communities_cascade_division); this only reports how many homes
+  // went. A community taken out of every division leaves its homes where they were.
+  const divisionMoved = data.division_id !== before.division_id
+  const homesMoved = divisionMoved && data.division_id ? await countCommunityHomes(context, id) : 0
+  await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community.updated", entityType: "community", entityId: id, action: "update", before, after: data, payload: divisionMoved ? { name: data.name, from_division_id: before.division_id, to_division_id: data.division_id, homes_moved: homesMoved } : { name: data.name } })
   return getCommunity(id, context.orgId)
 }
 
