@@ -366,7 +366,12 @@ async function lostAuditIsNeverACleanSuccess(kit, expected, check) {
   const { org, gulf } = await world(kit)
   const { q } = kit
   const commitments = app("commitments")
-  const order = await kit.as(org.owner, () => commitments.createCommitment({ input: { project_id: gulf.homeId, company_id: org.vendorIds["Gulf Concrete"], commitment_type: "purchase_order", title: "SEC-01 foundation order", total_cents: 5800000 } }))
+  // Purchasing writes the order and the owner approves it: the creator of a
+  // commitment cannot approve it while someone else could (EP02-05). Writing a
+  // commitment by hand takes a seat on the home's team (SQL fixture: staffing
+  // the house is not under test here).
+  kit.sql(`insert into public.project_members(org_id,project_id,user_id,role_id,status) select ${q(org.orgId)},${q(gulf.homeId)},${q(org.team.purchasing.userId)},id,'active' from public.roles where scope='project' and key='pm' on conflict do nothing`)
+  const order = await kit.as(org.team.purchasing, () => commitments.createCommitment({ input: { project_id: gulf.homeId, company_id: org.vendorIds["Gulf Concrete"], commitment_type: "purchase_order", title: "SEC-01 foundation order", total_cents: 5800000 } }))
   const startedAt = kit.rows("select now() at")[0].at
   // Harness fault (not under test): the audit table refuses this org's
   // commitment rows, as an outage of the audit write would.
