@@ -8637,7 +8637,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Standing spec age now starts at the recorded completion date (project_financial_settings.books_inventory_completed_on) and never at projects.end_date; unfinished homes, homes completed with no recorded date and future dates report no age (lib/sales/spec-inventory.ts, lib/services/community-sales.ts, 56b76687). Only homes completed through Books inventory have that date, so a completed spec home outside Books shows no age.",
       "remainingWork": [
         "Decide how completed spec homes outside Books inventory record a completion date (today they show no age).",
@@ -8722,7 +8722,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -8843,6 +8843,34 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "specInventoryAge starts the clock only at a recorded completion date and never reads projects.end_date or start_date (lib/sales/spec-inventory.ts:25-40). Both consumers feed it books_inventory_completed_on from project_financial_settings, org-scoped: community-portfolio.ts:348-368, 411 (the former start_date-based specs_aging computation is gone; urgency built from agingByCommunity at :488-494) and community-sales.ts:265-267."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "No recorded completion or a completion dated after now returns completedAt null and agingDays 0 (spec-inventory.ts:31-35), so unfinished and future-completed homes never age. community-portfolio.ts:412 skips any home without completedAt before counting toward specs_aging; completion lookups are chunked by 400 projects and paged, not truncated (:350-362)."
+            }
+          ],
+          "scope": "Fresh static review after fixes."
         }
       ],
       "releaseState": "unverified",
@@ -23684,7 +23712,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14",
             "FIX-20261010-W1"
@@ -23806,6 +23834,34 @@
           "scope": "Every LOT-01 subcase mapped to this item; other LOT-01 subcases belong to other items and are tracked there.",
           "failedChecks": [],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Validation lookups are keyset-paged to the end per org-scoped table and refuse past an explicit cap instead of truncating (lib/services/imports.ts:212-232); roles is the system catalog limited to scope=org. Companion batches are paged and org-scoped (:330-346), companion/commit rows are paged in 500-row pages across 100-batch id chunks with org_id filter (:750-766); explicit companion receipts must match row_count exactly (:377-391)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Duplicate natural key in a file errors (imports.ts:245-247); duplicate companion source rows throw (:363-370); missing as-of date, missing budget file, and budget_total_mismatch add error issues and now call settleRowStatus so the row status is recomputed to error (:393-418), blocking commit (commitImportBatch claims only error_count=0, :903); commitOpenWip rechecks as-of date, companions and budget sum before the project insert (:795-828). Wrong date/run/creator/sample scope is rejected in loadOpenWipCompanionBatches (:330-358). The earlier staging-status bug (73844300) is fixed."
+            }
+          ],
+          "scope": "Fresh static review after fixes."
         }
       ],
       "releaseState": "unverified",
