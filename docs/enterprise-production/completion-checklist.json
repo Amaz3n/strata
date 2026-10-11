@@ -6848,7 +6848,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Precedence and ambiguity handling are explicit and reads are bounded; medium confidence because production homes without a pinned plan version fall back to base option price instead of failing.",
       "remainingWork": [
         "Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price.",
@@ -7145,7 +7145,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -7162,6 +7162,34 @@
               "index": 1,
               "verdict": "partial",
               "evidence": "resolveOptionPricing now fails loudly: requirePlanVersion (option-catalog.ts:640) passed by every caller with a community (selections.ts:238-243,351,354,422; selection-change-orders.ts:73-78,118-123; configuration-rules.ts:140,177; community-sales.ts:1601; app/p/[token]/selections/actions.ts:50-56,79-85), integer/non-negative money checks (:741-742), complete id-cursor reads. But community-sales.ts:118-125 (deriveLotAskingPrice) ignores the query error and uses maybeSingle, so duplicate availability rows or a missing row silently price at 0; list path community-sales.ts:263-288 destructures only data (errors swallowed) and defaults to 0 via ?? 0."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/selections/catalog-math.ts:9-16 chooseResolvedPrice: community price > plan price > base; resolveOptionPricing lib/services/option-catalog.ts:203-210. Duplicate scoped prices/overrides throw (option-catalog.ts:176,183,148)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "option-catalog.ts:104 requirePlanVersion throws for community homes with no pinned plan version; every web caller passes Boolean(community_id) (selections.ts:238,351,354,422; selection-change-orders.ts:77,123; configuration-rules.ts:141,177; community-sales.ts:1616; portal selections actions.ts:55,85; community-sales.ts:1148 always has versionId). Money validated as non-negative integer cents (option-catalog.ts:213-214). Reads paged via readAllRowsById with cap that throws (lib/land/paging.ts)."
             }
           ],
           "scope": "Fresh static review after the fix waves."
@@ -20048,7 +20076,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Scoped and org-wide variance reports read complete facts with explicit truncation errors and inclusive end dates. tests/variance-report-scale.test.js was merged into tests/variance-analysis.test.js. Scoped vs RPC outputs still need comparison on populated QA data.",
       "remainingWork": [
         "Compare scoped vs RPC outputs and export totals on populated QA facts.",
@@ -20327,7 +20355,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -20361,6 +20389,34 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "LOT-01 variance subcases.",
           "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "lib/services/reports/variance-analysis.ts: all three paths page every fact with readAllRows/readReferenceRows and throw on truncation (lines 86,102,119,183); division-scoped and member-scoped paths read via service client incl. lot-based division and superintendent labels (loadSuperintendents 252-281, lines 76-88, 97-110); org-wide RPC 20261011100000 includes superintendent CTE (lines 55-63)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "summarize() sums division-dimension budgets only so each home counted once (variance-analysis.ts:383-389); RPC grouped_budget uses distinct covered_projects (migration lines 98-108). Window is [start, next-day-midnight) timestamptz via lib/reports/date-range.ts:12-13 and RPC lines 45-46."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
         }
       ],
       "releaseState": "unverified",
@@ -21255,7 +21311,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Punch create/update/bulk-assign now live in the punch service with punch.write authorization on the project; closing a verification-required item needs after-photo evidence; settlement blocks on unverified punch (bb8d2c74). Enforcing punch.write needs migration 20261010114000 (grants to owner, project lead, PM and field roles), pending approval, or those roles are locked out.",
       "remainingWork": [
         "Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production.",
@@ -21513,7 +21569,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -21533,6 +21589,60 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "superseded",
+          "runIds": [
+            "REVIEW2-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Main path met: lib/services/punch-lists.ts authorizePunchWrite (342), assignee validation (356), created_by/assigned_to/assigned_company/due_date/dispatched_at/resolved_by/verified_by stamped (435-453, 539-551), event+audit. setProjectSuperintendent uses service client for roles (starts.ts:844). BUT app/(app)/drawings/actions.ts:1337-1395 createPunchItemFromDrawingAction inserts punch_items directly with only requireOrgContext: no punch.write/project authorization, no created_by, no assignee/location validation - a web write path outside the service."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "closing-readiness.ts:35-50 blocks any non-closed item and any verification_required item lacking verified_at; project-close-readiness.ts:164-168,420-437 same rule as blockers; closing a verification-required item needs 'after' file_link evidence (punch-lists.ts:539-551, 377-387)."
+            }
+          ],
+          "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW3-20261011"
+          ],
+          "date": "2026-10-11",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Main path met: lib/services/punch-lists.ts authorizePunchWrite (342), assignee validation (356), created_by/assigned_to/assigned_company/due_date/dispatched_at/resolved_by/verified_by stamped (435-453, 539-551), event+audit. setProjectSuperintendent uses service client for roles (starts.ts:844). BUT app/(app)/drawings/actions.ts:1337-1395 createPunchItemFromDrawingAction inserts punch_items directly with only requireOrgContext: no punch.write/project authorization, no created_by, no assignee/location validation - a web write path outside the service. — remaining web bypass (createPunchItemFromDrawingAction) now routes through createProjectPunchItem with punch.write, validation, created_by, event and audit: 4b238d91."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "closing-readiness.ts:35-50 blocks any non-closed item and any verification_required item lacking verified_at; project-close-readiness.ts:164-168,420-437 same rule as blockers; closing a verification-required item needs 'after' file_link evidence (punch-lists.ts:539-551, 377-387)."
+            }
+          ],
+          "scope": "Review G plus the fix for its one web-path gap. Mobile API punch paths deferred by owner decision.",
+          "deferredMobile": "lib/mobile/daily-logs.ts and lib/mobile/workspace-punch.ts punch paths are not assessed (iOS API out of scope for now)."
         }
       ],
       "releaseState": "unverified",
@@ -21563,6 +21673,9 @@
       "remainingEffort": "none",
       "scenarioIds": [
         "LOT-01"
+      ],
+      "deferred": [
+        "Mobile API: daily-log punch close bypasses verification evidence (lib/mobile/daily-logs.ts ~388); deferred to iOS work by owner decision 2026-10-11."
       ]
     },
     {

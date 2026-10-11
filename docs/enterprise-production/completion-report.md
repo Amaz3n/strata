@@ -9,9 +9,9 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 | Measure | Current result |
 | --- | --- |
 | Implemented | 18.7% — a documented lower bound, not an ETA |
-| Fully verified | 14.9% |
+| Fully verified | 17.3% |
 | Release ready | 0% |
-| Code implemented | 6 items |
+| Code implemented | 2 items |
 | Partially implemented | 84 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
@@ -86,7 +86,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP03-04 | Atomic configuration mutation | partial | Apply migration 20261010162000_selection_package_save (pending approval). |
 | EP03-05 | Community offering restrictions | partial | Add the screen that assigns a plan to an unsold lot (service and action exist in lib/services/lots.ts and app/(app)/communities/actions.ts). |
 | EP03-06 | Lot fit and orientation | partial | Model lot buildable constraints (dimensions, setbacks, orientation, allowed elevations) and plan/elevation footprint requirements. |
-| EP03-07 | Deterministic pricing resolution | implemented | Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price. |
+| EP03-07 | Deterministic pricing resolution | verified | Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price. |
 | EP03-08 | Immutable commercial snapshots | partial | Apply migration 20261010161000_budget_baseline_write_once (pending approval). |
 | EP03-09 | Revision impact and rollout | partial | Revision proposal with affected-home preview (contracted vs released vs unsold) for plan, elevation and catalog changes. |
 | EP03-10 | Guided configuration correction | partial | Return structured violations (rule, source, target) from the preflight instead of a joined string. |
@@ -170,7 +170,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP08-09 | Variance approval controls | partial | Require cost evidence per org policy and validate file ancestry. |
 | EP08-10 | Delivery and shortage workflow | partial | Design delivery records keyed to home + PO line (expected/received date and qty, shortage reason) — migration with RLS, indexes, RBAC, search, events. |
 | EP08-11 | Completion to payment reconciliation | partial | Apply migration 20261010110000_po_completion_rollback_keeps_bill (pending approval). |
-| EP08-12 | Complete variance reporting | implemented | Compare scoped vs RPC outputs and export totals on populated QA facts. |
+| EP08-12 | Complete variance reporting | verified | Compare scoped vs RPC outputs and export totals on populated QA facts. |
 
 ### EP09: Field execution and quality
 
@@ -180,7 +180,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP09-02 | Offline conflict recovery | partial | Apply migration 20261010170000_mobile_idempotency_receipts (pending approval). |
 | EP09-03 | Released field documents | partial | Approve/apply the plan drawing publication migrations and enable planDrawingCopyTransactions in the QA org. |
 | EP09-04 | Inspection failure lifecycle | implemented | Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write). |
-| EP09-05 | Punch and close readiness | implemented | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
+| EP09-05 | Punch and close readiness | verified | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
 | EP09-06 | Cross-home daily records | partial | Add a cross-home review band (logs missing today, new photos) for assigned homes on the super's Home/My Work. |
 | EP09-07 | Supplier and trade communication | partial | Add optional PO linkage on field issues/punch with ancestry validation. |
 | EP09-08 | Field device usability | pending | Agree the required daily field workflows and a latency target with the owner. |
@@ -189,7 +189,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP10-01 | Legal-entity financial reconciliation | implemented | Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together). |
+| EP10-01 | Legal-entity financial reconciliation | verified | Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together). |
 | EP10-02 | Inventory and land capitalization | partial | Add a governed correction for a land acquisition (reverse, clear the lot's acquisition pointer, re-acquire) and for a start transfer (reverse and re-transfer when the start is undone or redated), preserving receipts. |
 | EP10-03 | Construction-driven cash forecast | partial | Feed starts (budgets by schedule), closings (settlement proceeds), takedowns, loan draws and payoffs, with editable scenario assumptions. |
 | EP10-04 | Margin arithmetic | partial | Expose original vs revised budget separately from the approved/locked baseline. |
