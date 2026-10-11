@@ -444,9 +444,11 @@ insert into public.bid_awards(org_id,bid_package_id,awarded_submission_id,awarde
 
 async function purchasingManagerRunsTheBidWorkbench(kit, expected, check) {
   const f = await fixture(kit), { org } = f, bids = app("bids"), buyer = org.team.purchasing
-  const { pkg, scope } = await openPackage(kit, f, { title: "Workbench — buyer runs it", items: [{ item_type: "base", description: "Frame the shell", quantity: 1650, unit: "sf", cost_code_id: org.costCodeIds["06-100"] }] })
+  // The package stays a draft: sending is the step under test, and an already-open package refuses it.
+  const pkg = await kit.as(buyer, () => bids.createBidPackage({ input: { community_id: f.communityA, house_plan_id: org.plans[0].id, title: "Workbench — buyer runs it", trade: "Framing", cost_code_id: org.costCodeIds["06-100"], due_at: dueIn(14) } }))
+  const scope = await kit.as(buyer, () => bids.saveBidScopeItems({ input: { bid_package_id: pkg.id, items: [{ item_type: "base", description: "Frame the shell", quantity: 1650, unit: "sf", cost_code_id: org.costCodeIds["06-100"] }] } }))
   const vendor = org.vendorIds["Palmetto Framing"]
-  const invited = await attempt(() => kit.as(buyer, () => bids.createBidInvite({ input: { bid_package_id: pkg.id, company_id: vendor, status: "sent" } })))
+  const invited = await attempt(() => kit.as(buyer, () => bids.createBidInvite({ input: { bid_package_id: pkg.id, company_id: vendor, status: "draft" } })))
   const sent = await attempt(() => kit.as(buyer, () => bids.sendBidPackage({ bidPackageId: pkg.id })))
   const manual = await attempt(() => kit.as(buyer, () => bids.createManualBidSubmission({ input: { bid_package_id: pkg.id, company_id: vendor, total_cents: 9000000, items: scope.map((item) => ({ bid_scope_item_id: item.id, description: item.description, response: "priced", amount_cents: 9000000 })) } })))
   same(check, "the buyer who creates and awards production bid packages can also invite vendors, send the package and enter a bid on it", expected.expected, { invited, sent, manual })

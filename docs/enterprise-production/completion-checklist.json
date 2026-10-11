@@ -8154,7 +8154,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Lifecycle transitions and truncation-honest inventory reads are in place and tested.",
       "remainingWork": [
         "Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org."
@@ -8410,7 +8410,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -8422,6 +8422,20 @@
             "inventory-map-page-loads-at-its-documented-size"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -8833,7 +8847,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -8871,6 +8885,20 @@
             }
           ],
           "scope": "Fresh static review after fixes."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -9277,7 +9305,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Every criterion has code; the transactional versions remain in migrations 20261003221905/20261003232615/20261004000100/20261005121409 that are still NOT in the production ledger (checked 2026-10-09) and behind three env flags. The Oct 5 fixture failure in tests/reservation-conversion-db.test.js is fixed: all 8 cases (atomic commit, replay, rollback, competing actors) now pass.",
       "remainingWork": [
         "Obtain approval and apply 20261003221905, 20261004000100, 20261003232615, 20261005121409; enable ARC_RESERVATION_CONVERSION_ENABLED, ARC_AGREEMENT_ATOMIC_CREATION_ENABLED, ARC_AGREEMENT_DURABLE_SIGNING_ENABLED.",
@@ -9503,7 +9531,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -9515,6 +9543,20 @@
             "voiding-a-signed-agreement-unwinds-the-sale"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -10268,7 +10310,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Money math is pure, integer-cent and unit tested; settlement refuses mismatched invoice totals and now also refuses when another invoice already bills part of the home's price, and counts deposits net of refunds. Database enforcement still depends on the unapplied closing evidence guard migration.",
       "remainingWork": [
         "Apply 20261003050000_closing_evidence_guards after approval.",
@@ -10495,7 +10537,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -10507,6 +10549,20 @@
             "approved-change-order-counts-once-in-the-final-price"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -10838,7 +10894,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -10855,7 +10911,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -10867,6 +10923,34 @@
             "voiding-a-signed-agreement-unwinds-the-sale"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -11396,7 +11480,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Cutoff enforcement and override governance are implemented; undoing a manual cutoff now needs a reason and is audited with an event (5dc16e16). Weaknesses unchanged: not race-safe at the DB, overrides authorized at org level only, and agreement execution locks every selection on the home. Signing now locks only confirmed, ordered or received selections; design rows stay open to their cutoff (4158415c). Found by LOT-01.",
       "remainingWork": [
         "Authorize overrides against the project/division.",
@@ -11613,7 +11697,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -11625,6 +11709,20 @@
             "extending-a-swept-cutoff-reopens-the-choices"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -13065,7 +13163,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Coordinators see every notice state and can requeue only failed notices with scope, role and CAS checks. retryStartTradeNotice now writes the outbox through the service client after the same checks and clears the claim token, so the staged browser-write guard no longer blocks it (dd770797); that depends on the starts migrations being applied together with this code.",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited) and 20261010100000 together with this code (pending approval).",
@@ -13271,7 +13369,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -13283,6 +13381,20 @@
             "trade-notice-recovery-desk"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -15745,7 +15857,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Notice workers have token-claimed ownership and retry rules (dd770797). Abandoned plan-drawing copies are now cleaned up: the starts pipeline sweep claims reservations over a day old with no live release and no file naming the path, marks them abandoned so reservation and publication refuse the path, deletes the object, then clears the manifest after re-checking under the home lock that no file references it (cleanupAbandonedPlanDrawingCopies, migration 20261010141000 pending approval; 66900c27). A stuck reservation no longer blocks disabling the flag once the sweep runs.",
       "remainingWork": [
         "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval).",
@@ -15997,7 +16109,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16014,7 +16126,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16026,6 +16138,34 @@
             "notice-worker-claims-enforce-ownership-and-retries"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-race02b/RACE-02.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -16585,7 +16725,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Production buyers create community/plan packages and award them into effective-dated price agreements with reviewed scope/terms in one SQL transaction. No code change since Oct 5. Production still carries the plain bid_awards_package_uidx (read-only pg_indexes check 2026-10-09), so 20261004120000 is unapplied and a re-award after rescind fails. Rescind leaving minted agreements active is tracked under EP08-05.",
       "remainingWork": [
         "Fix rescind of price-book awards (EP08-05) since it is reachable from this workbench.",
@@ -16811,7 +16951,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -16824,6 +16964,20 @@
             "purchasing-manager-runs-the-bid-workbench"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -16874,7 +17028,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Bid queue is a server-filtered, division-scoped, exactly counted, stably ordered page; vendor/entity pickers search on the server with retry that keeps selection. No changes since Oct 5. Vendor picker searches every directory company and shows no total count.",
       "remainingWork": [
         "QA judgement whether the vendor picker must show a visible total; if so surface the directory page total.",
@@ -17114,7 +17268,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -17126,6 +17280,20 @@
             "picker-page-past-the-end-is-empty"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -17361,7 +17529,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "History and comparison reads are complete, division-scoped and fail loudly; the old per-feature tests were merged into tests/bid-intelligence.test.js. The workbench still swallows intelligence failures with .catch(() => null).",
       "remainingWork": [
         "Render an explicit error state instead of .catch(() => null) at app/(app)/purchasing/bids/[packageId]/page.tsx:40.",
@@ -17588,7 +17756,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -17600,6 +17768,20 @@
             "purchasing-manager-reads-the-history-of-awarded-homes"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -18043,7 +18225,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -18056,6 +18238,22 @@
             "purchasing-manager-resolves-an-exception-on-a-house"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": [
+            "purchasing-manager-requests-a-variance-order-on-a-house"
+          ]
         }
       ],
       "releaseState": "unverified",
@@ -19061,7 +19259,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -19074,6 +19272,26 @@
             "variance-report-labels-the-superintendent"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "failed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": [
+            "variance-report-reads-every-scoped-fact",
+            "variance-report-inclusive-end-dates-keep-timestamp-precision",
+            "division-scoped-variance-report-matches-the-organisation-report",
+            "variance-report-labels-the-superintendent",
+            "division-scoped-variance-report-counts-each-home-once"
+          ]
         }
       ],
       "releaseState": "unverified",
@@ -20091,7 +20309,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -20103,6 +20321,20 @@
             "owner-assigns-the-houses-superintendent"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -22310,7 +22542,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Snapshot and calendar logic are correct in application code. Database enforcement is now written: coverage writes need warranty.manage, members can no longer delete, and a trigger freezes terms_snapshot and effective dates (5dc16e16, migration 20261010120100 pending approval).",
       "remainingWork": [
         "Apply migration 20261010120100_warranty_coverage_write_scope (pending approval).",
@@ -22511,7 +22743,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -22523,6 +22755,20 @@
             "warranty-desk-opens-a-claim-on-a-sold-home"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -23613,7 +23859,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Import reads are paged and scoped for commit rows, companion files and now the validation lookups, which fail loudly past their caps instead of rejecting valid rows (1c30a736). The staging-failure write is org-scoped. Bad facts are refused before a home is created.",
       "remainingWork": [
         "Add a case to tests/imports.test.js with >1,000 communities / >10,000 lots proving no false unresolved rejections.",
@@ -23824,7 +24070,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -23862,6 +24108,20 @@
             }
           ],
           "scope": "Fresh static review after fixes."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -23914,7 +24174,7 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
+      "status": "verified",
       "implementationNotes": "Imported open homes keep buyer, agreement total, budget, current stage and remaining POs, and a failed row never publishes the lot. A failed row still leaves behind any buyer contact or vendor company it created. Books openings (MIG-01) now carry the financial side of owned lots and spec homes, which complements this operational import.",
       "remainingWork": [
         "Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row.",
@@ -24103,7 +24363,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "failed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA-20261011"
@@ -24116,6 +24376,20 @@
             "open-wip-schedule-follows-the-plan-template"
           ],
           "evidencePath": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/442874b8-6db3-4087-9715-dbeb68177e82/scratchpad/ev/FINAL-lot01n/LOT-01.json"
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "QA2-20261011"
+          ],
+          "head": "7b76ae4b",
+          "stack": "arc-books-acceptance-0954cf243fce",
+          "scope": "Every LOT-01 subcase mapped to this item; other subcases are tracked on their own items.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -30874,6 +31148,16 @@
       "files": [],
       "sourceHashes": {},
       "notes": "Desktop sweep partial; defects recorded on items."
+    },
+    {
+      "id": "QA2-20261011",
+      "date": "2026-10-11",
+      "scope": "LOT-01 (normal and --include-pending) and HOME-01 re-run after fix wave at 7b76ae4b on arc-books-acceptance-0954cf243fce.",
+      "command": [],
+      "counts": {},
+      "files": [],
+      "sourceHashes": {},
+      "notes": "Variance-report subcases fail on a division backstop regression (EP08-06, EP08-12)."
     }
   ],
   "deferredBacklog": [
