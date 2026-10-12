@@ -5,7 +5,7 @@ require("../../scripts/register-ts-node-test")
 const { randomUUID } = require("node:crypto")
 
 const { createFakeSupabase } = require("./fake-supabase")
-const { canAttestFinalApproval, isGateApplicable, startPackageReadiness } = require("@/lib/starts/gate-logic")
+const { SQL_EVIDENCE_SOURCES, canAttestFinalApproval, isGateApplicable, startPackageReadiness } = require("@/lib/starts/gate-logic")
 
 const ORG = "00000000-0000-4000-8000-000000000001"
 const ACTOR = "00000000-0000-4000-8000-000000000002"
@@ -447,7 +447,21 @@ function settleReadiness(store, pkg, actorId, purchasingEnabled) {
   return next
 }
 
+/**
+ * What start_gate_sql_evidence answers for a source. The real function reads
+ * the home's permit application and is proven in tests/permits-db.test.js and
+ * tests/starts-core-write-fences-db.test.js; here a fixture names the verdict
+ * (`gate_sql_evidence: [{ source, passed }]`).
+ */
+function sqlEvidence(store, source) {
+  return (store.gate_sql_evidence ?? []).some((row) => row.source === source && row.passed)
+}
+
 const deskProtocol = {
+  start_gate_sql_evidence({ p_source: source }, store) {
+    return ok(sqlEvidence(store, source))
+  },
+
   update_start_package({ p_actor_id: actorId, p_patch: patch, p_purchasing_enabled: purchasingEnabled, ...args }, store) {
     const pkg = deskPackage(store, args)
     if (!pkg) return refused("Start package not found")
@@ -497,9 +511,13 @@ const deskProtocol = {
     for (const { gate, definition } of packageGates(store, pkg)) {
       let next
       if (!isGateApplicable({ appliesWhen: definition.applies_when }, { isFinanced: pkg.is_financed, purchasingEnabled })) next = { status: "not_applicable", passed_via: null }
-      else if (gate.status === "waived" || definition.check_kind !== "auto") {
+      else if (definition.check_kind === "auto" && definition.auto_source === "permit_approved") {
+        next = sqlEvidence(store, "permit_approved") ? { status: "passed", passed_via: "auto" } : { status: "pending", passed_via: null }
+      } else if (gate.status === "waived" || definition.check_kind !== "auto") {
         if (gate.status !== "not_applicable") continue
         next = { status: "pending", passed_via: null }
+      } else if (SQL_EVIDENCE_SOURCES.has(definition.auto_source)) {
+        next = sqlEvidence(store, definition.auto_source) ? { status: "passed", passed_via: "auto" } : { status: "pending", passed_via: null }
       } else {
         if (typeof evidence[gate.id] !== "boolean") return refused(`Readiness evidence is missing for the ${definition.key} gate; refresh again.`)
         next = evidence[gate.id] ? { status: "passed", passed_via: "auto" } : { status: "pending", passed_via: null }

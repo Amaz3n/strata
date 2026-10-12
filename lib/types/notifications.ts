@@ -32,6 +32,13 @@ export type NotificationType =
   | "selection_cutoff_reminder"
   | "selection_cutoff_missed"
   | "selection_cutoff_changed"
+  | "selection_approval_approved"
+  | "selection_approval_declined"
+  | "selection_approval_expired"
+  | "selection_signature_withdrawn"
+  | "design_studio_appointment_assigned"
+  | "design_studio_appointment_rescheduled"
+  | "design_studio_appointment_canceled"
   | "portal_message"
   | "project_email_change_trigger"
   | "file_created"
@@ -98,12 +105,16 @@ export type NotificationType =
   | "po_completion.rejected"
   | "variance_digest"
   | "selection_change_variance_unrouted"
+  | "selection_exception_opened"
+  | "selection_change_schedule_pending"
   | "takedown_due"
   | "land_review_requested"
   | "land_review_decided"
   | "land_diligence_due"
   | "entitlement_condition_due"
   | "agreement_milestone_due"
+  | "permit_correction_due"
+  | "permit_decision_overdue"
   | "start_package_ready"
   | "start_released"
   | "start_release_failed"
@@ -581,6 +592,42 @@ export const EMAIL_NOTIFICATION_TYPES = [
     description: "Email me when selections are due in 14 or 7 days.",
   },
   {
+    key: "selection_approval_approved",
+    category: "sales",
+    label: "Selections approved",
+    description: "Email me when a buyer approves selections on a home I run.",
+  },
+  {
+    key: "selection_approval_declined",
+    category: "sales",
+    label: "Selections declined",
+    description: "Email me when a buyer declines selections sent for approval on a home I run.",
+  },
+  {
+    key: "selection_approval_expired",
+    category: "sales",
+    label: "Selection approval expired",
+    description: "Email me when selections sent for approval reach their deadline without an answer.",
+  },
+  {
+    key: "design_studio_appointment_assigned",
+    category: "sales",
+    label: "Design studio session booked",
+    description: "Email me when a design studio session is booked with me.",
+  },
+  {
+    key: "design_studio_appointment_rescheduled",
+    category: "sales",
+    label: "Design studio session moved",
+    description: "Email me when one of my design studio sessions moves to a new time.",
+  },
+  {
+    key: "design_studio_appointment_canceled",
+    category: "sales",
+    label: "Design studio session canceled",
+    description: "Email me when one of my design studio sessions is canceled.",
+  },
+  {
     key: "daily_log_mentioned",
     category: "field",
     label: "Daily log mentions",
@@ -663,6 +710,18 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "starts",
     label: "Start package ready",
     description: "Email me when a lot's start package has all gates cleared.",
+  },
+  {
+    key: "permit_correction_due",
+    category: "starts",
+    label: "Permit corrections due",
+    description: "Email me as a response I own to a permit authority's corrections comes due or runs late.",
+  },
+  {
+    key: "permit_decision_overdue",
+    category: "starts",
+    label: "Permit decision overdue",
+    description: "Email me when a permit application I own is past the authority's review time.",
   },
   {
     key: "takedown_due",

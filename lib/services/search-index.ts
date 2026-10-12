@@ -70,10 +70,14 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   budget_template: "budget_template",
   agreement_template: "agreement_template",
   selection_option: "selection_option",
+  selection_exception: "selection_exception",
   design_studio_appointment: "design_studio_appointment",
+  design_studio_location: "design_studio_location",
+  selection_approval: "selection_approval",
   price_agreement: "price_agreement",
   commitment_change_order: "commitment_change_order",
   start_package: "start_package",
+  permit_application: "permit_application",
   closing: "closing",
   spec_price_proposal: "spec_price_proposal",
   spec_disposition: "spec_disposition",
@@ -270,6 +274,10 @@ export async function reindexEntity(
       ? [priceCompany ?? "Vendor", priceCostCode ?? "Cost code", baseTitle].join(" — ")
       : entityType === "start_package"
         ? `${startCommunity ?? "Community"} — Lot ${startLot ?? "start package"}`
+      : entityType === "permit_application"
+        ? `${projectName ?? "Home"} — ${String(row.permit_type ?? "building").replace(/_/g, " ")} permit${typeof row.permit_number === "string" ? ` ${row.permit_number}` : ""}`
+      : entityType === "selection_exception"
+        ? `${projectName ?? "Home"} — selection exception: ${String(row.reason ?? "supply").replace(/_/g, " ")}`
       : entityType === "closing"
         ? `Closing — ${projectName ?? "Home"}`
       : entityType === "warranty_request"

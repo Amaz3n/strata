@@ -9,10 +9,12 @@ import {
   deleteScheduleItem,
   bulkUpdateScheduleItems,
   listDependenciesByProject,
+  applyScheduleChangeOrderImpact,
 } from "@/lib/services/schedule"
 import { scheduleItemInputSchema, scheduleItemUpdateSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
 import type { ScheduleDependency } from "@/lib/types"
 
+import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -70,5 +72,14 @@ export async function deleteScheduleItemAction(itemId: string) {
       await deleteScheduleItem(itemId)
       revalidatePath("/schedule")
       revalidatePath("/")
+  })
+}
+
+/** The superintendent applies a change order's pending schedule impact to its task. */
+export async function applyScheduleChangeOrderImpactAction(impactId: unknown) {
+  return run(async () => {
+    const applied = await applyScheduleChangeOrderImpact(z.string().uuid().parse(impactId))
+    revalidatePath(`/projects/${applied.projectId}/schedule`)
+    return applied
   })
 }

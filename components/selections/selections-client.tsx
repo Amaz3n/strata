@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useTransition, useEffect } from "react"
+import { useMemo, useState, useTransition, useEffect, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -9,7 +9,8 @@ import type { Project, Selection, SelectionCategory, SelectionOption } from "@/l
 import type { SelectionInput } from "@/lib/validation/selections"
 import { createSelectionAction } from "@/app/(app)/selections/actions"
 import { overrideGroupCutoffAction, revertGroupCutoffAction } from "@/app/(app)/design-studio/actions"
-import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
+import { SelectionApprovalPanel } from "@/components/selections/selection-approval-panel"
+import type { GroupSelectionApproval } from "@/lib/services/selection-approvals"
 import { SelectionForm } from "@/components/selections/selection-form"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
@@ -29,7 +30,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Plus, Calendar, List, Lock } from "@/components/icons"
 
-import { unwrapAction } from "@/lib/action-result"
+import { unwrapAction, type ActionResult } from "@/lib/action-result"
+import { addCalendarDays } from "@/lib/selections/cutoff-math"
 
 const statusLabels: Record<string, string> = {
   pending: "Pending",
@@ -62,6 +64,7 @@ type BuilderSelection = Selection & {
     cutoff_source: "schedule" | "manual_override"
     override_reason: string | null
     status: "open" | "locked"
+    needed_by?: string | null
   } | null
 }
 
@@ -74,15 +77,25 @@ interface SelectionsBuilderData {
 interface Props {
   data: SelectionsBuilderData
   projects: Project[]
+  /** The home's supply exceptions band, rendered on the server. */
+  exceptions?: ReactNode
+  /** Each group's buyer approval on the home this page is for. */
+  approvals?: ActionResult<GroupSelectionApproval[]>
+  canManageApprovals?: boolean
 }
 
-export function SelectionsBuilderClient({ data, projects }: Props) {
+/** The last day the chosen option can be ordered to arrive for its task, or null without a lead time or anchor. */
+function orderByDate(selection: BuilderSelection, leadTimeDays: number | null | undefined) {
+  const neededBy = selection.group?.needed_by
+  if (!neededBy || !leadTimeDays || leadTimeDays <= 0) return null
+  return addCalendarDays(neededBy, -leadTimeDays)
+}
+
+export function SelectionsBuilderClient({ data, projects, exceptions, approvals, canManageApprovals = false }: Props) {
   const router = useRouter()
   const [items, setItems] = useState<BuilderSelection[]>(data.selections)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
-  const [signatureTarget, setSignatureTarget] = useState<EnvelopeWizardSourceEntity | null>(null)
   const [cutoffTarget, setCutoffTarget] = useState<{ projectId: string; groupId: string; name: string; date: string | null } | null>(null)
   const [isPending, startTransition] = useTransition()
 
@@ -145,39 +158,6 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
     })
   }
 
-  const handleOpenSignatureWizard = (input: {
-    selection: Selection
-    categoryName?: string
-    optionName?: string
-  }) => {
-    if (!input.selection.project_id) {
-      toast.error("Selection must belong to a project before requesting signature.")
-      return
-    }
-    if (!input.selection.selected_option_id) {
-      toast.error("Select an option before requesting signature.")
-      return
-    }
-
-    const documentTitle = [input.categoryName, input.optionName].filter(Boolean).join(" - ") || "Selection Approval"
-
-    setSignatureTarget({
-      type: "selection",
-      id: input.selection.id,
-      project_id: input.selection.project_id,
-      title: documentTitle,
-      document_type: "other",
-    })
-    setSignatureWizardOpen(true)
-  }
-
-  const handleSignatureWizardOpenChange = (open: boolean) => {
-    setSignatureWizardOpen(open)
-    if (!open) {
-      setSignatureTarget(null)
-    }
-  }
-
   function handleCutoffOverride(formData: FormData) {
     if (!cutoffTarget) return
     startTransition(async () => {
@@ -204,6 +184,16 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
     })
   }
 
+  const todayIso = format(new Date(), "yyyy-MM-dd")
+  const approvalProjectId = projects.length === 1 ? projects[0].id : null
+  const approvalFor = (groupId: string | null) =>
+    approvals?.success ? approvals.data.find((approval) => approval.groupId === groupId) ?? null : null
+  const approvalsError = approvals && !approvals.success ? (
+    <p role="alert" className="border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+      Buyer approvals could not be loaded: {approvals.error}
+    </p>
+  ) : null
+
   if (groupedItems.length > 0) {
     return (
       <>
@@ -213,13 +203,14 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
           <div className="flex gap-2"><Select value={filterProjectId} onValueChange={setFilterProjectId}><SelectTrigger className="h-8 w-[220px] rounded-none"><SelectValue placeholder="Filter by project" /></SelectTrigger><SelectContent><SelectItem value="all">All projects</SelectItem>{projects.map((project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select><Button size="sm" className="h-8 rounded-none" onClick={() => setSheetOpen(true)}><Plus className="mr-1 h-4 w-4" />Selection</Button></div>
         </div>
         <SelectionForm open={sheetOpen} onOpenChange={setSheetOpen} projects={projects} categories={data.categories} defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id} onSubmit={handleCreate} isSubmitting={isPending} />
+        {exceptions}
+        {approvalsError}
         {groupedItems.map((group) => {
           const remaining = group.deadline ? Math.ceil((Date.parse(`${group.deadline}T00:00:00`) - Date.now()) / 86_400_000) : null
           const projectId = group.items[0]?.project_id
-          return <section key={group.id} className="border"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 px-3 py-2"><div className="flex items-center gap-2"><h2 className="text-sm font-semibold">{group.name}</h2><Badge variant={group.locked ? "destructive" : "secondary"} className="rounded-none">{group.locked ? "Locked" : "Open"}</Badge><Badge variant="outline" title={group.reason ?? undefined} className="rounded-none">{group.source === "manual_override" ? "Manual override" : "From schedule"}</Badge></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><span>{group.deadline ? `Cutoff ${formatDate(group.deadline)}` : "Unresolved cutoff"}</span>{remaining != null && <span className="tabular-nums">{remaining >= 0 ? `${remaining} days remaining` : `${Math.abs(remaining)} days overdue`}</span>}{projectId && group.source === "manual_override" && <Button size="sm" variant="ghost" className="h-7 rounded-none" disabled={isPending} onClick={() => handleCutoffRevert(projectId, group.id)}>Revert</Button>}{projectId && <Button size="sm" variant="outline" className="h-7 rounded-none" onClick={() => setCutoffTarget({ projectId, groupId: group.id, name: group.name, date: group.deadline })}>Override</Button>}</div></div><Table><TableHeader><TableRow><TableHead>Category</TableHead><TableHead>Chosen option</TableHead><TableHead>Scope</TableHead><TableHead className="text-right">Price</TableHead><TableHead>Status</TableHead><TableHead>Confirmed</TableHead><TableHead className="w-[130px]" /></TableRow></TableHeader><TableBody>{group.items.map((selection) => { const category = categoriesById[selection.category_id]; const option = selection.selected_option_id ? optionsById[selection.selected_option_id] : undefined; return <TableRow key={selection.id}><TableCell className="font-medium">{category?.name ?? "Selection"}</TableCell><TableCell><div className="flex items-center gap-2">{option?.image_url ? <img src={option.image_url} alt="" className="h-8 w-8 border object-cover" /> : <div className="h-8 w-8 border bg-muted" />}<span>{option?.name ?? "Not selected"}</span></div></TableCell><TableCell><Badge variant="outline" className="rounded-none text-[10px]">{option?.option_scope === "structural" ? "Structural" : "Design"}</Badge></TableCell><TableCell className="text-right tabular-nums">{selection.price_cents_snapshot == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(selection.price_cents_snapshot / 100)}</TableCell><TableCell><Badge variant="secondary" className="rounded-none">{selection.status}</Badge></TableCell><TableCell>{selection.confirmed_at ? formatDate(selection.confirmed_at) : "—"}</TableCell><TableCell className="text-right">{group.locked ? <Button asChild size="sm" variant="outline" className="h-7 rounded-none"><a href={`/projects/${selection.project_id}/change-orders?selection=${selection.id}`}><Lock className="mr-1 h-3.5 w-3.5" />Change via CO</a></Button> : option ? <Button size="sm" variant="outline" className="h-7 rounded-none" onClick={() => handleOpenSignatureWizard({ selection, categoryName: category?.name, optionName: option.name })}>Request signature</Button> : null}</TableCell></TableRow> })}</TableBody></Table></section>
+          return <section key={group.id} className="border"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 px-3 py-2"><div className="flex items-center gap-2"><h2 className="text-sm font-semibold">{group.name}</h2><Badge variant={group.locked ? "destructive" : "secondary"} className="rounded-none">{group.locked ? "Locked" : "Open"}</Badge><Badge variant="outline" title={group.reason ?? undefined} className="rounded-none">{group.source === "manual_override" ? "Manual override" : "From schedule"}</Badge></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><span>{group.deadline ? `Cutoff ${formatDate(group.deadline)}` : "Unresolved cutoff"}</span>{remaining != null && <span className="tabular-nums">{remaining >= 0 ? `${remaining} days remaining` : `${Math.abs(remaining)} days overdue`}</span>}{projectId && group.source === "manual_override" && <Button size="sm" variant="ghost" className="h-7 rounded-none" disabled={isPending} onClick={() => handleCutoffRevert(projectId, group.id)}>Revert</Button>}{projectId && <Button size="sm" variant="outline" className="h-7 rounded-none" onClick={() => setCutoffTarget({ projectId, groupId: group.id, name: group.name, date: group.deadline })}>Override</Button>}</div></div>{approvalProjectId && <SelectionApprovalPanel projectId={approvalProjectId} approval={approvalFor(group.id)} canManage={canManageApprovals} />}<Table><TableHeader><TableRow><TableHead>Category</TableHead><TableHead>Chosen option</TableHead><TableHead>Scope</TableHead><TableHead className="text-right">Price</TableHead><TableHead>Status</TableHead><TableHead>Confirmed</TableHead><TableHead className="w-[130px]" /></TableRow></TableHeader><TableBody>{group.items.map((selection) => { const category = categoriesById[selection.category_id]; const option = selection.selected_option_id ? optionsById[selection.selected_option_id] : undefined; return <TableRow key={selection.id}><TableCell className="font-medium">{category?.name ?? "Selection"}</TableCell><TableCell><div className="flex items-center gap-2">{option?.image_url ? <img src={option.image_url} alt="" className="h-8 w-8 border object-cover" /> : <div className="h-8 w-8 border bg-muted" />}<span>{option?.name ?? "Not selected"}{(() => { const orderBy = orderByDate(selection, option?.lead_time_days); if (!orderBy) return null; const late = orderBy < todayIso && !["confirmed", "ordered", "received"].includes(selection.status); return <span className={`block text-xs tabular-nums ${late ? "text-destructive" : "text-muted-foreground"}`}>{late ? "Order-by passed " : "Order by "}{formatDate(`${orderBy}T12:00:00`)}</span> })()}</span></div></TableCell><TableCell><Badge variant="outline" className="rounded-none text-[10px]">{option?.option_scope === "structural" ? "Structural" : "Design"}</Badge></TableCell><TableCell className="text-right tabular-nums">{selection.price_cents_snapshot == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(selection.price_cents_snapshot / 100)}</TableCell><TableCell><Badge variant="secondary" className="rounded-none">{selection.status}</Badge></TableCell><TableCell>{selection.confirmed_at ? formatDate(selection.confirmed_at) : "—"}</TableCell><TableCell className="text-right">{group.locked ? <Button asChild size="sm" variant="outline" className="h-7 rounded-none"><a href={`/projects/${selection.project_id}/change-orders?selection=${selection.id}`}><Lock className="mr-1 h-3.5 w-3.5" />Change via CO</a></Button> : null}</TableCell></TableRow> })}</TableBody></Table></section>
         })}
       </div>
-      <EnvelopeWizard open={signatureWizardOpen} onOpenChange={handleSignatureWizardOpenChange} sourceEntity={signatureTarget} sourceLabel="Selection" sheetTitle="Prepare selection approval for signature" sheetDescription="Attach the finalized selection PDF, place signer fields, and send for approval." />
       <Dialog open={Boolean(cutoffTarget)} onOpenChange={(open) => { if (!open) setCutoffTarget(null) }}><DialogContent className="rounded-none"><form action={handleCutoffOverride}><DialogHeader><DialogTitle>Override {cutoffTarget?.name} cutoff</DialogTitle><DialogDescription>This replaces the schedule-derived date until reverted. A reason is required and audited.</DialogDescription></DialogHeader><div className="space-y-3 py-4"><Label htmlFor="cutoff-date">Cutoff date</Label><Input id="cutoff-date" name="cutoffDate" type="date" required defaultValue={cutoffTarget?.date ?? ""} className="rounded-none" /><Label htmlFor="cutoff-reason">Reason</Label><Input id="cutoff-reason" name="reason" required minLength={5} maxLength={500} className="rounded-none" /></div><DialogFooter><Button type="submit" disabled={isPending} className="rounded-none">Save override</Button></DialogFooter></form></DialogContent></Dialog>
       </>
     )
@@ -276,11 +267,17 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
           isSubmitting={isPending}
         />
 
+        {approvalsError}
+        {approvalProjectId && approvalFor(null) && (
+          <div className="border">
+            <SelectionApprovalPanel projectId={approvalProjectId} approval={approvalFor(null)} canManage={canManageApprovals} />
+          </div>
+        )}
+
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((sel) => {
             const category = categoriesById[sel.category_id]
             const selectedOption = sel.selected_option_id ? optionsById[sel.selected_option_id] : undefined
-            const canRequestSignature = !!selectedOption
             return (
               <Card key={sel.id} className="h-full flex flex-col">
                 <CardHeader className="space-y-2">
@@ -320,21 +317,6 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
                         : "No option selected yet. Clients choose in the portal."}
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!canRequestSignature}
-                    onClick={() =>
-                      handleOpenSignatureWizard({
-                        selection: sel,
-                        categoryName: category?.name,
-                        optionName: selectedOption?.name,
-                      })
-                    }
-                  >
-                    {canRequestSignature ? "Request signature" : "Select option before signature"}
-                  </Button>
                   {sel.notes && <p className="text-xs text-muted-foreground">Notes: {sel.notes}</p>}
                   <SelectionAttachments selection={sel} />
                 </CardContent>
@@ -362,14 +344,6 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
         </div>
       </div>
 
-      <EnvelopeWizard
-        open={signatureWizardOpen}
-        onOpenChange={handleSignatureWizardOpenChange}
-        sourceEntity={signatureTarget}
-        sourceLabel="Selection"
-        sheetTitle="Prepare selection approval for signature"
-        sheetDescription="Attach the finalized selection PDF, place signer fields, and send for approval."
-      />
     </>
   )
 }

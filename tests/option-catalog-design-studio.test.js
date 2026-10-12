@@ -8,7 +8,6 @@ const {
   deriveSelectionCutoff,
   normalizeScheduleTemplateItems,
   selectionReminderKey,
-  shouldReopenSelectionGroup,
 } = require("../lib/selections/cutoff-math")
 
 test("catalog price precedence is plan+community, plan, community option, then base", () => {
@@ -62,9 +61,7 @@ test("cutoff derivation supports offsets, fallback matching, and earliest match"
   assert.deepEqual(deriveSelectionCutoff({ scheduleTaskKey: "missing", cutoffAnchor: "end", cutoffOffsetDays: 0, items: [] }), { cutoffDate: null, matchedScheduleItemId: null })
 })
 
-test("future slips reopen locked groups and reminder keys are idempotent", () => {
-  assert.equal(shouldReopenSelectionGroup({ status: "locked", nextCutoffDate: "2026-08-20", today: "2026-08-01" }), true)
-  assert.equal(shouldReopenSelectionGroup({ status: "locked", nextCutoffDate: "2026-07-20", today: "2026-08-01" }), false)
+test("reminder keys are idempotent", () => {
   assert.equal(selectionReminderKey(14), "t14")
   assert.equal(selectionReminderKey(7), "t7")
   assert.equal(selectionReminderKey(6), null)

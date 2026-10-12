@@ -39,10 +39,6 @@ export function deriveSelectionCutoff(input: {
   return { cutoffDate: addCalendarDays(anchorDate, input.cutoffOffsetDays), matchedScheduleItemId: matched.id }
 }
 
-export function shouldReopenSelectionGroup(input: { status: string; nextCutoffDate: string | null; today: string }) {
-  return input.status === "locked" && Boolean(input.nextCutoffDate && input.nextCutoffDate >= input.today)
-}
-
 export function selectionReminderKey(daysRemaining: number) {
   if (daysRemaining === 14) return "t14"
   if (daysRemaining === 7) return "t7"

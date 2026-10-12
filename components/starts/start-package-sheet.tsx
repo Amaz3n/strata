@@ -19,6 +19,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
+import { uploadDocumentForm } from "@/lib/files/upload-document-form"
 import type { StartGateDTO, StartPackageDetailDTO, SuperintendentCandidateDTO } from "@/lib/services/starts"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
 import { superintendentLoad } from "@/lib/starts/superintendent-load"
@@ -36,7 +37,8 @@ const STEP_LABELS: Record<string, string> = {
 
 /** What an unmet automatic check is actually waiting for, and where to go fix it. */
 const AUTO_GATE_HINTS: Record<string, { hint: string; tab?: string; cta?: string }> = {
-  plot_plan: { hint: "No plot plan on file for this house", tab: "documents", cta: "Upload" },
+  permit: { hint: "No approved permit for this lot's pinned plan — record the authority's decision on the home", tab: "permits", cta: "Open permits" },
+  plot_plan: { hint: "The home's permit application has no plot plan attached", tab: "permits", cta: "Open permits" },
   selections_locked: { hint: "This house has no locked selection groups yet — every structural group must exist and be closed", tab: "selections", cta: "Open selections" },
   plan_pinned: { hint: "The lot needs a released plan version and elevation pinned" },
   price_book: { hint: "The price book has not been run clean against this house yet — dry-run generation and clear any exceptions", tab: "commitments", cta: "Run generation" },
@@ -73,6 +75,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   const [overSlot, setOverSlot] = useState<{ targetWeek: string; target: number; alreadyTargeted: number } | null>(null)
   const [attestTarget, setAttestTarget] = useState<StartGateDTO | null>(null)
   const [attestNote, setAttestNote] = useState("")
+  const [attestFile, setAttestFile] = useState<File | null>(null)
   const [waiveTarget, setWaiveTarget] = useState<StartGateDTO | null>(null)
   const [waiveReason, setWaiveReason] = useState("")
   const [cancelOpen, setCancelOpen] = useState(false)
@@ -477,11 +480,11 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                           {canWrite && !gatesLocked ? (
                             <div className="flex flex-none gap-1">
                               {gate.checkKind === "manual" && gate.status === "pending" ? (
-                                <Button size="sm" variant="outline" className="h-7 rounded-none px-2 text-[11px]" disabled={pending} onClick={() => { setAttestNote(""); setAttestTarget(gate) }}>
+                                <Button size="sm" variant="outline" className="h-7 rounded-none px-2 text-[11px]" disabled={pending} onClick={() => { setAttestNote(""); setAttestFile(null); setAttestTarget(gate) }}>
                                   Attest
                                 </Button>
                               ) : null}
-                              {gate.status === "pending" && canRelease ? (
+                              {gate.status === "pending" && canRelease && gate.waivable ? (
                                 <Button size="sm" variant="ghost" className="h-7 rounded-none px-2 text-[11px]" disabled={pending} onClick={() => { setWaiveReason(""); setWaiveTarget(gate) }}>
                                   Waive
                                 </Button>
@@ -651,21 +654,55 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
         <DialogContent className="rounded-none sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Attest — {attestTarget?.label}</DialogTitle>
-            <DialogDescription>Confirms this requirement is satisfied. Your name and the timestamp are recorded on the gate.</DialogDescription>
+            <DialogDescription>
+              {attestTarget?.requiresEvidence
+                ? "Attach the document that shows this requirement is met. It is filed on the home, and your name and the timestamp are recorded on the gate."
+                : "Confirms this requirement is satisfied. Your name and the timestamp are recorded on the gate."}
+            </DialogDescription>
           </DialogHeader>
+          {attestTarget?.requiresEvidence ? (
+            <div className="grid gap-1.5">
+              <Label htmlFor="attest-evidence">Evidence</Label>
+              {pkg?.projectId ? (
+                <Input
+                  id="attest-evidence"
+                  type="file"
+                  className="rounded-none"
+                  onChange={(event) => setAttestFile(event.target.files?.[0] ?? null)}
+                />
+              ) : (
+                <p className="text-xs text-destructive">This house has no project yet, so there is nowhere to file the evidence.</p>
+              )}
+            </div>
+          ) : null}
           <div className="grid gap-1.5">
             <Label htmlFor="attest-note">Note <span className="font-normal text-muted-foreground">(optional)</span></Label>
-            <Textarea id="attest-note" className="rounded-none" rows={2} maxLength={2000} placeholder="Permit #, appraisal reference…" value={attestNote} onChange={(event) => setAttestNote(event.target.value)} />
+            <Textarea id="attest-note" className="rounded-none" rows={2} maxLength={2000} placeholder="Appraisal reference, approval note…" value={attestNote} onChange={(event) => setAttestNote(event.target.value)} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAttestTarget(null)}>Cancel</Button>
             <Button
-              disabled={pending}
+              disabled={pending || Boolean(attestTarget?.requiresEvidence && (!attestFile || !pkg?.projectId))}
               onClick={() => {
                 const gate = attestTarget
                 if (!gate || !pkg) return
+                const projectId = pkg.projectId
+                const file = attestFile
                 runAction(
-                  async () => { unwrapAction(await attestGateAction(pkg.id, gate.id, attestNote.trim() ? { notes: attestNote.trim() } : {})) },
+                  async () => {
+                    let evidenceFileId: string | undefined
+                    if (gate.requiresEvidence && file && projectId) {
+                      const upload = new FormData()
+                      upload.set("file", file)
+                      upload.set("projectId", projectId)
+                      upload.set("category", "other")
+                      upload.set("visibility", "private")
+                      upload.set("description", `Evidence for the start gate: ${gate.label}`)
+                      evidenceFileId = unwrapAction(await uploadDocumentForm(upload)).id
+                    }
+                    const notes = attestNote.trim()
+                    unwrapAction(await attestGateAction(pkg.id, gate.id, { ...(notes ? { notes } : {}), ...(evidenceFileId ? { evidenceFileId } : {}) }))
+                  },
                   "Gate attested",
                   "Unable to attest gate",
                   () => setAttestTarget(null),

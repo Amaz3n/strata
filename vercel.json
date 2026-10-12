@@ -109,6 +109,10 @@
       "schedule": "55 12 * * *"
     },
     {
+      "path": "/api/jobs/permit-reminders",
+      "schedule": "5 13 * * *"
+    },
+    {
       "path": "/api/jobs/warranty-courtesy-inspections",
       "schedule": "10 12 * * *"
     },
@@ -225,6 +229,9 @@
       "maxDuration": 120
     },
     "app/api/jobs/takedown-reminders/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/permit-reminders/route.ts": {
       "maxDuration": 120
     },
     "app/api/jobs/warranty-courtesy-inspections/route.ts": {

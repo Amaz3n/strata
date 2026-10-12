@@ -53,7 +53,14 @@ const DESIGN_PICKS = { Kitchen: "KT-QTZ", Flooring: "FL-LVP", Electrical: "EL-LG
 
 const csv = (headers, rows) => [headers.join(","), ...rows.map((row) => headers.map((h) => { const t = String(row[h] ?? ""); return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t }).join(","))].join("\n")
 const glId = (kit, org, code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
-const isoDay = (offsetDays = 0, now = new Date()) => new Date(now.getTime() + offsetDays * 86400000).toISOString().slice(0, 10)
+/**
+ * The seeded builder's day. Orgs default to America/New_York and the seeded
+ * community sets no zone of its own, so selection cutoffs (EP06-03) are judged
+ * on this day, not the server's UTC date, which runs a day ahead every evening.
+ */
+const SEED_TIME_ZONE = "America/New_York"
+const seedToday = (now) => new Intl.DateTimeFormat("en-CA", { timeZone: SEED_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(now)
+const isoDay = (offsetDays = 0, now = new Date()) => new Date(Date.parse(`${seedToday(now)}T12:00:00Z`) + offsetDays * 86400000).toISOString().slice(0, 10)
 
 // Months from June 2026 through the month after next, so a release dated a few
 // days from now always lands in an open accounting period.
@@ -279,7 +286,21 @@ async function signAgreement(kit, org, { reservationId, config }) {
 }
 
 /**
- * The buyer's design choices, confirmed, and the group's cutoff passed. Signing
+ * The buyer approves a group's selections at the design studio table (EP06-02):
+ * the approval is bound to the terms on screen and carries the buyer's signed
+ * copy, filed on the home. Returns how many of the group's selections are now
+ * confirmed.
+ */
+async function approveSelectionsInPerson(kit, org, { projectId, groupId = org.selectionGroupId, actor = org.team.design }) {
+  const approvals = app("selection-approvals")
+  const group = (await kit.as(actor, () => approvals.listHomeSelectionApprovals(projectId))).find((row) => row.groupId === groupId)
+  if (!group) throw Error("The home has no such selection group")
+  await kit.as(actor, () => approvals.recordInPersonSelectionApproval({ projectId, groupId, termsHash: group.terms.termsHash, signedCopyFileId: signedCopyFile(kit, org, projectId, "signed-selections.pdf") }))
+  return kit.rows(`select count(*)::int n from public.project_selections where project_id=${kit.q(projectId)} and group_id=${kit.q(groupId)} and status='confirmed'`)[0].n
+}
+
+/**
+ * The buyer's design choices, approved, and the group's cutoff passed. Signing
  * locks only the structural rows the agreement wrote; design rows stay open until
  * their group's cutoff.
  */
@@ -288,9 +309,45 @@ async function chooseDesign(kit, org, { projectId, picks = DESIGN_PICKS }) {
   const rows = kit.rows(`select s.id, c.name, s.locked_at from public.project_selections s join public.selection_categories c on c.id=s.category_id where s.project_id=${kit.q(projectId)} and s.group_id is not null order by c.name`)
   const lockedAfterSigning = rows.filter((row) => row.locked_at).length
   for (const row of rows) await kit.as(org.team.design, () => selections.selectProjectOption({ orgId: org.orgId, projectId, selectionId: row.id, optionId: org.optionIds[picks[row.name]] }))
-  await kit.as(org.owner, () => selections.confirmSelectionGroup({ orgId: org.orgId, projectId, groupId: org.selectionGroupId }))
+  await approveSelectionsInPerson(kit, org, { projectId, actor: org.owner })
   await kit.as(org.team.design, () => cutoffs.overrideGroupCutoff({ projectId, groupId: org.selectionGroupId, cutoffDate: isoDay(-1), reason: "Buyer finished the design appointment" }))
   return { rows, lockedAfterSigning }
+}
+
+/** A document on the home. The stack has no file storage, so its record stands in for the upload. */
+function homeFile(kit, org, projectId, name) {
+  const id = randomUUID()
+  kit.sql(`insert into public.files(id,org_id,project_id,file_name,storage_path,mime_type) values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(projectId)},${kit.q(name)},${kit.q(`acceptance/${id}.pdf`)},'application/pdf')`)
+  return id
+}
+
+/** The county the builder pulls building permits from: a directory company, created once per org. */
+function permitAuthority(kit, org) {
+  if (!org.permitAuthorityId) {
+    org.permitAuthorityId = randomUUID()
+    kit.sql(`insert into public.companies(id,org_id,name) values(${kit.q(org.permitAuthorityId)},${kit.q(org.orgId)},'Collier County Growth Management')`)
+  }
+  return org.permitAuthorityId
+}
+
+/**
+ * The home's building permit, applied for and approved through the permits
+ * service by the starts coordinator: the plot plan attached, the submission
+ * recorded (snapshotting the lot's pinned plan), and the approval recorded on
+ * the issued permit and the approved plan set. The permit and plot-plan start
+ * gates read this application.
+ */
+async function approvePermit(kit, org, { projectId }) {
+  const permits = app("permits")
+  const as = (operation) => kit.as(org.team.starts, operation)
+  const { applicationId } = await as(() => permits.createPermitApplication({ projectId, jurisdictionCompanyId: permitAuthority(kit, org), permitType: "building" }))
+  await as(() => permits.setPermitDocument({ applicationId, documentKind: "plot_plan", fileId: homeFile(kit, org, projectId, "plot-plan.pdf") }))
+  await as(() => permits.recordPermitSubmission({ applicationId, submittedOn: isoDay(-30), reference: "CYP-PLAN-REVIEW" }))
+  await as(() => permits.recordPermitDecision({
+    applicationId, decision: "approved", decidedOn: isoDay(-2), permitNumber: `BLD-${projectId.slice(0, 8).toUpperCase()}`,
+    issuedPermitFileId: homeFile(kit, org, projectId, "building-permit.pdf"), approvedPlansFileId: homeFile(kit, org, projectId, "approved-plans.pdf"),
+  }))
+  return applicationId
 }
 
 /** Opens the lot's start package and clears every gate a person owns. */
@@ -298,16 +355,14 @@ async function clearStartGates(kit, org, { lotId, projectId: known = null, spec 
   const starts = app("starts"), generation = app("po-generation")
   const pkg = await kit.as(org.team.starts, () => starts.openStartPackage(lotId, { isFinanced: false }))
   const projectId = known ?? kit.rows(`select project_id from public.start_packages where id=${kit.q(pkg.id)}`)[0].project_id
-  // The plot plan is a file on the home; storage-less, its record stands in for the upload.
-  kit.sql(`insert into public.files(org_id,project_id,file_name,storage_path,metadata) values(${kit.q(org.orgId)},${kit.q(projectId)},'plot-plan.pdf','acceptance/plot-plan.pdf','{"document_kind":"plot_plan"}')`)
+  const permitApplicationId = await approvePermit(kit, org, { projectId })
   const preview = await kit.as(org.team.starts, () => generation.generatePurchaseOrders({ projectId, mode: "dry_run" }))
   const gates = await kit.as(org.team.starts, () => starts.refreshAutoGates(pkg.id))
   const gateId = (key) => gates.find((gate) => gate.key === key).id
   // A spec home has no buyer and so no selection groups to lock; the starts desk waives that gate with its reason.
   if (spec) await kit.as(org.team.starts, () => starts.waiveGate(pkg.id, gateId("selections_locked"), { reason: "Spec home: the builder makes the selections, no buyer to lock them." }))
-  await kit.as(org.team.starts, () => starts.attestGate(pkg.id, gateId("permit"), { notes: "Permit 2026-0412 issued by Collier County" }))
   await kit.as(org.team.starts, () => starts.attestGate(pkg.id, gateId("final_approval"), { notes: "Approved for the week's release" }))
-  return { packageId: pkg.id, projectId, opened: pkg, preview, ready: await kit.as(org.team.starts, () => starts.getStartPackage(pkg.id)) }
+  return { packageId: pkg.id, projectId, permitApplicationId, opened: pkg, preview, ready: await kit.as(org.team.starts, () => starts.getStartPackage(pkg.id)) }
 }
 
 /**
@@ -485,6 +540,6 @@ module.exports = {
   EVIDENCE, COST_CODES, TRADES, PLANS, OPTIONS, DESIGN_PICKS,
   defaultPeriods, isoDay, glId, csv, planTradeCostCents,
   productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveHold, reserveLot, configuration, signAgreement,
-  agreementPacketFor, signedCopyFile,
-  chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, prepareClosingGates, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
+  agreementPacketFor, signedCopyFile, homeFile, permitAuthority, approvePermit,
+  approveSelectionsInPerson, chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, prepareClosingGates, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
 }

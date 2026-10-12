@@ -1,6 +1,6 @@
 "use strict"
 
-/** `lib/services/design-studio.ts` — the desk's counters must come from complete reads. */
+/** `lib/services/design-studio.ts` — the desk's counters must come from complete reads, and count only sessions that hold time. */
 
 const assert = require("node:assert/strict")
 const { test } = require("node:test")
@@ -10,15 +10,16 @@ const { freshRequire } = require("./support/modules")
 
 const { getStudioRunway } = freshRequire("lib/services/design-studio.ts")
 
-test("sessions this week counts every appointment, not just the page the calendar shows", async () => {
+test("sessions this week counts every session but the canceled ones, not just the page the calendar shows", async () => {
   const now = new Date()
-  const appointments = Array.from({ length: 130 }, (_, index) => ({
+  const appointments = Array.from({ length: 140 }, (_, index) => ({
     id: id(100 + index),
     org_id: ORG,
     community_id: null,
     project_id: id(5),
     scheduled_at: now.toISOString(),
-    status: "scheduled",
+    ends_at: new Date(now.getTime() + 3_600_000).toISOString(),
+    status: index < 130 ? "scheduled" : "canceled",
   }))
   const service = createServiceHarness({
     permissions: ["selections.read", "project.read"],

@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { TakeoffLineBadge } from "@/components/takeoff/takeoff-line-badge"
+import { SelectionChangeSummary } from "@/components/change-orders/selection-change-summary"
 import { Ruler } from "lucide-react"
 import { useState, useCallback, useEffect, useRef } from "react"
 import { format } from "date-fns"
@@ -742,6 +743,8 @@ export function ChangeOrderDetailSheet({
               </div>
             </div>
           </div>
+
+          <SelectionChangeSummary metadata={metadata} status={changeOrder.status} />
 
           {summaryText && (
             <div className="space-y-2">

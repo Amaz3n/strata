@@ -215,11 +215,12 @@ async function groupConfirmationIsAllOrNothing(kit, expected, check) {
   const observed = { chosen: state() }
   // The design coordinator withdraws the kitchen pick from sale while the buyer is still choosing.
   await kit.as(org.team.design, () => catalog.upsertOption({ ...butcher.input, isAvailable: false }))
-  observed.confirmWithOneUnavailable = await attempt(() => kit.as(org.team.design, () => selections.confirmSelectionGroup({ orgId: org.orgId, projectId: home.projectId, groupId: org.selectionGroupId })))
+  // Confirming is the buyer's approval of the group (EP06-02), recorded in person by the coordinator.
+  observed.confirmWithOneUnavailable = await attempt(() => seed.approveSelectionsInPerson(kit, org, { projectId: home.projectId }))
   observed.afterRefusal = state()
   // Back on sale, the whole group confirms in one write.
   await kit.as(org.team.design, () => catalog.upsertOption({ ...butcher.input, isAvailable: true }))
-  observed.confirmed = (await kit.as(org.team.design, () => selections.confirmSelectionGroup({ orgId: org.orgId, projectId: home.projectId, groupId: org.selectionGroupId }))).confirmed
+  observed.confirmed = await seed.approveSelectionsInPerson(kit, org, { projectId: home.projectId })
   observed.afterConfirmation = state()
   observed.confirmationInstants = count(kit, `select distinct confirmed_at from public.project_selections where project_id=${kit.q(home.projectId)} and group_id=${kit.q(org.selectionGroupId)}`)
   check.equal("a group with one unavailable member confirms nothing; once it is available again every member confirms in one write", expected.expected, observed)

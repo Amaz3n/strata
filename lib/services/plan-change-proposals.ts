@@ -25,7 +25,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { assertLotCanAdoptPlanVersion, writeLotPlanVersion } from "@/lib/services/lots"
 import { requirePermission } from "@/lib/services/permissions"
-import { createVarianceOrdersForSelectionChange, type VarianceOrderSubject } from "@/lib/services/selection-change-orders"
+import { createChangeOrderVarianceOrders, type VarianceOrderSubject } from "@/lib/services/selection-change-orders"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { changeOrderInputSchema } from "@/lib/validation/change-orders"
 import {
@@ -627,17 +627,16 @@ export async function applyPlanAdoptionFromChangeOrder(changeOrderId: string, or
     lotId: adoption.lot_id, fromVersionId: adoption.from_version_id, toVersionId: adoption.to_version_id, source: "plan_change_change_order",
   })
   const variance = adoption.variance_orders
-    ? await createVarianceOrdersForSelectionChange({
+    ? await createChangeOrderVarianceOrders({
       orgId,
       projectId: changeOrder.project_id,
       changeOrderId: changeOrder.id,
       subject: PLAN_VARIANCE_SUBJECT,
-      changes: adoption.cost_by_code.map((entry) => ({
-        selection_id: home.id,
-        cost_code_id: entry.cost_code_id,
-        cost_delta_cents: entry.cost_delta_cents,
-        category_name: adoption.label,
-        option_name: "plan revision",
+      deltas: adoption.cost_by_code.map((entry) => ({
+        sourceId: home.id,
+        costCodeId: entry.cost_code_id,
+        costDeltaCents: entry.cost_delta_cents,
+        description: `${adoption.label} — plan revision`,
       })),
     })
     : null

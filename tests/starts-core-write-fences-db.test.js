@@ -102,7 +102,7 @@ async function desk(t, { role = "org_starts_coordinator", status = "ready" } = {
 
 test("the desk's service-role writes pass the fences that refuse the browser", async (t) => {
   const h = await desk(t, { status: "open" })
-  const definition = await full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key: "permit", label: "Permit", check_kind: "manual", applies_when: "always", sort_order: 10 })
+  const definition = await full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key: "soil_report", label: "Soil report", check_kind: "manual", applies_when: "always", sort_order: 10 })
   const gate = await full.insert(h.db, "start_package_gates", { org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: definition.id })
   const attest = "update start_package_gates set status = 'passed', passed_via = 'attested' where id = $1"
 
@@ -300,7 +300,7 @@ async function yard(t, { role = "org_starts_coordinator" } = {}) {
   const { orgId, userId: actorId } = await full.seedMember(db, { role })
   const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
   const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, lot_number: "9", status: "developed" })
-  for (const [key, isActive] of [["permit", true], ["financing", true], ["retired", false]]) {
+  for (const [key, isActive] of [["soil_report", true], ["financing", true], ["retired", false]]) {
     await full.insert(db, "start_gate_definitions", { org_id: orgId, key, label: key, check_kind: "manual", applies_when: "always", sort_order: 10, is_active: isActive })
   }
   const count = async (sql, params = []) => (await db.query(sql, params)).rows[0].n
@@ -453,11 +453,13 @@ async function gated(t, options = {}) {
     org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: (await definition(row)).id, status,
   })
   h.gates = {
-    permit: await gate({ key: "permit" }),
+    soil: await gate({ key: "soil_report" }),
     financing: await gate({ key: "financing", applies_when: "financed_only" }, "not_applicable"),
-    plot: await gate({ key: "plot_plan", check_kind: "auto", auto_source: "plot_plan_file" }),
+    selections: await gate({ key: "selections_locked", check_kind: "auto", auto_source: "selections_locked" }),
     approval: await gate({ key: "final_approval" }),
   }
+  // A fact gate is attested with its evidence: a file on this home.
+  h.evidence = { evidence_file_id: (await full.insert(h.db, "files", { org_id: h.orgId, project_id: h.home.id, file_name: "soil-report.pdf", storage_path: "acceptance/soil-report.pdf" })).id }
   const scope = { p_org_id: h.orgId, p_package_id: h.pkg.id }
   h.mutate = (gate, action, input = {}, actor = h.actorId) => full.rpc(h.db, "mutate_start_gate", {
     ...scope, p_gate_id: gate.id, p_actor_id: actor, p_action: action, p_input: input, p_purchasing_enabled: false,
@@ -481,8 +483,8 @@ async function gated(t, options = {}) {
 test("clearing the last gate makes the package ready with its event and notice in the same commit", async (t) => {
   const h = await gated(t)
   await assert.rejects(h.mutate(h.gates.approval, "attest"), /Clear every other readiness gate/)
-  await h.mutate(h.gates.permit, "attest", { notes: "County permit 24-118" })
-  assert.deepEqual(await h.refresh({ [h.gates.plot.id]: true }), { status: "open", changed: 1 })
+  await h.mutate(h.gates.soil, "attest", { ...h.evidence, notes: "Geotech report 24-118" })
+  assert.deepEqual(await h.refresh({ [h.gates.selections.id]: true }), { status: "open", changed: 1 })
   assert.equal(await h.status(), "open")
 
   assert.deepEqual(await h.mutate(h.gates.approval, "attest"), { status: "ready" })
@@ -492,15 +494,15 @@ test("clearing the last gate makes the package ready with its event and notice i
   assert.equal((await h.audit("starts.readiness_changed")).n, 1)
   assert.equal(await h.count("select count(*)::int as n from audit_log where entity_type = 'start_gate' and source = 'starts.gate_attested'"), 2)
 
-  await h.mutate(h.gates.permit, "reopen")
+  await h.mutate(h.gates.soil, "reopen")
   assert.equal(await h.status(), "open")
   assert.equal(await h.events("start_package.not_ready"), 1)
 })
 
 test("a gate change that fails after it is written leaves no gate, readiness, audit or notice behind", async (t) => {
   const h = await gated(t)
-  await h.mutate(h.gates.permit, "attest")
-  await h.refresh({ [h.gates.plot.id]: true })
+  await h.mutate(h.gates.soil, "attest", h.evidence)
+  await h.refresh({ [h.gates.selections.id]: true })
   await failInsert(h.db, "outbox", "new.job_type = 'start_package_notice'")
 
   await assert.rejects(h.mutate(h.gates.approval, "attest"), /injected failure/)
@@ -510,14 +512,14 @@ test("a gate change that fails after it is written leaves no gate, readiness, au
   assert.equal(await h.events("start_gate.attested"), 1, "only the permit's attestation committed")
   assert.equal(await h.events("start_package.ready"), 0)
 
-  await assert.rejects(h.mutate(h.gates.permit, "waive", { reason: "Permit is issued at the counter on start day" }), /injected failure/)
-  assert.equal(await h.gateStatus(h.gates.permit), "passed")
+  await assert.rejects(h.mutate(h.gates.soil, "waive", { reason: "Soil report is issued at the counter on start day" }), /injected failure/)
+  assert.equal(await h.gateStatus(h.gates.soil), "passed")
   assert.equal(await h.events("start_gate.waived"), 0)
 })
 
 test("gate and package edits re-check the actor's authority inside the transaction", async (t) => {
   const viewer = await gated(t, { role: "org_viewer" })
-  await assert.rejects(viewer.mutate(viewer.gates.permit, "attest"), /start\.write permission/)
+  await assert.rejects(viewer.mutate(viewer.gates.soil, "attest"), /start\.write permission/)
   await assert.rejects(viewer.update({ notes: "x" }), /start\.write permission/)
   await assert.rejects(viewer.cancelPackage(), /start\.write permission/)
 
@@ -534,11 +536,11 @@ test("gate and package edits re-check the actor's authority inside the transacti
   await h.db.query("update communities set division_id = $1 where id = $2", [division.id, h.community.id])
   await h.db.query("update memberships set division_scope = 'assigned' where org_id = $1 and user_id = $2", [h.orgId, h.actorId])
   await h.db.query("insert into membership_divisions (membership_id, division_id) select id, $1 from memberships where org_id = $2 and user_id = $3", [mine.id, h.orgId, h.actorId])
-  await assert.rejects(h.mutate(h.gates.permit, "attest"), /outside actor division access/)
-  await assert.rejects(h.refresh({ [h.gates.plot.id]: true }), /outside actor division access/)
+  await assert.rejects(h.mutate(h.gates.soil, "attest"), /outside actor division access/)
+  await assert.rejects(h.refresh({ [h.gates.selections.id]: true }), /outside actor division access/)
   await assert.rejects(h.update({ notes: "Moved to the north phase" }), /outside actor division access/)
 
-  for (const gate of [h.gates.permit, h.gates.plot, survey]) assert.equal(await h.gateStatus(gate), "pending")
+  for (const gate of [h.gates.soil, h.gates.selections, survey]) assert.equal(await h.gateStatus(gate), "pending")
   assert.equal(await h.count("select count(*)::int as n from audit_log where org_id = $1", [h.orgId]), 0)
 
   await full.setRequestHeaders(h.db, { "x-starts-job-id": "1", "x-starts-claim-token": full.uuid() })
@@ -553,26 +555,26 @@ test("gate and package edits re-check the actor's authority inside the transacti
 
 test("a refresh records only evidence it was given, and never touches a package already releasing", async (t) => {
   const h = await gated(t)
-  await assert.rejects(h.refresh({}), /evidence is missing for the plot_plan gate/)
-  assert.equal(await h.gateStatus(h.gates.plot), "pending")
+  await assert.rejects(h.refresh({}), /evidence is missing for the selections_locked gate/)
+  assert.equal(await h.gateStatus(h.gates.selections), "pending")
 
-  assert.deepEqual(await h.refresh({ [h.gates.plot.id]: false }), { status: "open", changed: 0 })
+  assert.deepEqual(await h.refresh({ [h.gates.selections.id]: false }), { status: "open", changed: 0 })
   assert.equal(await h.events("start_gate.refreshed"), 0, "a refresh that changes nothing records nothing")
-  await h.refresh({ [h.gates.plot.id]: true })
+  await h.refresh({ [h.gates.selections.id]: true })
   assert.equal((await h.audit("starts.gates_refreshed")).n, 1)
   assert.equal(await h.events("start_gate.refreshed"), 1)
 
   await h.db.query("update start_packages set status = 'releasing' where id = $1", [h.pkg.id])
-  assert.deepEqual(await h.refresh({ [h.gates.plot.id]: false }), { status: "releasing", changed: 0 })
-  assert.equal(await h.gateStatus(h.gates.plot), "passed")
-  await assert.rejects(h.mutate(h.gates.permit, "attest"), /cannot change after release begins/)
+  assert.deepEqual(await h.refresh({ [h.gates.selections.id]: false }), { status: "releasing", changed: 0 })
+  assert.equal(await h.gateStatus(h.gates.selections), "passed")
+  await assert.rejects(h.mutate(h.gates.soil, "attest"), /cannot change after release begins/)
   await assert.rejects(h.update({ notes: "x" }), /Only open or ready/)
 })
 
 test("financing a package re-decides which gates apply in the edit that changes it", async (t) => {
   const h = await gated(t)
-  await h.mutate(h.gates.permit, "attest")
-  await h.refresh({ [h.gates.plot.id]: true })
+  await h.mutate(h.gates.soil, "attest", h.evidence)
+  await h.refresh({ [h.gates.selections.id]: true })
   await h.mutate(h.gates.approval, "attest")
   assert.equal(await h.status(), "ready")
 
@@ -679,4 +681,98 @@ test("the lease reaper records the failure of a release it parks, and nothing fo
   assert.equal((await h.row("select status from start_packages where id = $1")).status, "attention")
   assert.equal((await h.audit("starts.release_failed")).n, 1)
   assert.equal((await h.row("select count(*)::int as n from outbox where job_type = 'start_package_notice'", [])).n, 1)
+})
+
+// ---------------------------------------------------------------------------
+// The permit and plot-plan gates are evidenced by the database from the home's
+// permit application (20261013120000_permits): no supplied verdict, waiver or
+// definition change clears them.
+// ---------------------------------------------------------------------------
+
+const { permitWorld } = require("./support/permits")
+
+function permitDesk(w) {
+  const scope = { p_org_id: w.orgId, p_package_id: w.pkg.id, p_actor_id: w.coordinator.userId, p_purchasing_enabled: false }
+  return {
+    refresh: (evidence = {}) => full.rpc(w.db, "refresh_start_package_gates", { ...scope, p_evidence: evidence }),
+    mutate: (gateId, action, input = {}) => full.rpc(w.db, "mutate_start_gate", { ...scope, p_gate_id: gateId, p_action: action, p_input: input }),
+    status: async (gate) => (await w.row("select status from start_package_gates where id = $1", [gate.id])).status,
+  }
+}
+
+test("the permit gate passes only on an approved permit for the lot's pinned plan, under the community's authority", async (t) => {
+  const w = await permitWorld(t)
+  const desk = permitDesk(w)
+  await desk.refresh({ [w.gates.permit.id]: true, [w.gates.plot.id]: true })
+  assert.deepEqual([await desk.status(w.gates.permit), await desk.status(w.gates.plot)], ["pending", "pending"], "a supplied verdict is ignored")
+
+  const applicationId = await w.approvedApplication()
+  await desk.refresh()
+  assert.deepEqual([await desk.status(w.gates.permit), await desk.status(w.gates.plot)], ["passed", "passed"])
+
+  await w.db.query("update permit_applications set expires_on = current_date - 1 where id = $1", [applicationId])
+  assert.equal(await w.evidence("permit_approved"), false, "an expired permit starts nothing")
+  await w.db.query("update permit_applications set expires_on = null where id = $1", [applicationId])
+
+  await w.db.query("update communities set permit_jurisdiction_company_id = $1 where id = $2", [w.otherAuthority.id, w.community.id])
+  assert.equal(await w.evidence("permit_approved"), false, "a permit from another authority is not this community's permit")
+  await w.db.query("update communities set permit_jurisdiction_company_id = $1 where id = $2", [w.authority.id, w.community.id])
+
+  await w.db.query("update lots set house_plan_version_id = $1 where id = $2", [w.nextVersion.id, w.lot.id])
+  await desk.refresh()
+  assert.equal(await desk.status(w.gates.permit), "pending", "a plan change reopens the gate until the revision is approved")
+  const revision = await w.open({ p_supersedes_id: applicationId })
+  await w.attach(revision, "plot_plan", await w.file("plot-plan-r2.pdf"))
+  await w.submit(revision, { p_submitted_on: "2026-09-25" })
+  await w.decide(revision, { p_permit_number: "BLD-26-0412-R1", p_issued_permit_file_id: await w.file("permit-r1.pdf"), p_approved_plans_file_id: await w.file("plans-r1.pdf") })
+  await desk.refresh()
+  assert.equal(await desk.status(w.gates.permit), "passed")
+})
+
+test("the authority's letter that no permit is needed clears the gate; a denial does not", async (t) => {
+  const w = await permitWorld(t)
+  const denied = await w.open()
+  await w.attach(denied, "plot_plan", await w.file("plot-plan.pdf"))
+  await w.submit(denied)
+  await w.decide(denied, { p_decision: "denied", p_note: "Flood elevation not met" })
+  assert.equal(await w.evidence("permit_approved"), false)
+  const exempt = await w.open()
+  await assert.rejects(w.decide(exempt, { p_decision: "not_required" }), /no-permit letter is required/)
+  await w.decide(exempt, { p_decision: "not_required", p_issued_permit_file_id: await w.file("exemption-letter.pdf") })
+  assert.equal(await w.evidence("permit_approved"), true)
+})
+
+test("the permit gate is never waived, and a fact gate is attested only with evidence on its home", async (t) => {
+  const w = await permitWorld(t)
+  const desk = permitDesk(w)
+  await assert.rejects(desk.mutate(w.gates.permit.id, "waive", { reason: "County issues the permit at the counter" }), /never waived/)
+  await assert.rejects(desk.mutate(w.gates.permit.id, "attest", { notes: "Permit 24-118" }), /Only manual gates/)
+
+  const soil = await full.insert(w.db, "start_package_gates", {
+    org_id: w.orgId, start_package_id: w.pkg.id,
+    gate_definition_id: (await full.insert(w.db, "start_gate_definitions", { org_id: w.orgId, key: "soil_report", label: "Soil report", check_kind: "manual", applies_when: "always" })).id,
+  })
+  await assert.rejects(desk.mutate(soil.id, "attest", { notes: "Report is in" }), /Attach the evidence/)
+  await assert.rejects(desk.mutate(soil.id, "attest", { evidence_file_id: await w.file("soil.pdf", w.otherHome.id) }), /file on this home/)
+  await desk.mutate(soil.id, "attest", { evidence_file_id: await w.file("soil.pdf") })
+  assert.equal(await desk.status(soil), "passed")
+})
+
+test("gate definitions change only with start.release, and the permit and plot-plan gates never change shape", async (t) => {
+  const w = await permitWorld(t)
+  const asMember = (userId, sql, params = []) => full.asRole(w.db, { role: "authenticated", userId }, (tx) => tx.query(sql, params))
+  const deactivate = "update start_gate_definitions set is_active = false where org_id = $1 and key = $2"
+
+  const viewerPatch = await asMember(w.viewer.userId, deactivate, [w.orgId, "permit"])
+  assert.equal(viewerPatch.affectedRows, 0, "a viewer's patch reaches no definition")
+  await assert.rejects(
+    asMember(w.viewer.userId, "insert into start_gate_definitions (org_id, key, label, check_kind) values ($1, 'shortcut', 'Shortcut', 'manual')", [w.orgId]),
+    /row-level security/,
+  )
+  await assert.rejects(asMember(w.coordinator.userId, deactivate, [w.orgId, "permit"]), /cannot be made manual, conditional or inactive/)
+  await assert.rejects(asMember(w.coordinator.userId, deactivate, [w.orgId, "plot_plan"]), /cannot be made manual, conditional or inactive/)
+  await assert.rejects(w.db.query("update start_gate_definitions set check_kind = 'manual', auto_source = null where key = 'permit'"), /cannot be made manual/)
+  await assert.rejects(w.db.query("delete from start_gate_definitions where key = 'permit'"), /cannot be removed/)
+  await asMember(w.coordinator.userId, "update start_gate_definitions set label = 'Building permit issued' where org_id = $1 and key = 'permit'", [w.orgId])
+  assert.equal((await w.row("select label, is_active from start_gate_definitions where key = 'permit'")).is_active, true)
 })

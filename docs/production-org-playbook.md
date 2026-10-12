@@ -274,17 +274,27 @@ construction from stalling.
 Turns a signed agreement into a released house, and keeps the release cadence even
 so trades are not feast-or-famine.
 
-**Lives on:** `/starts` (release board), `/starts/pipeline`, `/starts/trades`,
-`/purchasing`
+**Lives on:** `/starts` (release board, with the permits band), `/purchasing`, and
+each home's Permits workbench (`/projects/[id]/permits`)
 
 **Loop**
 
 1. Review start-package candidates — homes with an executed agreement and a lot.
-2. Clear the start gates (permits, plans, budget, selections locked).
-3. Release to the field on the even-flow cadence.
-4. Issue POs and manage vendor pricing.
+2. Chase permits: open the building application with the community's authority,
+   attach its documents, record each submission and correction round, and record the
+   decision on the issued permit and approved plans. The Starts desk's permits band
+   lists every decision past the authority's review time and every correction round
+   still unresolved; each row opens the home's permit.
+3. Clear the start gates (plans, budget, selections locked). The permit and
+   plot-plan gates clear on their own from the approved application for the lot's
+   pinned plan; nobody attests or waives them.
+4. Release to the field on the even-flow cadence.
+5. Issue POs and manage vendor pricing.
 
-**Mutates:** start packages, gate definitions, purchase orders.
+**Mutates:** start packages, gate definitions, permit applications, rounds and fee
+assessments (and links fee payables), purchase orders. Fee bills and counter
+expenses are entered by whoever holds bill rights (the office); the coordinator
+links them.
 
 **Reads:** backlog and the sales pipeline as the input to the release schedule.
 

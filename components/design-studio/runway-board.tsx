@@ -1,14 +1,22 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 
+import { cancelAppointmentAction, recordAppointmentOutcomeAction } from "@/app/(app)/design-studio/actions"
+import { unwrapAction } from "@/lib/action-result"
 import type { RunwayHome, StudioRunway } from "@/lib/services/design-studio"
+import type { AppointmentDto, StudioLocationDto } from "@/lib/services/design-studio-appointments"
 import { StudioShell } from "@/components/design-studio/studio-shell"
 import { BookAppointmentDialog } from "@/components/design-studio/book-appointment-dialog"
 import { Button } from "@/components/ui/button"
-import { AlertTriangle, Calendar } from "@/components/icons"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { AlertTriangle, Calendar, MoreHorizontal } from "@/components/icons"
 
 import "./studio.css"
 
@@ -24,6 +32,7 @@ interface Props {
   runway: StudioRunway
   communityId?: string
   canManage: boolean
+  studios: StudioLocationDto[]
 }
 
 /**
@@ -78,14 +87,51 @@ function formatDay(value: string | null) {
   return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })
 }
 
-function formatSlot(value: string) {
-  return new Date(value).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })
+/** A session's start at its studio's wall clock; the desk may be read from another zone. */
+function formatSlot(appointment: AppointmentDto) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    ...(appointment.timeZone ? { timeZone: appointment.timeZone } : {}),
+  }).format(new Date(appointment.scheduledAt))
 }
 
-export function RunwayBoard({ runway, communityId, canManage }: Props) {
+const OUTCOME_LABELS: Partial<Record<AppointmentDto["status"], string>> = { completed: "Held", no_show: "No-show" }
+
+export function RunwayBoard({ runway, communityId, canManage, studios }: Props) {
   const router = useRouter()
   const [focus, setFocus] = useState<Focus>("all")
   const [booking, setBooking] = useState(false)
+  const [moving, setMoving] = useState<AppointmentDto | null>(null)
+  const [canceling, setCanceling] = useState<AppointmentDto | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  function closeOut(appointment: AppointmentDto, outcome: "completed" | "no_show") {
+    startTransition(async () => {
+      try {
+        unwrapAction(await recordAppointmentOutcomeAction({ appointmentId: appointment.id, outcome }))
+        router.refresh()
+      } catch (error) {
+        toast.error("Could not close out the session", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
+
+  function cancel(formData: FormData) {
+    if (!canceling) return
+    const appointmentId = canceling.id
+    startTransition(async () => {
+      try {
+        unwrapAction(await cancelAppointmentAction({ appointmentId, reason: String(formData.get("reason") ?? "") }))
+        setCanceling(null)
+        toast.success("Session canceled", { description: "The buyer has been told." })
+        router.refresh()
+      } catch (error) {
+        toast.error("Could not cancel the session", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
   const [expanded, setExpanded] = useState<string[]>([])
 
   const counters: Array<{ key: Focus; label: string; value: number; tone: Tone }> = [
@@ -287,27 +333,45 @@ export function RunwayBoard({ runway, communityId, canManage }: Props) {
             </p>
           ) : (
             <ul className="flex flex-col">
-              {runway.appointments.map((appointment) => (
-                <li
-                  key={appointment.id}
-                  className="flex items-center gap-4 border-b py-2.5 last:border-b-0 border-border"
-                >
-                  <span className="font-mono tabular-nums w-24 flex-none text-[11px] text-muted-foreground">
-                    {formatSlot(appointment.scheduled_at)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-semibold">
-                      {appointment.buyer_name ?? appointment.project_name ?? "Buyer"}
+              {runway.appointments.map((appointment) => {
+                const started = Date.parse(appointment.scheduledAt) <= Date.now()
+                const outcome = OUTCOME_LABELS[appointment.status]
+                return (
+                  <li key={appointment.id} className="flex items-center gap-4 border-b py-2.5 last:border-b-0 border-border">
+                    <span className="font-mono tabular-nums w-24 flex-none text-[11px] text-muted-foreground">{formatSlot(appointment)}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold">{appointment.buyerName ?? appointment.projectName ?? "Buyer"}</span>
+                      <span className="block truncate text-[11.5px] text-muted-foreground">
+                        {[appointment.communityName, [appointment.locationName, appointment.roomName].filter(Boolean).join(" · "), appointment.consultantName].filter(Boolean).join(" — ") || "Design studio"}
+                      </span>
                     </span>
-                    <span className="block truncate text-[11.5px] text-muted-foreground">
-                      {[appointment.community_name, appointment.location].filter(Boolean).join(" · ") || "Design studio"}
-                    </span>
-                  </span>
-                  <Button asChild size="sm" variant="outline" className="h-7 flex-none rounded-none">
-                    <Link href={`/design-studio/sheet/${appointment.project_id}`}>Open sheet</Link>
-                  </Button>
-                </li>
-              ))}
+                    {outcome ? (
+                      <span className={`flex-none text-[11px] ${appointment.status === "no_show" ? "text-destructive" : "text-success"}`}>{outcome}</span>
+                    ) : started ? (
+                      <span className="flex-none text-[11px] text-warning">Not closed out</span>
+                    ) : null}
+                    <Button asChild size="sm" variant="outline" className="h-7 flex-none rounded-none">
+                      <Link href={`/design-studio/sheet/${appointment.projectId}`}>Open sheet</Link>
+                    </Button>
+                    {canManage && appointment.status === "scheduled" && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button size="icon" variant="ghost" className="h-7 w-7 flex-none rounded-none" aria-label={`Session actions for ${appointment.buyerName ?? "this buyer"}`} disabled={pending}>
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="rounded-none">
+                          <DropdownMenuItem onSelect={() => setMoving(appointment)}>Move…</DropdownMenuItem>
+                          {started && <DropdownMenuItem onSelect={() => closeOut(appointment, "completed")}>Mark held</DropdownMenuItem>}
+                          {started && <DropdownMenuItem onSelect={() => closeOut(appointment, "no_show")}>Mark no-show</DropdownMenuItem>}
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem className="text-destructive" onSelect={() => setCanceling(appointment)}>Cancel…</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           )}
         </section>
@@ -315,6 +379,34 @@ export function RunwayBoard({ runway, communityId, canManage }: Props) {
         <section
           className="flex flex-col gap-2 border-t px-5 py-4 lg:border-l lg:border-t-0 border-border bg-muted/40"
         >
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="microlabel">Selection exceptions</p>
+            <span className={`tabular-nums text-[12px] font-semibold ${runway.openExceptions.total > 0 ? "text-warning" : "text-muted-foreground"}`}>
+              {runway.openExceptions.total.toLocaleString()}{runway.openExceptions.truncated ? "+" : ""} open
+            </span>
+          </div>
+          {runway.openExceptions.total === 0 ? (
+            <p className="pb-3 text-[13px] text-muted-foreground">
+              No choice is waiting on an alternate, an expedite or a change order.
+            </p>
+          ) : (
+            <ul className="flex flex-col border-b pb-3 border-border">
+              {runway.openExceptions.homes.map((home) => (
+                <li key={home.projectId} className="flex items-baseline justify-between gap-2 py-1.5">
+                  <Link
+                    href={`/projects/${home.projectId}/selections`}
+                    className="font-mono tabular-nums min-w-0 truncate text-[11.5px] underline-offset-2 hover:underline"
+                  >
+                    {home.lotLabel} · {home.buyerName}
+                  </Link>
+                  <span className="tabular-nums flex-none text-[11.5px] text-muted-foreground">{home.count}</span>
+                </li>
+              ))}
+              {runway.openExceptions.homes.reduce((sum, home) => sum + home.count, 0) < runway.openExceptions.total && (
+                <li className="pt-1 text-[11.5px] text-muted-foreground">Showing the {runway.openExceptions.homes.length} homes with the most.</li>
+              )}
+            </ul>
+          )}
           <p className="microlabel">Blocking a start</p>
           {runway.blockedStarts.length === 0 ? (
             <p className="py-6 text-[13px] text-muted-foreground">
@@ -350,14 +442,40 @@ export function RunwayBoard({ runway, communityId, canManage }: Props) {
         </section>
       </div>
 
-      {canManage && (
+      {canManage && (booking || moving) && (
         <BookAppointmentDialog
-          open={booking}
-          onOpenChange={setBooking}
+          key={moving?.id ?? "new"}
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setBooking(false)
+              setMoving(null)
+            }
+          }}
           communityId={communityId}
-          onBooked={() => router.refresh()}
+          studios={studios}
+          moving={moving}
+          onSaved={() => router.refresh()}
         />
       )}
+
+      <Dialog open={Boolean(canceling)} onOpenChange={(open) => { if (!open) setCanceling(null) }}>
+        <DialogContent className="rounded-none">
+          <form action={cancel}>
+            <DialogHeader>
+              <DialogTitle>Cancel {canceling?.buyerName ?? "this"} session</DialogTitle>
+              <DialogDescription>The buyer is told, and the room and consultant are freed. Selection deadlines do not move.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-1.5 py-4">
+              <Label htmlFor="cancel-reason">Reason</Label>
+              <Textarea id="cancel-reason" name="reason" required minLength={3} maxLength={500} className="rounded-none" />
+            </div>
+            <DialogFooter>
+              <Button type="submit" variant="destructive" disabled={pending} className="rounded-none">Cancel session</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </StudioShell>
   )
 }

@@ -1,0 +1,404 @@
+{
+  "scenario": "SEL-01",
+  "reviewedFrom": "EP06-01 through EP06-05 (docs/enterprise-production/completion-checklist.json) and the EP06 owner decisions of 2026-10-12: consultant and studio-room capacity enforced in the database with working hours per consultant and buyer notices on book, reschedule and cancel; a buyer approval (e-sign, portal, or in person with the signed copy) binds the exact options and prices sent, a change after sending voids it, and unsigned, sent, declined, expired and approved stay distinct; cutoffs are enforced inside the selection write in the community's day with home-scoped override authority; option lead times and released procurement close an option early and open a persisted exception with alternates; an approved selection change order lands the agreement version, selections, owning purchase order variance, budget revision and a pending schedule impact in one transaction, and voids the buyer's earlier approval of those selections. Code: lib/services/{design-studio-appointments,design-studio-appointment-notices,selection-approvals,selections,selection-cutoffs,selection-exceptions,selection-change-orders}.ts, lib/selections/{appointment-slots,approval-state,supply-eligibility}.ts; migrations 20261013100000_design_studio_capacity_and_approvals and 20261013110000_selection_supply_and_propagation.",
+  "subcases": {
+    "consultant-cannot-be-double-booked": {
+      "derivation": "EP06-01. One consultant, one session at a time; back to back is fine; another consultant is free. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "first": "scheduled",
+        "overlapping": "refused: consultant already in a session",
+        "backToBack": "scheduled",
+        "otherConsultant": "scheduled",
+        "roomsUsed": [
+          "Room A",
+          "Room A",
+          "Room B"
+        ]
+      }
+    },
+    "studio-rooms-are-the-capacity": {
+      "derivation": "EP06-01. A two-room studio holds two concurrent sessions, refuses a third, frees a room on cancel. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "rooms": [
+          "Room A",
+          "Room B"
+        ],
+        "third": "refused: all 2 rooms booked",
+        "afterCancel": {
+          "status": "scheduled",
+          "room": "the freed room"
+        }
+      }
+    },
+    "competing-bookings-one-wins": {
+      "derivation": "EP06-01. Two coordinators racing for one consultant's hour: exactly one session lands. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "outcomes": [
+          "fulfilled",
+          "rejected"
+        ],
+        "refusal": [
+          "consultant already in a session"
+        ],
+        "landed": 1
+      }
+    },
+    "working-hours-in-studio-time": {
+      "derivation": "EP06-01. Outside the consultant's hours (studio zone) or on a day off is refused; a DST day inside hours books. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "evening": "refused: outside the consultant's hours",
+        "sunday": "refused: outside the consultant's hours",
+        "afterChange": {
+          "status": "scheduled",
+          "utc": "13:00"
+        }
+      }
+    },
+    "reschedule-keeps-deadlines-and-tells-buyer": {
+      "derivation": "EP06-01. A move bumps the revision, never moves the cutoff, cannot land past it; book and move each queue one buyer notice. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "revision": 2,
+        "deadlineUnchanged": true,
+        "deadlineSource": "manual_override",
+        "pastCutoff": "refused: lands after the cutoff",
+        "queued": [
+          "booked r1",
+          "rescheduled r2"
+        ],
+        "noticesSent": [
+          "rescheduled"
+        ]
+      }
+    },
+    "cancel-frees-and-notifies": {
+      "derivation": "EP06-01. A cancellation queues one notice, frees the slot and leaves the desk's week count. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "status": "canceled",
+        "again": "refused: already canceled",
+        "notices": [
+          "booked r1",
+          "canceled r1"
+        ],
+        "slotRebooked": "scheduled",
+        "dayCount": {
+          "before": 1,
+          "after": 1
+        }
+      }
+    },
+    "sessions-only-through-the-studio": {
+      "derivation": "EP06-01. A member's direct insert, move, cancel or delete is refused; room setup needs design_studio.manage. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "insert": "refused",
+        "move": "refused",
+        "cancel": "refused",
+        "remove": "refused",
+        "salesRenamesRoom": "refused: no row visible to change",
+        "stillScheduled": "scheduled"
+      }
+    },
+    "portal-approval-binds-what-buyer-saw": {
+      "derivation": "EP06-02. A stale terms hash approves nothing; the fresh one approves at the shown prices, channel portal. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "stale": "SELECTION_TERMS_CHANGED",
+        "afterStale": [
+          "selected",
+          "selected",
+          "selected"
+        ],
+        "approved": {
+          "channel": "portal",
+          "status": "approved",
+          "totalMatchesShown": true,
+          "byBuyer": true
+        },
+        "confirmedAtShownPrices": true
+      }
+    },
+    "esign-approval-binds-sent-terms": {
+      "derivation": "EP06-02. A change after sending voids the request and its envelope; the re-sent terms are what the signature confirms, at the sent price. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "afterChange": {
+          "approval": "voided",
+          "envelope": "voided",
+          "reason": "The selections changed after they were sent"
+        },
+        "hashChanged": true,
+        "outcome": {
+          "outcome": "approved",
+          "idempotent": false
+        },
+        "confirmedAtSentPrices": true,
+        "approval": {
+          "channel": "esign",
+          "status": "approved"
+        }
+      }
+    },
+    "unsigned-declined-expired-stay-distinct": {
+      "derivation": "EP06-02. Never sent, declined on the signing link, expired by the sweep: three states, nothing confirmed, each can be sent again. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "never": {
+          "state": "unsigned",
+          "reason": null,
+          "confirmed": false,
+          "canSendAgain": true
+        },
+        "declined": {
+          "state": "declined",
+          "reason": "The tile is not what we picked",
+          "confirmed": false,
+          "canSendAgain": true
+        },
+        "expired": {
+          "state": "expired",
+          "reason": null,
+          "confirmed": false,
+          "canSendAgain": true
+        },
+        "coordinatorsTold": [
+          "declined",
+          "expired"
+        ]
+      }
+    },
+    "signature-before-cutoff-lands-after-lock": {
+      "derivation": "EP06-02. A signature made before the deadline confirms the selections even after the group locked. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "outcome": {
+          "outcome": "approved",
+          "idempotent": false
+        },
+        "statuses": [
+          "confirmed",
+          "confirmed",
+          "confirmed"
+        ],
+        "group": "locked"
+      }
+    },
+    "in-person-approval-needs-signed-copy": {
+      "derivation": "EP06-02. A coordinator's approval needs the buyer's signed copy filed on the home. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "wrongHome": "SELECTION_SIGNED_COPY_REQUIRED",
+        "recorded": "allowed",
+        "approval": {
+          "channel": "in_person",
+          "status": "approved",
+          "has_copy": true
+        }
+      }
+    },
+    "approval-evidence-cannot-be-forged": {
+      "derivation": "EP06-02. A member cannot insert or approve a request, or rewrite what was sent, through the data API. Fixture: the SEL-01 design studio org (Cypress Landing, a two-room studio in America/New_York, two consultants with Monday-Saturday 9:00-17:00 hours); every subcase sells its own home. Values are derived from the inputs sel-01-studio.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "insertApproved": "refused",
+        "approve": "refused",
+        "rewriteLine": "refused",
+        "forgeDocument": "refused",
+        "stillSent": "sent"
+      }
+    },
+    "override-needs-home-authority": {
+      "derivation": "EP06-03. A coordinator limited to another division is refused; in-division succeeds with before/after audit. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "outsideDivision": "AUTH_FORBIDDEN",
+        "salesConsultant": "AUTH_FORBIDDEN",
+        "afterRefusals": "schedule",
+        "inDivision": "allowed",
+        "recorded": {
+          "source": "manual_override",
+          "status": "open",
+          "auditBy": true,
+          "auditBefore": "schedule",
+          "auditAfter": "manual_override",
+          "events": 1,
+          "deniedDecisionLogged": true
+        }
+      }
+    },
+    "data-api-cannot-move-a-cutoff": {
+      "derivation": "EP06-03. A member's direct writes to a group's cutoff/status/override or a choice's lock are refused. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "cutoffDate": "refused",
+        "status": "refused",
+        "override": "refused",
+        "choiceLock": "refused",
+        "choiceMetadata": "refused",
+        "unchanged": true
+      }
+    },
+    "cutoff-holds-under-race": {
+      "derivation": "EP06-03. The sweep and a write on the cutoff boundary serialize on the home lock; never a write after the lock. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "sweepRan": true,
+        "writeLanded": false,
+        "kitchenStillQuartz": true,
+        "kitchenLocked": true,
+        "group": "locked"
+      }
+    },
+    "cutoff-day-is-the-community-day": {
+      "derivation": "EP06-03. A cutoff that is today in the community is open even where the server's day has moved on. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "whereTheDayHasPassed": "refused: past the cutoff",
+        "whereItIsStillTheCutoffDay": "allowed"
+      }
+    },
+    "lead-time-closes-an-option-early": {
+      "derivation": "EP06-04. An option that cannot arrive in time is refused while the group is open, with alternates and an exception. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "group": "open",
+        "granite": "SELECTION_LEAD_TIME",
+        "namesTheOrderByDate": true,
+        "offersQuartz": true,
+        "exception": {
+          "reason": "lead_time_exceeded",
+          "status": "open",
+          "forGranite": true,
+          "orderByDays": -20
+        },
+        "quartz": "allowed",
+        "exceptionAfterQuartz": "resolved_alternate",
+        "graniteAfterOverride": "SELECTION_LEAD_TIME"
+      }
+    },
+    "unavailable-option-opens-an-exception": {
+      "derivation": "EP06-04. An option taken off sale opens one exception; an alternate resolves it; an expedite needs authority. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "opened": {
+          "reason": "option_unavailable",
+          "alternates": [
+            "Laminate countertops",
+            "Quartz countertops"
+          ]
+        },
+        "oneOpen": 1,
+        "waiveRefused": "Only a lead time can be waived (an expedite the vendor confirmed); choose an alternate or raise a change order",
+        "salesCannotChoose": "AUTH_FORBIDDEN",
+        "resolved": {
+          "status": "resolved_alternate",
+          "byTheCoordinator": true,
+          "kitchenIsLaminate": true
+        }
+      }
+    },
+    "released-po-routes-the-change": {
+      "derivation": "EP06-04. After the purchase order is released a direct change is refused; the change order revises the owning PO. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "direct": "SELECTION_PROCUREMENT_RELEASED",
+        "fee": 0,
+        "variance": [
+          {
+            "onTheOwningPo": true,
+            "onTheDecoy": false,
+            "totalCents": -50000,
+            "status": "draft"
+          }
+        ]
+      }
+    },
+    "approved-change-moves-everything-once": {
+      "derivation": "EP06-05. One buyer signature: agreement version, confirmed selection, VPO, budget revision, pending schedule impact. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "changeOrder": {
+          "daysImpact": 20,
+          "feeCents": 25000,
+          "totalCents": -65000
+        },
+        "versions": [
+          {
+            "version": 1,
+            "kind": "original",
+            "deltaCents": "agreement price"
+          },
+          {
+            "version": 2,
+            "kind": "amendment",
+            "deltaCents": -65000
+          }
+        ],
+        "selection": {
+          "option": true,
+          "status": "confirmed",
+          "priceCents": 390000,
+          "costCents": 240000,
+          "byTheChangeOrder": true,
+          "priceDelta": -90000
+        },
+        "variance": [
+          {
+            "onTheOwningPo": true,
+            "totalCents": -50000
+          }
+        ],
+        "budget": [
+          {
+            "totalCents": -50000,
+            "lines": 1
+          }
+        ],
+        "schedule": {
+          "onInteriorFinishes": true,
+          "days": 20,
+          "applied": false
+        },
+        "claimsOpen": 0,
+        "superintendentNotified": true,
+        "costDeltaMatchesVariance": -50000,
+        "applied": {
+          "shiftedDays": 20,
+          "again": "This schedule impact was already applied."
+        }
+      }
+    },
+    "signed-change-is-frozen": {
+      "derivation": "EP06-05. A member never edits a raised selection change, its lines or its price. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "selectionChange": "refused",
+        "lines": "refused",
+        "price": "refused",
+        "serviceEdit": "refused",
+        "smuggled": "refused"
+      }
+    },
+    "failed-apply-leaves-nothing": {
+      "derivation": "EP06-05. A selection that moved since pricing fails the approval; nothing lands; the change order says so. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "signed": "refused: the selection moved",
+        "afterRefusal": {
+          "changeOrder": "draft",
+          "versions": 1,
+          "variance": 0,
+          "budget": 0,
+          "schedule": 0,
+          "kitchenUnchanged": true
+        },
+        "stuckOnTheChangeOrder": "SELECTION_CHANGED_SINCE_CHANGE_ORDER",
+        "approvalsRecorded": 0,
+        "afterRetry": {
+          "changeOrder": "approved",
+          "versions": 2,
+          "variance": 1,
+          "budget": 1,
+          "schedule": 0,
+          "kitchenUnchanged": false,
+          "stuck": false
+        }
+      }
+    },
+    "concurrent-changes-cannot-double-count": {
+      "derivation": "EP06-05. A second open change order on a selection is refused; two approvals of one land once. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "secondChangeOrder": "refused: already open",
+        "selectionChangeOrders": 1,
+        "bothSessionsFinished": true,
+        "versions": 1,
+        "variance": 1,
+        "budget": 1,
+        "agreementDeltaIsTheChangeOrder": true,
+        "varianceIsTheCostDelta": true
+      }
+    }
+  }
+}

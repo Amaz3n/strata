@@ -8,7 +8,7 @@ import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
-import { RELEASE_PRODUCED_GATE_KEYS, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
+import { RELEASE_PRODUCED_GATE_KEYS, SQL_EVIDENCE_SOURCES, SYSTEM_GATE_KEYS, canWaiveGate, gateRequiresEvidence, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -68,6 +68,10 @@ export interface StartGateDTO {
   waivedReason: string | null
   evidenceFileId: string | null
   releaseProduced: boolean
+  /** The permit gate is never waived; the authority's decision clears it. */
+  waivable: boolean
+  /** Attesting it needs a file on this home as evidence. */
+  requiresEvidence: boolean
 }
 
 /**
@@ -196,7 +200,7 @@ function prepareStartHome(context: OrgServiceContext, lot: { lot_number: unknown
 
 const DEFAULT_GATE_DEFINITIONS = [
   { key: "entitlements", label: "Entitlements & conditions met", check_kind: "auto", auto_source: "entitlements_clear", applies_when: "always", sort_order: 5 },
-  { key: "permit", label: "Permit approved", check_kind: "manual", auto_source: null, applies_when: "always", sort_order: 10 },
+  { key: "permit", label: "Approved permit for this plan", check_kind: "auto", auto_source: "permit_approved", applies_when: "always", sort_order: 10 },
   { key: "plot_plan", label: "Plot/site plan on file", check_kind: "auto", auto_source: "plot_plan_file", applies_when: "always", sort_order: 20 },
   { key: "selections_locked", label: "Structural selections locked", check_kind: "auto", auto_source: "selections_locked", applies_when: "always", sort_order: 30 },
   { key: "plan_pinned", label: "Plan version & elevation pinned", check_kind: "auto", auto_source: "plan_pinned", applies_when: "always", sort_order: 40 },
@@ -335,6 +339,12 @@ function mapGate(row: Relation): StartGateDTO {
     attestedBy: text(row.attested_by), attestedByName: text(user?.full_name), attestedAt: text(row.attested_at),
     waivedReason: text(row.waived_reason), evidenceFileId: text(row.evidence_file_id),
     releaseProduced: RELEASE_PRODUCED_GATE_KEYS.has(String(definition.key)),
+    waivable: canWaiveGate({ autoSource: text(definition.auto_source) }),
+    requiresEvidence: gateRequiresEvidence({
+      key: String(definition.key),
+      checkKind: definition.check_kind === "manual" ? "manual" : "auto",
+      requiresAttestationPermission: text(definition.requires_attestation_permission),
+    }),
   }
 }
 
@@ -347,7 +357,9 @@ async function loadPurchasingEnabled(supabase: SupabaseClient, orgId: string, co
 export async function seedDefaultGateDefinitions(orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  const { error } = await context.supabase.from("start_gate_definitions").upsert(
+  // Definitions are writable by start.release holders only; seeding the
+  // system's defaults is part of opening a package, which start.write may do.
+  const { error } = await startsWriter().from("start_gate_definitions").upsert(
     DEFAULT_GATE_DEFINITIONS.map((gate) => ({ org_id: context.orgId, ...gate })),
     { onConflict: "org_id,key", ignoreDuplicates: true },
   )
@@ -367,6 +379,11 @@ export async function upsertGateDefinition(input: GateDefinitionInput, orgId?: s
   const parsed = gateDefinitionSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  const system = DEFAULT_GATE_DEFINITIONS.find((gate) => gate.key === parsed.key && SYSTEM_GATE_KEYS.has(gate.key))
+  if (system && (parsed.checkKind !== system.check_kind || parsed.autoSource !== system.auto_source
+    || parsed.appliesWhen !== system.applies_when || !parsed.isActive || parsed.requiresAttestationPermission)) {
+    throw new Error(`The ${system.label.toLowerCase()} gate is part of every start; only its label and order can change.`)
+  }
   const payload = {
     org_id: context.orgId, key: parsed.key, label: parsed.label, description: parsed.description ?? null,
     check_kind: parsed.checkKind, auto_source: parsed.checkKind === "auto" ? parsed.autoSource : null,
@@ -418,7 +435,7 @@ export async function assertReleaseGateCompletion(
   expected: { projectId: string; lotId: string; communityId: string; startDate: string; purchasingEnabled: boolean },
 ) {
   const [pkg, definitions, gates] = await Promise.all([
-    supabase.from("start_packages").select("status,project_id,lot_id,community_id,scheduled_start_date,is_financed")
+    supabase.from("start_packages").select("id,status,project_id,lot_id,community_id,scheduled_start_date,is_financed")
       .eq("org_id", orgId).eq("id", packageId).maybeSingle(),
     readAllRows((from, to) => supabase.from("start_gate_definitions").select("id,key,check_kind,auto_source,applies_when")
       .eq("org_id", orgId).eq("is_active", true).order("id").range(from, to),
@@ -457,6 +474,13 @@ async function deriveAutoGate(
   source: string,
 ) {
   const projectId = text(pkg.project_id)
+  if (SQL_EVIDENCE_SOURCES.has(source)) {
+    // The permit and its plot plan are evidenced by the database from the
+    // home's permit application, whoever asks.
+    const { data, error } = await supabase.rpc("start_gate_sql_evidence", { p_org_id: orgId, p_package_id: String(pkg.id), p_source: source })
+    if (error) throw new Error(`Failed to check the ${source === "permit_approved" ? "permit" : "plot plan"}: ${error.message}`)
+    return z.boolean().parse(data)
+  }
   if (source === "entitlements_clear") {
     // Nothing recorded is nothing blocking: an org that tracks no entitlements
     // sees this gate clear. A recorded, unmet one for the lot's phase holds it.
@@ -508,12 +532,6 @@ async function deriveAutoGate(
     // clear; an open or failed milestone required before start holds it.
     const blockers = await readAgreementMilestoneBlockers(supabase, orgId, projectId, "start")
     return blockers.length === 0
-  }
-  if (source === "plot_plan_file") {
-    const { count, error } = await supabase.from("files").select("id", { count: "exact", head: true })
-      .eq("org_id", orgId).eq("project_id", projectId).eq("metadata->>document_kind", "plot_plan").is("archived_at", null)
-    if (error || count === null) throw new Error(`Failed to check plot plan: ${error?.message ?? "Evidence count unavailable"}`)
-    return (count ?? 0) > 0
   }
   if (source === "selections_locked") {
     // Absence of evidence is not satisfaction. "No open selection groups" is
@@ -616,11 +634,13 @@ export async function refreshAutoGates(packageId: string, orgId?: string): Promi
   // Once a release begins its gates belong to the release.
   if (!["open", "ready"].includes(pkg.status)) return rows.map((row) => mapGate(row))
   // Evidence is read here; applicability, the verdicts and the readiness they
-  // prove are written by SQL, which refuses a gate whose evidence is missing.
+  // prove are written by SQL, which refuses a gate whose evidence is missing
+  // and evidences the permit and plot plan itself.
   const evidence: Record<string, boolean> = {}
   await Promise.all(rows.map(async (row) => {
     const definition = relation(row.definition)
     if (!definition || definition.check_kind !== "auto" || row.status === "waived") return
+    if (SQL_EVIDENCE_SOURCES.has(String(definition.auto_source))) return
     if (!isGateApplicable({ appliesWhen: definition.applies_when as GateAppliesWhen }, { isFinanced: pkg.is_financed, purchasingEnabled })) return
     evidence[String(row.id)] = await deriveAutoGate(context.supabase, context.orgId, pkg, String(definition.auto_source))
   }))

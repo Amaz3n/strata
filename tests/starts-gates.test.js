@@ -32,7 +32,8 @@ function gateFixture(overrides = {}) {
   tables.community_plan_availability = overrides.offering ?? [
     { id: "cpa-1", org_id: ORG, community_id: tables.lots[0].community_id, house_plan_id: "plan-1", elevation_id: null, is_available: true, effective_start: null, effective_end: null },
   ]
-  tables.files = [{ id: "file-1", org_id: ORG, project_id: PROJECT, archived_at: null, metadata: { document_kind: "plot_plan" } }]
+  // The plot plan is on the home's permit application (evidenced in SQL).
+  tables.gate_sql_evidence = [{ source: "plot_plan_file", passed: true }, { source: "permit_approved", passed: overrides.permitApproved ?? false }]
   tables.project_selection_groups = overrides.selectionGroups ?? []
   tables.po_generation_runs = overrides.poRuns ?? []
   tables.po_generation_exceptions = overrides.poExceptions ?? []
@@ -210,7 +211,7 @@ test("a house cannot be started on a lot a buyer is holding, or on land that was
 })
 
 test("automatic readiness evidence read failures surface instead of recording a false verdict", async () => {
-  for (const failingTable of ["lots", "files", "budgets", "po_generation_runs"]) {
+  for (const failingTable of ["lots", "budgets", "po_generation_runs"]) {
     const tables = gateFixture({ purchasing: true })
     for (const [key, auto_source] of [["budget", "budget_generated"], ["po_set", "pos_generated"]]) {
       const definition = { id: `def-${key}`, org_id: ORG, key, auto_source, check_kind: "auto", applies_when: "always", is_active: true }
@@ -337,4 +338,39 @@ test("the financing gate holds a sold house while a milestone its agreement requ
 
   harness.store.agreement_milestones.find((row) => row.title === "Loan approval issued").status = "satisfied"
   assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "financing"), "passed", "a milestone held for closing does not hold the start")
+})
+
+test("a house waits on its approved permit, which the database decides and nobody waives", async () => {
+  const withPermit = (permitApproved) => {
+    const tables = gateFixture({
+      permitApproved,
+      selectionGroups: [{ id: "psg-1", org_id: ORG, project_id: PROJECT, status: "locked" }],
+      poRuns: [{ id: "run-1", org_id: ORG, project_id: PROJECT, mode: "dry_run", status: "succeeded" }],
+    })
+    const definition = { id: "def-permit", org_id: ORG, key: "permit", label: "Approved permit for this plan", check_kind: "auto", auto_source: "permit_approved", applies_when: "always", is_active: true, requires_attestation_permission: null, description: null, sort_order: 10 }
+    tables.start_gate_definitions.push(definition)
+    tables.start_package_gates.push({
+      id: "gate-permit", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: definition.id, status: "pending", passed_via: null,
+      attested_by: null, attested_at: null, waived_reason: null, evidence_file_id: null, created_at: "2026-09-01T00:09:00.000Z", definition, attested_user: null,
+    })
+    return tables
+  }
+
+  buildHarness({ tables: withPermit(false), instantiate: async () => ({ success: true }) })
+  const waiting = await loadStarts().refreshAutoGates(PACKAGE)
+  const permit = waiting.find((gate) => gate.key === "permit")
+  assert.equal(permit.status, "pending")
+  assert.equal(permit.waivable, false)
+  assert.equal(waiting.find((gate) => gate.key === "plot_plan").waivable, true)
+
+  buildHarness({ tables: withPermit(true), instantiate: async () => ({ success: true }) })
+  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "permit"), "passed")
+})
+
+test("a manual gate is attested with a file on the home, unless it is a permissioned sign-off", () => {
+  const { gateRequiresEvidence } = require("@/lib/starts/gate-logic")
+  assert.equal(gateRequiresEvidence({ key: "appraisal", checkKind: "manual", requiresAttestationPermission: null }), true)
+  assert.equal(gateRequiresEvidence({ key: "final_approval", checkKind: "manual", requiresAttestationPermission: null }), false)
+  assert.equal(gateRequiresEvidence({ key: "board_signoff", checkKind: "manual", requiresAttestationPermission: "start.release" }), false)
+  assert.equal(gateRequiresEvidence({ key: "plot_plan", checkKind: "auto", requiresAttestationPermission: null }), false)
 })

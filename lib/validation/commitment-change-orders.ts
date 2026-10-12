@@ -39,6 +39,8 @@ export const commitmentChangeOrderUpdateSchema = z.object({
   description: z.string().trim().max(5000).nullable().optional(),
   metadata: z.record(z.any()).nullable().optional(),
   lines: z.array(commitmentChangeOrderLineInputSchema).min(1, "Add at least one line").optional(),
+  /** Required to re-price a variance order an executed change order raised. */
+  reprice_reason: z.string().trim().min(5, "Say why the price changed").max(500).optional(),
 })
 
 export const commitmentChangeOrderFromClientChangeOrderSchema = z.object({

@@ -182,20 +182,6 @@ export const cutoffOverrideSchema = z.object({
 
 export const revertCutoffSchema = cutoffOverrideSchema.pick({ projectId: true, groupId: true, reason: true })
 
-export const appointmentSchema = z.object({
-  id: optionalUuid,
-  communityId: optionalUuid,
-  projectId: z.string().uuid(),
-  contactId: optionalUuid,
-  coordinatorUserId: optionalUuid,
-  scheduledAt: z.string().datetime(),
-  durationMinutes: z.number().int().min(15).max(1440).default(120),
-  location: optionalText(500),
-  status: z.enum(["scheduled", "completed", "no_show", "canceled"]).default("scheduled"),
-  groupIds: z.array(z.string().uuid()).max(50).default([]),
-  notes: optionalText(4000),
-})
-
 export const postCutoffChangeSchema = z.object({
   projectId: z.string().uuid(),
   changes: z
@@ -215,17 +201,59 @@ export const postCutoffChangeSchema = z.object({
   waiveFee: z.boolean().default(false),
 })
 
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+
+/** `project_selection_choice_facts`, read back into the shape the supply policy takes. */
+export const selectionChoiceFactsSchema = z.object({
+  today: isoDate,
+  time_zone: z.string().min(1),
+  selection_locked: z.boolean(),
+  group_status: z.enum(["open", "locked"]).nullable(),
+  cutoff_date: isoDate.nullable(),
+  needed_by: isoDate.nullable(),
+  released_purchase_order_id: z.string().uuid().nullable(),
+  released_purchase_order_title: z.string().nullable(),
+  options: z.array(z.object({
+    option_id: z.string().uuid(),
+    lead_time_days: z.number().int().nullable(),
+    order_by: isoDate.nullable(),
+    waived: z.boolean(),
+  })),
+}).transform((facts) => ({
+  today: facts.today,
+  timeZone: facts.time_zone,
+  selectionLocked: facts.selection_locked,
+  groupStatus: facts.group_status,
+  cutoffDate: facts.cutoff_date,
+  neededBy: facts.needed_by,
+  releasedPurchaseOrderId: facts.released_purchase_order_id,
+  releasedPurchaseOrderTitle: facts.released_purchase_order_title,
+  options: facts.options.map((option) => ({
+    optionId: option.option_id,
+    leadTimeDays: option.lead_time_days,
+    orderBy: option.order_by,
+    waived: option.waived,
+  })),
+}))
+
+export const selectionExceptionAlternateSchema = z.object({
+  exceptionId: z.string().uuid(),
+  optionId: z.string().uuid(),
+})
+
+export const selectionExceptionCloseSchema = z.object({
+  exceptionId: z.string().uuid(),
+  resolution: z.enum(["waived", "resolved_manual", "void"]),
+  reason: z.string().trim().min(5).max(500),
+})
+
+export type SelectionExceptionAlternateInput = z.infer<typeof selectionExceptionAlternateSchema>
+export type SelectionExceptionCloseInput = z.infer<typeof selectionExceptionCloseSchema>
+
 export type CatalogCategoryInput = z.infer<typeof catalogCategorySchema>
 export type CatalogOptionInput = z.infer<typeof catalogOptionSchema>
 export type CatalogPriceInput = z.infer<typeof catalogPriceSchema>
 export type SelectionPackageInput = z.infer<typeof packageSchema>
 export type SelectionGroupInput = z.infer<typeof selectionGroupSchema>
 export type CutoffOverrideInput = z.infer<typeof cutoffOverrideSchema>
-export type AppointmentInput = z.infer<typeof appointmentSchema>
 export type PostCutoffChangeInput = z.infer<typeof postCutoffChangeSchema>
-
-
-
-
-
-

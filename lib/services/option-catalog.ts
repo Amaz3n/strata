@@ -2,8 +2,7 @@ import { publishCatalogGroup, reviewCatalogGroupCategories } from "@/lib/service
 import { publishCatalogPriceBatch } from "@/lib/services/catalog-price-publication"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
-import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
-import { resolveVisibleProjectIds } from "@/lib/services/projects"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { publishCatalogPackage } from "@/lib/services/catalog-package-publication"
 import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
@@ -17,7 +16,6 @@ import { modelChangesSchema, type ModelChange } from "@/lib/drawings/model-optio
 
 export { allocatePackageTotal, chooseResolvedPrice } from "@/lib/selections/catalog-math"
 import {
-  appointmentSchema,
   catalogCategorySchema,
   catalogOptionSchema,
   catalogPriceSchema,
@@ -25,7 +23,6 @@ import {
   catalogPriceSourceSchema,
   packageSchema,
   selectionGroupSchema,
-  type AppointmentInput,
   type CatalogCategoryInput,
   type CatalogOptionInput,
   type CatalogPriceInput,
@@ -121,24 +118,6 @@ export type SelectionGroupDto = {
   sort_order: number
   is_archived: boolean
   category_ids: string[]
-}
-
-export type AppointmentDto = {
-  id: string
-  community_id: string | null
-  project_id: string
-  contact_id: string | null
-  coordinator_user_id: string | null
-  scheduled_at: string
-  duration_minutes: number
-  location: string | null
-  status: "scheduled" | "completed" | "no_show" | "canceled"
-  group_ids: string[]
-  notes: string | null
-  project_name?: string | null
-  community_name?: string | null
-  buyer_name?: string | null
-  coordinator_name?: string | null
 }
 
 type CategoryRow = Omit<CatalogCategoryDto, "source" | "options">
@@ -891,133 +870,4 @@ export async function cloneOrgGroupsToCommunity(communityId: string) {
       categoryIds: group.category_ids,
     })
   }
-}
-
-interface AppointmentFilter {
-  communityId?: string
-  /** Narrows to appointments on this division's homes. */
-  divisionId?: string
-  from?: string
-  to?: string
-  status?: AppointmentDto["status"]
-}
-
-/**
- * The calendar shows the homes the reader can see: a division- or
- * project-scoped coordinator does not read another division's buyers. The list
- * and its count both resolve visibility here so they cannot disagree.
- */
-async function visibleAppointmentProjects(context: Awaited<ReturnType<typeof requireOrgContext>>) {
-  return resolveVisibleProjectIds({ ...context, includePrecon: true })
-}
-
-/** How many appointments match, uncapped — `listAppointments` returns at most 100. */
-export async function countAppointments(opts: AppointmentFilter = {}): Promise<number> {
-  const context = await requireOrgContext()
-  await requirePermission("selections.read", context)
-  const visibleProjectIds = await visibleAppointmentProjects(context)
-  if (visibleProjectIds?.length === 0) return 0
-  let query = context.supabase
-    .from("design_studio_appointments")
-    .select("id, project:projects!inner(division_id)", { count: "exact", head: true })
-    .eq("org_id", context.orgId)
-  if (visibleProjectIds) query = query.in("project_id", visibleProjectIds)
-  if (opts.divisionId) query = query.eq("project.division_id", opts.divisionId)
-  if (opts.communityId) query = query.eq("community_id", opts.communityId)
-  if (opts.from) query = query.gte("scheduled_at", opts.from)
-  if (opts.to) query = query.lte("scheduled_at", opts.to)
-  if (opts.status) query = query.eq("status", opts.status)
-  const { count, error } = await query
-  if (error) throw new Error(`Failed to count design studio appointments: ${error.message}`)
-  return count ?? 0
-}
-
-export async function listAppointments(opts: AppointmentFilter & { limit?: number } = {}): Promise<AppointmentDto[]> {
-  const context = await requireOrgContext()
-  // Reading the calendar is part of every selections read surface — a
-  // superintendent checking a cutoff must not be blocked by the coordinator's
-  // manage permission. Booking and rescheduling keep the stricter gate.
-  await requirePermission("selections.read", context)
-  const visibleProjectIds = await visibleAppointmentProjects(context)
-  if (visibleProjectIds?.length === 0) return []
-  let query = context.supabase
-    .from("design_studio_appointments")
-    .select("id, community_id, project_id, contact_id, coordinator_user_id, scheduled_at, duration_minutes, location, status, group_ids, notes, project:projects!inner(name, division_id), community:communities(name), buyer:contacts(full_name), coordinator:app_users(full_name)")
-    .eq("org_id", context.orgId)
-    .order("scheduled_at")
-    .limit(Math.min(opts.limit ?? 50, 100))
-  if (visibleProjectIds) query = query.in("project_id", visibleProjectIds)
-  if (opts.divisionId) query = query.eq("project.division_id", opts.divisionId)
-  if (opts.communityId) query = query.eq("community_id", opts.communityId)
-  if (opts.from) query = query.gte("scheduled_at", opts.from)
-  if (opts.to) query = query.lte("scheduled_at", opts.to)
-  if (opts.status) query = query.eq("status", opts.status)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to load design studio appointments: ${error.message}`)
-  return (data ?? []).map((row) => {
-    const project = Array.isArray(row.project) ? row.project[0] : row.project
-    const community = Array.isArray(row.community) ? row.community[0] : row.community
-    const buyer = Array.isArray(row.buyer) ? row.buyer[0] : row.buyer
-    const coordinator = Array.isArray(row.coordinator) ? row.coordinator[0] : row.coordinator
-    return {
-      ...row,
-      status: row.status as AppointmentDto["status"],
-      project_name: project?.name ?? null,
-      community_name: community?.name ?? null,
-      buyer_name: buyer?.full_name ?? null,
-      coordinator_name: coordinator?.full_name ?? null,
-    }
-  })
-}
-
-export async function upsertAppointment(raw: AppointmentInput): Promise<AppointmentDto> {
-  const input = appointmentSchema.parse(raw)
-  const context = await requireOrgContext()
-  await requirePermission("design_studio.manage", context)
-  // Booking is a mutation on a home, so it is authorized on the home — its
-  // project and division scope — not just the org-wide permission. A
-  // reschedule is authorized on the home the appointment already belongs to
-  // as well as the one it is being moved to.
-  const authorizeHome = (projectId: string) =>
-    requireAuthorization({ permission: "design_studio.manage", orgId: context.orgId, userId: context.userId, projectId,
-      supabase: context.supabase, resourceType: "project", resourceId: projectId, logDecision: true })
-  if (input.id) {
-    const { data: existing, error: existingError } = await context.supabase.from("design_studio_appointments")
-      .select("project_id").eq("org_id", context.orgId).eq("id", input.id).maybeSingle()
-    if (existingError) throw new Error(`Failed to load appointment: ${existingError.message}`)
-    if (!existing) throw new Error("Appointment not found")
-    if (existing.project_id !== input.projectId) await authorizeHome(existing.project_id)
-  }
-  await authorizeHome(input.projectId)
-  if (input.communityId) {
-    const { data: lot, error: lotError } = await context.supabase.from("lots")
-      .select("community_id").eq("org_id", context.orgId).eq("project_id", input.projectId).maybeSingle()
-    if (lotError) throw new Error(`Failed to verify the home's community: ${lotError.message}`)
-    if (lot?.community_id !== input.communityId) throw new Error("The appointment's community must be the home's community")
-  }
-  const payload = {
-    community_id: input.communityId ?? null,
-    project_id: input.projectId,
-    contact_id: input.contactId ?? null,
-    coordinator_user_id: input.coordinatorUserId ?? null,
-    scheduled_at: input.scheduledAt,
-    duration_minutes: input.durationMinutes,
-    location: input.location ?? null,
-    status: input.status,
-    group_ids: input.groupIds,
-    notes: input.notes ?? null,
-  }
-  const query = input.id
-    ? context.supabase.from("design_studio_appointments").update(payload).eq("org_id", context.orgId).eq("id", input.id)
-    : context.supabase.from("design_studio_appointments").insert({ org_id: context.orgId, ...payload })
-  const { data, error } = await query
-    .select("id, community_id, project_id, contact_id, coordinator_user_id, scheduled_at, duration_minutes, location, status, group_ids, notes")
-    .single()
-  if (error || !data) throw new Error(`Failed to save appointment: ${error?.message ?? "missing row"}`)
-  const eventType = input.id ? "design_studio_appointment_updated" : "design_studio_appointment_created"
-  await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "design_studio_appointment", entityId: data.id, payload }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "design_studio_appointment", entityId: data.id, after: payload }),
-  ])
-  return { ...data, status: data.status as AppointmentDto["status"] }
 }

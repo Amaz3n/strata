@@ -5,6 +5,7 @@ export const PROJECT_MODULES = [
   { key: "drawings", label: "Drawings", description: "Drawing sets, revisions, and markups." },
   { key: "bids", label: "Bids", description: "Bid packages, invitations, and leveling." },
   { key: "signatures", label: "Signatures", description: "Project e-signature envelopes." },
+  { key: "permits", label: "Permits", description: "Permit applications, corrections, fees and decisions." },
   { key: "schedule", label: "Schedule", description: "Project schedule and milestones." },
   { key: "daily_logs", label: "Daily logs", description: "Field activity and daily reporting." },
   { key: "photos", label: "Photos", description: "Jobsite photos across project records." },

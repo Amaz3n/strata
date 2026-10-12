@@ -389,6 +389,10 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return agreementMilestoneRecipients(supabase, orgId, event)
   }
 
+  if (event.event_type === "permit_correction.due" || event.event_type === "permit_application.decision_overdue") {
+    return permitReminderRecipients(supabase, orgId, event)
+  }
+
   // Requests route to whoever decides them; decisions route back to whoever
   // raises them. The decision half was declared as a notification type, given a
   // title, and emitted — but never given a recipient set, so five event types
@@ -1829,6 +1833,45 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    case "permit_correction.due": {
+      const payload: Record<string, unknown> = event.payload ?? {}
+      const projectId = payloadText(payload, "project_id")
+      const applicationId = payloadText(payload, "application_id")
+      const daysOut = typeof payload.days_out === "number" ? payload.days_out : null
+      const round = typeof payload.round_no === "number" ? `Round ${payload.round_no} corrections` : "Permit corrections"
+      const when = daysOut === null ? "due soon" : daysOut < 0 ? `${-daysOut} ${daysOut === -1 ? "day" : "days"} late` : daysOut === 0 ? "due today" : `due in ${daysOut} ${daysOut === 1 ? "day" : "days"}`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "permit_correction_due" as const,
+        title: `${round} ${when}`,
+        message: `The response to the permit authority's ${round.toLowerCase()} is ${when}.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: projectId ? `/projects/${projectId}/permits${applicationId ? `?permit=${applicationId}` : ""}` : "/starts" },
+      }
+    }
+
+    case "permit_application.decision_overdue": {
+      const payload: Record<string, unknown> = event.payload ?? {}
+      const projectId = payloadText(payload, "project_id")
+      const days = typeof payload.days_overdue === "number" ? payload.days_overdue : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "permit_decision_overdue" as const,
+        title: "Permit decision overdue",
+        message: days === null ? "The permit authority is past its review time." : `The permit authority is ${days} ${days === 1 ? "day" : "days"} past its review time.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: projectId ? `/projects/${projectId}/permits?permit=${entity_id}` : "/starts" },
+      }
+    }
+
     case "agreement_milestone.due": {
       const payload: Record<string, unknown> = event.payload ?? {}
       const title = payloadText(payload, "title") ?? "A milestone"
@@ -2122,6 +2165,28 @@ async function agreementMilestoneRecipients(
   const candidates = owner ? [owner] : await usersWithAnyPermission(supabase, orgId, ["closing.manage"])
   const checks = await Promise.all(uniqUserIds(candidates).slice(0, LAND_NOTIFICATION_CANDIDATE_CAP).map(async (userId) => {
     const decision = await authorize({ permission: "sales.read", orgId, userId, projectId, supabase })
+    return decision.allowed ? userId : null
+  }))
+  return uniqUserIds(checks)
+}
+
+/**
+ * A permit reminder goes to whoever owns the round or the application, or to
+ * whoever manages permits when nobody does — and only to people who can still
+ * read the home's permits.
+ */
+async function permitReminderRecipients(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  event: EventRecord,
+): Promise<string[]> {
+  const payload: Record<string, unknown> = event.payload ?? {}
+  const projectId = payloadText(payload, "project_id")
+  if (!projectId) return []
+  const owner = payloadText(payload, "owner_user_id")
+  const candidates = owner ? [owner] : await usersWithAnyPermission(supabase, orgId, ["permit.write"])
+  const checks = await Promise.all(uniqUserIds(candidates).slice(0, LAND_NOTIFICATION_CANDIDATE_CAP).map(async (userId) => {
+    const decision = await authorize({ permission: "permit.read", orgId, userId, projectId, supabase })
     return decision.allowed ? userId : null
   }))
   return uniqUserIds(checks)

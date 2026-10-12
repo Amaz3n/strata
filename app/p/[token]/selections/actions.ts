@@ -1,7 +1,8 @@
 "use server"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
-import { confirmSelectionGroup, listProjectSelections, listSelectionCategories, listSelectionOptions, selectProjectOption, selectProjectOptions, selectProjectPackage } from "@/lib/services/selections"
+import { listProjectSelections, listSelectionCategories, listSelectionOptions, selectProjectOption, selectProjectOptions, selectProjectPackage } from "@/lib/services/selections"
+import { approveSelectionsFromPortal, declineSelectionsFromPortal, listPortalSelectionApprovals, type GroupSelectionApproval } from "@/lib/services/selection-approvals"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { getHomeConfigurationFixes, resolveHomeConfigurationFix } from "@/lib/services/configuration-rules"
 import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
@@ -16,6 +17,36 @@ async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
+/** What the buyer is shown about each group's approval: never who sent it or the request history. */
+export interface PortalSelectionApproval {
+  groupId: string | null
+  state: GroupSelectionApproval["state"]
+  reason: string | null
+  termsHash: string
+  totalCents: number
+  complete: boolean
+  confirmed: boolean
+  locked: boolean
+  /** A request still waiting on the buyer. */
+  pending: { id: string; channel: "esign" | "portal" | "in_person"; expiresAt: string | null } | null
+}
+
+async function portalApprovals(orgId: string, projectId: string): Promise<PortalSelectionApproval[]> {
+  return (await listPortalSelectionApprovals(orgId, projectId)).map((approval) => ({
+    groupId: approval.groupId,
+    state: approval.state,
+    reason: approval.state === "declined" ? approval.reason : null,
+    termsHash: approval.terms.termsHash,
+    totalCents: approval.terms.totalCents,
+    complete: approval.terms.complete,
+    confirmed: approval.terms.confirmed,
+    locked: approval.locked,
+    pending: approval.state === "sent" && approval.latest
+      ? { id: approval.latest.id, channel: approval.latest.channel, expiresAt: approval.latest.expiresAt }
+      : null,
+  }))
+}
+
 export async function loadSelectionsAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
@@ -23,10 +54,11 @@ export async function loadSelectionsAction(token: string) {
     permission: "can_submit_selections",
   })
 
-  const [selections, categories, configuration] = await Promise.all([
+  const [selections, categories, configuration, approvals] = await Promise.all([
     listProjectSelections(access.org_id, access.project_id, { portalAccess: true }),
     listSelectionCategories(access.org_id),
     run(() => getHomeConfigurationFixes(access.org_id, access.project_id, { portalAccess: true })),
+    run(() => portalApprovals(access.org_id, access.project_id)),
   ])
 
   const optionsByCategory = Object.fromEntries(
@@ -87,6 +119,7 @@ export async function loadSelectionsAction(token: string) {
     }),
     categories,
     configuration,
+    approvals,
     optionsByCategory: Object.fromEntries(
       Object.entries(effectiveOptionsByCategory).map(([categoryId, options]) => [
         categoryId,
@@ -167,19 +200,33 @@ export async function applyConfigurationFixAction(input: { token: string; fixId:
   })
 }
 
-export async function confirmGroupAction(input: { token: string; groupId: string }) {
+/** Each group's approval as it stands now, re-read after the buyer changes a choice. */
+export async function loadApprovalsAction(token: string) {
   return run(async () => {
-    const access = await assertPortalActionAccess(input.token, {
-      portalType: "client",
-      requireProject: true,
-      permission: "can_submit_selections",
-    })
-    return confirmSelectionGroup({
-      orgId: access.org_id,
-      projectId: access.project_id,
-      groupId: input.groupId,
-      portalAccess: true,
-    })
+    const access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true, permission: "can_submit_selections" })
+    return portalApprovals(access.org_id, access.project_id)
+  })
+}
+
+function buyerOf(access: { contact_id?: string | null }) {
+  if (!access.contact_id) throw new Error("This link is not tied to a buyer. Ask your builder for your own link to approve selections.")
+  return access.contact_id
+}
+
+/** The buyer approves a group exactly as the page showed it: the terms hash travels with the approval. */
+export async function approveGroupAction(input: { token: string; groupId: string | null; termsHash: string }) {
+  return run(async () => {
+    const access = await assertPortalActionAccess(input.token, { portalType: "client", requireProject: true, permission: "can_submit_selections" })
+    await approveSelectionsFromPortal({ orgId: access.org_id, projectId: access.project_id, contactId: buyerOf(access), groupId: input.groupId, termsHash: input.termsHash })
+    return portalApprovals(access.org_id, access.project_id)
+  })
+}
+
+export async function declineApprovalAction(input: { token: string; approvalId: string; reason?: string }) {
+  return run(async () => {
+    const access = await assertPortalActionAccess(input.token, { portalType: "client", requireProject: true, permission: "can_submit_selections" })
+    await declineSelectionsFromPortal({ orgId: access.org_id, projectId: access.project_id, contactId: buyerOf(access), approvalId: input.approvalId, reason: input.reason })
+    return portalApprovals(access.org_id, access.project_id)
   })
 }
 

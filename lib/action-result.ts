@@ -2,6 +2,7 @@ import { ZodError } from "zod"
 import { parsePermissionDenied, permissionLabel } from "@/lib/permission-denied"
 import type { ConfigurationFix } from "@/lib/selections/configuration-fixes"
 import { ConfigurationViolationError, type ConfigurationViolation } from "@/lib/selections/configuration-rules"
+import { SelectionEligibilityError, type SelectionAlternate } from "@/lib/selections/supply-eligibility"
 
 /**
  * Standard server-action result envelope. Actions must return this instead of throwing:
@@ -14,6 +15,7 @@ export type ActionResult<T> = { success: true; data: T } | ActionFailure
  * A refusal. A configuration that breaks its option rules also carries the
  * rules it broke and, where the action can work them out, the valid fixes —
  * so the page can explain and correct instead of showing one long sentence.
+ * A choice the home cannot have in time carries the alternates it still can.
  */
 export type ActionFailure = {
   success: false
@@ -21,6 +23,7 @@ export type ActionFailure = {
   code?: string
   violations?: ConfigurationViolation[]
   fixes?: ConfigurationFix[]
+  supply?: { reason: string; alternates: SelectionAlternate[]; exceptionId: string | null }
 }
 
 /**
@@ -51,6 +54,14 @@ export function actionError(error: unknown, fallback = "Something went wrong. Pl
   }
   if (error instanceof ConfigurationViolationError) {
     return { success: false, error: error.message, code: error.code, violations: error.violations }
+  }
+  if (error instanceof SelectionEligibilityError) {
+    return {
+      success: false,
+      error: error.message,
+      code: error.code,
+      supply: { reason: error.reason, alternates: error.alternates, exceptionId: error.exceptionId },
+    }
   }
   if (error instanceof Error && error.message) {
     const codedError: Error & { code?: unknown } = error

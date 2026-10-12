@@ -8,6 +8,30 @@ export interface GateReadinessInput {
 }
 export const RELEASE_PRODUCED_GATE_KEYS = new Set(["budget", "po_set"])
 
+/** Gates every start carries: their source is fixed and they are never switched off. */
+export const SYSTEM_GATE_KEYS = new Set(["permit", "plot_plan"])
+
+/**
+ * Auto sources the database evidences itself (start_gate_sql_evidence), from
+ * the home's permit application, so no caller's row security or supplied
+ * verdict decides them.
+ */
+export const SQL_EVIDENCE_SOURCES = new Set(["permit_approved", "plot_plan_file"])
+
+/** A house starts on an approved permit (or the authority's letter that none is needed), never on a waiver. */
+export function canWaiveGate(gate: { autoSource: string | null }) {
+  return gate.autoSource !== "permit_approved"
+}
+
+/**
+ * A manual gate attests a fact, so it is attested with the file that shows it
+ * on this home — `mutate_start_gate` refuses one without. A sign-off gated by a
+ * permission (and final approval) is a decision, not a fact, and needs none.
+ */
+export function gateRequiresEvidence(gate: { key: string; checkKind: "auto" | "manual"; requiresAttestationPermission: string | null }) {
+  return gate.checkKind === "manual" && gate.requiresAttestationPermission === null && gate.key !== "final_approval"
+}
+
 /**
  * Typical calendar days a gate needs once someone starts chasing it. The permit
  * is the long pole in most jurisdictions, which is why it outranks everything

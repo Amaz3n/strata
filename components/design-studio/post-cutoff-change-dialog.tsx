@@ -27,6 +27,8 @@ interface Props {
   group: SheetGroup
   changeFeeCents: number
   canWaiveChangeFee: boolean
+  /** The refused choice this change order is raised for, when there is one. */
+  initial?: { selectionId: string; optionId: string } | null
 }
 
 function money(cents: number) {
@@ -34,9 +36,11 @@ function money(cents: number) {
 }
 
 /**
- * The buyer changed their mind after the cutoff. This does not edit the
- * selection — it raises a draft change order carrying the price delta and the
- * community's change fee, which is the only way a locked selection moves.
+ * The buyer changed their mind after the cutoff, or asked for something the
+ * home can no longer take directly (it cannot arrive in time, or the trade
+ * already bought the selection). This does not edit the selection — it raises
+ * a draft change order carrying the price delta and, past the cutoff, the
+ * community's change fee, which is the only way such a selection moves.
  */
 export function PostCutoffChangeDialog({
   open,
@@ -45,6 +49,7 @@ export function PostCutoffChangeDialog({
   group,
   changeFeeCents,
   canWaiveChangeFee,
+  initial = null,
 }: Props) {
   const router = useRouter()
   const [selectionId, setSelectionId] = useState("")
@@ -54,10 +59,10 @@ export function PostCutoffChangeDialog({
 
   useEffect(() => {
     if (!open) return
-    setSelectionId("")
-    setOptionId("")
+    setSelectionId(initial?.selectionId ?? "")
+    setOptionId(initial?.optionId ?? "")
     setWaiveFee(false)
-  }, [open])
+  }, [open, initial])
 
   const category = useMemo(
     () => group.categories.find((item) => item.selectionId === selectionId) ?? null,
@@ -103,13 +108,19 @@ export function PostCutoffChangeDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="rounded-none">
         <DialogHeader>
-          <DialogTitle>Change a locked selection</DialogTitle>
+          <DialogTitle>{group.status === "locked" ? "Change a locked selection" : "Change by change order"}</DialogTitle>
           <DialogDescription>
-            {group.name} closed on{" "}
-            {group.cutoffDate
-              ? new Date(`${group.cutoffDate}T00:00:00`).toLocaleDateString(undefined, { month: "long", day: "numeric" })
-              : "its cutoff"}
-            . A change now is drafted as a change order, not an edit.
+            {group.status === "locked" ? (
+              <>
+                {group.name} closed on{" "}
+                {group.cutoffDate
+                  ? new Date(`${group.cutoffDate}T00:00:00`).toLocaleDateString(undefined, { month: "long", day: "numeric" })
+                  : "its cutoff"}
+                . A change now is drafted as a change order, not an edit.
+              </>
+            ) : (
+              <>{group.name} is still open, but this choice can no longer be made directly. It is drafted as a change order, not an edit.</>
+            )}
           </DialogDescription>
         </DialogHeader>
 

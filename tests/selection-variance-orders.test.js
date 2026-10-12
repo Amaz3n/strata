@@ -5,126 +5,14 @@ const test = require("node:test")
 
 const {
   agreementLocksStructuralOptions,
-  describeSelectionChange,
   isSelectionPastCutoff,
   planPackageSelection,
-  planSelectionVarianceOrders,
 } = require("../lib/selections/selection-variance")
 const { vpoApprovalBlockReason } = require("../lib/financials/vpo-approval-thresholds")
 const { aggregateVarianceFacts } = require("../lib/services/reports/variance-analysis")
 
-const COUNTERTOP_PO = { commitmentId: "po-countertop", companyId: "co-stone" }
-const TRIM_PO = { commitmentId: "po-trim", companyId: "co-trim" }
-
-function costCodeIndex(entries) {
-  return new Map(entries)
-}
-
-function change(overrides) {
-  return {
-    selection_id: "sel-1",
-    cost_code_id: "cc-countertop",
-    cost_delta_cents: 120_000,
-    category_name: "Kitchen countertop",
-    option_name: "Level 4 granite",
-    ...overrides,
-  }
-}
-
-// --- Fix 1: design studio → VPO fan-out ------------------------------------
-
-test("a post-cutoff upgrade routes its cost delta onto the purchase order that owns the cost code", () => {
-  const { orders, unrouted } = planSelectionVarianceOrders({
-    changes: [change({})],
-    commitmentByCostCode: costCodeIndex([["cc-countertop", COUNTERTOP_PO]]),
-  })
-  assert.equal(unrouted.length, 0)
-  assert.equal(orders.length, 1)
-  assert.equal(orders[0].commitment_id, "po-countertop")
-  assert.equal(orders[0].company_id, "co-stone")
-  assert.equal(orders[0].total_cents, 120_000)
-  assert.deepEqual(orders[0].selection_ids, ["sel-1"])
-  assert.equal(orders[0].lines[0].description, "Kitchen countertop — Level 4 granite")
-  assert.equal(orders[0].lines[0].unit_cost_cents, 120_000)
-})
-
-test("deltas sharing one purchase order collapse into a single variance order", () => {
-  const { orders } = planSelectionVarianceOrders({
-    changes: [
-      change({ selection_id: "sel-1", cost_delta_cents: 120_000 }),
-      change({ selection_id: "sel-2", cost_code_id: "cc-backsplash", cost_delta_cents: 30_000, category_name: "Backsplash", option_name: "Subway tile" }),
-    ],
-    commitmentByCostCode: costCodeIndex([
-      ["cc-countertop", COUNTERTOP_PO],
-      ["cc-backsplash", COUNTERTOP_PO],
-    ]),
-  })
-  assert.equal(orders.length, 1)
-  assert.equal(orders[0].total_cents, 150_000)
-  assert.equal(orders[0].lines.length, 2)
-  assert.deepEqual(orders[0].selection_ids, ["sel-1", "sel-2"])
-})
-
-test("different purchase orders get their own variance order", () => {
-  const { orders } = planSelectionVarianceOrders({
-    changes: [
-      change({ selection_id: "sel-1" }),
-      change({ selection_id: "sel-2", cost_code_id: "cc-trim", cost_delta_cents: -25_000 }),
-    ],
-    commitmentByCostCode: costCodeIndex([
-      ["cc-countertop", COUNTERTOP_PO],
-      ["cc-trim", TRIM_PO],
-    ]),
-  })
-  assert.deepEqual(orders.map((order) => order.commitment_id).sort(), ["po-countertop", "po-trim"])
-  assert.equal(orders.find((order) => order.commitment_id === "po-trim").total_cents, -25_000)
-})
-
-test("a downgrade produces a negative variance order rather than being dropped", () => {
-  const { orders, unrouted } = planSelectionVarianceOrders({
-    changes: [change({ cost_delta_cents: -80_000 })],
-    commitmentByCostCode: costCodeIndex([["cc-countertop", COUNTERTOP_PO]]),
-  })
-  assert.equal(unrouted.length, 0)
-  assert.equal(orders[0].total_cents, -80_000)
-})
-
-test("a zero-cost swap creates nothing at all", () => {
-  const { orders, unrouted } = planSelectionVarianceOrders({
-    changes: [change({ cost_delta_cents: 0 })],
-    commitmentByCostCode: costCodeIndex([["cc-countertop", COUNTERTOP_PO]]),
-  })
-  assert.deepEqual(orders, [])
-  assert.deepEqual(unrouted, [])
-})
-
-test("a delta with no purchase order behind its cost code is reported, never silently dropped", () => {
-  const { orders, unrouted } = planSelectionVarianceOrders({
-    changes: [
-      change({ selection_id: "sel-1", cost_code_id: "cc-unbought" }),
-      change({ selection_id: "sel-2", cost_code_id: null, cost_delta_cents: 40_000 }),
-    ],
-    commitmentByCostCode: costCodeIndex([["cc-countertop", COUNTERTOP_PO]]),
-  })
-  assert.deepEqual(orders, [])
-  assert.equal(unrouted.length, 2)
-  assert.equal(unrouted[0].reason, "no_commitment")
-  assert.equal(unrouted[0].cost_delta_cents, 120_000)
-  assert.equal(unrouted[1].reason, "no_cost_code")
-  assert.equal(unrouted[1].description, "Kitchen countertop — Level 4 granite")
-})
-
-test("re-planning the same executed change is stable, so idempotency only has to guard the write", () => {
-  const input = {
-    changes: [change({ selection_id: "sel-1" }), change({ selection_id: "sel-2", cost_code_id: "cc-trim", cost_delta_cents: 10_000 })],
-    commitmentByCostCode: costCodeIndex([["cc-countertop", COUNTERTOP_PO], ["cc-trim", TRIM_PO]]),
-  }
-  assert.deepEqual(planSelectionVarianceOrders(input), planSelectionVarianceOrders(input))
-})
-
-test("the change description is what the vendor reads on the line", () => {
-  assert.equal(describeSelectionChange({ category_name: "Flooring", option_name: "Engineered oak" }), "Flooring — Engineered oak")
-})
+// Routing a selection change's cost onto the owning purchase orders is the
+// approval's own transaction now; it is proven in selections-db.test.js.
 
 // --- Fix 2: a post-cutoff fee needs a cutoff that actually passed -----------
 

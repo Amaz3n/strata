@@ -4,15 +4,15 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, replies, id, ORG } = require("./support/service")
 const { stubModule, freshRequire } = require("./support/modules")
 
-// Neighbouring workbenches with their own suites: linking the executed file and
-// carrying a selection change are recorded, not re-tested here.
+// A neighbouring workbench with its own suite: linking the executed file is
+// recorded, not re-tested here. A selection change is applied by the approval
+// itself in the database (selections-db.test.js).
 const attached = []
 stubModule("@/lib/services/file-links", {
   attachFileWithServiceRole: async (input) => attached.push(input),
 })
-stubModule("@/lib/services/selections", { applySelectionChangeFromChangeOrder: async () => {} })
 
-const { approveChangeOrder, approveChangeOrderFromEnvelopeExecution, voidChangeOrder } = freshRequire("lib/services/change-orders.ts")
+const { approveChangeOrder, approveChangeOrderFromEnvelopeExecution, updateChangeOrder, voidChangeOrder } = freshRequire("lib/services/change-orders.ts")
 
 const PROJECT = id(1)
 const CHANGE_ORDER = id(2)
@@ -132,5 +132,66 @@ describe("a change order on a sold home is an amendment to the buyer's agreement
     await assert.rejects(service.run(() => voidChangeOrder({ changeOrderId: CHANGE_ORDER, reason: "Buyer changed mind" })), /cannot be voided/)
     assert.equal(service.db.change_orders[0].status, "approved")
     assert.equal(service.queries.some((query) => query.table === "rpc:void_approved_change_order_atomic"), false)
+  })
+})
+
+describe("a selection change order", () => {
+  const SELECTION_CHANGE = { changes: [{ selection_id: id(40), new_option_id: id(41), cost_delta_cents: 700_00, cost_code_id: id(42) }], fee_cents: 250_00 }
+  const input = { orgId: ORG, changeOrderId: CHANGE_ORDER, envelopeId: ENVELOPE, documentId: id(5), executedFileId: id(6), signerName: "Buyer" }
+
+  function harness() {
+    attached.length = 0
+    return createServiceHarness({
+      permissions: ["change_order.write", "project.read"],
+      tables: {
+        projects: [{ id: PROJECT, org_id: ORG, division_id: null }],
+        change_orders: [{ id: CHANGE_ORDER, org_id: ORG, project_id: PROJECT, title: "Post-cutoff selection change", status: "pending", lifecycle: "proposed", total_cents: 1550_00, requires_signature: true, metadata: { selection_change: SELECTION_CHANGE } }],
+        change_order_lines: [
+          { id: id(43), org_id: ORG, change_order_id: CHANGE_ORDER, description: "Selection change: Countertop — Quartz", quantity: 1, unit_cost_cents: 1300_00, internal_cost_cents: 700_00, cost_code_id: id(42) },
+          { id: id(44), org_id: ORG, change_order_id: CHANGE_ORDER, description: "Post-cutoff selection change fee", quantity: 1, unit_cost_cents: 250_00, internal_cost_cents: 0, cost_code_id: null },
+        ],
+        contracts: [],
+        draw_schedules: [],
+        project_financial_settings: [],
+        approvals: [],
+        budget_revisions: [],
+        budget_revision_lines: [],
+      },
+    })
+  }
+
+  test("its budget revision is the approval's own, and an uncosted fee line no longer stops a budget posting", async () => {
+    const service = harness()
+    await service.run(() => approveChangeOrderFromEnvelopeExecution(input))
+    const [changeOrder] = service.db.change_orders
+    assert.equal(changeOrder.status, "approved")
+    assert.deepEqual(service.writes("budget_revisions"), [])
+    assert.deepEqual(changeOrder.metadata.financial_impact.budget_distributions.map((line) => [line.cost_code_id, line.budget_revision_cents]), [[id(42), 700_00]])
+    assert.equal(changeOrder.metadata.financial_impact.posting_skipped_reason, undefined)
+  })
+
+  test("a buyer signature the approval refuses is recorded on the change order, with no approval behind it", async () => {
+    const service = harness()
+    service.tamper("change_orders", (result) => ({ ...result, data: null, error: { message: "Countertop changed after this change order was priced; void it and raise a new one", details: "SELECTION_CHANGED_SINCE_CHANGE_ORDER" } }), { on: "update", times: 1 })
+    await assert.rejects(service.run(() => approveChangeOrderFromEnvelopeExecution(input)), /changed after this change order was priced/)
+    assert.equal(service.db.change_orders[0].metadata.approval_blocked.code, "SELECTION_CHANGED_SINCE_CHANGE_ORDER")
+    assert.deepEqual(service.db.approvals, [])
+
+    // A signature that later lands clears the stuck note.
+    const retried = harness()
+    retried.db.change_orders[0].metadata = { ...retried.db.change_orders[0].metadata, approval_blocked: { reason: "stale", code: "SELECTION_CHANGED_SINCE_CHANGE_ORDER" } }
+    await retried.run(() => approveChangeOrderFromEnvelopeExecution(input))
+    assert.equal(retried.db.change_orders[0].status, "approved")
+    assert.equal(retried.db.change_orders[0].metadata.approval_blocked, undefined)
+    assert.equal(retried.db.approvals.length, 1)
+  })
+
+  test("it is not edited in place: its lines are the buyer's selection prices", async () => {
+    const service = harness()
+    await assert.rejects(
+      service.run(() => updateChangeOrder({ changeOrderId: CHANGE_ORDER, input: { project_id: PROJECT, title: "Edited", lines: [{ description: "x", quantity: 1, unit_cost: 1 }] } })),
+      /fixed as raised/,
+    )
+    assert.deepEqual(service.writes("change_order_lines"), [])
   })
 })

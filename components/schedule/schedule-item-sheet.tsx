@@ -21,6 +21,7 @@ import { useSchedule } from "./schedule-context"
 import { PHASE_COLORS, parseDate, toDateString } from "./types"
 import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { setScheduleAssigneeAction } from "@/app/(app)/schedule/assignment-actions"
+import { applyScheduleChangeOrderImpactAction } from "@/app/(app)/schedule/actions"
 import type { Inspection } from "@/lib/services/inspections"
 import { getInspectionForScheduleItemAction } from "@/app/(app)/projects/[id]/inspections/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
@@ -183,6 +184,8 @@ export function ScheduleItemSheet({
   const [changeOrderImpacts, setChangeOrderImpacts] = useState<ScheduleItemChangeOrder[]>([])
   const [linkedDraws, setLinkedDraws] = useState<DrawSchedule[]>([])
   const [loadingCOData, setLoadingCOData] = useState(false)
+  const [applyingImpactId, setApplyingImpactId] = useState<string | null>(null)
+  const [impactError, setImpactError] = useState<string | null>(null)
 
   // Cost code state
   const [costCodes, setCostCodes] = useState<CostCode[]>([])
@@ -431,6 +434,19 @@ export function ScheduleItemSheet({
 
     fetchCOData()
   }, [open, isEditing, item])
+
+  async function applyImpact(impactId: string) {
+    setApplyingImpactId(impactId)
+    setImpactError(null)
+    const result = await applyScheduleChangeOrderImpactAction(impactId)
+    setApplyingImpactId(null)
+    if (!result.success) {
+      setImpactError(result.error)
+      return
+    }
+    setChangeOrderImpacts((current) => current.map((impact) => impact.id === impactId ? { ...impact, applied_at: new Date().toISOString() } : impact))
+    router.refresh()
+  }
 
   // Helper for CO impact totals
   const coImpactTotals = {
@@ -1422,12 +1438,24 @@ export function ScheduleItemSheet({
                                             Applied
                                           </Badge>
                                         ) : (
-                                          <Badge
-                                            variant="outline"
-                                            className="text-[10px] bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-                                          >
-                                            Pending
-                                          </Badge>
+                                          <>
+                                            <Badge
+                                              variant="outline"
+                                              className="text-[10px] bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                                            >
+                                              Pending
+                                            </Badge>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              className="h-6 px-2 text-[11px]"
+                                              disabled={applyingImpactId !== null}
+                                              onClick={() => applyImpact(impact.id)}
+                                            >
+                                              {applyingImpactId === impact.id ? "Applying…" : "Apply to schedule"}
+                                            </Button>
+                                          </>
                                         )}
                                       </div>
                                       {impact.notes && (
@@ -1453,6 +1481,9 @@ export function ScheduleItemSheet({
                                   </div>
                                 ))}
                               </div>
+                              {impactError && (
+                                <p role="alert" className="text-xs text-destructive">{impactError}</p>
+                              )}
                               {coImpactTotals.pending !== 0 && (
                                 <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
                                   <AlertTriangle className="h-4 w-4 text-amber-600" />

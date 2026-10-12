@@ -31,7 +31,7 @@ export default async function SelectionsPortalPage({ params }: Params) {
     <>
       <PortalPageHeader
         title="Choose your finishes"
-        description="Complete each group before its deadline. Your builder reviews the choices you confirm."
+        description="Choose each group, then approve it before its deadline. What you approve, at the prices shown, is what we build."
       />
       <SelectionsPortalClient token={token} data={data} />
     </>

@@ -15,6 +15,14 @@ export { ExternalVerifyEmail, type ExternalVerifyEmailProps } from "./external-v
 export { RfiNotificationEmail, type RfiNotificationEmailProps } from "./rfi-notification-email"
 export { WarrantyVisitEmail, type WarrantyVisitEmailProps } from "./warranty-visit-email"
 export {
+  DesignStudioAppointmentEmail,
+  type DesignStudioAppointmentEmailProps,
+} from "./design-studio-appointment-email"
+export {
+  SelectionApprovalRequestEmail,
+  type SelectionApprovalRequestEmailProps,
+} from "./selection-approval-request-email"
+export {
   WeeklyExecutiveSnapshotEmail,
   type WeeklyExecutiveSnapshotEmailProps,
 } from "./weekly-executive-snapshot-email"

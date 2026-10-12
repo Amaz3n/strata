@@ -5,16 +5,17 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
-import { applyPackageAction, chooseOptionAction, confirmGroupAction } from "@/app/(app)/design-studio/actions"
+import { applyPackageAction, chooseOptionAction } from "@/app/(app)/design-studio/actions"
 import type { SelectionSheet, SheetCategory, SheetGroup, SheetOption } from "@/lib/services/design-studio"
 import { swatchHue } from "@/lib/selections/swatch"
-import { unwrapAction } from "@/lib/action-result"
-import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
+import { unwrapAction, type ActionFailure } from "@/lib/action-result"
+import { SelectionApprovalPanel } from "@/components/selections/selection-approval-panel"
+import { formatWarrantyVisitWindow } from "@/lib/services/warranty/visit-time"
 import { PostCutoffChangeDialog } from "@/components/design-studio/post-cutoff-change-dialog"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { ArrowLeft, Check, Lock } from "@/components/icons"
+import { ArrowLeft, Calendar, Check, Lock } from "@/components/icons"
 
 import "./studio.css"
 
@@ -37,6 +38,16 @@ function formatDay(value: string | null) {
   return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })
 }
 
+/** A choice the home cannot have as asked, held with what it can have instead. */
+type UnavailableChoice = {
+  categoryId: string
+  selectionId: string
+  optionId: string
+  message: string
+  code: string | null
+  supply: NonNullable<ActionFailure["supply"]>
+}
+
 function findActiveCategory(groups: SheetGroup[], categoryId: string) {
   for (const group of groups) {
     const category = group.categories.find((candidate) => candidate.id === categoryId)
@@ -55,8 +66,8 @@ export function SelectionSheetClient({ sheet }: Props) {
       groups[0]?.categories[0]?.id ??
       "",
   )
-  const [signing, setSigning] = useState<EnvelopeWizardSourceEntity | null>(null)
-  const [changingGroup, setChangingGroup] = useState<SheetGroup | null>(null)
+  const [changing, setChanging] = useState<{ group: SheetGroup; initial: { selectionId: string; optionId: string } | null } | null>(null)
+  const [unavailable, setUnavailable] = useState<UnavailableChoice | null>(null)
 
   const showInternals = sheet.canReadMargin && !buyerView
 
@@ -70,23 +81,33 @@ export function SelectionSheetClient({ sheet }: Props) {
     [groups],
   )
 
-  function choose(category: SheetCategory, option: SheetOption) {
+  function choose(category: SheetCategory, optionId: string) {
     if (!sheet.canManage) return
+    setUnavailable(null)
     startTransition(async () => {
-      try {
-        unwrapAction(
-          await chooseOptionAction({
-            projectId: sheet.home.projectId,
-            selectionId: category.selectionId,
-            optionId: option.id,
-          }),
-        )
+      const result = await chooseOptionAction({
+        projectId: sheet.home.projectId,
+        selectionId: category.selectionId,
+        optionId,
+      })
+      if (result.success) {
         router.refresh()
-      } catch (error) {
-        toast.error("Could not record that choice", {
-          description: error instanceof Error ? error.message : undefined,
-        })
+        return
       }
+      if (result.supply) {
+        setUnavailable({
+          categoryId: category.id,
+          selectionId: category.selectionId,
+          optionId,
+          message: result.error,
+          code: result.code ?? null,
+          supply: result.supply,
+        })
+        // The refusal opened an exception on the home; the workbench band lists it.
+        router.refresh()
+        return
+      }
+      toast.error("Could not record that choice", { description: result.error })
     })
   }
 
@@ -98,30 +119,6 @@ export function SelectionSheetClient({ sheet }: Props) {
         router.refresh()
       } catch (error) {
         toast.error("Could not apply the package", {
-          description: error instanceof Error ? error.message : undefined,
-        })
-      }
-    })
-  }
-
-  function confirmGroup(group: SheetGroup) {
-    startTransition(async () => {
-      const anchor = group.categories[0]?.selectionId
-      try {
-        unwrapAction(await confirmGroupAction({ projectId: sheet.home.projectId, groupId: group.groupId }))
-        toast.success(`${group.name} confirmed`)
-        if (anchor) {
-          setSigning({
-            type: "selection",
-            id: anchor,
-            project_id: sheet.home.projectId,
-            title: `${group.name} selections — ${sheet.home.lotLabel}`,
-            document_type: "other",
-          })
-        }
-        router.refresh()
-      } catch (error) {
-        toast.error("Could not confirm the group", {
           description: error instanceof Error ? error.message : undefined,
         })
       }
@@ -147,6 +144,12 @@ export function SelectionSheetClient({ sheet }: Props) {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-4">
+          <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+            <Calendar className="h-3.5 w-3.5" />
+            {sheet.appointment && sheet.appointment.timeZone
+              ? `${formatWarrantyVisitWindow(sheet.appointment.scheduledAt, sheet.appointment.endsAt, sheet.appointment.timeZone)}${sheet.appointment.locationName ? ` · ${sheet.appointment.locationName}` : ""}`
+              : "No session booked"}
+          </span>
           {sheet.canReadMargin && (
             <div className="flex items-center gap-2">
               <Switch id="buyer-view" checked={buyerView} onCheckedChange={setBuyerView} />
@@ -276,6 +279,49 @@ export function SelectionSheetClient({ sheet }: Props) {
                     </p>
                   )}
                 </div>
+                {unavailable?.categoryId === activeCategory.id && (
+                  <div role="alert" className="flex flex-col gap-2 border border-warning/40 bg-warning/10 p-3">
+                    <p className="text-[12.5px] font-medium">{unavailable.supply.reason}</p>
+                    {unavailable.supply.alternates.length > 0 ? (
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-[11.5px] text-muted-foreground">Still in time</span>
+                        {unavailable.supply.alternates.map((alternate) => (
+                          <div key={alternate.optionId} className="flex items-center gap-3 border border-border bg-background px-2.5 py-1.5">
+                            <span className="min-w-0 flex-1 truncate text-[12.5px]">{alternate.name}</span>
+                            <span className="font-mono tabular-nums flex-none text-[12px]">{alternate.priceCents === 0 ? "Included" : money(alternate.priceCents)}</span>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 flex-none rounded-none"
+                              disabled={pending || !sheet.canManage}
+                              onClick={() => choose(activeCategory, alternate.optionId)}
+                            >
+                              Choose instead
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[11.5px] text-muted-foreground">No option in this category can arrive in time.</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {activeGroup && unavailable.code !== "SELECTION_OPTION_UNAVAILABLE" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 rounded-none"
+                          disabled={!sheet.canManage}
+                          onClick={() => setChanging({ group: activeGroup, initial: { selectionId: unavailable.selectionId, optionId: unavailable.optionId } })}
+                        >
+                          Draft a change order
+                        </Button>
+                      )}
+                      <Button asChild size="sm" variant="ghost" className="h-7 rounded-none">
+                        <Link href={`/projects/${sheet.home.projectId}/selections`}>Expedite or resolve on the project file</Link>
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {activeCategory.options.length === 0 ? (
                   <p className="py-12 text-center text-[13px] text-muted-foreground">
                     No options are configured for this category yet.
@@ -292,7 +338,7 @@ export function SelectionSheetClient({ sheet }: Props) {
                           className="studio-option"
                           data-picked={picked}
                           disabled={!option.isAvailable || locked || pending || !sheet.canManage}
-                          onClick={() => choose(activeCategory, option)}
+                          onClick={() => choose(activeCategory, option.id)}
                         >
                           <span
                             className="studio-swatch"
@@ -345,7 +391,7 @@ export function SelectionSheetClient({ sheet }: Props) {
               {sheet.tally.byGroup.map((group) => (
                 <Row
                   key={group.groupId}
-                  label={`${group.name}${group.locked ? " (signed)" : ""}`}
+                  label={`${group.name}${sheet.approvals.some((approval) => approval.groupId === group.groupId && approval.state === "approved") ? " (approved)" : group.locked ? " (locked)" : ""}`}
                   value={group.subtotalCents === 0 ? "—" : money(group.subtotalCents)}
                 />
               ))}
@@ -377,21 +423,18 @@ export function SelectionSheetClient({ sheet }: Props) {
                     variant="outline"
                     className="w-full rounded-none"
                     disabled={!sheet.canManage}
-                    onClick={() => setChangingGroup(activeGroup)}
+                    onClick={() => setChanging({ group: activeGroup, initial: null })}
                   >
                     <Lock className="mr-1.5 h-3.5 w-3.5" />
                     Change via change order
                   </Button>
                 ) : (
-                  <Button
-                    className="w-full rounded-none"
-                    disabled={pending || !sheet.canManage || activeGroup.chosenCount < activeGroup.categories.length}
-                    onClick={() => confirmGroup(activeGroup)}
-                  >
-                    {activeGroup.chosenCount < activeGroup.categories.length
-                      ? `${activeGroup.categories.length - activeGroup.chosenCount} left in ${activeGroup.name.toLowerCase()}`
-                      : `Confirm ${activeGroup.name.toLowerCase()} · send to sign`}
-                  </Button>
+                  <SelectionApprovalPanel
+                    projectId={sheet.home.projectId}
+                    approval={sheet.approvals.find((approval) => approval.groupId === activeGroup.groupId) ?? null}
+                    canManage={sheet.canManage}
+                    layout="stack"
+                  />
                 )}
                 <Button asChild variant="outline" className="w-full rounded-none">
                   <Link href={`/projects/${sheet.home.projectId}/selections`}>Open the project file</Link>
@@ -402,29 +445,20 @@ export function SelectionSheetClient({ sheet }: Props) {
         </div>
       )}
 
-      {changingGroup && (
+      {changing && (
         <PostCutoffChangeDialog
           open
           onOpenChange={(open) => {
-            if (!open) setChangingGroup(null)
+            if (!open) setChanging(null)
           }}
           projectId={sheet.home.projectId}
-          group={changingGroup}
-          changeFeeCents={sheet.changeFeeCents}
+          group={changing.group}
+          initial={changing.initial}
+          changeFeeCents={changing.group.status === "locked" ? sheet.changeFeeCents : 0}
           canWaiveChangeFee={sheet.canWaiveChangeFee}
         />
       )}
 
-      <EnvelopeWizard
-        open={Boolean(signing)}
-        onOpenChange={(open) => {
-          if (!open) setSigning(null)
-        }}
-        sourceEntity={signing}
-        sourceLabel="Selection"
-        sheetTitle="Send selections for signature"
-        sheetDescription="Attach the finalized selection sheet, place signer fields, and send it to the buyer."
-      />
     </div>
   )
 }

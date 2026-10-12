@@ -6,6 +6,7 @@ import { z } from "zod"
 import { discoverCatalogGroupCategories } from "@/lib/services/catalog-group-categories"
 import { reviewCatalogGroupCategories } from "@/lib/services/catalog-group-publication"
 import { revertCutoffSchema, selectionGroupSchema } from "@/lib/validation/selections"
+import { inPersonSelectionApprovalSchema, sendSelectionApprovalSchema, voidSelectionApprovalSchema } from "@/lib/validation/design-studio"
 
 import { createHash } from "node:crypto"
 
@@ -17,7 +18,6 @@ import {
   cloneOrgGroupsToCommunity,
   findCatalogImageByChecksum,
   listModelOptions,
-  upsertAppointment,
   upsertCategory,
   upsertOption,
   upsertPackage,
@@ -29,7 +29,18 @@ import {
 } from "@/lib/services/option-catalog"
 import { recomputeCommunityCutoffs, overrideGroupCutoff, revertCutoffToSchedule } from "@/lib/services/selection-cutoffs"
 import { createPostCutoffSelectionChangeOrder } from "@/lib/services/selection-change-orders"
-import { confirmSelectionGroup, selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
+import { selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
+import {
+  bookAppointment,
+  cancelAppointment,
+  listOpenSlots,
+  recordAppointmentOutcome,
+  rescheduleAppointment,
+  saveConsultantHours,
+  saveStudioLocation,
+  saveStudioRooms,
+} from "@/lib/services/design-studio-appointments"
+import { recordInPersonSelectionApproval, sendSelectionApproval, voidSelectionApproval } from "@/lib/services/selection-approvals"
 import { requireOrgContext } from "@/lib/services/context"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { listBookableHomes } from "@/lib/services/design-studio"
@@ -103,8 +114,42 @@ export async function upsertSelectionGroupAction(input: unknown) {
   }, ["/design-studio/rules"])
 }
 
-export async function upsertAppointmentAction(input: unknown) {
-  return run(() => upsertAppointment(input as Parameters<typeof upsertAppointment>[0]))
+/** Design studio sessions. Booking, moving and closing out live on this desk; every rule is the service's and the database's. */
+export async function bookAppointmentAction(input: unknown) {
+  return run(() => bookAppointment(input as Parameters<typeof bookAppointment>[0]))
+}
+
+export async function rescheduleAppointmentAction(input: unknown) {
+  return run(() => rescheduleAppointment(input as Parameters<typeof rescheduleAppointment>[0]))
+}
+
+export async function cancelAppointmentAction(input: unknown) {
+  return run(() => cancelAppointment(input as Parameters<typeof cancelAppointment>[0]))
+}
+
+export async function recordAppointmentOutcomeAction(input: unknown) {
+  return run(() => recordAppointmentOutcome(input as Parameters<typeof recordAppointmentOutcome>[0]))
+}
+
+/** Read-only, for the booking dialog's slot picker; nothing is revalidated. */
+export async function listOpenSlotsAction(input: unknown): Promise<ActionResult<Awaited<ReturnType<typeof listOpenSlots>>>> {
+  try {
+    return { success: true, data: await listOpenSlots(input as Parameters<typeof listOpenSlots>[0]) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function saveStudioLocationAction(input: unknown) {
+  return run(() => saveStudioLocation(input as Parameters<typeof saveStudioLocation>[0]), ["/design-studio/studios"])
+}
+
+export async function saveStudioRoomsAction(input: unknown) {
+  return run(() => saveStudioRooms(input as Parameters<typeof saveStudioRooms>[0]), ["/design-studio/studios"])
+}
+
+export async function saveConsultantHoursAction(input: unknown) {
+  return run(() => saveConsultantHours(input as Parameters<typeof saveConsultantHours>[0]), ["/design-studio/studios"])
 }
 
 const bookableHomesSchema = z.object({
@@ -209,13 +254,27 @@ export async function applyPackageAction(input: unknown) {
   }, [`/design-studio/sheet/${parsed.projectId}`, `/projects/${parsed.projectId}/selections`])
 }
 
-export async function confirmGroupAction(input: unknown) {
-  const parsed = z.object({ projectId: z.string().uuid(), groupId: z.string().uuid() }).parse(input)
-  return run(async () => {
-    const context = await requireOrgContext()
-    await requirePermission("design_studio.manage", context)
-    return confirmSelectionGroup({ orgId: context.orgId, ...parsed })
-  }, [`/design-studio/sheet/${parsed.projectId}`, `/projects/${parsed.projectId}/selections`, "/starts"])
+const approvalPaths = (projectId: string) => [`/design-studio/sheet/${projectId}`, `/projects/${projectId}/selections`, "/starts"]
+
+/**
+ * Buyer approval of a group's selections. The workbench and the selection
+ * sheet both send, void and record through these; the terms hash the page
+ * showed travels with every one, so nothing is sent or approved that the
+ * coordinator did not see.
+ */
+export async function sendSelectionApprovalAction(input: unknown) {
+  const parsed = sendSelectionApprovalSchema.parse(input)
+  return run(() => sendSelectionApproval(parsed), approvalPaths(parsed.projectId))
+}
+
+export async function voidSelectionApprovalAction(input: unknown) {
+  const parsed = voidSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
+  return run(() => voidSelectionApproval({ approvalId: parsed.approvalId, reason: parsed.reason }), approvalPaths(parsed.projectId))
+}
+
+export async function recordInPersonSelectionApprovalAction(input: unknown) {
+  const parsed = inPersonSelectionApprovalSchema.parse(input)
+  return run(() => recordInPersonSelectionApproval(parsed), approvalPaths(parsed.projectId))
 }
 
 

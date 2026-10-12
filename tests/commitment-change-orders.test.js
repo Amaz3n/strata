@@ -7,6 +7,7 @@ const { freshRequire } = require("./support/modules")
 const {
   approveCommitmentChangeOrder,
   createCommitmentChangeOrder,
+  deleteCommitmentChangeOrder,
   listVarianceOrders,
   rejectVarianceOrder,
   updateCommitmentChangeOrder,
@@ -182,5 +183,35 @@ describe("the variance queue's division lens", () => {
     const result = await lensHarness().run(() => listVarianceOrders())
 
     assert.equal(result.items.length, 4)
+  })
+})
+
+describe("a variance order an executed change order raised", () => {
+  const raised = () => vpo({ origin: "design_studio_co", prime_change_order_id: id(50), requested_by: null, total_cents: 700_00 })
+
+  test("purchasing re-prices it only with a reason, kept on the order", async () => {
+    const service = harness({ orders: [raised()] })
+    await assert.rejects(
+      service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { lines: [line(650_00)] } })),
+      /Say why this variance order's price changed/,
+    )
+    assert.equal(service.db.commitment_change_orders[0].total_cents, 700_00)
+
+    await service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { lines: [line(650_00)], reprice_reason: "Vendor honoured the 2025 slab price" } }))
+    const [order] = service.db.commitment_change_orders
+    assert.equal(order.total_cents, 650_00)
+    assert.deepEqual(order.metadata.repricings.map((entry) => [entry.reason, entry.from_cents, entry.to_cents]), [["Vendor honoured the 2025 slab price", 700_00, 650_00]])
+  })
+
+  test("it keeps its origin and is voided, never deleted", async () => {
+    const service = harness({ orders: [raised()] })
+    await assert.rejects(service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { origin: "office" } })), /keeps its origin/)
+    await assert.rejects(service.run(() => deleteCommitmentChangeOrder({ commitmentChangeOrderId: VPO })), /Void it instead/)
+    assert.equal(service.db.commitment_change_orders.length, 1)
+  })
+
+  test("an office variance order is never passed off as one the change order raised", async () => {
+    const service = harness()
+    await assert.rejects(service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { origin: "design_studio_co" } })), /keeps its origin/)
   })
 })

@@ -57,10 +57,14 @@ export type SearchEntityType =
   | 'budget_template'
   | 'agreement_template'
   | 'selection_option'
+  | 'selection_exception'
   | 'design_studio_appointment'
+  | 'design_studio_location'
+  | 'selection_approval'
   | 'price_agreement'
   | 'commitment_change_order'
   | 'start_package'
+  | 'permit_application'
   | 'closing'
   | 'spec_price_proposal'
   | 'spec_disposition'
@@ -156,6 +160,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     searchableFields: ['status', 'notes'],
     hrefTemplate: '/starts/{id}',
   },
+  permit_application: {
+    table: 'permit_applications',
+    titleField: 'permit_number',
+    subtitleFields: ['permit_type', 'decision', 'decided_on'],
+    descriptionFields: ['decision_note'],
+    searchableFields: ['permit_number', 'permit_type', 'decision_note'],
+    hrefTemplate: '/projects/{project_id}/permits?permit={id}',
+  },
   commitment_change_order: {
     table: 'commitment_change_orders',
     titleField: 'title',
@@ -172,6 +184,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     searchableFields: ['scope_of_work', 'notes', 'status', 'uom'],
     hrefTemplate: '/purchasing?tab=price-book&agreement={id}',
   },
+  selection_exception: {
+    table: 'selection_exceptions',
+    titleField: 'reason',
+    subtitleFields: ['status', 'opened_at'],
+    descriptionFields: ['resolution_reason'],
+    searchableFields: ['reason', 'status', 'resolution_reason'],
+    hrefTemplate: '/projects/{project_id}/selections?exception={id}',
+  },
   selection_option: {
     table: 'selection_options',
     titleField: 'name',
@@ -183,10 +203,25 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
   design_studio_appointment: {
     table: 'design_studio_appointments',
     titleField: 'scheduled_at',
-    subtitleFields: ['status', 'location', 'contact_id'],
-    descriptionFields: ['notes'],
-    searchableFields: ['location', 'notes', 'status'],
-    hrefTemplate: '/design-studio?tab=appointments&appointment={id}',
+    subtitleFields: ['status', 'ends_at'],
+    descriptionFields: ['notes', 'cancel_reason'],
+    searchableFields: ['notes', 'status', 'cancel_reason'],
+    hrefTemplate: '/design-studio/sheet/{project_id}',
+  },
+  design_studio_location: {
+    table: 'design_studio_locations',
+    titleField: 'name',
+    subtitleFields: ['address', 'time_zone'],
+    searchableFields: ['name', 'address'],
+    hrefTemplate: '/design-studio/studios?location={id}',
+  },
+  selection_approval: {
+    table: 'selection_approvals',
+    titleField: 'status',
+    subtitleFields: ['channel', 'total_cents', 'sent_at'],
+    descriptionFields: ['decline_reason', 'void_reason'],
+    searchableFields: ['status', 'channel', 'decline_reason', 'void_reason'],
+    hrefTemplate: '/projects/{project_id}/selections?approval={id}',
   },
   house_plan: {
     table: 'house_plans',
@@ -584,8 +619,11 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "spec_price_proposal",
   "spec_disposition",
   "start_package",
+  "permit_application",
   "commitment_change_order",
+  "selection_exception",
   "design_studio_appointment",
+  "selection_approval",
   "task",
   "file",
   "invoice",

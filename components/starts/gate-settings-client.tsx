@@ -18,6 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
 import type { GateDefinitionDTO } from "@/lib/services/starts"
+import { SYSTEM_GATE_KEYS } from "@/lib/starts/gate-logic"
 import { cn } from "@/lib/utils"
 import { seedDefaultGatesAction, upsertGateDefinitionAction } from "@/app/(app)/starts/actions"
 
@@ -175,7 +176,11 @@ export function GateSettingsClient({ definitions, canManage }: { definitions: Ga
                 <TableCell className="font-mono text-[11px] text-muted-foreground">{definition.requiresAttestationPermission ?? "start.write"}</TableCell>
                 <TableCell className="text-right tabular-nums">{definition.sortOrder}</TableCell>
                 <TableCell className="text-right">
-                  <Switch checked={definition.isActive} disabled={!canManage || pending} onCheckedChange={() => toggleActive(definition)} />
+                  {SYSTEM_GATE_KEYS.has(definition.key) ? (
+                    <span className="text-[11px] text-muted-foreground" title="Every start carries this gate; it reads the home's permit application.">Always</span>
+                  ) : (
+                    <Switch checked={definition.isActive} disabled={!canManage || pending} onCheckedChange={() => toggleActive(definition)} />
+                  )}
                 </TableCell>
                 {canManage ? (
                   <TableCell className="text-right">

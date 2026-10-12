@@ -19,7 +19,6 @@ import {
 } from "@/lib/financials/change-order-math"
 import { applyApprovedChangeOrderToSov } from "@/lib/services/prime-sov"
 import { applyPlanAdoptionFromChangeOrder } from "@/lib/services/plan-change-proposals"
-import { applySelectionChangeFromChangeOrder } from "@/lib/services/selections"
 import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
 
 export type ChangeOrderLifecycle = "draft" | "pricing" | "proposed" | "approved" | "rejected" | "void"
@@ -157,7 +156,9 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
     }
   }
 
-  const uncodedLines = lines.filter((line) => !line.cost_code_id && !line.budget_line_id)
+  // A line with no cost behind it (a fee, a pure price change) moves no budget,
+  // so it needs no code; only a costed line without one stops the posting.
+  const uncodedLines = lines.filter((line) => !line.cost_code_id && !line.budget_line_id && calculateLineBudgetRevisionCents(line) !== 0)
   if (uncodedLines.length > 0) {
     return {
       budget_revision_cents: changeOrder.total_cents ?? lines.reduce((sum, line) => sum + calculateLineBudgetRevisionCents(line), 0),
@@ -174,11 +175,12 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
     }
   }
 
-  const budgetDistributions = lines.map((line, index) => {
+  const budgetDistributions = lines.flatMap((line, index) => {
+    if (!line.cost_code_id && !line.budget_line_id) return []
     const budgetRevisionCents = calculateLineBudgetRevisionCents(line)
     const gmpImpact = normalizeGmpImpact(line.gmp_impact)
     const gmpDeltaCents = calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), gmpImpact)
-    return {
+    return [{
       cost_code_id: line.cost_code_id,
       budget_line_id: line.budget_line_id,
       description: line.description,
@@ -188,7 +190,7 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
       gmp_impact: gmpImpact,
       gmp_delta_cents: gmpDeltaCents,
       source_line_index: index,
-    }
+    }]
   })
 
   const budgetRevisionCents = budgetDistributions.reduce((sum, line) => sum + line.budget_revision_cents, 0)
@@ -217,6 +219,33 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
 
 function hasBudgetDistributions(financialImpact: ReturnType<typeof buildApprovedChangeOrderFinancialMetadata>) {
   return financialImpact.budget_distributions.length > 0
+}
+
+/**
+ * A selection change order's selections, variance orders and budget revision
+ * are written by its approval itself (`tg_change_order_selection_apply`), in
+ * the approval's transaction; the service never posts them a second time.
+ */
+function carriesSelectionChange(changeOrder: ChangeOrder) {
+  return Boolean(changeOrder.metadata && typeof changeOrder.metadata === "object" && "selection_change" in changeOrder.metadata)
+}
+
+function withoutBlockedApproval(metadata: Record<string, unknown> | null | undefined) {
+  return Object.fromEntries(Object.entries(metadata ?? {}).filter(([key]) => key !== "approval_blocked"))
+}
+
+/**
+ * The buyer signed but the approval could not land (a selection on it changed
+ * since it was priced): the change order says so, so the stuck signature is in
+ * front of the office rather than only in a webhook's retry log.
+ */
+async function recordBlockedApproval(supabase: SupabaseClient, changeOrder: ChangeOrder, failure: { message: string; details?: string | null }) {
+  const { error } = await supabase
+    .from("change_orders")
+    .update({ metadata: { ...(changeOrder.metadata ?? {}), approval_blocked: { reason: failure.message, code: failure.details ?? null, at: new Date().toISOString() } } })
+    .eq("org_id", changeOrder.org_id)
+    .eq("id", changeOrder.id)
+  if (error) throw new Error(`The approval could not land (${failure.message}) and could not be recorded on the change order: ${error.message}`)
 }
 
 async function postBudgetRevisionForChangeOrder({
@@ -1243,7 +1272,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
   const nowIso = new Date().toISOString()
   const financialImpact = buildApprovedChangeOrderFinancialMetadata(existing, null)
   const metadataPatch = {
-    ...(existing.metadata ?? {}),
+    ...withoutBlockedApproval(existing.metadata),
     approved_via_envelope: true,
     approved_envelope_id: input.envelopeId ?? null,
     approved_document_id: input.documentId,
@@ -1260,6 +1289,28 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
   }
 
   const needsApprovalTransition = existing.status !== "approved"
+
+  const updatePayload: Record<string, any> = {
+    metadata: metadataPatch,
+  }
+
+  if (needsApprovalTransition) {
+    updatePayload.status = "approved"
+    updatePayload.lifecycle = "approved"
+    updatePayload.approved_at = nowIso
+    updatePayload.approved_by = null
+  }
+
+  const { error: updateError } = await supabase
+    .from("change_orders")
+    .update(updatePayload)
+    .eq("org_id", input.orgId)
+    .eq("id", input.changeOrderId)
+
+  if (updateError) {
+    if (needsApprovalTransition) await recordBlockedApproval(supabase, existing, updateError)
+    throw new Error(`Failed to update change order from envelope execution: ${updateError.message}`)
+  }
 
   if (needsApprovalTransition) {
     const { error: approvalError } = await supabase.from("approvals").insert({
@@ -1288,27 +1339,6 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     }
   }
 
-  const updatePayload: Record<string, any> = {
-    metadata: metadataPatch,
-  }
-
-  if (needsApprovalTransition) {
-    updatePayload.status = "approved"
-    updatePayload.lifecycle = "approved"
-    updatePayload.approved_at = nowIso
-    updatePayload.approved_by = null
-  }
-
-  const { error: updateError } = await supabase
-    .from("change_orders")
-    .update(updatePayload)
-    .eq("org_id", input.orgId)
-    .eq("id", input.changeOrderId)
-
-  if (updateError) {
-    throw new Error(`Failed to update change order from envelope execution: ${updateError.message}`)
-  }
-
   await attachFileWithServiceRole({
     orgId: existing.org_id,
     fileId: input.executedFileId,
@@ -1319,7 +1349,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     createdBy: null,
   })
 
-  if (hasBudgetDistributions(financialImpact)) {
+  if (hasBudgetDistributions(financialImpact) && !carriesSelectionChange(existing)) {
     await postBudgetRevisionForChangeOrder({
       supabase,
       changeOrder: {
@@ -1350,7 +1380,6 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
       changeOrderId: existing.id,
       actorId: null,
     })
-    await applySelectionChangeFromChangeOrder(existing.id, existing.org_id)
     await applyPlanAdoptionFromChangeOrder(existing.id, existing.org_id)
   }
 
@@ -1416,7 +1445,7 @@ export async function approveChangeOrderFromPortalSignature(input: {
   }
 
   const metadataPatch = {
-    ...(existing.metadata ?? {}),
+    ...withoutBlockedApproval(existing.metadata),
     approval_method: "portal_native_signature",
     approved_via_portal_signature: true,
     approved_signer_name: input.signerName,
@@ -1435,6 +1464,29 @@ export async function approveChangeOrderFromPortalSignature(input: {
   }
 
   const needsApprovalTransition = existing.status !== "approved"
+
+  const updatePayload: Record<string, any> = {
+    metadata: metadataPatch,
+  }
+
+  if (needsApprovalTransition) {
+    updatePayload.status = "approved"
+    updatePayload.lifecycle = "approved"
+    updatePayload.approved_at = nowIso
+    updatePayload.approved_by = null
+  }
+
+  const { error: updateError } = await supabase
+    .from("change_orders")
+    .update(updatePayload)
+    .eq("org_id", input.orgId)
+    .eq("project_id", input.projectId)
+    .eq("id", input.changeOrderId)
+
+  if (updateError) {
+    if (needsApprovalTransition) await recordBlockedApproval(supabase, existing, updateError)
+    throw new Error(`Failed to approve change order: ${updateError.message}`)
+  }
 
   if (needsApprovalTransition) {
     const { error: approvalError } = await supabase.from("approvals").insert({
@@ -1462,29 +1514,7 @@ export async function approveChangeOrderFromPortalSignature(input: {
     }
   }
 
-  const updatePayload: Record<string, any> = {
-    metadata: metadataPatch,
-  }
-
-  if (needsApprovalTransition) {
-    updatePayload.status = "approved"
-    updatePayload.lifecycle = "approved"
-    updatePayload.approved_at = nowIso
-    updatePayload.approved_by = null
-  }
-
-  const { error: updateError } = await supabase
-    .from("change_orders")
-    .update(updatePayload)
-    .eq("org_id", input.orgId)
-    .eq("project_id", input.projectId)
-    .eq("id", input.changeOrderId)
-
-  if (updateError) {
-    throw new Error(`Failed to approve change order: ${updateError.message}`)
-  }
-
-  if (needsApprovalTransition && hasBudgetDistributions(financialImpact)) {
+  if (needsApprovalTransition && hasBudgetDistributions(financialImpact) && !carriesSelectionChange(existing)) {
     await postBudgetRevisionForChangeOrder({
       supabase,
       changeOrder: {
@@ -1510,7 +1540,6 @@ export async function approveChangeOrderFromPortalSignature(input: {
       changeOrderId: existing.id,
       actorId: null,
     })
-    await applySelectionChangeFromChangeOrder(existing.id, existing.org_id)
     await applyPlanAdoptionFromChangeOrder(existing.id, existing.org_id)
   }
 
@@ -1689,27 +1718,6 @@ export async function approveChangeOrder({
     signed_file_id: signedFileId,
   }
 
-  const { error: approvalError } = await supabase.from("approvals").insert({
-    org_id: existing.org_id,
-    entity_type: "change_order",
-    entity_id: changeOrderId,
-    approver_id: userId,
-    status: "approved",
-    decision_at: approvedAt,
-    decision_notes: approvalNote ?? "Approved offline outside Arc",
-    payload: {
-      source: "manual_offline",
-      ...offlineApproval,
-    },
-    signature_data: JSON.stringify(offlineApproval),
-    signature_ip: null,
-    signed_at: approvedAt,
-  })
-
-  if (approvalError) {
-    throw new Error(`Failed to record offline approval: ${approvalError.message}`)
-  }
-
   const { data, error } = await supabase
     .from("change_orders")
     .update({
@@ -1718,7 +1726,7 @@ export async function approveChangeOrder({
       approved_at: approvedAt,
       approved_by: userId,
       metadata: {
-        ...(existing.metadata ?? {}),
+        ...withoutBlockedApproval(existing.metadata),
         approval_method: "manual_offline",
         approved_by_user: userId,
         approved_at: approvedAt,
@@ -1742,7 +1750,28 @@ export async function approveChangeOrder({
     throw new Error(`Failed to approve change order: ${error?.message}`)
   }
 
-  if (hasBudgetDistributions(financialImpact)) {
+  const { error: approvalError } = await supabase.from("approvals").insert({
+    org_id: existing.org_id,
+    entity_type: "change_order",
+    entity_id: changeOrderId,
+    approver_id: userId,
+    status: "approved",
+    decision_at: approvedAt,
+    decision_notes: approvalNote ?? "Approved offline outside Arc",
+    payload: {
+      source: "manual_offline",
+      ...offlineApproval,
+    },
+    signature_data: JSON.stringify(offlineApproval),
+    signature_ip: null,
+    signed_at: approvedAt,
+  })
+
+  if (approvalError) {
+    throw new Error(`Failed to record offline approval: ${approvalError.message}`)
+  }
+
+  if (hasBudgetDistributions(financialImpact) && !carriesSelectionChange(existing)) {
     await postBudgetRevisionForChangeOrder({
       supabase,
       changeOrder: {
@@ -1767,7 +1796,6 @@ export async function approveChangeOrder({
     changeOrderId: data.id,
     actorId: userId,
   })
-  await applySelectionChangeFromChangeOrder(data.id, resolvedOrgId)
   await applyPlanAdoptionFromChangeOrder(data.id, resolvedOrgId)
 
   await recordEvent({
@@ -2352,6 +2380,9 @@ export async function updateChangeOrder({
 
   if (["approved", "rejected", "void"].includes(existing.lifecycle ?? "draft")) {
     throw new Error("Approved, rejected, or voided change orders cannot be edited.")
+  }
+  if (carriesSelectionChange(existing)) {
+    throw new Error("A selection change order is fixed as raised: its lines are the buyer's selection prices. Delete or void it and raise a new one to change it.")
   }
   await assertNotOutForSignature(changeOrderId)
 

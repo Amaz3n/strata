@@ -1,9 +1,13 @@
+import { z } from "zod"
 import { recordAudit } from "@/lib/services/audit"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
-import { requirePermission } from "@/lib/services/permissions"
+import { NotificationService } from "@/lib/services/notifications"
+import { expireSelectionApprovals } from "@/lib/services/selection-approvals"
+import { refreshProjectSelectionExceptions } from "@/lib/services/selection-exceptions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { cutoffOverrideSchema, revertCutoffSchema, type CutoffOverrideInput } from "@/lib/validation/selections"
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -13,7 +17,6 @@ import {
   normalizeScheduleTemplateItems,
   selectionReminderKey,
   selectionTaskKey,
-  shouldReopenSelectionGroup,
 } from "@/lib/selections/cutoff-math"
 
 export {
@@ -22,9 +25,16 @@ export {
   normalizeScheduleTemplateItems,
   selectionReminderKey,
   selectionTaskKey,
-  shouldReopenSelectionGroup,
 } from "@/lib/selections/cutoff-math"
 
+const COORDINATOR_NOTIFY_CAP = 25
+
+/**
+ * The people who run design studio sessions on the home -- by permission, not
+ * role name, and only those whose division and project scope reach it -- hear
+ * about its deadlines through the notification service, which applies each
+ * person's email preferences.
+ */
 async function notifySelectionCoordinators(input: {
   supabase: SupabaseClient
   orgId: string
@@ -34,32 +44,34 @@ async function notifySelectionCoordinators(input: {
   title: string
   message: string
 }) {
-  const { data: memberships, error } = await input.supabase
-    .from("memberships")
-    .select("user_id, role:roles(key)")
-    .eq("org_id", input.orgId)
-    .eq("status", "active")
+  const { data, error } = await input.supabase.rpc("project_permission_holders", {
+    p_org_id: input.orgId, p_project_id: input.projectId, p_permission: "design_studio.manage",
+  })
   if (error) throw new Error(`Failed to load selection coordinators: ${error.message}`)
-  const userIds = Array.from(new Set((memberships ?? []).filter((membership) => {
-    const role = Array.isArray(membership.role) ? membership.role[0] : membership.role
-    return ["org_design_studio_coordinator", "org_project_lead", "org_admin", "org_owner"].includes(role?.key ?? "")
-  }).map((membership) => membership.user_id)))
-  if (!userIds.length) return
-  const { error: insertError } = await input.supabase.from("notifications").insert(userIds.map((userId) => ({
-    org_id: input.orgId,
-    user_id: userId,
-    notification_type: input.type,
-    payload: { title: input.title, message: input.message, project_id: input.projectId, entity_type: "project_selection_group", entity_id: input.entityId },
+  const userIds = Array.from(new Set(z.array(z.string().uuid()).parse(data ?? []))).slice(0, COORDINATOR_NOTIFY_CAP)
+  const notifications = new NotificationService()
+  await Promise.all(userIds.map((userId) => notifications.createAndQueue({
+    orgId: input.orgId, userId, type: input.type, title: input.title, message: input.message,
+    projectId: input.projectId, entityType: "project_selection_group", entityId: input.entityId,
+    metadata: { href: `/projects/${input.projectId}/selections` },
   })))
-  if (insertError) throw new Error(`Failed to notify selection coordinators: ${insertError.message}`)
 }
 
-export async function recomputeProjectSelectionCutoffs(projectId: string, orgId: string) {
+type CutoffGroupInstance = {
+  id: string
+  group_id: string
+  cutoff_date: string | null
+  cutoff_source: string
+  group: { name: string; schedule_task_key: string; cutoff_offset_days: number; cutoff_anchor: string } | null
+}
+
+/** Each group instance on the home with the cutoff its schedule task now gives it. */
+async function deriveHomeCutoffs(orgId: string, projectId: string) {
   const supabase = createServiceSupabaseClient()
   const [groupsResult, itemsResult] = await Promise.all([
     supabase
       .from("project_selection_groups")
-      .select("id, group_id, cutoff_date, cutoff_source, status, group:selection_groups(name, schedule_task_key, cutoff_offset_days, cutoff_anchor)")
+      .select("id, group_id, cutoff_date, cutoff_source, group:selection_groups(name, schedule_task_key, cutoff_offset_days, cutoff_anchor)")
       .eq("org_id", orgId)
       .eq("project_id", projectId),
     supabase
@@ -70,38 +82,45 @@ export async function recomputeProjectSelectionCutoffs(projectId: string, orgId:
   ])
   if (groupsResult.error) throw new Error(`Failed to load selection cutoff groups: ${groupsResult.error.message}`)
   if (itemsResult.error) throw new Error(`Failed to load cutoff schedule items: ${itemsResult.error.message}`)
-  const today = new Date().toISOString().slice(0, 10)
-  let changed = 0
-  let unresolved = 0
-  for (const instance of groupsResult.data ?? []) {
-    if (instance.cutoff_source === "manual_override") continue
-    const group = Array.isArray(instance.group) ? instance.group[0] : instance.group
-    if (!group) continue
+  const items = (itemsResult.data ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    start_date: item.start_date,
+    end_date: item.end_date,
+    template_item_key: typeof item.metadata?.template_item_key === "string" ? item.metadata.template_item_key : null,
+  }))
+  return (groupsResult.data ?? []).flatMap((row) => {
+    const group = Array.isArray(row.group) ? row.group[0] : row.group
+    if (!group) return []
+    const instance: CutoffGroupInstance = { id: row.id, group_id: row.group_id, cutoff_date: row.cutoff_date, cutoff_source: row.cutoff_source, group }
     const derived = deriveSelectionCutoff({
       scheduleTaskKey: group.schedule_task_key,
-      cutoffAnchor: group.cutoff_anchor as "start" | "end",
+      cutoffAnchor: group.cutoff_anchor === "end" ? "end" : "start",
       cutoffOffsetDays: Number(group.cutoff_offset_days),
-      items: (itemsResult.data ?? []).map((item) => ({
-        id: item.id,
-        name: item.name,
-        start_date: item.start_date,
-        end_date: item.end_date,
-        template_item_key: typeof item.metadata?.template_item_key === "string" ? item.metadata.template_item_key : null,
-      })),
+      items,
     })
-    const reopen = shouldReopenSelectionGroup({ status: instance.status, nextCutoffDate: derived.cutoffDate, today })
-    if (instance.cutoff_date === derived.cutoffDate && !reopen) continue
-    const { error } = await supabase
-      .from("project_selection_groups")
-      .update({
-        cutoff_date: derived.cutoffDate,
-        matched_schedule_item_id: derived.matchedScheduleItemId,
-        ...(reopen ? { status: "open", locked_at: null } : {}),
-      })
-      .eq("org_id", orgId)
-      .eq("id", instance.id)
+    return [{ instance, derived }]
+  })
+}
+
+const cutoffMoveSchema = z.object({ changed: z.boolean(), reopened: z.number().int(), old: z.string().nullable(), new: z.string().nullable() })
+
+export async function recomputeProjectSelectionCutoffs(projectId: string, orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  let changed = 0
+  let unresolved = 0
+  for (const { instance, derived } of await deriveHomeCutoffs(orgId, projectId)) {
+    if (instance.cutoff_source === "manual_override") continue
+    // The move re-reads the group under the home's lock: an override that
+    // landed meanwhile is kept, and a group the new date reopens reopens its
+    // swept choices in the same step.
+    const { data, error } = await supabase.rpc("move_project_selection_group_cutoff", {
+      p_org_id: orgId, p_project_id: projectId, p_group_id: instance.group_id,
+      p_cutoff_date: derived.cutoffDate, p_matched_schedule_item_id: derived.matchedScheduleItemId,
+    })
     if (error) throw new Error(`Failed to update selection cutoff: ${error.message}`)
-    if (reopen) await reopenSweptSelections(supabase, { orgId, projectId, groupId: instance.group_id })
+    const moved = cutoffMoveSchema.parse(data)
+    if (!moved.changed || (moved.old === moved.new && moved.reopened === 0)) continue
     changed += 1
     if (!derived.cutoffDate) {
       unresolved += 1
@@ -110,52 +129,34 @@ export async function recomputeProjectSelectionCutoffs(projectId: string, orgId:
         eventType: "selection_cutoff_unresolved",
         entityType: "project_selection_group",
         entityId: instance.id,
-        payload: { project_id: projectId, group_id: instance.group_id, schedule_task_key: group.schedule_task_key },
+        payload: { project_id: projectId, group_id: instance.group_id, schedule_task_key: instance.group?.schedule_task_key },
       })
-    } else {
-      await recordEvent({
+      continue
+    }
+    await recordEvent({
+      orgId,
+      eventType: "selection_cutoff_changed",
+      entityType: "project_selection_group",
+      entityId: instance.id,
+      payload: { project_id: projectId, group_id: instance.group_id, old: moved.old, new: moved.new, selections_reopened: moved.reopened },
+    })
+    const oldTime = moved.old ? Date.parse(`${moved.old}T00:00:00.000Z`) : null
+    const nextTime = Date.parse(`${derived.cutoffDate}T00:00:00.000Z`)
+    if (oldTime != null && Math.abs(nextTime - oldTime) > 3 * 86_400_000) {
+      await notifySelectionCoordinators({
+        supabase,
         orgId,
-        eventType: "selection_cutoff_changed",
-        entityType: "project_selection_group",
+        projectId,
         entityId: instance.id,
-        payload: { project_id: projectId, group_id: instance.group_id, old: instance.cutoff_date, new: derived.cutoffDate },
+        type: "selection_cutoff_changed",
+        title: "Selection cutoff moved",
+        message: `${instance.group?.name ?? "A selection group"} moved from ${moved.old} to ${derived.cutoffDate}.`,
       })
-      const oldTime = instance.cutoff_date ? Date.parse(`${instance.cutoff_date}T00:00:00.000Z`) : null
-      const nextTime = Date.parse(`${derived.cutoffDate}T00:00:00.000Z`)
-      if (oldTime != null && Math.abs(nextTime - oldTime) > 3 * 86_400_000) {
-        await notifySelectionCoordinators({
-          supabase,
-          orgId,
-          projectId,
-          entityId: instance.id,
-          type: "selection_cutoff_changed",
-          title: "Selection cutoff moved",
-          message: `${group.name} moved from ${instance.cutoff_date} to ${derived.cutoffDate}.`,
-        })
-      }
     }
   }
-  return { changed, unresolved }
-}
-
-/**
- * The sweep stamps `locked_at` on every choice in a group it locks. When the
- * deadline moves forward the group reopens, so the choices the sweep closed
- * must reopen with it or the extension does nothing. Confirmed choices stay
- * locked: the buyer already signed those off.
- */
-async function reopenSweptSelections(supabase: SupabaseClient, input: { orgId: string; projectId: string; groupId: string }) {
-  const { data, error } = await supabase
-    .from("project_selections")
-    .update({ locked_at: null })
-    .eq("org_id", input.orgId)
-    .eq("project_id", input.projectId)
-    .eq("group_id", input.groupId)
-    .in("status", ["pending", "selected"])
-    .not("locked_at", "is", null)
-    .select("id")
-  if (error) throw new Error(`Failed to reopen group selections: ${error.message}`)
-  return data?.length ?? 0
+  // A schedule pull-in can put a chosen option's order-by date behind today.
+  const exceptions = await refreshProjectSelectionExceptions(orgId, projectId)
+  return { changed, unresolved, exceptionsOpened: exceptions.opened }
 }
 
 export async function recomputeCommunityCutoffs(communityId: string, orgId: string) {
@@ -239,159 +240,129 @@ export async function instantiateSelectionGroupsForProject(projectId: string, or
   return { groups: groupIds.length, selections: selectionRows.length }
 }
 
+const cutoffChangeSchema = z.object({
+  id: z.string().uuid(),
+  before: z.record(z.string(), z.unknown()),
+  after: z.record(z.string(), z.unknown()),
+  reopened: z.number().int(),
+})
+
+/**
+ * Moves a home's cutoff by hand. The authority is the home's (its division),
+ * the reason is required, and the group and the choices it reopens move in one
+ * step whose before and after are audited.
+ */
 export async function overrideGroupCutoff(raw: CutoffOverrideInput) {
   const input = cutoffOverrideSchema.parse(raw)
   const context = await requireOrgContext()
-  await requirePermission("selections.cutoff.override", context)
-  const today = new Date().toISOString().slice(0, 10)
-  const extended = input.cutoffDate >= today
-  const { data, error } = await context.supabase
-    .from("project_selection_groups")
-    .update({
-      cutoff_date: input.cutoffDate,
-      cutoff_source: "manual_override",
-      override_reason: input.reason,
-      overridden_by: context.userId,
-      status: extended ? "open" : "locked",
-      locked_at: extended ? null : new Date().toISOString(),
-    })
-    .eq("org_id", context.orgId)
-    .eq("project_id", input.projectId)
-    .eq("group_id", input.groupId)
-    .select("id")
-    .single()
-  if (error || !data) throw new Error(`Failed to override cutoff: ${error?.message ?? "missing group"}`)
-  const reopened = extended ? await reopenSweptSelections(createServiceSupabaseClient(), { orgId: context.orgId, projectId: input.projectId, groupId: input.groupId }) : 0
+  await requireAuthorization({
+    permission: "selections.cutoff.override", userId: context.userId, orgId: context.orgId, projectId: input.projectId,
+    supabase: context.supabase, logDecision: true, resourceType: "project_selection_group", resourceId: input.groupId,
+  })
+  const { data, error } = await createServiceSupabaseClient().rpc("override_project_selection_group_cutoff", {
+    p_org_id: context.orgId, p_project_id: input.projectId, p_group_id: input.groupId,
+    p_cutoff_date: input.cutoffDate, p_reason: input.reason, p_actor_id: context.userId,
+  })
+  if (error) throw new Error(`Failed to override cutoff: ${error.message}`)
+  const result = cutoffChangeSchema.parse(data)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "selection_cutoff_overridden", entityType: "project_selection_group", entityId: data.id, payload: input }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: data.id, after: { cutoff_date: input.cutoffDate, cutoff_source: "manual_override", override_reason: input.reason, selections_reopened: reopened } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "selection_cutoff_overridden", entityType: "project_selection_group", entityId: result.id,
+      payload: { ...input, previous_cutoff_date: result.before.cutoff_date ?? null, selections_reopened: result.reopened } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: result.id, critical: true,
+      before: result.before, after: { ...result.after, selections_reopened: result.reopened } }),
   ])
+  return result
 }
 
 /**
  * Drops a manual cutoff and goes back to the schedule-derived date. It moves a
  * buyer's deadline exactly as an override does, so it is held to the same
- * record: a reason, the override it discards in the audit, and an event.
+ * record: authority on the home, a reason, the override it discards in the
+ * audit, and an event.
  */
 export async function revertCutoffToSchedule(raw: { projectId: string; groupId: string; reason: string }) {
   const input = revertCutoffSchema.parse(raw)
   const context = await requireOrgContext()
-  await requirePermission("selections.cutoff.override", context)
-  const { data: before, error: beforeError } = await context.supabase
-    .from("project_selection_groups")
-    .select("id, cutoff_date, cutoff_source, override_reason, overridden_by")
-    .eq("org_id", context.orgId)
-    .eq("project_id", input.projectId)
-    .eq("group_id", input.groupId)
-    .maybeSingle()
-  if (beforeError) throw new Error(`Failed to load selection cutoff: ${beforeError.message}`)
-  if (!before) throw new Error("Selection group not found on this home")
-  if (before.cutoff_source !== "manual_override") throw new Error("This cutoff already follows the schedule")
-  const { data, error } = await context.supabase
-    .from("project_selection_groups")
-    .update({ cutoff_source: "schedule", override_reason: null, overridden_by: null })
-    .eq("org_id", context.orgId)
-    .eq("id", before.id)
-    .eq("cutoff_source", "manual_override")
-    .select("id")
-    .maybeSingle()
+  await requireAuthorization({
+    permission: "selections.cutoff.override", userId: context.userId, orgId: context.orgId, projectId: input.projectId,
+    supabase: context.supabase, logDecision: true, resourceType: "project_selection_group", resourceId: input.groupId,
+  })
+  const home = (await deriveHomeCutoffs(context.orgId, input.projectId)).find((entry) => entry.instance.group_id === input.groupId)
+  if (!home) throw new Error("Selection group not found on this home")
+  const { data, error } = await createServiceSupabaseClient().rpc("restore_project_selection_group_cutoff", {
+    p_org_id: context.orgId, p_project_id: input.projectId, p_group_id: input.groupId,
+    p_cutoff_date: home.derived.cutoffDate, p_matched_schedule_item_id: home.derived.matchedScheduleItemId, p_actor_id: context.userId,
+  })
+  if (error?.details === "SELECTION_CUTOFF_NOT_OVERRIDDEN") throw new Error("This cutoff already follows the schedule")
   if (error) throw new Error(`Failed to restore schedule cutoff: ${error.message}`)
-  if (!data) throw new Error("This cutoff changed while you were reverting it. Refresh and try again.")
-  const result = await recomputeProjectSelectionCutoffs(input.projectId, context.orgId)
+  const result = cutoffChangeSchema.parse(data)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "selection_cutoff_reverted", entityType: "project_selection_group", entityId: before.id, payload: { project_id: input.projectId, group_id: input.groupId, reason: input.reason, discarded_cutoff_date: before.cutoff_date } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: before.id,
-      before: { cutoff_date: before.cutoff_date, cutoff_source: before.cutoff_source, override_reason: before.override_reason, overridden_by: before.overridden_by },
-      after: { cutoff_source: "schedule", revert_reason: input.reason } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "selection_cutoff_reverted", entityType: "project_selection_group", entityId: result.id,
+      payload: { project_id: input.projectId, group_id: input.groupId, reason: input.reason, discarded_cutoff_date: result.before.cutoff_date ?? null, cutoff_date: home.derived.cutoffDate } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: result.id, critical: true,
+      before: result.before, after: { ...result.after, revert_reason: input.reason, selections_reopened: result.reopened } }),
   ])
-  return result
+  return { changed: 1, unresolved: home.derived.cutoffDate ? 0 : 1 }
 }
 
 const LOCK_SWEEP_BATCH = 200
 /** One sweep may not lock more groups than this; the cron runs again tomorrow. */
 const LOCK_SWEEP_MAX_BATCHES = 200
 
+const lockedGroupSchema = z.object({
+  id: z.string().uuid(),
+  org_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  group_id: z.string().uuid(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  unconfirmed: z.number().int(),
+})
+
+/**
+ * Locks every open group whose cutoff has passed in its community's day, with
+ * its choices, one home at a time in the database (`lock_due_selection_groups`).
+ * Each batch drains from the `open` set it reads, so the sweep never re-reads a
+ * page it already locked.
+ */
 export async function lockDueGroups(orgId?: string) {
   const supabase = createServiceSupabaseClient()
-  const today = new Date().toISOString().slice(0, 10)
-  const lockedAt = new Date().toISOString()
   let locked = 0
-
-  // Each batch is removed from the `open` filter as it is locked, so the query
-  // drains rather than re-reading the same first page. A single capped page
-  // left the oldest cutoffs open for extra days once an org passed the cap.
   for (let batch = 0; batch < LOCK_SWEEP_MAX_BATCHES; batch += 1) {
-    let query = supabase
-      .from("project_selection_groups")
-      .select("id, org_id, project_id, group_id, metadata, group:selection_groups(name), project:projects(name)")
-      .eq("status", "open")
-      .lt("cutoff_date", today)
-      .order("cutoff_date", { ascending: true })
-      .order("id", { ascending: true })
-      .limit(LOCK_SWEEP_BATCH)
-    if (orgId) query = query.eq("org_id", orgId)
-    const { data, error } = await query
-    if (error) throw new Error(`Failed to load due selection groups: ${error.message}`)
-    if (!data?.length) break
-    await lockGroupBatch(supabase, data, lockedAt)
-    locked += data.length
-    if (data.length < LOCK_SWEEP_BATCH) break
+    const { data, error } = await supabase.rpc("lock_due_selection_groups", { p_org_id: orgId ?? null, p_limit: LOCK_SWEEP_BATCH })
+    if (error) throw new Error(`Failed to lock due selection groups: ${error.message}`)
+    const rows = z.array(lockedGroupSchema).parse(data ?? [])
+    if (!rows.length) break
+    await announceLockedGroups(supabase, rows)
+    locked += rows.length
+    if (rows.length < LOCK_SWEEP_BATCH) break
   }
-
   return { locked }
 }
 
-type DueSelectionGroupRow = {
-  id: string
-  org_id: string
-  project_id: string
-  group_id: string
-  metadata: Record<string, unknown> | null
-  group: { name: string } | { name: string }[] | null
-  project: { name: string } | { name: string }[] | null
-}
-
-async function lockGroupBatch(supabase: SupabaseClient, rows: DueSelectionGroupRow[], lockedAt: string) {
+async function announceLockedGroups(supabase: SupabaseClient, rows: Array<z.infer<typeof lockedGroupSchema>>) {
+  const [groupsResult, projectsResult] = await Promise.all([
+    supabase.from("selection_groups").select("id, name").in("id", Array.from(new Set(rows.map((row) => row.group_id)))),
+    supabase.from("projects").select("id, name").in("id", Array.from(new Set(rows.map((row) => row.project_id)))),
+  ])
+  if (groupsResult.error) throw new Error(`Failed to load locked selection groups: ${groupsResult.error.message}`)
+  if (projectsResult.error) throw new Error(`Failed to load locked homes: ${projectsResult.error.message}`)
+  const groupName = new Map((groupsResult.data ?? []).map((row) => [row.id as string, row.name as string]))
+  const projectName = new Map((projectsResult.data ?? []).map((row) => [row.id as string, row.name as string]))
   for (const group of rows) {
-    const { error: groupError } = await supabase
-      .from("project_selection_groups")
-      .update({ status: "locked", locked_at: lockedAt })
-      .eq("org_id", group.org_id)
-      .eq("id", group.id)
-      .eq("status", "open")
-    if (groupError) throw new Error(`Failed to lock selection group: ${groupError.message}`)
-    const { error: selectionError } = await supabase
-      .from("project_selections")
-      .update({ locked_at: lockedAt })
-      .eq("org_id", group.org_id)
-      .eq("project_id", group.project_id)
-      .eq("group_id", group.group_id)
-    if (selectionError) throw new Error(`Failed to lock group selections: ${selectionError.message}`)
     await recordEvent({ orgId: group.org_id, eventType: "selection_group_locked", entityType: "project_selection_group", entityId: group.id, payload: { project_id: group.project_id, group_id: group.group_id } })
-    const metadata: Record<string, unknown> = group.metadata && !Array.isArray(group.metadata) ? group.metadata : {}
-    const { count: pendingCount, error: countError } = await supabase
-      .from("project_selections")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", group.org_id)
-      .eq("project_id", group.project_id)
-      .eq("group_id", group.group_id)
-      .in("status", ["pending", "selected"])
-    if (countError) throw new Error(`Failed to count missed selections: ${countError.message}`)
-    if ((pendingCount ?? 0) > 0 && metadata.missed_notified !== true) {
-      const groupDefinition = Array.isArray(group.group) ? group.group[0] : group.group
-      const project = Array.isArray(group.project) ? group.project[0] : group.project
-      await notifySelectionCoordinators({
-        supabase,
-        orgId: group.org_id,
-        projectId: group.project_id,
-        entityId: group.id,
-        type: "selection_cutoff_missed",
-        title: "Selection cutoff missed",
-        message: `${project?.name ?? "A project"} has unconfirmed choices in ${groupDefinition?.name ?? "a selection group"}.`,
-      })
-      const { error: metadataError } = await supabase.from("project_selection_groups").update({ metadata: { ...metadata, missed_notified: true } }).eq("org_id", group.org_id).eq("id", group.id)
-      if (metadataError) throw new Error(`Failed to stamp missed-cutoff notification: ${metadataError.message}`)
-    }
+    const metadata = group.metadata ?? {}
+    if (group.unconfirmed === 0 || metadata.missed_notified === true) continue
+    await notifySelectionCoordinators({
+      supabase,
+      orgId: group.org_id,
+      projectId: group.project_id,
+      entityId: group.id,
+      type: "selection_cutoff_missed",
+      title: "Selection cutoff missed",
+      message: `${projectName.get(group.project_id) ?? "A project"} has unconfirmed choices in ${groupName.get(group.group_id) ?? "a selection group"}.`,
+    })
+    const { error: metadataError } = await supabase.from("project_selection_groups").update({ metadata: { ...metadata, missed_notified: true } }).eq("org_id", group.org_id).eq("id", group.id)
+    if (metadataError) throw new Error(`Failed to stamp missed-cutoff notification: ${metadataError.message}`)
   }
 }
 
@@ -496,5 +467,6 @@ export async function sendSelectionCutoffReminders() {
 export async function runSelectionCutoffSweep() {
   const reminders = await sendSelectionCutoffReminders()
   const locks = await lockDueGroups()
-  return { reminders, ...locks }
+  const approvals = await expireSelectionApprovals()
+  return { reminders, ...locks, ...approvals }
 }

@@ -16,6 +16,8 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "start.write", label: "Manage start packages and gates", category: "Plans & Production" },
   { key: "start.release", label: "Approve, waive, and release starts", category: "Plans & Production" },
   { key: "start.slots", label: "Edit even-flow slots", category: "Plans & Production" },
+  { key: "permit.read", label: "View permit applications and fees", category: "Plans & Production" },
+  { key: "permit.write", label: "Manage permit applications, corrections and fees", category: "Plans & Production" },
   { key: "price_book.read", label: "View purchasing and price book", category: "Purchasing" },
   { key: "price_book.write", label: "Manage price agreements", category: "Purchasing" },
   { key: "po.generate", label: "Generate purchase orders", category: "Purchasing" },

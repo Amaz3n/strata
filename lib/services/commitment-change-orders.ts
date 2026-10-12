@@ -657,6 +657,17 @@ export async function updateCommitmentChangeOrder({
   if (parsed.reason_code_id !== undefined && parsed.reason_code_id !== existing.reason_code_id) {
     throw new Error("A variance reason cannot be changed after the request. Void it and raise a new one.")
   }
+  // A variance order raised by an executed change order carries the cost the
+  // buyer signed for; purchasing may re-price it, but only with a reason, and
+  // it stays tied to its change order and purchase order.
+  const systemRaised = existing.origin === "design_studio_co"
+  if (parsed.origin !== undefined && parsed.origin !== existing.origin && (systemRaised || parsed.origin === "design_studio_co")) {
+    throw new Error("A variance order raised by a change order keeps its origin.")
+  }
+  if (systemRaised && parsed.lines && !parsed.reprice_reason) {
+    throw new Error("Say why this variance order's price changed: it was raised from the buyer's signed change order.")
+  }
+  const writer = systemRaised ? createServiceSupabaseClient() : supabase
   if (parsed.lines && existing.reason_code_id) {
     const { data: reason, error: reasonError } = await supabase.from("variance_reason_codes")
       .select("is_backcharge").eq("org_id", resolvedOrgId).eq("id", existing.reason_code_id).maybeSingle()
@@ -667,14 +678,23 @@ export async function updateCommitmentChangeOrder({
 
   const totalCents = parsed.lines
     ? await replaceLines({
-        supabase,
+        supabase: writer,
         orgId: resolvedOrgId,
         changeOrderId: commitmentChangeOrderId,
         lines: parsed.lines,
       })
     : existing.total_cents
 
-  const { error } = await supabase
+  const baseMetadata = parsed.metadata ? { ...(existing.metadata ?? {}), ...parsed.metadata } : existing.metadata ?? {}
+  const repriced = systemRaised && parsed.lines && parsed.reprice_reason
+    ? {
+        repricings: [
+          ...(Array.isArray(baseMetadata.repricings) ? baseMetadata.repricings : []),
+          { at: new Date().toISOString(), by: userId, reason: parsed.reprice_reason, from_cents: existing.total_cents, to_cents: totalCents },
+        ],
+      }
+    : {}
+  const { error } = await writer
     .from("commitment_change_orders")
     .update({
       title: parsed.title ?? existing.title,
@@ -682,7 +702,7 @@ export async function updateCommitmentChangeOrder({
       origin: parsed.origin === undefined ? existing.origin : parsed.origin,
       photo_file_ids: parsed.photo_file_ids ?? existing.photo_file_ids,
       total_cents: totalCents,
-      metadata: parsed.metadata ? { ...(existing.metadata ?? {}), ...parsed.metadata } : existing.metadata ?? {},
+      metadata: { ...baseMetadata, ...repriced },
       updated_at: new Date().toISOString(),
     })
     .eq("org_id", resolvedOrgId)
@@ -912,6 +932,9 @@ export async function deleteCommitmentChangeOrder({
 
   if (existing.status !== "draft" && existing.status !== "sent") {
     throw new Error("Only draft or sent commitment change orders can be deleted.")
+  }
+  if (existing.origin === "design_studio_co") {
+    throw new Error("A variance order raised by a change order is kept with it. Void it instead.")
   }
 
   const { error } = await supabase

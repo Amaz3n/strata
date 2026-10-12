@@ -291,12 +291,12 @@ async function preflightRejectsInvalidEffectiveConfigurations(kit, expected, che
 
   // CONFIRMATION: a rule added after the choices were made (flooring excludes the lighting package) stops the group confirming.
   const lateRule = await addRule(kit, org, lvp, lgt, "excludes")
-  observed.groupConfirmationRefused = await configRefusal(() => kit.as(org.team.design, () => app("selections").confirmSelectionGroup({ orgId: org.orgId, projectId: h2.projectId, groupId: org.selectionGroupId })))
+  observed.groupConfirmationRefused = await configRefusal(() => seed.approveSelectionsInPerson(kit, org, { projectId: h2.projectId }))
   observed.statusesAfterRefusedConfirmation = designRows(kit, h2.projectId).map((row) => row.status).sort()
   // PO GENERATION on the same home.
   observed.purchaseOrderPreviewRefused = await configRefusal(() => kit.as(org.team.starts, () => app("po-generation").generatePurchaseOrders({ projectId: h2.projectId, mode: "dry_run" })))
   await kit.as(org.owner, () => rules().removeOptionConfigurationRule({ sourceId: lvp, ruleId: lateRule.id }))
-  observed.groupConfirmedOnceRuleRemoved = (await kit.as(org.team.design, () => app("selections").confirmSelectionGroup({ orgId: org.orgId, projectId: h2.projectId, groupId: org.selectionGroupId }))).confirmed
+  observed.groupConfirmedOnceRuleRemoved = await seed.approveSelectionsInPerson(kit, org, { projectId: h2.projectId })
   observed.statusesAfterConfirmation = designRows(kit, h2.projectId).map((row) => row.status).sort()
 
   // STARTS: a fully gated home cannot be released, or finish releasing, under a configuration that has become invalid.
@@ -361,7 +361,7 @@ async function storedChoicesDoNotAdoptNewOverride(kit, expected, check) {
   const override = await makeOption(kit, org, "Butcher block countertops (Cypress Landing)", { category: "Kitchen", priceCents: 450000, costCents: 280000, communityId: org.communityId, parentOptionId: base })
   const flooring = designRows(kit, home.projectId).find((row) => row.category === "Flooring")
   observed.unrelatedSelectionRefused = await overrideSentence(() => kit.as(org.team.design, () => selections().selectProjectOption({ orgId: org.orgId, projectId: home.projectId, selectionId: flooring.id, optionId: optionOf(org, "FL-LVP") })))
-  observed.confirmationRefused = await overrideSentence(() => kit.as(org.team.design, () => selections().confirmSelectionGroup({ orgId: org.orgId, projectId: home.projectId, groupId: org.selectionGroupId })))
+  observed.confirmationRefused = await overrideSentence(() => seed.approveSelectionsInPerson(kit, org, { projectId: home.projectId }))
   observed.purchaseOrderPreviewRefused = await overrideSentence(() => kit.as(org.team.starts, () => app("po-generation").generatePurchaseOrders({ projectId: home.projectId, mode: "dry_run" })))
   const stillBase = kitchen(home.projectId)
   observed.choiceAfterRefusals = { isBase: stillBase.selected_option_id === base, status: stillBase.status, priceCents: stillBase.price_cents_snapshot }
@@ -369,7 +369,7 @@ async function storedChoicesDoNotAdoptNewOverride(kit, expected, check) {
   await kit.as(org.team.design, () => selections().selectProjectOption({ orgId: org.orgId, projectId: home.projectId, selectionId: kitchen(home.projectId).id, optionId: base }))
   const adopted = kitchen(home.projectId)
   observed.choiceAfterExplicitChange = { isOverride: adopted.selected_option_id === override, status: adopted.status, priceCents: adopted.price_cents_snapshot }
-  observed.confirmationAfterExplicitChange = (await kit.as(org.team.design, () => selections().confirmSelectionGroup({ orgId: org.orgId, projectId: home.projectId, groupId: org.selectionGroupId }))).confirmed
+  observed.confirmationAfterExplicitChange = await seed.approveSelectionsInPerson(kit, org, { projectId: home.projectId })
   observed.purchaseOrderPreviewAfterExplicitChange = await overrideSentence(() => kit.as(org.team.starts, () => app("po-generation").generatePurchaseOrders({ projectId: home.projectId, mode: "dry_run" })))
 
   // A signed structural choice: the override cannot replace it, and only a change order can move it.
@@ -515,15 +515,16 @@ async function cutoffsFollowTheScheduleAndOverridesAreControlled(kit, expected, 
   const home = await soldHome(kit, org, "Cutoff Home")
   const projectId = home.projectId
   await chooseAll(kit, org, projectId)
-  await kit.as(org.team.design, () => selections.confirmSelectionGroup({ orgId: org.orgId, projectId, groupId: org.selectionGroupId }))
+  await seed.approveSelectionsInPerson(kit, org, { projectId })
   const instance = () => kit.rows(`select id, cutoff_date::text cutoff, cutoff_source source, override_reason reason, overridden_by by, status, locked_at is not null locked from public.project_selection_groups where project_id=${q(kit, projectId)} and group_id=${q(kit, org.selectionGroupId)}`)[0]
   const state = () => { const row = instance(); return { cutoffDays: daysFromToday(row.cutoff), source: row.source, status: row.status, locked: row.locked } }
   const override = (actor, cutoffDate, reason) => kit.as(actor, () => cutoffs.overrideGroupCutoff({ projectId, groupId: org.selectionGroupId, cutoffDate, reason }))
   const revert = (actor, reason) => kit.as(actor, () => cutoffs.revertCutoffToSchedule({ projectId, groupId: org.selectionGroupId, reason }))
   const flooring = () => designRows(kit, projectId).find((row) => row.category === "Flooring")
   const touchFlooring = () => kit.as(org.team.design, () => selections.selectProjectOption({ orgId: org.orgId, projectId, selectionId: flooring().id, optionId: optionOf(org, "FL-LVP") }))
-  const confirmFlooring = () => kit.as(org.team.design, () => selections.confirmSelection({ orgId: org.orgId, projectId, selectionId: flooring().id }))
-  const mutation = async (work) => { const text = await refusal(work); return text === "allowed" ? "allowed" : /selection deadline|is locked/i.test(text) ? "refused: past the cutoff" : text.slice(0, 160) }
+  // Confirming is the buyer's approval of the group (EP06-02), recorded in person by the coordinator.
+  const confirmFlooring = () => seed.approveSelectionsInPerson(kit, org, { projectId })
+  const mutation = async (work) => { const text = await refusal(work); return text === "allowed" ? "allowed" : /selection deadline|is locked|deadline for these selections has passed/i.test(text) ? "refused: past the cutoff" : /already approved/.test(text) ? "refused: already approved" : text.slice(0, 160) }
   const denied = async (work) => { const text = await refusal(work); return /Missing permission: selections\.cutoff\.override/.test(text) ? "refused: selections.cutoff.override" : text === "allowed" ? "allowed" : text.slice(0, 160) }
   const evidence = (type) => kit.rows(`select payload from public.events where org_id=${q(kit, org.orgId)} and entity_id=${q(kit, instance().id)} and event_type=${q(kit, type)} order by created_at`)
 
@@ -599,8 +600,9 @@ async function extendingASweptCutoffReopensTheChoices(kit, expected, check) {
   const flooring = () => designRows(kit, projectId).find((row) => row.category === "Flooring")
   const touch = async () => { const text = await refusal(() => kit.as(org.team.design, () => selections.selectProjectOption({ orgId: org.orgId, projectId, selectionId: flooring().id, optionId: optionOf(org, "FL-LVP") }))); return text === "allowed" ? "allowed" : "refused" }
   // The cutoff is today (still open); the day then passes and the nightly sweep locks the group and its choices.
+  // The sweep reads the community's day (EP06-03), so "passed" is yesterday in the community's zone.
   await kit.as(org.team.design, () => cutoffs.overrideGroupCutoff({ projectId, groupId: org.selectionGroupId, cutoffDate: seed.isoDay(0), reason: "Cutoff set for today" }))
-  kit.sql(`update public.project_selection_groups set cutoff_date=(current_date - 1) where id=${q(kit, instance().id)}`)
+  kit.sql(`update public.project_selection_groups set cutoff_date=((now() at time zone 'America/New_York')::date - 1) where id=${q(kit, instance().id)}`)
   await kit.service(() => cutoffs.lockDueGroups(org.orgId))
   const observed = { afterSweep: { group: instance().status, choicesLocked: choicesLocked(), select: await touch() } }
   // The design coordinator, with a reason, gives the buyer ten more days.

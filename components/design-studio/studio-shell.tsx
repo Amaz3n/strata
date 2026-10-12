@@ -5,12 +5,13 @@ import Link from "next/link"
 
 import "./studio.css"
 
-type StudioSurface = "runway" | "catalog" | "rules"
+type StudioSurface = "runway" | "catalog" | "rules" | "studios"
 
 const SURFACES: Array<{ key: StudioSurface; label: string; href: string }> = [
   { key: "runway", label: "Runway", href: "/design-studio" },
   { key: "catalog", label: "Catalog", href: "/design-studio/catalog" },
   { key: "rules", label: "Cutoff rules", href: "/design-studio/rules" },
+  { key: "studios", label: "Studios & hours", href: "/design-studio/studios" },
 ]
 
 interface Props {

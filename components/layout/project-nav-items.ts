@@ -16,6 +16,7 @@ export type ProjectSection =
   | "drawings"
   | "bids"
   | "signatures"
+  | "permits"
   | "schedule"
   | "daily-logs"
   | "photos"
@@ -112,7 +113,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "selections",
 ])
 
-export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures"])
+export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures", "permits"])
 
 export function getProjectIdFromPath(pathname: string): string | null {
   const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
@@ -160,6 +161,7 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "drawings":
     case "bids":
     case "signatures":
+    case "permits":
     case "schedule":
     case "daily-logs":
     case "photos":
@@ -342,6 +344,14 @@ export function buildProjectNavGroups({
       url: url("/signatures"),
       isActive: section === "signatures",
       requiredAny: ["signature.read", "signature.send"],
+    },
+    {
+      // No posture gate: custom homes and commercial jobs pull permits too.
+      title: "Permits",
+      moduleKey: "permits",
+      url: url("/permits"),
+      isActive: section === "permits",
+      requiredAny: ["permit.read", "permit.write"],
     },
   ]
   const buildSubs: ProjectNavSubItem[] = [

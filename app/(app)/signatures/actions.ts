@@ -1499,7 +1499,7 @@ function buildSignatureActivity(event: {
 
 export type SignatureStartTarget = {
   id: string
-  type: "proposal" | "change_order" | "selection" | "subcontract" | "subcontract_change_order"
+  type: "proposal" | "change_order" | "subcontract" | "subcontract_change_order"
   project_id: string
   project_name: string | null
   title: string
@@ -2084,16 +2084,6 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
         .order("updated_at", { ascending: false })
         .limit(200)
 
-      let selectionQuery = supabase
-        .from("project_selections")
-        .select("id, project_id, status, category_id, selected_option_id")
-        .eq("org_id", orgId)
-        .not("project_id", "is", null)
-        .not("selected_option_id", "is", null)
-        .in("status", ["selected", "confirmed", "ordered"])
-        .order("updated_at", { ascending: false })
-        .limit(200)
-
       let commitmentQuery = supabase
         .from("commitments")
         .select("id, project_id, company_id, title, status, executed_at")
@@ -2117,15 +2107,13 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
       if (input?.projectId) {
         proposalQuery = proposalQuery.eq("project_id", input.projectId)
         changeOrderQuery = changeOrderQuery.eq("project_id", input.projectId)
-        selectionQuery = selectionQuery.eq("project_id", input.projectId)
         commitmentQuery = commitmentQuery.eq("project_id", input.projectId)
         commitmentChangeOrderQuery = commitmentChangeOrderQuery.eq("project_id", input.projectId)
       }
 
-      const [proposalsResult, changeOrdersResult, selectionsResult, commitmentsResult, commitmentChangeOrdersResult] = await Promise.all([
+      const [proposalsResult, changeOrdersResult, commitmentsResult, commitmentChangeOrdersResult] = await Promise.all([
         proposalQuery,
         changeOrderQuery,
-        selectionQuery,
         commitmentQuery,
         commitmentChangeOrderQuery,
       ])
@@ -2136,9 +2124,6 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
       if (changeOrdersResult.error) {
         throw new Error(`Failed to load change order signature targets: ${changeOrdersResult.error.message}`)
       }
-      if (selectionsResult.error) {
-        throw new Error(`Failed to load selection signature targets: ${selectionsResult.error.message}`)
-      }
       if (commitmentsResult.error) {
         throw new Error(`Failed to load commitment signature targets: ${commitmentsResult.error.message}`)
       }
@@ -2148,57 +2133,25 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
 
       const proposals = proposalsResult.data ?? []
       const changeOrders = changeOrdersResult.data ?? []
-      const selections = selectionsResult.data ?? []
       const commitments = commitmentsResult.data ?? []
       const commitmentChangeOrders = commitmentChangeOrdersResult.data ?? []
 
       const projectIds = Array.from(
         new Set(
-          [...proposals, ...changeOrders, ...selections, ...commitments, ...commitmentChangeOrders]
+          [...proposals, ...changeOrders, ...commitments, ...commitmentChangeOrders]
             .map((row: any) => row.project_id as string | null)
             .filter((value): value is string => !!value),
         ),
       )
-      const categoryIds = Array.from(
-        new Set(
-          selections
-            .map((row: any) => row.category_id as string | null)
-            .filter((value): value is string => !!value),
-        ),
-      )
-      const optionIds = Array.from(
-        new Set(
-          selections
-            .map((row: any) => row.selected_option_id as string | null)
-            .filter((value): value is string => !!value),
-        ),
-      )
-
-      const [projectsResult, categoriesResult, optionsResult] = await Promise.all([
-        projectIds.length > 0
-          ? supabase.from("projects").select("id, name").eq("org_id", orgId).in("id", projectIds)
-          : Promise.resolve({ data: [], error: null }),
-        categoryIds.length > 0
-          ? supabase.from("selection_categories").select("id, name").eq("org_id", orgId).in("id", categoryIds)
-          : Promise.resolve({ data: [], error: null }),
-        optionIds.length > 0
-          ? supabase.from("selection_options").select("id, name").eq("org_id", orgId).in("id", optionIds)
-          : Promise.resolve({ data: [], error: null }),
-      ])
+      const projectsResult = projectIds.length > 0
+        ? await supabase.from("projects").select("id, name").eq("org_id", orgId).in("id", projectIds)
+        : { data: [], error: null }
 
       if (projectsResult.error) {
         throw new Error(`Failed to load project names for signature targets: ${projectsResult.error.message}`)
       }
-      if (categoriesResult.error) {
-        throw new Error(`Failed to load selection categories for signature targets: ${categoriesResult.error.message}`)
-      }
-      if (optionsResult.error) {
-        throw new Error(`Failed to load selection options for signature targets: ${optionsResult.error.message}`)
-      }
 
       const projectNameById = new Map<string, string>((projectsResult.data ?? []).map((row) => [row.id, row.name]))
-      const categoryNameById = new Map<string, string>((categoriesResult.data ?? []).map((row) => [row.id, row.name]))
-      const optionNameById = new Map<string, string>((optionsResult.data ?? []).map((row) => [row.id, row.name]))
 
       const targets: SignatureStartTarget[] = [
         ...proposals.map((proposal: any) => ({
@@ -2217,22 +2170,6 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
           title: changeOrder.title?.trim() || "Change order",
           document_type: "change_order" as const,
         })),
-        ...selections.map((selection: any) => {
-          const categoryName = categoryNameById.get(selection.category_id) ?? "Selection"
-          const optionName = selection.selected_option_id
-            ? optionNameById.get(selection.selected_option_id) ?? null
-            : null
-          const title = optionName ? `${categoryName} - ${optionName}` : categoryName
-
-          return {
-            id: selection.id,
-            type: "selection" as const,
-            project_id: selection.project_id,
-            project_name: projectNameById.get(selection.project_id) ?? null,
-            title,
-            document_type: "other" as const,
-          }
-        }),
         ...commitments.map((commitment: any) => ({
           id: commitment.id,
           type: "subcontract" as const,

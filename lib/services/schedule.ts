@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
 
 import type {
   ScheduleItem,
@@ -37,6 +38,7 @@ import { enqueueOutboxJob } from "@/lib/services/outbox";
 import { normalizeScheduleTemplateItems, selectionTaskKey } from "@/lib/selections/cutoff-math";
 import { getProjectPosture } from "@/lib/product-tier";
 import { enqueueTradeScheduleChange } from "@/lib/services/trade-lookahead";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
 
 // ============================================================================
 // SCHEDULE ITEMS
@@ -1965,7 +1967,6 @@ export async function applyChangeOrderToSchedule({
         change_order_id: changeOrderId,
         days_adjusted: daysAdjusted,
         notes: notes || null,
-        applied_at: applyNow ? new Date().toISOString() : null,
       },
       { onConflict: "schedule_item_id,change_order_id" },
     )
@@ -1982,9 +1983,9 @@ export async function applyChangeOrderToSchedule({
     );
   }
 
-  // If applying now, also adjust the schedule item dates
-  if (applyNow && daysAdjusted !== 0) {
-    await adjustScheduleItemDates(scheduleItemId, daysAdjusted, resolvedOrgId);
+  // Applying now moves the item in the same step that stamps the impact applied.
+  if (applyNow) {
+    await applyScheduleImpact(resolvedOrgId, data.id);
   }
 
   await recordEvent({
@@ -2061,46 +2062,73 @@ export async function removeChangeOrderFromSchedule(
   });
 }
 
+const appliedImpactSchema = z.object({
+  schedule_item_id: z.string().uuid(),
+  change_order_id: z.string().uuid(),
+  days_adjusted: z.number().int().nullable(),
+  before: z.object({ start_date: z.string().nullable(), end_date: z.string().nullable() }),
+  after: z.object({ start_date: z.string().nullable(), end_date: z.string().nullable() }),
+});
+
+const SCHEDULE_IMPACT_REFUSALS: Record<string, string> = {
+  SCHEDULE_IMPACT_NOT_APPROVED: "Only an approved change order moves the schedule.",
+  SCHEDULE_IMPACT_APPLIED: "This schedule impact was already applied.",
+};
+
 /**
- * Helper to adjust schedule item dates by a number of days
+ * Moves a schedule item by a change order's impact, once: whole calendar days
+ * on both dates, in one database step that refuses an unapproved change order
+ * or an impact already applied.
  */
-async function adjustScheduleItemDates(
-  scheduleItemId: string,
-  daysToAdd: number,
-  orgId: string,
-): Promise<void> {
-  const { supabase } = await requireOrgContext(orgId);
+async function applyScheduleImpact(orgId: string, impactId: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("apply_schedule_item_change_order", {
+    p_org_id: orgId,
+    p_impact_id: impactId,
+  });
+  const refusal = error?.details ? SCHEDULE_IMPACT_REFUSALS[error.details] : undefined;
+  if (refusal) throw new Error(refusal);
+  if (error) throw new Error(`Failed to apply the schedule impact: ${error.message}`);
+  return appliedImpactSchema.parse(data);
+}
 
-  const { data: item } = await supabase
-    .from("schedule_items")
-    .select("start_date, end_date")
-    .eq("org_id", orgId)
-    .eq("id", scheduleItemId)
-    .single();
-
-  if (!item) return;
-
-  const updateData: Record<string, string> = {};
-
-  if (item.start_date) {
-    const newStart = new Date(item.start_date);
-    newStart.setDate(newStart.getDate() + daysToAdd);
-    updateData.start_date = newStart.toISOString().split("T")[0];
-  }
-
-  if (item.end_date) {
-    const newEnd = new Date(item.end_date);
-    newEnd.setDate(newEnd.getDate() + daysToAdd);
-    updateData.end_date = newEnd.toISOString().split("T")[0];
-  }
-
-  if (Object.keys(updateData).length > 0) {
-    await supabase
-      .from("schedule_items")
-      .update(updateData)
-      .eq("org_id", orgId)
-      .eq("id", scheduleItemId);
-  }
+/**
+ * The superintendent applies a change order's pending schedule impact (a
+ * selection change order records one on approval rather than moving the
+ * critical path on its own).
+ */
+export async function applyScheduleChangeOrderImpact(impactId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  const { data: impact, error } = await supabase
+    .from("schedule_item_change_orders")
+    .select("id, schedule_item_id, change_order_id, schedule_item:schedule_items(project_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", impactId)
+    .maybeSingle();
+  if (error) throw new Error(`Failed to load the schedule impact: ${error.message}`);
+  const item = Array.isArray(impact?.schedule_item) ? impact?.schedule_item[0] : impact?.schedule_item;
+  if (!impact || !item?.project_id) throw new Error("Schedule impact not found");
+  await requireProjectPermission(userId, item.project_id, "schedule.edit");
+  const applied = await applyScheduleImpact(resolvedOrgId, impact.id);
+  await Promise.all([
+    recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: "schedule_co_applied",
+      entityType: "schedule_item",
+      entityId: applied.schedule_item_id,
+      payload: { change_order_id: applied.change_order_id, days_adjusted: applied.days_adjusted, applied: true, project_id: item.project_id },
+    }),
+    recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "update",
+      entityType: "schedule_item",
+      entityId: applied.schedule_item_id,
+      before: applied.before,
+      after: { ...applied.after, change_order_id: applied.change_order_id, days_adjusted: applied.days_adjusted },
+    }),
+  ]);
+  return { projectId: item.project_id, ...applied };
 }
 
 /**

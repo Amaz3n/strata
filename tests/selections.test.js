@@ -2,11 +2,10 @@
 
 /**
  * `lib/services/selections.ts` — what a buyer's selection is priced at when it
- * is confirmed, and how multi-row changes (a package, a change order) land.
+ * is chosen, and how multi-row changes (a package, a change order) land.
+ * (Confirmation is a buyer approval: tests/selection-approvals.test.js.)
  *
- * Catalog pricing and configuration rules are replaced at their module seams:
- * the catalog answers with today's price, which is exactly what confirmation
- * must NOT use for a selection that already carries the price it was chosen at.
+ * Catalog pricing and configuration rules are replaced at their module seams.
  */
 
 const assert = require("node:assert/strict")
@@ -21,7 +20,6 @@ const SECOND = id(3)
 const OPTION = id(4)
 const UPGRADE = id(5)
 const CATEGORY = id(6)
-const CHANGE_ORDER = id(7)
 const PACKAGE = id(8)
 const COMMUNITY_UPGRADE = id(9)
 
@@ -47,11 +45,29 @@ stubModule("@/lib/services/configuration-rules", {
     if (configurationFailure) throw new Error(configurationFailure)
   },
 })
-stubModule("@/lib/services/selection-change-orders", {
-  createVarianceOrdersForSelectionChange: async () => ({ created: 0, unrouted: 0 }),
+// The supply facts are what `project_selection_choice_facts` reads in the
+// database (its rules are proven in selections-db.test.js); here each test
+// says what the home's supply looks like, and which exceptions get opened.
+let supply = {}
+let databaseRefusal = null
+const openedExceptions = []
+const utcToday = () => new Date().toISOString().slice(0, 10)
+stubModule("@/lib/services/selection-exceptions", {
+  readSelectionChoiceFacts: async (_orgId, _projectId, _selectionId, optionIds) => ({
+    today: utcToday(), timeZone: "UTC", selectionLocked: false, groupStatus: null, cutoffDate: null, neededBy: null,
+    releasedPurchaseOrderId: supply.releasedPurchaseOrderId ?? null, releasedPurchaseOrderTitle: supply.releasedPurchaseOrderTitle ?? null,
+    options: optionIds.map((optionId) => ({ optionId, leadTimeDays: supply.orderBy?.[optionId] ? 45 : null, orderBy: supply.orderBy?.[optionId] ?? null, waived: false })),
+  }),
+  openSelectionException: async (input) => {
+    openedExceptions.push(input)
+    return { id: id(90), opened: true }
+  },
+  listSelectionExceptions: async () => ({ exceptions: [], truncated: false }),
+  loadSelectionException: async () => { throw new Error("not used") },
+  recordAlternateChosen: async () => undefined,
 })
 
-const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, createProjectSelection, listSelectionOptions, selectProjectOption, selectProjectOptions, selectProjectPackage } = freshRequire("lib/services/selections.ts")
+const { createProjectSelection, listSelectionOptions, selectProjectOption, selectProjectOptions, selectProjectPackage } = freshRequire("lib/services/selections.ts")
 
 const priced = (optionId, priceCents) => ({ available: true, optionId, priceCents, costCents: priceCents / 2, categoryIds: [CATEGORY] })
 
@@ -59,19 +75,24 @@ function harness({ selections, changeOrder, groups = [], lots = [] } = {}) {
   configurationFailure = null
   duringValidation = null
   pricingScopes.length = 0
+  supply = {}
+  databaseRefusal = null
+  openedExceptions.length = 0
   const applied = []
   // What the database fences a write on: the org catalog revision and the
   // home's selection state, as they stand when the write commits.
   const fence = { catalogRevision: "41", homeState: "0".repeat(32) }
+  // A design coordinator: selections.write with the org-wide project read every
+  // studio role carries, so the home's own team is not required.
   const service = createServiceHarness({
-    permissions: ["selections.write"],
+    permissions: ["selections.write", "project.read"],
     tables: {
       project_selections: selections ?? [
         { id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: null, package_id: null, price_cents_snapshot: 1_200_00, cost_cents_snapshot: 600_00, locked_at: null, metadata: {} },
       ],
       selection_options: [
-        { id: OPTION, org_id: ORG, option_scope: "design_studio" },
-        { id: UPGRADE, org_id: ORG, option_scope: "design_studio" },
+        { id: OPTION, org_id: ORG, category_id: CATEGORY, name: "Laminate", option_scope: "design_studio", is_available: true, is_archived: false, parent_option_id: null, sort_order: 1 },
+        { id: UPGRADE, org_id: ORG, category_id: CATEGORY, name: "Quartz", option_scope: "design_studio", is_available: true, is_archived: false, parent_option_id: null, sort_order: 2 },
       ],
       projects: [{ id: HOME, org_id: ORG, property_type: "production" }],
       orgs: [{ id: ORG, product_tier: "production" }],
@@ -83,6 +104,7 @@ function harness({ selections, changeOrder, groups = [], lots = [] } = {}) {
     rpc: {
       read_project_selection_fence: () => ({ data: { ...fence }, error: null }),
       apply_project_selection_writes: (args, store) => {
+        if (databaseRefusal) return { data: null, error: databaseRefusal }
         if (args.p_expected_catalog_revision !== fence.catalogRevision) {
           return { data: null, error: { message: "The catalog changed while you were choosing; review and try again", details: "SELECTION_CATALOG_CHANGED" } }
         }
@@ -101,116 +123,6 @@ function harness({ selections, changeOrder, groups = [], lots = [] } = {}) {
 }
 
 const stored = (service, selectionId = SELECTION) => service.db.project_selections.find((row) => row.id === selectionId)
-
-describe("confirmSelection", () => {
-  test("confirming commits the price the option was chosen at, not today's catalog price", async () => {
-    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
-    const { service } = harness()
-    await service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION }))
-    assert.equal(stored(service).status, "confirmed")
-    assert.equal(stored(service).price_cents_snapshot, 1_200_00)
-    assert.equal(stored(service).cost_cents_snapshot, 600_00)
-  })
-
-  test("a selection chosen before prices were captured confirms at the catalog price", async () => {
-    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
-    const { service } = harness()
-    Object.assign(stored(service), { price_cents_snapshot: null, cost_cents_snapshot: null })
-    await service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION }))
-    assert.equal(stored(service).price_cents_snapshot, 1_500_00)
-    assert.equal(stored(service).cost_cents_snapshot, 750_00)
-  })
-})
-
-describe("confirmSelectionGroup", () => {
-  const GROUP = id(10)
-  const members = () => [
-    { id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: GROUP, package_id: null, price_cents_snapshot: 1_200_00, cost_cents_snapshot: 600_00, locked_at: null, metadata: {} },
-    { id: SECOND, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: GROUP, package_id: null, price_cents_snapshot: 800_00, cost_cents_snapshot: 400_00, locked_at: null, metadata: {} },
-  ]
-
-  test("an org-level coordinator who is not a member of the home confirms the whole group", async () => {
-    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
-    const { service } = harness({ selections: members() })
-    const result = await service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP }))
-    assert.equal(result.confirmed, 2)
-    assert.deepEqual([stored(service).status, stored(service, SECOND).status], ["confirmed", "confirmed"])
-  })
-
-  test("the whole group is confirmed in one write, at the prices each member was chosen at", async () => {
-    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
-    const { service, applied } = harness({ selections: members() })
-    await service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP }))
-    assert.equal(applied.length, 1)
-    assert.deepEqual(applied[0].p_writes.map((write) => [write.id, write.status, write.price_cents_snapshot, Boolean(write.confirmed_at)]), [
-      [SELECTION, "confirmed", 1_200_00, true],
-      [SECOND, "confirmed", 800_00, true],
-    ])
-  })
-
-  test("a member that cannot be confirmed leaves every member unconfirmed", async () => {
-    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
-    const selections = members()
-    selections[1].selected_option_id = UPGRADE
-    const { service, applied } = harness({ selections })
-    await assert.rejects(service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP })), /no longer available/)
-    assert.deepEqual(applied, [])
-    assert.deepEqual([stored(service).status, stored(service, SECOND).status], ["selected", "selected"])
-    assert.deepEqual(service.events, [])
-  })
-
-  test("without selections.write nothing is read or confirmed", async () => {
-    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
-    const { service } = harness({ selections: members() })
-    service.grant([])
-    await assert.rejects(service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP })))
-    assert.deepEqual(service.writes(), [])
-    assert.deepEqual(service.reads().filter((q) => q.table === "project_selections"), [])
-  })
-})
-
-describe("applySelectionChangeFromChangeOrder", () => {
-  const selections = () => [
-    { id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "confirmed", group_id: null, locked_at: null, metadata: {} },
-    { id: SECOND, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "confirmed", group_id: null, locked_at: null, metadata: {} },
-  ]
-  const changeOrder = (changes) => ({ id: CHANGE_ORDER, org_id: ORG, project_id: HOME, metadata: { selection_change: { changes } } })
-
-  test("every change in the order lands in one write", async () => {
-    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00) }
-    const { service, applied } = harness({
-      selections: selections(),
-      changeOrder: changeOrder([
-        { selection_id: SELECTION, new_option_id: UPGRADE, price_cents: 1_900_00 },
-        { selection_id: SECOND, new_option_id: UPGRADE },
-      ]),
-    })
-    const result = await service.run(() => applySelectionChangeFromChangeOrder(CHANGE_ORDER, ORG))
-
-    assert.equal(result.applied, 2)
-    assert.equal(applied.length, 1)
-    assert.deepEqual(applied[0].p_writes.map((write) => [write.id, write.price_cents_snapshot, write.source_change_order_id]), [
-      [SELECTION, 1_900_00, CHANGE_ORDER],
-      [SECOND, 2_000_00, CHANGE_ORDER],
-    ])
-    assert.equal(service.events.filter((event) => event.eventType === "selection_changed_post_cutoff").length, 2)
-  })
-
-  test("a change that cannot be applied stops the whole order before anything is written", async () => {
-    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00) }
-    const { service, applied } = harness({
-      selections: selections(),
-      changeOrder: changeOrder([
-        { selection_id: SELECTION, new_option_id: UPGRADE },
-        { selection_id: SECOND, new_option_id: id(99) },
-      ]),
-    })
-    await assert.rejects(service.run(() => applySelectionChangeFromChangeOrder(CHANGE_ORDER, ORG)), /not available/)
-    assert.deepEqual(applied, [])
-    assert.equal(stored(service).selected_option_id, OPTION)
-    assert.deepEqual(service.events, [])
-  })
-})
 
 describe("selectProjectOptions", () => {
   const two = () => [
@@ -235,7 +147,7 @@ describe("selectProjectOptions", () => {
     const { service, applied } = harness({ selections: two() })
     await assert.rejects(
       service.run(() => selectProjectOptions({ orgId: ORG, projectId: HOME, changes: [{ selectionId: SELECTION, optionId: UPGRADE }, { selectionId: SECOND, optionId: id(99) }] })),
-      /not available/,
+      /no longer offered for this home/,
     )
     assert.deepEqual(applied, [])
     assert.equal(stored(service).selected_option_id, OPTION)
@@ -268,15 +180,12 @@ describe("an invalid effective configuration", () => {
       [UPGRADE]: priced(COMMUNITY_UPGRADE, 2_000_00),
       [PACKAGE]: { available: true, priceCents: 900_00, costCents: 400_00, categoryIds: [] },
     }
-    const changeOrder = { id: CHANGE_ORDER, org_id: ORG, project_id: HOME, metadata: { selection_change: { changes: [{ selection_id: SELECTION, new_option_id: UPGRADE }] } } }
     const mutations = {
       "a selection change": (service) => service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })),
-      "a confirmation": (service) => service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION })),
       "a package": (service) => service.run(() => selectProjectPackage({ orgId: ORG, projectId: HOME, packageId: PACKAGE })),
-      "a change order": (service) => service.run(() => applySelectionChangeFromChangeOrder(CHANGE_ORDER, ORG)),
     }
     for (const [name, mutate] of Object.entries(mutations)) {
-      const { service, applied } = harness({ changeOrder })
+      const { service, applied } = harness()
       configurationFailure = CHAIN
       await assert.rejects(mutate(service), /requires Electrical upgrade/, name)
       assert.deepEqual(applied, [], name)
@@ -295,7 +204,6 @@ describe("selection cutoffs on mutations", () => {
   const instance = (overrides = {}) => ({ org_id: ORG, project_id: HOME, group_id: GROUP, status: "open", cutoff_date: daysFromToday(10), group: { name: "Flooring" }, ...overrides })
   const attempts = {
     select: (service) => service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })),
-    confirm: (service) => service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION })),
   }
 
   test("a selection can change up to and including its cutoff day", async () => {
@@ -350,10 +258,7 @@ describe("a catalog or home that moves while a selection is validated", () => {
   const GROUP = id(10)
   const mutations = {
     "a selection change": (service) => service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })),
-    "a confirmation": (service) => service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION })),
-    "a group confirmation": (service) => service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP })),
     "a package": (service) => service.run(() => selectProjectPackage({ orgId: ORG, projectId: HOME, packageId: PACKAGE })),
-    "a change order": (service) => service.run(() => applySelectionChangeFromChangeOrder(CHANGE_ORDER, ORG)),
   }
   const moves = {
     "a price, rule or availability published": [(fence) => { fence.catalogRevision = "42" }, /catalog changed while you were choosing/],
@@ -370,7 +275,6 @@ describe("a catalog or home that moves while a selection is validated", () => {
         }
         const { service, applied, fence } = harness({
           selections: [{ id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: GROUP, package_id: null, price_cents_snapshot: 1_200_00, cost_cents_snapshot: 600_00, locked_at: null, metadata: {} }],
-          changeOrder: { id: CHANGE_ORDER, org_id: ORG, project_id: HOME, metadata: { selection_change: { changes: [{ selection_id: SELECTION, new_option_id: UPGRADE }] } } },
         })
         duringValidation = () => change(fence)
         await assert.rejects(mutate(service), (error) => error.code === "SELECTION_CONFIGURATION_CHANGED" && message.test(error.message), `${name}: ${move}`)
@@ -430,5 +334,76 @@ describe("listSelectionOptions", () => {
     const offered = await service.run(() => listSelectionOptions(ORG, CATEGORY))
 
     assert.deepEqual(offered.map((row) => row.id), [UPGRADE])
+  })
+})
+
+describe("supply eligibility on a selection change", () => {
+  const ORDER_BY_PASSED = new Date(Date.now() - 15 * 86_400_000).toISOString().slice(0, 10)
+
+  test("an option that cannot arrive in time is refused with what can, and an exception is on record", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00), [OPTION]: priced(OPTION, 1_100_00) }
+    const { service, applied } = harness()
+    supply.orderBy = { [UPGRADE]: ORDER_BY_PASSED }
+    const error = await service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })).catch((caught) => caught)
+    assert.ok(error.code === "SELECTION_LEAD_TIME" && /had to be ordered by/.test(error.message) && error.alternates.map((alternate) => alternate.optionId).join() === OPTION && /Still in time: Laminate/.test(error.message))
+    assert.deepEqual(applied, [])
+    assert.deepEqual(openedExceptions.map((exception) => [exception.reason, exception.optionId, exception.selectionId]), [["lead_time_exceeded", UPGRADE, SELECTION]])
+    // The page gets the refusal alone and the alternates as data, to offer them as choices.
+    const failure = require("@/lib/action-result").actionError(error)
+    assert.equal(failure.code, "SELECTION_LEAD_TIME")
+    assert.match(failure.supply.reason, /had to be ordered by/)
+    assert.doesNotMatch(failure.supply.reason, /Still in time/)
+    assert.deepEqual(failure.supply.alternates.map((alternate) => alternate.optionId), [OPTION])
+  })
+
+  test("a selection already on a released purchase order is refused for buyer and builder alike", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00), [OPTION]: priced(OPTION, 1_100_00) }
+    for (const portalAccess of [false, true]) {
+      const { service, applied } = harness()
+      supply.releasedPurchaseOrderId = id(91)
+      supply.releasedPurchaseOrderTitle = "PO — Countertops — Lot 12"
+      await assert.rejects(
+        service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE, portalAccess })),
+        (error) => error.code === "SELECTION_PROCUREMENT_RELEASED" && /PO — Countertops — Lot 12/.test(error.message) && error.alternates.length === 0,
+      )
+      assert.deepEqual(applied, [])
+      assert.equal(openedExceptions[0].reason, "procurement_released")
+    }
+  })
+
+  test("the database's own refusal reaches the caller in words when the supply moved after the explanation", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00) }
+    const refusals = [
+      [{ message: "This option had to be ordered by 2026-09-01 to arrive in time", details: "SELECTION_LEAD_TIME", hint: "2026-09-01" }, "SELECTION_LEAD_TIME", /ordered by Sep 1, 2026/],
+      [{ message: "This selection has already been bought on a released purchase order; changing it needs a change order", details: "SELECTION_PROCUREMENT_RELEASED" }, "SELECTION_PROCUREMENT_RELEASED", /released purchase order/],
+      [{ message: "The selection deadline for Kitchen was 2026-10-01; changes now need a change order", details: "SELECTION_LOCKED_CUTOFF" }, "SELECTION_LOCKED_CUTOFF", /deadline for Kitchen/],
+    ]
+    for (const [refusal, code, words] of refusals) {
+      const { service } = harness()
+      databaseRefusal = refusal
+      await assert.rejects(
+        service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })),
+        (error) => error.code === code && words.test(error.message),
+      )
+    }
+  })
+})
+
+describe("who may change a home's selections", () => {
+  const DIVISION = id(70)
+  const OTHER_DIVISION = id(71)
+
+  test("a design coordinator limited to another division cannot choose, or apply a package, on the home", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00), [PACKAGE]: { available: true, priceCents: 900_00, costCents: 400_00, categoryIds: [] } }
+    const { service, applied } = harness()
+    service.db.projects[0].division_id = DIVISION
+    service.grant(["selections.write", "project.read"], { divisions: [OTHER_DIVISION] })
+    await assert.rejects(service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })), /Missing permission: selections\.write/)
+    await assert.rejects(service.run(() => selectProjectPackage({ orgId: ORG, projectId: HOME, packageId: PACKAGE })), /Missing permission: selections\.write/)
+    assert.deepEqual(applied, [])
+
+    service.grant(["selections.write", "project.read"], { divisions: [DIVISION] })
+    await service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE }))
+    assert.equal(applied.length, 1)
   })
 })

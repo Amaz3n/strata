@@ -3,7 +3,15 @@ import { readAllRows } from "@/lib/land/paging"
 import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
 import { intersectProjectReadScopes } from "@/lib/services/authorization-policy"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
-import { countAppointments, listAppointments, listCatalog, type AppointmentDto, type CatalogDto } from "@/lib/services/option-catalog"
+import { listCatalog, type CatalogDto } from "@/lib/services/option-catalog"
+import {
+  countAppointments,
+  getNextAppointmentForHome,
+  listAppointments,
+  nextAppointmentsByHome,
+  type AppointmentDto,
+} from "@/lib/services/design-studio-appointments"
+import { listHomeSelectionApprovals, type GroupSelectionApproval } from "@/lib/services/selection-approvals"
 
 /**
  * The Design Studio desk. Two surfaces sit on top of this file:
@@ -28,6 +36,10 @@ const ID_BATCH = 200
 const FACT_ROW_CAP = 100_000
 /** Open cutoffs the runway plots. Past this the board says so instead of dropping the tail. */
 const RUNWAY_INSTANCE_CAP = 5_000
+/** Open selection exceptions the desk counts; past this it says "at least". */
+const EXCEPTION_ROW_CAP = 2_000
+/** Homes the desk names under open exceptions; the count covers all of them. */
+const EXCEPTION_HOME_CAP = 8
 
 type RangedRead<Row> = (from: number, to: number) => PromiseLike<{ data: Row[] | null; error: { message: string } | null }>
 
@@ -103,12 +115,31 @@ export interface BlockedStart {
   targetWeek: string | null
 }
 
+export interface ExceptionHome {
+  projectId: string
+  lotLabel: string
+  buyerName: string
+  count: number
+}
+
+/**
+ * Open selection exceptions across the desk's scope. They are resolved on the
+ * home's Selections workbench; the desk only counts them and links there.
+ */
+export interface OpenSelectionExceptions {
+  total: number
+  /** The count hit EXCEPTION_ROW_CAP: there are at least this many. */
+  truncated: boolean
+  homes: ExceptionHome[]
+}
+
 export interface StudioRunway {
   horizonDays: number
   lanes: RunwayLane[]
   counters: RunwayCounters
   appointments: AppointmentDto[]
   blockedStarts: BlockedStart[]
+  openExceptions: OpenSelectionExceptions
   /** Set when more open cutoffs exist than the board plots; the board says so. */
   truncatedAt: number | null
 }
@@ -142,6 +173,53 @@ async function resolveStudioScope(
     : null
   const projectIds = intersectProjectReadScopes(intersectProjectReadScopes(membershipScope, divisionIds), communityIds)
   return { projectIds, empty: projectIds !== null && projectIds.length === 0 }
+}
+
+async function readOpenExceptions(
+  context: Awaited<ReturnType<typeof requireOrgContext>>,
+  scopeBatches: Array<string[] | null>,
+): Promise<{ counts: Map<string, number>; total: number; truncated: boolean }> {
+  const reads = await Promise.all(
+    scopeBatches.map((batch) =>
+      readAllRows<{ id: string; project_id: string }>(
+        (from, to) => {
+          let query = context.supabase.from("selection_exceptions").select("id, project_id").eq("org_id", context.orgId).eq("status", "open")
+          if (batch) query = query.in("project_id", batch)
+          return query.order("id").range(from, to)
+        },
+        { cap: EXCEPTION_ROW_CAP, label: "Failed to load selection exceptions" },
+      ),
+    ),
+  )
+  const counts = new Map<string, number>()
+  let total = 0
+  for (const row of reads.flatMap((read) => read.rows)) {
+    counts.set(row.project_id, (counts.get(row.project_id) ?? 0) + 1)
+    total += 1
+  }
+  return { counts, total, truncated: reads.some((read) => read.truncated) }
+}
+
+function exceptionHomesToName(counts: Map<string, number>) {
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, EXCEPTION_HOME_CAP)
+}
+
+function summarizeExceptions(
+  read: Awaited<ReturnType<typeof readOpenExceptions>>,
+  identities: Map<string, StudioHomeIdentity>,
+): OpenSelectionExceptions {
+  return {
+    total: read.total,
+    truncated: read.truncated,
+    homes: exceptionHomesToName(read.counts).map(([projectId, count]) => ({
+      projectId,
+      lotLabel: identities.get(projectId)?.lotLabel ?? "Lot",
+      buyerName: identities.get(projectId)?.buyerName ?? "Unsold",
+      count,
+    })),
+  }
 }
 
 function lotLabelFor(row: { lot_number: string | null; block: string | null }): string {
@@ -348,6 +426,7 @@ export async function getStudioRunway(
     counters: { overdue: 0, dueSoon: 0, unbooked: 0, sessionsThisWeek: 0, readyToSign: 0 },
     appointments: [],
     blockedStarts: [],
+    openExceptions: { total: 0, truncated: false, homes: [] },
     truncatedAt: null,
   }
   // A community the caller may not pin is an empty desk, never a widened one.
@@ -358,7 +437,7 @@ export async function getStudioRunway(
   const scopeBatches: Array<string[] | null> = scope.projectIds
     ? Array.from({ length: Math.ceil(scope.projectIds.length / ID_BATCH) }, (_, index) => scope.projectIds?.slice(index * ID_BATCH, (index + 1) * ID_BATCH) ?? [])
     : [null]
-  const instanceReads = await Promise.all(
+  const [instanceReads, exceptionRead] = await Promise.all([Promise.all(
     scopeBatches.map((batch) =>
       readAllRows<RunwayInstanceRow>(
         (from, to) => {
@@ -374,22 +453,29 @@ export async function getStudioRunway(
         { cap: RUNWAY_INSTANCE_CAP, label: "Failed to load selection cutoffs" },
       ),
     ),
-  )
+  ), readOpenExceptions(context, scopeBatches)])
+  const exceptionProjectIds = exceptionHomesToName(exceptionRead.counts).map(([projectId]) => projectId)
   const instances = instanceReads.flatMap((read) => read.rows)
   const truncatedAt = instanceReads.some((read) => read.truncated) ? RUNWAY_INSTANCE_CAP : null
   if (!instances.length) {
     const week = startOfWeekIso(now)
-    const [appointments, sessionsThisWeek] = await Promise.all([
+    const [appointments, sessionsThisWeek, exceptionIdentities] = await Promise.all([
       listAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to, limit: 50 }),
       countAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to }),
+      loadHomeIdentities(context, exceptionProjectIds),
     ])
-    return { ...emptyRunway, appointments, counters: { ...emptyRunway.counters, sessionsThisWeek } }
+    return {
+      ...emptyRunway,
+      appointments,
+      counters: { ...emptyRunway.counters, sessionsThisWeek },
+      openExceptions: summarizeExceptions(exceptionRead, exceptionIdentities),
+    }
   }
 
   const projectIds = Array.from(new Set(instances.map((row) => row.project_id as string)))
   const week = startOfWeekIso(now)
 
-  const [selectionRows, appointments, sessionsThisWeek, upcoming, startRows, identities] = await Promise.all([
+  const [selectionRows, appointments, sessionsThisWeek, nextAppointmentByProject, startRows, identities] = await Promise.all([
     readForIds<{ id: string; project_id: string; group_id: string; selected_option_id: string | null }>("selections", projectIds, (batch, from, to) =>
       context.supabase
         .from("project_selections")
@@ -401,7 +487,7 @@ export async function getStudioRunway(
     ),
     listAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to, limit: 50 }),
     countAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: week.from, to: week.to }),
-    listAppointments({ communityId: opts.communityId, divisionId: opts.divisionId, from: now.toISOString(), status: "scheduled", limit: 100 }),
+    nextAppointmentsByHome(projectIds),
     readForIds<{ id: string; project_id: string; target_week: string | null }>("start packages", projectIds, (batch, from, to) =>
       context.supabase
         .from("start_packages")
@@ -412,7 +498,7 @@ export async function getStudioRunway(
         .order("id")
         .range(from, to),
     ),
-    loadHomeIdentities(context, projectIds),
+    loadHomeIdentities(context, Array.from(new Set([...projectIds, ...exceptionProjectIds]))),
   ])
 
   const tally = new Map<string, { chosen: number; total: number }>()
@@ -422,12 +508,6 @@ export async function getStudioRunway(
     entry.total += 1
     if (row.selected_option_id) entry.chosen += 1
     tally.set(key, entry)
-  }
-  const nextAppointmentByProject = new Map<string, string>()
-  for (const appointment of upcoming) {
-    if (!nextAppointmentByProject.has(appointment.project_id)) {
-      nextAppointmentByProject.set(appointment.project_id, appointment.scheduled_at)
-    }
   }
   const pendingStartByProject = new Map(
     startRows.map((row) => [row.project_id, row.target_week]),
@@ -514,6 +594,7 @@ export async function getStudioRunway(
     blockedStarts: Array.from(blockedByProject.values())
       .sort((a, b) => (b.worstDaysOverdue ?? 0) - (a.worstDaysOverdue ?? 0))
       .slice(0, 12),
+    openExceptions: summarizeExceptions(exceptionRead, identities),
     truncatedAt,
   }
 }
@@ -586,7 +667,10 @@ export interface SelectionSheet {
   /** The community's fee for changing a selection after its cutoff. */
   changeFeeCents: number
   canWaiveChangeFee: boolean
+  /** The home's next scheduled session, read for this home. */
   appointment: AppointmentDto | null
+  /** Each group's buyer approval: its current terms and where the request stands. */
+  approvals: GroupSelectionApproval[]
 }
 
 const DEFAULT_CHANGE_FEE_CENTS = 25_000
@@ -620,7 +704,7 @@ export async function getSelectionSheet(projectId: string): Promise<SelectionShe
   if (!home) return null
 
   const today = new Date().toISOString().slice(0, 10)
-  const [instancesResult, selectionsResult, catalog, appointments, communityResult] = await Promise.all([
+  const [instancesResult, selectionsResult, catalog, appointment, approvals, communityResult] = await Promise.all([
     context.supabase
       .from("project_selection_groups")
       .select("group_id, cutoff_date, cutoff_source, override_reason, status, group:selection_groups(id, name, sort_order)")
@@ -634,7 +718,8 @@ export async function getSelectionSheet(projectId: string): Promise<SelectionShe
       .eq("project_id", projectId)
       .limit(500),
     listCatalog({ communityId: home.communityId ?? undefined }),
-    listAppointments({ from: new Date().toISOString(), status: "scheduled", limit: 100 }),
+    getNextAppointmentForHome(projectId),
+    listHomeSelectionApprovals(projectId),
     home.communityId
       ? context.supabase
           .from("communities")
@@ -751,7 +836,8 @@ export async function getSelectionSheet(projectId: string): Promise<SelectionShe
     canManage,
     changeFeeCents: communityResult.data?.selection_change_fee_cents ?? DEFAULT_CHANGE_FEE_CENTS,
     canWaiveChangeFee,
-    appointment: appointments.find((item) => item.project_id === projectId) ?? null,
+    appointment,
+    approvals,
   }
 }
 

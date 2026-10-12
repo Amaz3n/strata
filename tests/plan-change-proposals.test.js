@@ -45,9 +45,22 @@ function takeoff(lineId, versionId, unitCostCents) {
   }
 }
 
+// Routing a cost delta onto the purchase order that owns it is the database's
+// (`create_change_order_variance_orders`, proven in selections-db.test.js);
+// here the service is held to what it hands over.
+const varianceCalls = []
+
 function harness({ permissions = PERMISSIONS, offered = true } = {}) {
+  varianceCalls.length = 0
   return createServiceHarness({
     permissions,
+    rpc: {
+      create_change_order_variance_orders: (args) => {
+        varianceCalls.push(args)
+        const total = args.p_deltas.reduce((sum, delta) => sum + delta.cost_delta_cents, 0)
+        return { data: { idempotent: false, created: [{ id: id(70), commitment_id: id(60), total_cents: total }], unrouted: [] }, error: null }
+      },
+    },
     tables: {
       communities: [{ id: COMMUNITY, org_id: ORG, name: "Oak Ridge", division_id: null, setbacks: {} }],
       house_plans: [{ id: PLAN, org_id: ORG, code: "A100", name: "Aspen", footprint_width_ft: null, footprint_depth_ft: null, drawn_swing: null }],
@@ -186,19 +199,16 @@ describe("decidePlanChangeHome", () => {
 
   test("a released home's executed change order also drafts the variance order on the purchase order carrying the cost", async () => {
     const service = harness()
-    service.db.commitments = [{ id: id(60), org_id: ORG, project_id: HOME.released, company_id: id(61), commitment_type: "purchase_order", status: "approved", created_at: "2026-08-02T00:00:00Z" }]
-    service.db.commitment_lines = [{ id: id(62), org_id: ORG, commitment_id: id(60), cost_code_id: FRAMING }]
     await openReview(service)
     await service.run(() => decidePlanChangeHome({ proposalHomeId: homeFor(service, LOT.released).id, decision: "adopt", priceDeltaCents: 180_000 }))
     const changeOrderId = service.db.change_orders[0].id
     await service.run(() => applyPlanAdoptionFromChangeOrder(changeOrderId, ORG))
 
-    const [variance] = service.db.commitment_change_orders
-    assert.equal(variance.commitment_id, id(60))
-    assert.equal(variance.status, "draft")
-    assert.equal(variance.total_cents, 150_000)
-    assert.equal(variance.prime_change_order_id, changeOrderId)
-    assert.equal(variance.title, "Plan revision adopted")
+    const [call] = varianceCalls
+    assert.deepEqual([call.p_project_id, call.p_change_order_id], [HOME.released, changeOrderId])
+    assert.deepEqual(call.p_subject, { title: "Plan revision adopted", reason_code: "plan_revision", reason_label: "Plan revision", source: "plan_change_proposal" })
+    assert.deepEqual(call.p_deltas.map((delta) => [delta.cost_code_id, delta.cost_delta_cents]), [[FRAMING, 150_000]])
+    assert.deepEqual(service.events.filter((event) => event.eventType === "vpo.requested").map((event) => [event.entityId, event.payload.total_cents]), [[id(70), 150_000]])
     assert.equal(pinOf(service, LOT.released), V4)
   })
 

@@ -28,8 +28,10 @@ import { markCommitmentExecutedFromEnvelope } from "@/lib/services/commitments"
 import { executeEstimateFromEnvelopeExecution } from "@/lib/services/estimate-portal"
 import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
 import { executePurchaseAgreementFromEnvelopeExecution } from "@/lib/services/community-sales"
-import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
+import { executeSelectionApprovalFromEnvelope, notifySelectionApprovalOutcome, SELECTION_APPROVAL_OUTCOME_JOB_TYPE } from "@/lib/services/selection-approvals"
+import { DESIGN_STUDIO_NOTICE_JOB_TYPE, sendDesignStudioAppointmentNotice } from "@/lib/services/design-studio-appointment-notices"
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
+import { processSelectionChangeApplied, SELECTION_CHANGE_APPLIED_JOB_TYPE } from "@/lib/services/selection-change-orders"
 import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
 import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
 import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
@@ -155,6 +157,7 @@ const OUTBOX_JOB_TYPES = [
   "remove_search_index",
   "process_inbound_bill_email",
   "selection_cutoff_recompute",
+  SELECTION_CHANGE_APPLIED_JOB_TYPE,
   "warranty_enroll_coverage",
   "reanchor_takeoff_markups",
   "process_quick_capture",
@@ -172,6 +175,8 @@ const OUTBOX_JOB_TYPES = [
   AUDIT_RETRY_JOB_TYPE,
   LEAD_INTAKE_JOB_TYPE,
   SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE,
+  DESIGN_STUDIO_NOTICE_JOB_TYPE,
+  SELECTION_APPROVAL_OUTCOME_JOB_TYPE,
 ]
 
 // Create a VISIBLE test image for the tiled viewer
@@ -591,6 +596,8 @@ async function processOutboxQueue(request: NextRequest) {
           const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
           if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
           await recomputeProjectSelectionCutoffs(projectId, job.org_id)
+        } else if (job.job_type === SELECTION_CHANGE_APPLIED_JOB_TYPE) {
+          await processSelectionChangeApplied(job.org_id, job.payload)
         } else if (job.job_type === "warranty_enroll_coverage") {
           const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
           const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
@@ -664,6 +671,10 @@ async function processOutboxQueue(request: NextRequest) {
           const closingId = typeof job.payload?.closing_id === "string" ? job.payload.closing_id : null
           if (!closingId) throw new Error("Commission unwind settlement is missing closing_id")
           await settleCommissionUnwindBooks({ orgId: job.org_id, closingId })
+        } else if (job.job_type === DESIGN_STUDIO_NOTICE_JOB_TYPE) {
+          await sendDesignStudioAppointmentNotice(job.org_id, job.payload)
+        } else if (job.job_type === SELECTION_APPROVAL_OUTCOME_JOB_TYPE) {
+          await notifySelectionApprovalOutcome(job.org_id, job.payload)
         } else {
           return false
         }
@@ -1186,16 +1197,13 @@ async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof c
     })
   }
 
-  const selectionId =
-    document.source_entity_type === "selection"
-      ? document.source_entity_id
-      : (document.metadata?.selection_id as string | undefined)
-  if (selectionId) {
-    await confirmSelectionFromEnvelopeExecution({
+  // A buyer's selection approval binds the terms its envelope carried.
+  if (document.source_entity_type === "selection_approval" && document.source_entity_id) {
+    if (!envelopeId) throw new Error("Missing selection approval signing envelope")
+    await executeSelectionApprovalFromEnvelope({
       orgId,
-      selectionId,
+      approvalId: document.source_entity_id,
       envelopeId,
-      documentId,
       executedFileId,
       signerName,
       signerEmail,
