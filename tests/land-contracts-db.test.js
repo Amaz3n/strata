@@ -402,3 +402,40 @@ test("a fee's payment is recorded once, with its receipt; the rest of the amendm
   await assert.rejects(record({ paidOn: "2026-10-04", fileId: signed.id }), /kept as recorded/)
   await assert.rejects(db.query("update land_contract_amendments set fee_cents = 1 where id = $1", [penalty.id]), /kept as recorded/)
 })
+
+test("a land contract ends only through its close-out, and completes only once nothing is still scheduled", async (t) => {
+  const { db, orgId, ownerId, signed, contract, takedown, execute } = await land(t)
+  const { userId: landManager } = await seedMember(db, { orgId, role: "org_land_manager" })
+  const row = await contract()
+  const tranche = await takedown(row.id)
+  const deposit = await insert(db, "land_contract_deposits", { org_id: orgId, land_contract_id: row.id, takedown_id: tranche.id, due_on: "2026-11-15", amount_cents: 25_000_00 })
+  await execute(row.id)
+  const closeOut = (status) => rpc(db, "close_out_land_contract", { p_org_id: orgId, p_contract_id: row.id, p_status: status, p_actor_id: ownerId })
+
+  // The reviewer's case: terminating by status alone left the deposit and takedown owed, and the close-out refused afterwards.
+  for (const status of ["terminated", "completed"]) {
+    await assert.rejects(
+      asRole(db, { role: "authenticated", userId: landManager }, (tx) => tx.query("update land_contracts set status = $2 where id = $1", [row.id, status])),
+      /through its close-out/,
+    )
+  }
+  await assert.rejects(closeOut("completed"), /still has scheduled takedowns or unpaid deposits/)
+
+  await pay(db, deposit.id, signed.id)
+  await rpc(db, "close_lot_takedown", { p_org_id: orgId, p_takedown_id: tranche.id, p_actual_date: "2026-11-30", p_actor_id: ownerId })
+  await closeOut("completed")
+  assert.equal((await db.query("select status from land_contracts where id = $1", [row.id])).rows[0].status, "completed")
+})
+
+test("a member never unlinks or deletes a land deal's takedown", async (t) => {
+  const { db, orgId, ownerId, community } = await land(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const deal = await insert(db, "land_opportunities", { org_id: orgId, name: "Cypress Run west", community_id: community.id, created_by: ownerId })
+  const tranche = await insert(db, "lot_takedowns", { org_id: orgId, community_id: community.id, land_opportunity_id: deal.id, name: "West tranche", scheduled_date: "2026-12-01", lot_count: 6 })
+  const as = (sql) => asRole(db, { role: "authenticated", userId: field }, (tx) => tx.query(sql, [tranche.id]))
+
+  await assert.rejects(as("update lot_takedowns set land_opportunity_id = null where id = $1"), /stays with its land deal/)
+  await assert.rejects(as("delete from lot_takedowns where id = $1"), /from a land deal is kept/)
+  await as("update lot_takedowns set notes = 'Seller asked to move the walk-through' where id = $1")
+  assert.equal((await db.query("select land_opportunity_id from lot_takedowns where id = $1", [tranche.id])).rows[0].land_opportunity_id, deal.id)
+})

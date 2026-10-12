@@ -155,6 +155,18 @@ function lotPayload(input: Partial<LotUpdateInput>, existingDimensions?: Record<
   return patch
 }
 
+/**
+ * A lot premium is part of the asking price of the home standing on the lot, so
+ * once a lot carries a home its premium moves only through a spec price move,
+ * where the approval bands apply (the database refuses the direct write too).
+ */
+function assertPremiumEditable(lots: ReadonlyArray<{ lot_number: string; project_id: string | null; premium_cents: number | null }>, premiumCents: number | undefined) {
+  if (premiumCents === undefined) return
+  const homed = lots.filter((lot) => lot.project_id && Number(lot.premium_cents ?? 0) !== premiumCents)
+  if (homed.length === 0) return
+  throw new Error(`${homed.length === 1 ? `Lot ${homed[0].lot_number} has` : `Lots ${homed.map((lot) => lot.lot_number).join(", ")} have`} a home: the premium is part of the home's asking price. Reprice the home from the community's offering instead.`)
+}
+
 async function logLotMutation(input: {
   orgId: string
   userId: string
@@ -409,6 +421,7 @@ export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgI
   await requireCommunityScope(before.community_id, context)
   await assertCommunityRelations(context.supabase, context.orgId, before.community_id, parsed)
   if (parsed.status) assertLotStatusTransition({ from: before.status, to: parsed.status, hasProject: Boolean(before.project_id) })
+  assertPremiumEditable([before], parsed.premiumCents)
   const { data, error } = await context.supabase.from("lots").update(lotPayload(parsed, before.dimensions)).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to update lot: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.updated", entityId: id, action: "update", before, after: data, payload: { community_id: before.community_id, lot_number: data.lot_number } })
@@ -427,9 +440,10 @@ export async function bulkUpdateLots(
   await requirePermission("lot.write", context)
   await requireCommunityScope(communityId, context)
   await assertCommunityRelations(context.supabase, context.orgId, communityId, parsed.patch)
-  const { data: before, error: beforeError } = await context.supabase.from("lots").select("id, status, project_id").eq("org_id", context.orgId).eq("community_id", communityId).in("id", parsed.lotIds)
+  const { data: before, error: beforeError } = await context.supabase.from("lots").select("id, lot_number, status, project_id, premium_cents").eq("org_id", context.orgId).eq("community_id", communityId).in("id", parsed.lotIds)
   if (beforeError) throw new Error(`Failed to load lots: ${beforeError.message}`)
   if ((before ?? []).length !== parsed.lotIds.length) throw new Error("One or more selected lots were not found.")
+  assertPremiumEditable(before ?? [], parsed.patch.premiumCents)
   if (parsed.patch.status) {
     for (const row of before ?? []) assertLotStatusTransition({ from: row.status as LotStatus, to: parsed.patch.status, hasProject: Boolean(row.project_id) })
   }

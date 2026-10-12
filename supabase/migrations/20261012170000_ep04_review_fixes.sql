@@ -13,23 +13,31 @@
 --    org's configurable bands live in lib/sales/spec-price-approval-thresholds.ts)
 --    before calling. A member can no longer insert a move at all, and only
 --    withdraws their own by direct update; decisions go through the function.
--- 2. lots.asking_price_override_cents is written only by those functions.
+-- 2. lots.asking_price_override_cents is written only by those functions, and
+--    a member never moves a home's derived asking price either: its lot premium
+--    is frozen once the lot carries a home, and its plan or elevation changes
+--    only when that leaves the price on the sheet where it was.
 -- 3. spec_dispositions.carrying_cents is the database's: what Books carries for
 --    the home on the day the disposition is proposed (books_home_carrying_cents).
 -- 4. lot_reservations: the buyer and the lot never change; status moves only
 --    along hold -> reserved -> converted (each releasable, a hold expirable); a
---    reservation going live again is held to the allocation rule; members do not
---    move a reservation's status, sale or deposit invoice, and do not delete one.
+--    reservation going live again is held to the allocation rule; a member only
+--    ever creates a hold, does not move a reservation's status, sale or deposit
+--    invoice, and does not delete one. attach_purchase_agreement_draft links a
+--    new draft agreement to its reservation and configures the home together.
 -- 5. lot_takedowns: one under a signed contract is never deleted. A member
---    never closes or reopens a takedown directly, and never cancels one under a
---    signed contract or from a land deal; closing a deal's takedown needs an
---    approved acquisition review whoever writes it. close_lot_takedown closes,
---    applies the paid deposits and advances the lots in one transaction.
--- 6. Terminating a land contract cancels its scheduled deposits ('cancelled',
---    a new status: no money moved, so no receipt) and its scheduled takedowns,
---    in one transaction (close_out_land_contract).
+--    never closes or reopens a takedown directly, never cancels one under a
+--    signed contract or from a land deal, and never unlinks or deletes a deal's
+--    takedown; closing a deal's takedown needs an approved acquisition review
+--    whoever writes it. close_lot_takedown closes, applies the paid deposits and
+--    advances the lots in one transaction.
+-- 6. A land contract is terminated or completed only by close_out_land_contract:
+--    terminating cancels its scheduled deposits ('cancelled', a new status: no
+--    money moved, so no receipt) and its scheduled takedowns in one transaction;
+--    completing waits until nothing is still scheduled.
 -- 7. A started or closed lot moving back is a reversal: a member needs
---    community.write, the authority the service's force path demands.
+--    community.write, the authority the service's force path demands. A member
+--    closes a lot only once its closing is recorded.
 -- 9. An extension or penalty fee records its payment (fee_paid_on with the
 --    receipt), so an unpaid one past due stays in the cash plan.
 
@@ -211,6 +219,9 @@ returns trigger
 language plpgsql
 set search_path = ''
 as $$
+declare
+  v_old_base bigint;
+  v_new_base bigint;
 begin
   if current_user <> 'authenticated' then
     return new;
@@ -224,6 +235,41 @@ begin
   if new.asking_price_override_cents is distinct from old.asking_price_override_cents then
     raise exception 'A spec home''s asking price is set by a price move' using errcode = '42501';
   end if;
+  -- A home's asking price, unless it was repriced, is its plan's price on the
+  -- sheet plus the lot premium (sellable_lot_inventory). A member moves it only
+  -- through a price move, where the approval bands apply.
+  if coalesce(old.project_id, new.project_id) is not null then
+    if new.premium_cents is distinct from old.premium_cents then
+      raise exception 'Lot % has a home: its premium is part of the home''s asking price. Reprice the home from the community''s offering instead.', old.lot_number
+        using errcode = '42501';
+    end if;
+    if new.asking_price_override_cents is null
+       and (new.house_plan_id, new.house_plan_elevation_id) is distinct from (old.house_plan_id, old.house_plan_elevation_id) then
+      select a.base_price_cents into v_old_base
+        from public.community_plan_availability a
+       where a.org_id = old.org_id and a.community_id = old.community_id and a.house_plan_id = old.house_plan_id
+         and a.is_available
+         and (a.elevation_id is null or a.elevation_id = old.house_plan_elevation_id)
+         and (a.effective_start is null or a.effective_start <= current_date)
+         and (a.effective_end is null or a.effective_end >= current_date)
+       order by (a.elevation_id is not null) desc
+       limit 1;
+      select a.base_price_cents into v_new_base
+        from public.community_plan_availability a
+       where a.org_id = new.org_id and a.community_id = new.community_id and a.house_plan_id = new.house_plan_id
+         and a.is_available
+         and (a.elevation_id is null or a.elevation_id = new.house_plan_elevation_id)
+         and (a.effective_start is null or a.effective_start <= current_date)
+         and (a.effective_end is null or a.effective_end >= current_date)
+       order by (a.elevation_id is not null) desc
+       limit 1;
+      -- A home with no price yet takes its first one from its plan.
+      if v_old_base is not null and v_new_base is distinct from v_old_base then
+        raise exception 'Changing the plan of lot % would move its home''s asking price. Reprice the home from the community''s offering instead.', old.lot_number
+          using errcode = '42501';
+      end if;
+    end if;
+  end if;
   -- Out of started or closed, except forward to closed, is a reversal.
   if old.status in ('started', 'closed')
      and new.status is distinct from old.status
@@ -231,6 +277,15 @@ begin
      and not public.has_org_permission(new.org_id, 'community.write') then
     raise exception 'Moving a lot out of % is a reversal; it takes community.write and an explicit force confirmation', old.status
       using errcode = '42501';
+  end if;
+  -- A lot closes with its home's closing.
+  if new.status = 'closed' and old.status is distinct from 'closed'
+     and not public.has_org_permission(new.org_id, 'community.write')
+     and not exists (
+       select 1 from public.closings c
+        where c.org_id = new.org_id and c.lot_id = new.id and c.status = 'closed'
+     ) then
+    raise exception 'Lot % closes when its home''s closing is recorded', old.lot_number using errcode = '42501';
   end if;
   return new;
 end;
@@ -240,7 +295,7 @@ revoke all on function public.tg_lots_member_write_guard() from public, anon, au
 
 drop trigger if exists lots_member_write_guard on public.lots;
 create trigger lots_member_write_guard
-  before insert or update of asking_price_override_cents, status on public.lots
+  before insert or update of asking_price_override_cents, status, premium_cents, house_plan_id, house_plan_elevation_id on public.lots
   for each row execute function public.tg_lots_member_write_guard();
 
 -- ---------------------------------------------------------------------------
@@ -288,6 +343,14 @@ begin
     end if;
     return old;
   end if;
+  -- A member starts a sale with a hold; reserving and converting are the sales flow's.
+  if tg_op = 'INSERT' then
+    if current_user = 'authenticated'
+       and (new.status <> 'hold' or new.contract_id is not null or new.deposit_invoice_id is not null) then
+      raise exception 'A sale starts as a hold on the lot; it is reserved and converted through the sales flow' using errcode = '42501';
+    end if;
+    return new;
+  end if;
   if (new.org_id, new.lot_id, new.community_id, new.buyer_contact_id)
      is distinct from (old.org_id, old.lot_id, old.community_id, old.buyer_contact_id) then
     raise exception 'A reservation stays with its buyer and lot; release it and hold the lot again' using errcode = '42501';
@@ -324,10 +387,65 @@ revoke all on function public.tg_lot_reservations_transition() from public, anon
 
 drop trigger if exists lot_reservations_transition on public.lot_reservations;
 create trigger lot_reservations_transition
-  before update or delete on public.lot_reservations
+  before insert or update or delete on public.lot_reservations
   for each row execute function public.tg_lot_reservations_transition();
 
 revoke delete on table public.lot_reservations from authenticated;
+
+-- A new draft purchase agreement takes its reservation and fixes the home's
+-- configuration in one transaction. The service (createPurchaseAgreement) has
+-- checked sales.manage on the home, the open-agreement rule and the quote, and
+-- removes the draft when this refuses, so a home is never left with an
+-- agreement that owns no sale.
+create or replace function public.attach_purchase_agreement_draft(
+  p_org_id uuid,
+  p_contract_id uuid,
+  p_reservation_id uuid,
+  p_house_plan_id uuid,
+  p_house_plan_version_id uuid,
+  p_elevation_id uuid,
+  p_swing text,
+  p_actor_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_project uuid;
+  v_lot uuid;
+begin
+  if p_actor_id is null or not exists (select 1 from public.app_users where id = p_actor_id) then
+    raise exception 'A purchase agreement is created by a person' using errcode = '22023';
+  end if;
+  select project_id into v_project
+    from public.contracts
+   where org_id = p_org_id and id = p_contract_id and contract_type = 'purchase_agreement' and status = 'draft';
+  if not found then
+    raise exception 'The draft purchase agreement was not found' using errcode = 'P0002';
+  end if;
+  update public.lot_reservations
+     set contract_id = p_contract_id
+   where org_id = p_org_id and id = p_reservation_id and status = 'reserved' and contract_id is null
+  returning lot_id into v_lot;
+  if not found then
+    raise exception 'The reservation is no longer reserved without an agreement' using errcode = '40001';
+  end if;
+  update public.lots
+     set house_plan_id = p_house_plan_id,
+         house_plan_version_id = p_house_plan_version_id,
+         house_plan_elevation_id = p_elevation_id,
+         swing = p_swing
+   where org_id = p_org_id and id = v_lot and project_id = v_project;
+  if not found then
+    raise exception 'The reserved lot no longer carries this agreement''s home' using errcode = '40001';
+  end if;
+end;
+$$;
+
+revoke all on function public.attach_purchase_agreement_draft(uuid, uuid, uuid, uuid, uuid, uuid, text, uuid) from public, anon, authenticated;
+grant execute on function public.attach_purchase_agreement_draft(uuid, uuid, uuid, uuid, uuid, uuid, text, uuid) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 5. Takedowns under a signed contract or from a land deal.
@@ -347,7 +465,15 @@ begin
     ) then
       raise exception 'A takedown under a signed land contract is kept; terminate the contract instead' using errcode = '42501';
     end if;
+    if current_user = 'authenticated' and old.land_opportunity_id is not null then
+      raise exception 'A takedown from a land deal is kept; cancel it through the land workflow' using errcode = '42501';
+    end if;
     return old;
+  end if;
+  if current_user = 'authenticated'
+     and old.land_opportunity_id is not null
+     and new.land_opportunity_id is distinct from old.land_opportunity_id then
+    raise exception 'A takedown stays with its land deal; moving it is a land decision made through the land workflow' using errcode = '42501';
   end if;
   if new.status is not distinct from old.status then
     return new;
@@ -572,6 +698,13 @@ begin
   if v_status <> 'executed' then
     raise exception 'Only an executed land contract is terminated or completed.' using errcode = '22023';
   end if;
+  -- Completed means nothing is still owed either way; ending a contract early is a termination.
+  if p_status = 'completed' and (
+    exists (select 1 from public.lot_takedowns t where t.org_id = p_org_id and t.land_contract_id = p_contract_id and t.status = 'scheduled')
+    or exists (select 1 from public.land_contract_deposits d where d.org_id = p_org_id and d.land_contract_id = p_contract_id and d.status = 'scheduled')
+  ) then
+    raise exception 'This contract still has scheduled takedowns or unpaid deposits. Close and pay them, or terminate the contract to cancel them.' using errcode = '22023';
+  end if;
 
   update public.land_contracts set status = p_status where id = p_contract_id;
 
@@ -596,6 +729,49 @@ $$;
 
 revoke all on function public.close_out_land_contract(uuid, uuid, text, uuid) from public, anon, authenticated;
 grant execute on function public.close_out_land_contract(uuid, uuid, text, uuid) to service_role;
+
+-- What was signed stays signed (20261012090000), and a member never ends a
+-- contract by its status alone: the close-out ends what it still called for.
+create or replace function public.guard_land_contract_terms()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if tg_op = 'DELETE' then
+    if old.status <> 'draft' then
+      raise exception 'An executed land contract is kept; terminate it instead' using errcode = '42501';
+    end if;
+    return old;
+  end if;
+  if new.org_id is distinct from old.org_id or new.community_id is distinct from old.community_id then
+    raise exception 'A land contract stays with its community' using errcode = '42501';
+  end if;
+  if old.status = 'draft' then
+    if new.status not in ('draft', 'executed') then
+      raise exception 'Execute a land contract before it can be terminated or completed' using errcode = '42501';
+    end if;
+    return new;
+  end if;
+  if (new.kind, new.seller_company_id, new.contract_number, new.title, new.executed_on, new.executed_file_id,
+      new.total_lots, new.base_price_per_lot_cents, new.extension_terms, new.penalty_terms)
+     is distinct from
+     (old.kind, old.seller_company_id, old.contract_number, old.title, old.executed_on, old.executed_file_id,
+      old.total_lots, old.base_price_per_lot_cents, old.extension_terms, old.penalty_terms) then
+    raise exception 'An executed land contract''s terms cannot change. Record an amendment.' using errcode = '42501';
+  end if;
+  if new.status is distinct from old.status
+     and not (old.status = 'executed' and new.status in ('terminated', 'completed')) then
+    raise exception 'A land contract only moves from executed to terminated or completed' using errcode = '42501';
+  end if;
+  if new.status is distinct from old.status and current_user = 'authenticated' then
+    raise exception 'A land contract is terminated or completed through its close-out, which settles its scheduled deposits and takedowns' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.guard_land_contract_terms() from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 9. A fee's payment, recorded once with its receipt.

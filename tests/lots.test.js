@@ -258,6 +258,22 @@ describe("updateLot", () => {
     assert.deepEqual(service.db.lots[0].dimensions, { width_ft: 50, depth_ft: 120, side_setback_ft: 5 })
     assert.deepEqual(service.events.map((event) => event.eventType), ["lot.updated", "lot.updated", "lot.fit_violated"])
   })
+
+  test("a premium is edited freely until a home stands on the lot; then it moves only by repricing the home", async () => {
+    const service = harness()
+    await service.run(() => updateLot(LOT, { premiumCents: 15_000_00 }))
+    await service.run(() => bulkUpdateLots(COMMUNITY, { lotIds: [LOT], patch: { premiumCents: 20_000_00 } }))
+    assert.equal(service.db.lots[0].premium_cents, 20_000_00)
+
+    service.db.lots[0].project_id = HOME
+    const before = service.writes("lots").length
+    await assert.rejects(service.run(() => updateLot(LOT, { premiumCents: 0 })), /Lot 12 has a home.*Reprice the home/)
+    await assert.rejects(service.run(() => bulkUpdateLots(COMMUNITY, { lotIds: [LOT], patch: { premiumCents: 0 } })), /Lot 12 has a home.*Reprice the home/)
+    assert.equal(service.writes("lots").length, before)
+    // Resending the premium it already has is not a price move.
+    await service.run(() => updateLot(LOT, { premiumCents: 20_000_00, notes: "Corner lot" }))
+    assert.equal(service.db.lots[0].notes, "Corner lot")
+  })
 })
 
 describe("lot status and home association", () => {

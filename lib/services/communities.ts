@@ -708,7 +708,8 @@ async function takedownContractStatus(context: Awaited<ReturnType<typeof require
  * closed. Cancelling (or restoring) one under a signed contract or from a land
  * deal is a land decision: the database refuses a member's direct status write
  * there, so after these checks the row is written as the system — and under a
- * signed contract it also takes land_contract.write.
+ * signed contract it also takes land_contract.write. Moving a takedown off its
+ * land deal takes land.approve and is written the same way.
  */
 export async function updateLotTakedown(id: string, input: Partial<TakedownInput>, orgId?: string): Promise<LotTakedownDTO> {
   const parsed = takedownUpdateSchema.parse(input)
@@ -726,13 +727,16 @@ export async function updateLotTakedown(id: string, input: Partial<TakedownInput
   if (statusChanges && before.status === "closed") throw new Error("A closed takedown stays closed.")
   const landDecision = statusChanges && ((contractStatus !== null && contractStatus !== "draft") || Boolean(before.land_opportunity_id))
   if (landDecision && contractStatus !== null && contractStatus !== "draft") await requirePermission("land_contract.write", context)
+  // Its deal's approval gates a takedown's closing, so moving it off that deal is the approvers' call.
+  const movesDeal = Boolean(before.land_opportunity_id) && parsed.landOpportunityId !== undefined && parsed.landOpportunityId !== before.land_opportunity_id
+  if (movesDeal) await requirePermission("land.approve", context)
   if (contractStatus === "executed") {
     const changes = (value: unknown, current: unknown) => value !== undefined && value !== current
     if (changes(parsed.scheduledDate, before.scheduled_date)) throw new Error("This takedown is under an executed land contract. Record an extension with the signed evidence to move its close date.")
     if (changes(parsed.lotCount, before.lot_count) || changes(parsed.pricePerLotCents, before.price_per_lot_cents)) throw new Error("The lot count and price of a takedown under an executed land contract are signed terms. Record an amendment.")
     if (changes(parsed.landContractId, before.land_contract_id)) throw new Error("A takedown cannot move out of an executed land contract.")
   }
-  const writer = landDecision ? createServiceSupabaseClient() : context.supabase
+  const writer = landDecision || movesDeal ? createServiceSupabaseClient() : context.supabase
   const { data, error } = await writer.from("lot_takedowns").update(takedownPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(TAKEDOWN_SELECT).single()
   if (error) throw new Error(`Failed to update takedown: ${error.message}`)
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot_takedown.updated", entityType: "lot_takedown", entityId: id, action: "update", before, after: data, payload: { community_id: data.community_id, name: data.name } })

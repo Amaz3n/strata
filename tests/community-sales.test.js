@@ -24,6 +24,8 @@ stubModule("@/lib/services/payments", {
     refunds.push(request)
   },
 })
+// Preparing the signing packet has its own suite; with no signing storage it reports why and stops.
+stubModule("@/lib/storage/files-storage", { getFilesStorageProvider: () => "unconfigured" })
 
 /**
  * `release_lot_reservation`'s contract as the service sees it: one guarded
@@ -37,7 +39,7 @@ function releaseLotReservation({ p_reservation_id, p_reason, p_deposit_dispositi
   return { data: { before, after: { ...row } }, error: null }
 }
 
-const { bulkRepriceCommunityPlans, createLotHold, createLotHoldFromProspect, priceAgreementDraft, registerReservationConversion, releaseReservation, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, proposeSpecPriceChange, decideSpecPriceChange, voidPurchaseAgreement } =
+const { bulkRepriceCommunityPlans, createLotHold, createPurchaseAgreement, createLotHoldFromProspect, priceAgreementDraft, registerReservationConversion, releaseReservation, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, proposeSpecPriceChange, decideSpecPriceChange, voidPurchaseAgreement } =
   freshRequire("lib/services/community-sales.ts")
 
 const COMMUNITY = id(1)
@@ -696,7 +698,7 @@ describe("a standing spec's price and incentive moves", () => {
     return createServiceHarness({
       permissions,
       userId: actor,
-      rpc: specPricingRpc(actor),
+      rpc: specPricingRpc(),
       tables: {
         lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 10_000_00, asking_price_override_cents: null, project_id: HOME, house_plan_id: PLAN, house_plan_elevation_id: null, metadata: {}, updated_at: STAMP }],
         sellable_lot_inventory: [{ lot_id: LOT, org_id: ORG, asking_price_cents: 410_000_00 }],
@@ -892,5 +894,69 @@ describe("a home under an approved sell-off belongs to the disposition's buyer",
     assert.deepEqual(priced.homeAdjustments, [{ kind: "home_incentive", sourceId: PROPOSAL, label: "Home incentive", amountCents: -7_500_00 }])
     assert.equal(priced.totalCents, 312_500_00)
     assert.equal(priced.disposition, null)
+  })
+})
+
+describe("createPurchaseAgreement", () => {
+  const LOT = id(81)
+  const PLAN = id(82)
+  const VERSION = id(83)
+  const BUYER = id(84)
+
+  /** `attach_purchase_agreement_draft`: the draft takes its reservation and configures the home, or nothing changes. */
+  function attachDraft({ p_contract_id, p_reservation_id, p_house_plan_id, p_house_plan_version_id, p_elevation_id, p_swing }, store) {
+    const contract = store.contracts.find((row) => row.id === p_contract_id && row.status === "draft")
+    const reservation = store.lot_reservations.find((row) => row.id === p_reservation_id && row.status === "reserved" && !row.contract_id)
+    if (!contract || !reservation) return { data: null, error: { message: "The reservation is no longer reserved without an agreement" } }
+    reservation.contract_id = p_contract_id
+    const lot = store.lots.find((row) => row.id === reservation.lot_id && row.project_id === contract.project_id)
+    Object.assign(lot, { house_plan_id: p_house_plan_id, house_plan_version_id: p_house_plan_version_id, house_plan_elevation_id: p_elevation_id, swing: p_swing })
+    return { data: null, error: null }
+  }
+
+  function harness({ attach = attachDraft } = {}) {
+    return createServiceHarness({
+      permissions: ["sales.manage", "sales.read"],
+      projects: [HOME],
+      rpc: { attach_purchase_agreement_draft: attach },
+      tables: {
+        lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 0, asking_price_override_cents: null, project_id: HOME, house_plan_id: PLAN, house_plan_version_id: VERSION, house_plan_elevation_id: null, swing: "left", lot_number: "81" }],
+        communities: [{ id: COMMUNITY, org_id: ORG, division_id: null }],
+        projects: [{ id: HOME, org_id: ORG, division_id: null }],
+        house_plan_versions: [{ id: VERSION, org_id: ORG, house_plan_id: PLAN, status: "released", label: "v1", plan: { name: "Oak", org_id: ORG } }],
+        community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, effective_start: null, effective_end: null, base_price_cents: 320_000_00 }],
+        lot_reservations: [{ id: RESERVATION, org_id: ORG, community_id: COMMUNITY, lot_id: LOT, status: "reserved", buyer_contact_id: BUYER, co_buyer_contact_id: null, contract_id: null, deposit_invoice_id: null, expires_at: null, lot: { project_id: HOME, lot_number: "81" } }],
+        contracts: [],
+        spec_price_proposals: [],
+        spec_dispositions: [],
+      },
+    })
+  }
+  async function create(service) {
+    const quote = await service.run(() => priceAgreementDraft({ lotId: LOT, optionItems: [], incentiveIds: [] }))
+    return service.run(() => createPurchaseAgreement({ reservationId: RESERVATION, lotId: LOT, optionItems: [], incentiveIds: [], expectedQuoteHash: quote.quoteHash }))
+  }
+
+  test("a sales manager's new agreement owns its reservation and fixes the home's configuration", async () => {
+    const service = harness()
+    const agreement = await create(service)
+
+    assert.equal(service.db.contracts.length, 1)
+    assert.equal(service.db.contracts[0].status, "draft")
+    assert.equal(service.db.lot_reservations[0].contract_id, agreement.id)
+    assert.deepEqual([service.db.lots[0].house_plan_id, service.db.lots[0].house_plan_version_id, service.db.lots[0].swing], [PLAN, VERSION, "left"])
+    // The member's client never writes the reservation or the lot: the database refuses those writes.
+    assert.deepEqual(service.writes("lot_reservations"), [])
+    assert.deepEqual(service.writes("lots"), [])
+    assert.ok(service.events.some((event) => event.eventType === "purchase_agreement_created"))
+  })
+
+  test("an agreement that cannot take its reservation is removed, so the home is free to sell again", async () => {
+    const refused = () => ({ data: null, error: { message: "The reservation is no longer reserved without an agreement" } })
+    const service = harness({ attach: refused })
+    await assert.rejects(create(service), /could not take its reservation, so nothing was saved/)
+    assert.deepEqual(service.db.contracts, [])
+    assert.equal(service.db.lot_reservations[0].contract_id, null)
+    assert.equal(service.events.some((event) => event.eventType === "purchase_agreement_created"), false)
   })
 })

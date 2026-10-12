@@ -205,6 +205,18 @@ test("naming a takedown's land deal takes land.read and a deal acquired into thi
   assert.equal((await reader.run(() => createLotTakedown(NORTH_COMMUNITY, input))).landOpportunityId, DEAL)
 })
 
+test("moving a takedown off its land deal is the deal approvers' call", async () => {
+  const deals = [{ id: DEAL, org_id: ORG, community_id: NORTH_COMMUNITY, name: "Hawthorne 80" }]
+  const unlink = (service) => service.run(() => updateLotTakedown(TAKEDOWN, { landOpportunityId: null }))
+
+  const writer = takedownHarness({ contractStatus: null, landOpportunityId: DEAL, deals, permissions: [...LAND_WRITER, "land.read"] })
+  await assert.rejects(unlink(writer), /land.approve/)
+  assert.deepEqual(writer.writes(), [])
+
+  const approver = takedownHarness({ contractStatus: null, landOpportunityId: DEAL, deals, permissions: [...LAND_WRITER, "land.read", "land.approve"] })
+  assert.equal((await unlink(approver)).landOpportunityId, null)
+})
+
 test("with Books on, a takedown closes only through the recorded land acquisition", async () => {
   const service = takedownHarness({
     contractStatus: null,

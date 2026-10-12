@@ -277,3 +277,83 @@ test("a reservation keeps its buyer and lot, moves only along its lifecycle, and
   await db.query("update lot_reservations set status = 'released', released_at = now() where id = $1", [live.id])
   await assert.rejects(db.query("update lot_reservations set status = 'hold' where id = $1", [live.id]), /cannot move from released to hold/)
 })
+
+test("a member creates a reservation only as a hold; reserving and converting are the sales flow's", async (t) => {
+  const { db, orgId, community, lot, buyer } = await sales(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const alma = await buyer("Alma")
+  const insertAs = (status, row) => asRole(db, { role: "authenticated", userId: field }, (tx) =>
+    tx.query("insert into lot_reservations (org_id, community_id, lot_id, buyer_contact_id, status, expires_at) values ($1, $2, $3, $4, $5, now() + interval '2 days') returning status",
+      [orgId, community.id, row.id, alma, status]))
+
+  for (const status of ["reserved", "converted"]) {
+    await assert.rejects(insertAs(status, await lot({ status: "developed" })), /starts as a hold/)
+  }
+  assert.equal((await insertAs("hold", await lot({ status: "developed" }))).rows[0].status, "hold")
+})
+
+test("a draft agreement takes its reservation and configures its home only through attach_purchase_agreement_draft", async (t) => {
+  const { db, orgId, ownerId, lot, buyer, home, hold } = await sales(t)
+  const { userId: salesAgent } = await seedMember(db, { orgId, role: "org_sales_agent" })
+  const alma = await buyer("Alma")
+  const homeId = await home(alma)
+  const plan = await insert(db, "house_plans", { org_id: orgId, name: "Oak", code: "OAK" })
+  const row = await lot({ status: "assigned", project_id: homeId })
+  const reservation = await hold(row, alma, { status: "reserved", expires_at: null })
+  const draft = await insert(db, "contracts", { org_id: orgId, project_id: homeId, title: "Purchase agreement", contract_type: "purchase_agreement", status: "draft" })
+  const attach = (actorId = ownerId) => rpc(db, "attach_purchase_agreement_draft", {
+    p_org_id: orgId, p_contract_id: draft.id, p_reservation_id: reservation.id,
+    p_house_plan_id: plan.id, p_house_plan_version_id: null, p_elevation_id: null, p_swing: "left", p_actor_id: actorId,
+  })
+
+  // The path the default agreement creation used to take: the sales member's own client.
+  await assert.rejects(
+    asRole(db, { role: "authenticated", userId: salesAgent }, (tx) => tx.query("update lot_reservations set contract_id = $2 where id = $1", [reservation.id, draft.id])),
+    /through the sales flow/,
+  )
+  await assert.rejects(
+    asRole(db, { role: "authenticated", userId: salesAgent }, (tx) => tx.query("select public.attach_purchase_agreement_draft($1, $2, $3, $4, null, null, 'left', $5)", [orgId, draft.id, reservation.id, plan.id, salesAgent])),
+    /permission denied/,
+  )
+
+  await attach(salesAgent)
+  const { rows: [after] } = await db.query("select r.contract_id, l.house_plan_id, l.swing from lot_reservations r join lots l on l.id = r.lot_id where r.id = $1", [reservation.id])
+  assert.deepEqual(after, { contract_id: draft.id, house_plan_id: plan.id, swing: "left" })
+  await assert.rejects(attach(), /no longer reserved without an agreement/)
+})
+
+test("a home's asking price moves only by repricing: a member changes neither its lot premium nor its plan's price", async (t) => {
+  const { db, orgId, ownerId, community, lot, home } = await sales(t)
+  const as = (sql, args) => asRole(db, { role: "authenticated", userId: ownerId }, (tx) => tx.query(sql, args))
+  const [big, small, twin] = await Promise.all(["Big", "Small", "Twin"].map((name) => insert(db, "house_plans", { org_id: orgId, name, code: name.toUpperCase() })))
+  for (const [plan, cents] of [[big, 450_000_00], [small, 380_000_00], [twin, 450_000_00]]) {
+    await insert(db, "community_plan_availability", { org_id: orgId, community_id: community.id, house_plan_id: plan.id, base_price_cents: cents, is_available: true })
+  }
+  const spec = await lot({ status: "started", project_id: await home(), house_plan_id: big.id, premium_cents: 50_000_00 })
+  const bare = await lot({ status: "developed", premium_cents: 10_000_00 })
+
+  // The reviewer's case: drop the premium and swap in a cheaper plan on a spec home that was never repriced.
+  await assert.rejects(as("update lots set premium_cents = 0 where id = $1", [spec.id]), /has a home: its premium is part of the home's asking price/)
+  await assert.rejects(as("update lots set house_plan_id = $2 where id = $1", [spec.id, small.id]), /would move its home's asking price/)
+  // A plan change that leaves the price where it was is not a price move.
+  await as("update lots set house_plan_id = $2 where id = $1", [spec.id, twin.id])
+  // A lot without a home is still priced freely.
+  await as("update lots set premium_cents = 0 where id = $1", [bare.id])
+  const { rows } = await db.query("select id, premium_cents::int as premium, house_plan_id from lots where id in ($1, $2) order by lot_number", [spec.id, bare.id])
+  assert.deepEqual(rows, [{ id: spec.id, premium: 50_000_00, house_plan_id: twin.id }, { id: bare.id, premium: 0, house_plan_id: null }])
+})
+
+test("a member closes a lot only once its home's closing is recorded", async (t) => {
+  const { db, orgId, lot, home } = await sales(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const homeId = await home()
+  const row = await lot({ status: "started", project_id: homeId })
+  const close = () => asRole(db, { role: "authenticated", userId: field }, (tx) => tx.query("update lots set status = 'closed' where id = $1", [row.id]))
+
+  await assert.rejects(close(), /closes when its home's closing is recorded/)
+  await db.query("set session_replication_role = replica")
+  await insert(db, "closings", { org_id: orgId, project_id: homeId, lot_id: row.id, status: "closed", scheduled_date: "2026-10-01", actual_date: "2026-10-01" })
+  await db.query("set session_replication_role = origin")
+  await close()
+  assert.equal((await db.query("select status from lots where id = $1", [row.id])).rows[0].status, "closed")
+})

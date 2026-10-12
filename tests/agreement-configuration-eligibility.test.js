@@ -7,7 +7,7 @@ const test = require("node:test")
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
 const ORG = id(1), LOT = id(2), COMMUNITY = id(3), PLAN = id(4), VERSION = id(5), ELEVATION = id(6), HOME = id(7), DIVISION = id(8)
 
-function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedOnly = false, divisions = [DIVISION], homeDenied = false, resolved = [], failure = null, openCount = 0, linkedContract = null, insertConflict = false, writeFailure = null, missingWrite = null, versionRows = null, elevationRows = null, incentiveRows = [], rowCap = 1000, lateFailure = null, selectionOptions = [], selectionPackages = [], atomic = false, durable = true, savedReceipt = null, receiptError = false, signingFailure = false, catalogRevisions = ["1", "1"], capacityRows = [], configurationError = null } = {}) {
+function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedOnly = false, divisions = [DIVISION], homeDenied = false, resolved = [], failure = null, openCount = 0, linkedContract = null, insertConflict = false, versionRows = null, elevationRows = null, incentiveRows = [], rowCap = 1000, lateFailure = null, selectionOptions = [], selectionPackages = [], atomic = false, durable = true, savedReceipt = null, receiptError = false, signingFailure = false, catalogRevisions = ["1", "1"], capacityRows = [], configurationError = null } = {}) {
   const calls = [], authorizations = [], writes = [], receiptCalls = [], signingCalls = [], logs = []
   const today = new Date().toISOString().slice(0, 10)
   const tables = {
@@ -35,7 +35,7 @@ function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedO
       gt(key,value) { cursor = value; rows = rows.filter(row => row[key] > value); return query },
       insert(payload) { writes.push(payload); inserting = true; return query },
       update() { return query },
-      async single() { if (inserting && insertConflict) return { data: null, error: { code: "23505", message: insertConflict === "number" ? "duplicate agreement number" : "contracts_open_purchase_agreement_home_unique" } }; return { data: inserting ? { id: id(12), project_id: HOME, total_cents: 30001000 } : missingWrite === table ? null : rows[0], error: writeFailure === table ? { message: "write failed" } : null } },
+      async single() { if (inserting && insertConflict) return { data: null, error: { code: "23505", message: insertConflict === "number" ? "duplicate agreement number" : "contracts_open_purchase_agreement_home_unique" } }; return { data: inserting ? { id: id(12), project_id: HOME, total_cents: 30001000 } : rows[0], error: null } },
       eq(key, value) { rows = rows.filter(row => key.split('.').reduce((v,k) => v?.[k], row) === value); return query },
       is(key, value) { rows = rows.filter(row => row[key] === value); return query },
       in(key, values) { rows = rows.filter(row => values.includes(row[key])); return query },
@@ -196,13 +196,6 @@ test("database ownership conflict cannot be reported as a newly created agreemen
     const h = harness({ insertConflict })
     const quote = await h.price(input)
     await assert.rejects(h.service.createPurchaseAgreement({ ...input, expectedQuoteHash: quote.quoteHash, reservationId: id(11) }), insertConflict === true ? /already owns this home/ : /Failed to create purchase agreement: duplicate agreement number/)
-  }
-})
-
-test("partial reservation or lot writes stop before signature preparation", async () => {
-  for (const settings of [{ writeFailure: "lot_reservations" }, { missingWrite: "lot_reservations" }, { writeFailure: "lots" }, { missingWrite: "lots" }]) {
-    const h = harness(settings), quote = await h.price(input)
-    await assert.rejects(h.service.createPurchaseAgreement({ ...input, expectedQuoteHash: quote.quoteHash, reservationId: id(11) }), /saved but.*could not be recorded/)
   }
 })
 

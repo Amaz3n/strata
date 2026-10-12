@@ -1821,10 +1821,20 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
     co_buyer_contact_id: reservation.co_buyer_contact_id ?? null }).select("*").single()
   if (error?.code === "23505" && error.message.includes("contracts_open_purchase_agreement_home_unique")) throw new Error("Another purchase agreement already owns this home. Reconcile the existing agreement instead of retrying creation")
   if (error || !contract) throw new Error(`Failed to create purchase agreement: ${error?.message}`)
-  const linked = await context.supabase.from("lot_reservations").update({ contract_id: contract.id }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "reserved").is("contract_id", null).select("id").single()
-  if (linked.error || !linked.data) throw new Error("The agreement was saved but reservation ownership could not be recorded. Reconcile the existing agreement before retrying")
-  const configured = await context.supabase.from("lots").update({ house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, house_plan_elevation_id: pricing.elevationId, swing: pricing.swing }).eq("org_id", context.orgId).eq("id", parsed.lotId).eq("project_id", contract.project_id).select("id").single()
-  if (configured.error || !configured.data) throw new Error("The agreement was saved but its home configuration could not be recorded. Reconcile the existing agreement before sending")
+  // The database refuses a member's direct write to a reservation's sale or a home's
+  // configuration; after the checks above the draft takes both as the system, together.
+  const service = createServiceSupabaseClient()
+  const attached = await service.rpc("attach_purchase_agreement_draft", {
+    p_org_id: context.orgId, p_contract_id: contract.id, p_reservation_id: reservation.id,
+    p_house_plan_id: pricing.housePlanId, p_house_plan_version_id: pricing.housePlanVersionId,
+    p_elevation_id: pricing.elevationId, p_swing: pricing.swing, p_actor_id: context.userId,
+  })
+  if (attached.error) {
+    // A draft that owns no sale would block every retry as the home's open agreement.
+    const removed = await service.from("contracts").delete().eq("org_id", context.orgId).eq("id", contract.id).eq("status", "draft")
+    if (removed.error) throw new Error("The agreement was saved but could not take its reservation, and the draft could not be removed. Reconcile the existing agreement before retrying")
+    throw new Error(`The agreement could not take its reservation, so nothing was saved: ${attached.error.message}`)
+  }
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_created", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, total_cents: contract.total_cents } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "contract", entityId: contract.id, after: contract }),

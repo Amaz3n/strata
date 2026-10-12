@@ -666,8 +666,8 @@ async function wallOrg(t) {
     estimates: { label: "title", row: (s, n) => ({ project_id: s.home.id, title: `${s.name} ${n}` }) },
     lot_reservations: {
       label: "notes",
-      // Released, so a lot may carry several.
-      row: (s, n) => ({ community_id: s.community.id, lot_id: s.lot.id, buyer_contact_id: buyer.id, status: "released", notes: `${s.name} ${n}` }),
+      // A member creates only holds; lapsed ones, so each new hold expires the last and a lot may carry several.
+      row: (s, n) => ({ community_id: s.community.id, lot_id: s.lot.id, buyer_contact_id: buyer.id, status: "hold", expires_at: "2026-01-01T00:00:00Z", notes: `${s.name} ${n}` }),
     },
     prospect_contacts: { label: "full_name", row: (s, n) => ({ prospect_id: s.lead.id, full_name: `${s.name} ${n}` }) },
     community_phases: { label: "name", row: (s, n) => ({ community_id: s.community.id, phase_number: n, name: `${s.name} ${n}` }) },
