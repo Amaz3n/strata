@@ -75,7 +75,19 @@ export async function listSelectionOptions(orgId: string, categoryId: string): P
     .order("sort_order", { ascending: true })
     .limit(500)
   if (error) throw new Error(`Failed to load selection options: ${error.message}`)
-  return data ?? []
+  // A community version is off sale with the option it overrides.
+  const parentIds = [...new Set((data ?? []).flatMap((row) => (row.parent_option_id ? [row.parent_option_id] : [])))]
+  if (parentIds.length === 0) return data ?? []
+  const { data: parents, error: parentError } = await supabase
+    .from("selection_options")
+    .select("id")
+    .eq("org_id", orgId)
+    .in("id", parentIds)
+    .eq("is_archived", false)
+    .eq("is_available", true)
+  if (parentError) throw new Error(`Failed to load selection options: ${parentError.message}`)
+  const parentsOnSale = new Set((parents ?? []).map((row) => row.id))
+  return (data ?? []).filter((row) => !row.parent_option_id || parentsOnSale.has(row.parent_option_id))
 }
 
 export async function listProjectSelections(orgId?: string, projectId?: string, options: { portalAccess?: boolean; permissionChecked?: boolean } = {}): Promise<ProjectSelectionDto[]> {

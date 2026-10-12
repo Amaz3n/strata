@@ -51,7 +51,7 @@ stubModule("@/lib/services/selection-change-orders", {
   createVarianceOrdersForSelectionChange: async () => ({ created: 0, unrouted: 0 }),
 })
 
-const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, createProjectSelection, selectProjectOption, selectProjectOptions, selectProjectPackage } = freshRequire("lib/services/selections.ts")
+const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, createProjectSelection, listSelectionOptions, selectProjectOption, selectProjectOptions, selectProjectPackage } = freshRequire("lib/services/selections.ts")
 
 const priced = (optionId, priceCents) => ({ available: true, optionId, priceCents, costCents: priceCents / 2, categoryIds: [CATEGORY] })
 
@@ -415,5 +415,20 @@ describe("createProjectSelection", () => {
 
     await assert.rejects(open(service))
     assert.equal(service.db.project_selections.length, 0)
+  })
+})
+
+describe("listSelectionOptions", () => {
+  test("a community version of a withdrawn option is not offered", async () => {
+    const { service } = harness()
+    service.db.selection_options = [
+      { id: OPTION, org_id: ORG, category_id: CATEGORY, name: "Pavers", is_available: false, is_archived: false, parent_option_id: null, sort_order: 1 },
+      { id: COMMUNITY_UPGRADE, org_id: ORG, category_id: CATEGORY, name: "Pavers (Ridge)", is_available: true, is_archived: false, parent_option_id: OPTION, sort_order: 2 },
+      { id: UPGRADE, org_id: ORG, category_id: CATEGORY, name: "Stamped concrete", is_available: true, is_archived: false, parent_option_id: null, sort_order: 3 },
+    ]
+
+    const offered = await service.run(() => listSelectionOptions(ORG, CATEGORY))
+
+    assert.deepEqual(offered.map((row) => row.id), [UPGRADE])
   })
 })

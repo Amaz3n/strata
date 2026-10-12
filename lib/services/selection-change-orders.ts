@@ -92,6 +92,12 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
       ...home.pricing,
     })
     if (!packagePrice.available) throw new Error(`${selectionPackage.name} is not available for this lot's plan`)
+    const memberPrices = packageItems.length ? await resolveOptionPricing({
+      orgId: context.orgId,
+      items: packageItems.map((item) => ({ optionId: item.option_id })),
+      ...home.pricing,
+    }) : []
+    if (memberPrices.some((price) => !price.available)) throw new Error(`An option in ${selectionPackage.name} is no longer available for this home`)
     const priceAllocations = allocatePackageTotal(packagePrice.priceCents, packageItems.length)
     const costAllocations = packagePrice.costCents == null ? null : allocatePackageTotal(packagePrice.costCents, packageItems.length)
     packageItems.forEach((item, index) => {
