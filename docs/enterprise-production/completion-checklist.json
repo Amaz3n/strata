@@ -8961,12 +8961,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Not built. Land enters Arc as a community with lots and takedowns and, with Books on, as an acquisition journal or (new since Oct 5) an opening-balance line at cutover; there is no pre-acquisition diligence pipeline.",
       "remainingWork": [
-        "Design and build a land opportunity entity with diligence items (evidence, owners, due dates), approval steps and versioned acquisition decisions linked to the resulting community/takedowns.",
-        "New-entity checklist (RLS, RBAC seed, search index, events, deadline notifications).",
-        "Migration approval; tests; QA workflow."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/books/inventory.ts",
@@ -9005,7 +9003,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -9025,6 +9023,56 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by 2afb292a apart from deal linkage: a member can no longer unlink or delete a deal's takedown (tg_lot_takedowns_closure_guard, 20261012170000; probe2/land.test.js: field null-link and delete REFUSED), and updateLotTakedown moves a takedown off its deal only with land.approve, written by the service (lib/services/communities.ts:730-739). Diligence items, owners, due dates, walled evidence and named approvers as in round 2. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Snapshot and content hash per revision, approvals bound to the hash; closing a deal-linked takedown still needs an approved acquire review for every writer (probe2: service close_lot_takedown without review REFUSED). Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
         }
       ],
       "releaseState": "unverified",
@@ -9039,14 +9087,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Land deal diligence tracking",
-        "description": "Arc has no place to work a land deal before purchase — no diligence checklist, owners, deadlines or go/no-go approvals. Land shows up only once it is a community with lots, or as a purchase recorded in the books."
+        "description": "A land deal is worked in Arc before purchase: diligence items with owners, due dates and evidence (walled by division), deadline reminders, and an acquisition decision submitted as a frozen version that named approvers sign off on together. Any change supersedes the version under review, and a takedown linked to the deal can't close until it is approved."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "A first 25–250-closing builder can run construction and sales on Arc while working land deals outside it.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP04 batch by the owner on 2026-10-12.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "LAND-01"
+      ]
     },
     {
       "id": "EP04-02",
@@ -9067,12 +9118,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Not built and unchanged since Oct 5. Community delivery readiness has no link to jurisdictional conditions.",
       "remainingWork": [
-        "Model entitlements and jurisdiction conditions per community/phase with due dates, owners and status.",
-        "Derive delivery readiness and surface overdue/unmet conditions as blockers on the community workbench and starts.",
-        "New-entity checklist; migration approval; tests; QA."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/communities.ts",
@@ -9113,7 +9162,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -9152,6 +9201,56 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged: entitlements and conditions per community/phase with required_before milestone; phaseReadiness on Community -> Land; 'entitlements' start gate. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged: closingBlockers feeds the closing workbench (display only); start gate hard-blocks; delivery blockers shown as phase chips. Suites pass. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
         }
       ],
       "releaseState": "unverified",
@@ -9166,14 +9265,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Entitlements and approval conditions",
-        "description": "Arc doesn't track zoning, plat approvals or conditions of approval for a community or phase, so an overdue condition can't hold up starts. Today the only related check is a manual permit gate on each start."
+        "description": "Entitlements and their conditions are tracked per community and phase with owners and due dates. A condition required before vertical start holds the start gate for lots in its phase until it's met or waived with a reason; overdue ones show on the community, and those required before closing show on the closing."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Builders of this size track entitlements with their land team and engineers; the per-start permit gate covers the operational need for a first customer.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP04 batch by the owner on 2026-10-12.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "LAND-01"
+      ]
     },
     {
       "id": "EP04-03",
@@ -9194,12 +9296,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Takedown schedule, quantity, price and a single deposit drive lot runway and a board-level cash total, and reminders fire. Contract terms and org cash-forecast integration are absent.",
       "remainingWork": [
-        "Link takedowns to a land contract with deposit schedule, refundability and extension/penalty terms, preserving signed evidence.",
-        "Feed scheduled takedown cash and deposits into an org cash plan/forecast.",
-        "Tests for closeLotTakedown and takedown cash rollups; QA."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/communities.ts",
@@ -9282,7 +9382,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -9322,6 +9422,56 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Round-2 Medium 3 fixed: guard_land_contract_terms now refuses any authenticated status change (20261012170000 section 6); probe2/land.test.js: owner direct terminate REFUSED, contract stays executed with takedown/deposit scheduled, then close_out_land_contract terminate cancels 1 deposit and 2 takedowns. Completion now refuses while takedowns or deposits are still scheduled. Deal takedowns cannot be unlinked or deleted by members. close_lot_takedown applies paid deposits and acquires lots (probe2: td closed, deposit applied, lot owned 2026-10-10); reopen refused; fee paid once with receipt. Legitimate paths intact: updateLandContract (draft only), executeLandContract, closeOutLandContract via service RPC, deal-linked takedown edits (name/date/phase) by a land manager through the user client (the form sends landOpportunityId only when it changed, components/communities/community-structure.tsx:235). Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Round-3 Low closed: getCommunityPortfolio no longer filters scheduled_date >= today (community-portfolio.ts:279), so an overdue scheduled takedown lands at month 0, matching the cash plan; tests/community-portfolio.test.js covers it and passes. Cash plan unchanged. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
         }
       ],
       "releaseState": "unverified",
@@ -9336,14 +9486,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Lot takedown schedule and cash",
-        "description": "Each community tracks its lot takedowns — dates, lot counts, price per lot and a deposit — with reminders, and these drive the lot runway chart and a takedown cash total on the community board. Land contract terms (deposit schedule, refundability, extensions, penalties) and a company cash forecast that includes takedowns are missing."
+        "description": "Takedowns belong to a land contract whose signed terms can't be edited: a deposit schedule with refundability and receipts, extensions and penalties recorded as permanent amendments with evidence, and closing applies paid deposits in one step. The company cash plan carries takedown cash net of deposits, deposits due and fees, by month."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Takedown dates, quantities and cash are already tracked; contract terms and cash forecasting are refinements a first builder can live without.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP04 batch by the owner on 2026-10-12.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "LAND-01"
+      ]
     },
     {
       "id": "EP04-04",
@@ -9364,14 +9517,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Land delivery is now its own fact (lots.delivered_at, stamped when a lot becomes developed): a start package or home attach needs a delivered lot or an audited delivery exception, and a sale no longer advances an owned lot to assigned (56b76687; migration 20261010160000 pending approval, and the code reads the new column). No horizontal development budgets or contracts per phase yet.",
       "remainingWork": [
-        "Apply migration 20261010160000_lot_land_delivery (pending approval).",
-        "Wire recordLotDeliveryExceptionAction into a lot screen so the exception can be recorded.",
-        "Staged atomic reservation RPC (20261005121409) still promotes owned lots; the delivery trigger in 20261010160000 keeps it consistent once applied.",
-        "Add horizontal development budgets and contracts per phase with budget-vs-actual reconciliation to phases and lots.",
-        "Approve starts fence and Books inventory migrations (20261003033000, 20261007200000, 20261007210000); tests for the gate and allocation; QA."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/starts.ts",
@@ -9444,7 +9593,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -9485,6 +9634,56 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged: phase->job links, allocation refusal, ledger reconciliation. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged: delivery trigger and start-package fences require delivery or a live exception. probe3: a field member moving a homed lot to developed is refused ('Marking land delivered takes lot.write'). Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
         }
       ],
       "releaseState": "unverified",
@@ -9501,14 +9700,17 @@
       ],
       "plain": {
         "title": "Land development costs and lot readiness",
-        "description": "Development costs can be spread across lots through a reviewed, two-person allocation in the books (awaiting database approval). A house can no longer start on a lot land development has not delivered unless someone records a reasoned, audited exception, and selling a lot no longer marks it ready (pending a database change that needs approval). There are still no development budgets or contracts per phase."
+        "description": "A development job is linked to the phases it builds; its budget, commitments, actual cost and the cost allocated to lots reconcile per phase, and allocations can't reach lots outside those phases. A house can't start on undelivered land unless someone with that authority records a reasoned exception, enforced in the database."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Starting a house on an undelivered lot is a costly field and money error, and the readiness gate is easily bypassed today.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "LAND-01"
+      ]
     },
     {
       "id": "EP04-05",
@@ -9532,7 +9734,7 @@
       "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Lifecycle transitions and truncation-honest inventory reads are in place and tested.",
       "remainingWork": [
-        "Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/land/lot-lifecycle.ts",
@@ -9841,7 +10043,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -9855,7 +10057,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -9878,6 +10080,70 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Reversals still need community.write (lots-db suite). The round-2 Low is closed: a member closes a lot only once its closing is recorded or with community.write (tg_lots_member_write_guard; tests/lots-db.test.js). The legitimate closing path is unaffected: settleClosing updates the closing to 'closed' before recoverClosingCompletion writes lots.status='closed' through the user client (lib/services/closings.ts:600-604, 429), so the EXISTS check passes; reverse_books_home_closing is a definer RPC. Home association rules unchanged (owned may carry a home per lead decision; 'assigned' without a home is the designed detached state, lib/land/lot-lifecycle.ts:47). Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass). New in 89263966: a homed lot's community_id is frozen for every authenticated caller. probe5/b.test.js: deleting a home project still nulls lots.project_id through the FK (RI runs as owner, guard skipped), and deleting a community with lots still cascades."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged paging/truncation surfaces; sellable-lot-inventory-db passes. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LOT-01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LOT-01 on the EP04 head: all 81 implemented subcases pass (10 belong to later items).",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -9887,23 +10153,21 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): inventory-map-page-loads-at-its-documented-size",
-        "Review 2026-10-11: Lot state machine does not require/validate home association for closed (or non-started states with an attached project); only 'started' requires a project."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
         "title": "Lot status and inventory lists",
-        "description": "Lots move through controlled statuses — a lot can't be 'started' without a home, and backing out of started or closed needs explicit confirmation. Community inventory lists page through large communities and say plainly when a list is cut off."
+        "description": "Lots move through controlled statuses enforced in the database: a started or closed lot needs its home, and backing out of started or closed is a recorded reversal only community managers can make. Inventory lists page through large communities and say plainly when a list is cut off."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Lot status and inventory are the backbone of a production builder's daily work.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
+        "LAND-01",
         "LOT-01"
       ]
     },
@@ -9928,13 +10192,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Converting a hold now claims the hold before it creates a home or deposit invoice, so the loser of a race creates nothing; attaching a home and opening a start package refuse a lot with a live hold or reservation for another buyer (lib/sales/live-reservation.ts, 56b76687). The staged atomic RPC is still unapplied and the multi-step legacy path still exists.",
       "remainingWork": [
-        "Approve/apply 20261005121409 and 20261003221905 after reconciling legacy duplicates; cut over to the atomic conversion and delete the legacy multi-step path.",
-        "Prove simultaneous hold/convert/attach and expiry/cancellation recovery with independent PostgreSQL sessions (full schema).",
-        "QA workflow in the QA org.",
-        "Prove the new claim and attach guards with independent PostgreSQL sessions."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -10006,7 +10267,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -10048,6 +10309,84 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Round-2 High 1 fixed: the flag-off createPurchaseAgreement path inserts the draft through the user client, then calls the service-only definer attach_purchase_agreement_draft, which links the reservation and configures the home in one transaction (lib/services/community-sales.ts:1824-1838). If the attach is refused, the service deletes the draft so a retry is not blocked. probe3/a.test.js: the sales agent inserts the draft (ALLOWED); attaching to a reservation that is not reserved is REFUSED; the service delete of the draft is ALLOWED; the retry inserts and attaches with reservation.contract_id and lot plan set. The flag-on path (create_purchase_agreement_atomic, definer) is unaffected, and tests/agreement-creation-db.test.js passes. Round-2 Medium 4 fixed: the transition trigger now fires BEFORE INSERT, and a member inserts only plain holds (probe2/resv.test.js: field insert 'converted' REFUSED; the sales hold insert on a lot with a lapsed hold ALLOWED and expires the old hold). The legitimate holdLot insert uses status 'hold' (community-sales.ts:853-858). Buyer/lot frozen, member status writes and deletes refused, and service hold->reserved->converted plus the release RPC still work. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass). 8a5268ad changes only the land deal dialog trigger (lint clean); nothing on the allocation path."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Lapsed hold expired by the next hold insert, the sweep uses the service client, and release_lot_reservation is unchanged (probe2 re-run). Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LOT-01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LOT-01 on the EP04 head: all 81 implemented subcases pass (10 belong to later items).",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "RACE-02-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RACE-02 16/16, including seven lot races on independent database sessions: two holds, two conversions, conversion vs another buyer's home, hold vs attach, expiry vs conversion vs release, two releases refunding once, cancel vs commit.",
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -10066,14 +10405,19 @@
       ],
       "plain": {
         "title": "No double-selling a lot",
-        "description": "Two salespeople can't put live holds on the same lot at once, and turning a hold into a reservation now claims the hold first, so a collision no longer leaves a stray home or deposit invoice. Attaching a home or starting a house on a lot held for someone else is refused. The all-at-once replacement is built and tested but not switched on, and none of this is proven with simultaneous sessions yet."
+        "description": "Holds, reservation conversion, attaching a home and releases all serialize on the lot, so two sessions can never sell or assign one lot twice; a lapsed hold frees the lot at once, a release refunds once, and reservations can't be rewritten directly. Proven with simultaneous database sessions."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Selling the same lot twice is a direct money and customer-trust failure.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "LAND-01",
+        "LOT-01",
+        "RACE-02"
+      ]
     },
     {
       "id": "EP04-07",
@@ -10097,8 +10441,7 @@
       "status": "verified",
       "implementationNotes": "Standing spec age now starts at the recorded completion date (project_financial_settings.books_inventory_completed_on) and never at projects.end_date; unfinished homes, homes completed with no recorded date and future dates report no age (lib/sales/spec-inventory.ts, lib/services/community-sales.ts, 56b76687). Only homes completed through Books inventory have that date, so a completed spec home outside Books shows no age.",
       "remainingWork": [
-        "Decide how completed spec homes outside Books inventory record a completion date (today they show no age).",
-        "QA: completed-late, completed-early, future and unfinished homes in the QA org."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/sales/spec-inventory.ts",
@@ -10305,7 +10648,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW-20261011"
           ],
@@ -10347,7 +10690,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -10355,6 +10698,70 @@
           "head": "76477b3d",
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged: age from coalesce(books_inventory_completed_on, projects.completed_on). Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged; spec-inventory-aging passes. Carried forward from round 4; 89263966 and 8a5268ad do not touch this path (re-checked: 119 related suites pass)."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LOT-01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LOT-01 on the EP04 head: all 81 implemented subcases pass (10 belong to later items).",
           "failedChecks": []
         }
       ],
@@ -10372,15 +10779,16 @@
       ],
       "plain": {
         "title": "Accurate spec home aging",
-        "description": "Spec homes on the sales list now age from the date the home was actually recorded complete, not the planned finish, and unfinished or future-dated homes show no aging. Completed specs that were never recorded as complete through the books show no age."
+        "description": "Spec homes age from the date the home was actually completed — from the books, or a completion date sales records — never from a planned finish. A completed home with no recorded completion says so, and future or unfinished homes show no aging."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Sales managers reprice and incentivize specs off their age, so a wrong age drives wrong pricing decisions; the fix is small.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S",
       "scenarioIds": [
+        "LAND-01",
         "LOT-01"
       ]
     },
@@ -10403,12 +10811,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "A sales manager can now reprice one spec home with a reason and the price they saw; the move is audited, kept on the lot, and refused if the home is reserved or under agreement (setSpecAskingPrice, components/communities/spec-reprice-dialog.tsx, 56b76687). Books added a reviewed spec write-down and cost-by-component sale relief (pending migrations). Incentive changes on a single home and the disposition lifecycle (bulk or rental sale, transfer) remain unbuilt.",
       "remainingWork": [
-        "Extend the single-spec price change to an approval step for large moves and to incentive changes.",
-        "Define and implement spec disposition (bulk/rental sale, transfer) on the sales side, linked to the Books impairment for write-downs, preserving margin and cancellation evidence.",
-        "Depends on EP03-08 immutable baselines for historical margin; approve Books inventory migrations (20261007180000, 20261007235000); tests; QA."
+        "Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -10494,7 +10900,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -10536,6 +10942,56 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LAND-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LAND01-ep04final"
+          ],
+          "head": "89263966",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LAND-01 9/9 subcases as real roles through the services on the acceptance stack; regression on the same stack: PROD-01, SEC-01, LOT-01, RACE-02 (16 incl. 7 lot races on independent sessions), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "lot01": "81/81",
+            "prod01": "passed",
+            "sec01": "passed",
+            "race02": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP04-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "89263966",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "All four round-4 bypasses are refused now (probe4/a,b,c re-run on the current chain; probe5/a.test.js). (1) High, lot community move: tg_lots_member_write_guard refuses a community_id change on a lot with a home for every authenticated caller, owner included ('Lot 1 has a home: it stays in its community'). Asking price stays 51,000,000. (2) Medium, option_scope flip: selection_options, selection_packages, selection_package_items and selection_catalog_prices are SELECT for members and INSERT/UPDATE/DELETE only with selections.catalog.manage (section 12). A field PATCH of scope, category or delete matches 0 rows, and inserts violate RLS. (3) Medium, selection delete or move: the selection guard now fires on DELETE and on org_id/project_id. A member or owner delete of a confirmed row and a project_id move are refused. A pending row (not counted in project_structural_option_cents) can still be deleted, and an insert must be pending. (4) Medium, community incentives: incentives is SELECT for members, writes only with sales.manage (section 13). A field update/delete matches 0 rows and an insert violates RLS. Every remaining input to sellable_lot_inventory.asking_price_cents is closed to a member without the owning permission: the lot's premium, plan, elevation, override, project_id and community; the sheet; selection status, option, snapshot and home; and option scope. The per-home price and incentive approval path (spec_price_proposals, record_spec_price_move / decide_spec_price_proposal) is unchanged. Remaining Lows: a catalog.manage holder deleting or rescoping a structural option moves asking prices without a proposal, which is the catalog analogue of the accepted sheet decision. A homeless lot's community, premium and plan are member-writable, which was accepted."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged: price moves never touch agreements, budgets or margin baselines. Disposition terms are immutable and executed dispositions are final. A proposal decision refuses on a changed asking price. The selection guard now also keeps confirmed, ordered and received rows (which margin baselines and agreements read) from member deletes and home moves."
+            }
+          ],
+          "scope": "Independent review of the EP04 batch (e1872a80..89263966) after four fix rounds; the fifth review found every criterion met."
         }
       ],
       "releaseState": "unverified",
@@ -10552,14 +11008,17 @@
       ],
       "plain": {
         "title": "Pricing and selling off aged specs",
-        "description": "Sales can see aged spec homes with their asking price, approve incentives and now reprice a single spec home with a reason and an audit trail; the books can record a reviewed write-down when a spec is worth less than it cost (awaiting database approval). There is no second-person approval for a price change and no workflow to dispose of one (bulk or rental sale, transfer)."
+        "description": "Sales reprice a spec home or give it its own incentive; a move over 5% or $10,000 waits for a second person with approval rights, and every move is kept as history. A bulk or investor sale is approved as a disposition and sold through the normal agreement and closing; below cost, it waits for the books write-down. Margin baselines and cancellation records are never touched."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Repricing individual aged specs is routine weekly work for a production sales manager, and today it can't be done per home.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "LAND-01"
+      ]
     },
     {
       "id": "EP05-01",
@@ -10774,7 +11233,7 @@
         "lib/services/community-sales.ts",
         "lib/services/reservation-conversion.ts",
         "lib/services/agreement-creation.ts",
-        "components/sales/reservation-review-dialog.tsx",
+        "components/sales/reserve-lot-dialog.tsx",
         "supabase/migrations/20261005121409_reservation_conversion_ownership.sql",
         "supabase/migrations/20261004000100_purchase_agreement_creation_receipts.sql",
         "supabase/migrations/20261003221905_purchase_agreement_open_home_unique.sql"
@@ -34988,6 +35447,12 @@
       "approvedBy": "owner",
       "change": "EP03-01, EP03-06, EP03-09 and EP03-10 pulled into the first batch with the rest of EP03.",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-12",
+      "approvedBy": "owner",
+      "change": "EP04-01, EP04-02 and EP04-03 pulled into the first batch with the rest of EP04.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -35728,6 +36193,38 @@
         ],
         "assessment": "exposed",
         "assessmentNote": "Community workspace; production nav Sell group."
+      },
+      {
+        "path": "app/(app)/communities/land-deals/[id]/page.tsx",
+        "route": "/communities/land-deals/[id]",
+        "surface": "builder_authenticated",
+        "audience": "project workbench",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP04"
+        ],
+        "checklistId": "EP04-01",
+        "checklistIds": [
+          "EP04-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Land deal workbench: terms, diligence, evidence and acquisition reviews."
+      },
+      {
+        "path": "app/(app)/communities/land-deals/page.tsx",
+        "route": "/communities/land-deals",
+        "surface": "builder_authenticated",
+        "audience": "org desk",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP04"
+        ],
+        "checklistId": "EP04-01",
+        "checklistIds": [
+          "EP04-01"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Land deals desk beside Communities; land manager's pipeline of deals under diligence."
       },
       {
         "path": "app/(app)/communities/page.tsx",
@@ -39380,6 +39877,23 @@
           "EP03-10"
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/prod-01.cjs (9 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "LAND-01",
+        "story": "Land and inventory: a land deal works diligence with owners, deadlines and evidence walled by division, and an acquisition decision keeps every reviewed version with approvals bound to it; entitlement conditions hold starts in their phase; land contracts freeze signed terms, schedule deposits and record extensions append-only, and the cash plan carries the obligations; development cost reconciles to phases and lots; an undelivered lot starts only under an authorized exception; lot states need the right home; a lot is never sold twice; spec homes age from recorded completion; large spec price moves need a second person and a disposition below cost waits for its write-down.",
+        "harness": "exists",
+        "covers": [
+          "EP04-01",
+          "EP04-02",
+          "EP04-03",
+          "EP04-04",
+          "EP04-05",
+          "EP04-06",
+          "EP04-07",
+          "EP04-08"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/land-01.cjs (9 subcases); races in RACE-02 (scripts/books-acceptance/scenarios/lot-01-sales.cjs race-* subcases)",
         "result": "passed"
       }
     ]

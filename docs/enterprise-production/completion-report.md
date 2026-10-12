@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 35.6% — a documented lower bound, not an ETA |
-| Fully verified | 34.3% |
+| Implemented | 40.1% — a documented lower bound, not an ETA |
+| Fully verified | 38.8% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 61 items |
-| Known pending tasks | 22 items |
+| Partially implemented | 57 items |
+| Known pending tasks | 20 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
 
@@ -95,14 +95,14 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP04-01 | Acquisition diligence | pending | Design and build a land opportunity entity with diligence items (evidence, owners, due dates), approval steps and versioned acquisition decisions linked to the resulting community/takedowns. |
-| EP04-02 | Entitlement milestones | pending | Model entitlements and jurisdiction conditions per community/phase with due dates, owners and status. |
-| EP04-03 | Takedown obligations | partial | Link takedowns to a land contract with deposit schedule, refundability and extension/penalty terms, preserving signed evidence. |
-| EP04-04 | Horizontal development controls | partial | Apply migration 20261010160000_lot_land_delivery (pending approval). |
-| EP04-05 | Lot lifecycle and bounded inventory | verified | Verify permission-scoped bulk/lifecycle mutations and inventory paging on a 400-lot community in the QA org. |
-| EP04-06 | Concurrent lot allocation | partial | Approve/apply 20261005121409 and 20261003221905 after reconciling legacy duplicates; cut over to the atomic conversion and delete the legacy multi-step path. |
-| EP04-07 | Spec aging calculation | verified | Decide how completed spec homes outside Books inventory record a completion date (today they show no age). |
-| EP04-08 | Spec disposition workflow | partial | Extend the single-spec price change to an approval step for large moves and to incentive changes. |
+| EP04-01 | Acquisition diligence | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-02 | Entitlement milestones | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-03 | Takedown obligations | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-04 | Horizontal development controls | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-05 | Lot lifecycle and bounded inventory | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-06 | Concurrent lot allocation | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-07 | Spec aging calculation | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
+| EP04-08 | Spec disposition workflow | verified | Apply the EP04 migrations (20261012070000, 20261012080000, 20261012090000, 20261012100000, 20261012110000, 20261012120000, 20261012130000, 20261012150000, 20261012170000 (with the staged 20261003221905 and 20261005121409, which EP04 makes the only conversion path); 20261012140000 in pending-migrations drops lot_takedowns.deposit_cents later) with the code (pending approval). |
 
 ### EP05: Sales, agreements and closing
 
@@ -258,7 +258,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 ## Scope and acceptance limits
 
-248 pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.
+250 pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.
 
 Sizing and operating assumptions are frozen engineering targets awaiting launch-owner approval under EP14-11. QA access, chosen-system sandbox credentials, migration/activation approval, independent security review and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.
 
@@ -372,10 +372,13 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/production-reporting.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/budgets.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/purchase-agreement-pricing.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: app/(app)/plans/[id]/page.tsx
 - AUDIT-20261009-EP03-EP04: source changed since proof: components/sales/purchase-agreement-sheet.tsx
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/books/inventory.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/communities.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/starts/gate-logic.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/starts-gates.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/community-portfolio.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/land/lot-lifecycle.ts
@@ -402,22 +405,28 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/sales-deal-file.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/reservation-conversion.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: components/sales/reservation-review-dialog.tsx
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261005121409_reservation_conversion_ownership.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-conversion.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-conversion-db.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-creation-preparation.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-creation-db.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-signing-identity.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-quote-fingerprint.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/closings.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/closing-readiness.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/starts.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/closing-readiness.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/financials/purchase-agreement-pricing.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/change-orders.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selections.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261007220000_books_home_closing_reversal.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261003050000_closing_evidence_guards.sql
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/purchase-agreement-pricing.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/closing-evidence-guards-db.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/financials/closing-settlement-evidence.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/books/inventory.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/warranty-operations.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: app/api/jobs/process-outbox/route.ts
@@ -428,11 +437,16 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/option-catalog-design-studio.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selection-change-orders.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/change-orders.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/starts/gate-logic.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-gates.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts.ts
+- AUDIT-20261009-EP07: source changed since proof: lib/starts/gate-logic.ts
+- AUDIT-20261009-EP07: source changed since proof: lib/validation/starts.ts
 - AUDIT-20261009-EP07: source changed since proof: components/starts/start-package-sheet.tsx
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-gates.test.js
+- AUDIT-20261009-EP07: source changed since proof: tests/starts.test.js
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-desk.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/services/even-flow.ts
 - AUDIT-20261009-EP07: source changed since proof: components/starts/launch-lane.tsx
@@ -522,8 +536,10 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261008001000_books_company_opening_balances.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: docs/books-entities.md
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-acceptance-scenarios.test.js
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/inventory.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/starts-pipeline.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/closings.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: components/books/inventory-allocation.tsx
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261003033000_starts_land_posting_fences.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007210000_books_development_allocation_review.sql
@@ -594,13 +610,18 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/land-scope.test.js
 - VERIFY-20261010: source changed since proof: tests/lots.test.js
 - VERIFY-20261010: source changed since proof: tests/community-sales.test.js
+- VERIFY-20261010: source changed since proof: tests/spec-inventory-aging.test.js
+- VERIFY-20261010: source changed since proof: tests/agreement-creation-db.test.js
 - VERIFY-20261010: source changed since proof: tests/reservation-creation-preparation.test.js
+- VERIFY-20261010: source changed since proof: tests/purchase-agreement-pricing.test.js
 - VERIFY-20261010: source changed since proof: tests/closings-db.test.js
 - VERIFY-20261010: source changed since proof: tests/selection-cutoffs.test.js
 - VERIFY-20261010: source changed since proof: tests/imports-open-wip.test.js
 - VERIFY-20261010: source changed since proof: tests/start-trade-notices.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release-actor-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-core-write-fences-db.test.js
+- VERIFY-20261010: source changed since proof: tests/starts-generated-fences-db.test.js
+- VERIFY-20261010: source changed since proof: tests/starts-drawing-fences-db.test.js
 - VERIFY-20261010: source changed since proof: tests/drawings-pipeline-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release.test.js
 - VERIFY-20261010: source changed since proof: tests/plan-instantiation-ledger.test.js
