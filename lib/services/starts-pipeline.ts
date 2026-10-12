@@ -14,6 +14,7 @@ import { NotificationService } from "@/lib/services/notifications"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { readAllRows } from "@/lib/land/paging"
 import { generatePurchaseOrdersForStartsRelease } from "@/lib/services/po-generation"
+import { captureHomeMarginBaseline } from "@/lib/services/home-margin-baselines"
 import { ensureReleaseSlotsForActiveCommunities } from "@/lib/services/even-flow"
 import { assertReleaseGateCompletion, assertStartCommunityAccess, syncReleaseProducedGates } from "@/lib/services/starts"
 import { requirePermission } from "@/lib/services/permissions"
@@ -191,7 +192,7 @@ async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, proj
 }
 
 /**
- * The release's notifications. `publish_start_release` wrote the
+ * The release's baseline and notifications. `publish_start_release` wrote the
  * `start.released` event in the transaction that released the house, and this
  * job — still claimed — is the durable intent to notify: it completes only
  * after this runs, and a retry of a released package runs only this. Every
@@ -200,6 +201,10 @@ async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, proj
  */
 async function confirmReleasedPackage(supabase: SupabaseClient, job: ClaimedJob, pkg: { id: string; project_id: string | null }) {
   if (!pkg.project_id) throw new Error("Released package is missing its confirmation scope")
+  // What the house was released at: the budget the release just instantiated
+  // against the agreement it was sold at (or its asking price, unsold). Captured
+  // once; a retried confirmation finds it already there.
+  await captureHomeMarginBaseline({ orgId: job.org_id, projectId: pkg.project_id, stage: "release", actorId: requiredString(job.payload.actor_id, "actor_id") })
   await notifyAssignedSuper(supabase, job.org_id, pkg.project_id, pkg.id)
 }
 

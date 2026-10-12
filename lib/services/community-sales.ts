@@ -16,6 +16,7 @@ import { requireOrgContext, type OrgServiceContext } from "@/lib/services/contex
 import { createInvoice } from "@/lib/services/invoices"
 import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs"
+import { captureHomeMarginBaseline } from "@/lib/services/home-margin-baselines"
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
 import { projectJournal } from "@/lib/services/books/projector"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
@@ -1755,6 +1756,9 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
     const { data: existingClosing } = checked(await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle())
     if (!existingClosing) checked(await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null }))
   }
+  // What the home was sold at, from the selections just costed and locked. A
+  // recovered execution finds it already captured.
+  await captureHomeMarginBaseline({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" })
   await Promise.all([
     recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId } }),
     recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now } }),

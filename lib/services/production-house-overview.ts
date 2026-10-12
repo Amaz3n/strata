@@ -1,5 +1,6 @@
 import "server-only"
 
+import { originalMargin, type HomeMarginBaselineStage } from "@/lib/financials/home-margin-baseline"
 import { projectedMargin } from "@/lib/financials/production-margin"
 import { readAllRowsById, type RangeResult } from "@/lib/land/paging"
 import { requireOrgContext } from "@/lib/services/context"
@@ -50,6 +51,10 @@ export type ProductionHouseOverviewData = {
     topVpoReason: string | null
     projectedMarginCents: number
     projectedMarginPercent: number
+    /** The margin locked at release (else at sale); null before either knew its cost. */
+    originalMarginCents: number | null
+    originalMarginPercent: number | null
+    originalMarginStage: HomeMarginBaselineStage | null
   }
   gates: {
     startStatus: string
@@ -95,7 +100,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   if (error || !project) throw new Error("Home not found")
 
   const { supabase, orgId: resolvedOrgId } = context
-  const [{ data: lot }, { data: schedule }, { data: startPackage }, { data: contracts }, { data: budgetRows }, costs, vpos, { data: selectionGroups }, selections, { data: closing }, { count: punchCount }, { data: photos }, { data: logs }, { count: warrantyCount }, approvedCos] = await Promise.all([
+  const [{ data: lot }, { data: schedule }, { data: startPackage }, { data: contracts }, { data: budgetRows }, costs, vpos, { data: selectionGroups }, selections, { data: closing }, { count: punchCount }, { data: photos }, { data: logs }, { count: warrantyCount }, approvedCos, { data: baselines, error: baselineError }] = await Promise.all([
     context.supabase.from("lots").select("id,lot_number,address,dimensions,swing,premium_cents,community_id,community:communities(name,settings),phase:community_phases(name),house_plan_id,plan:house_plans(name,code),elevation:house_plan_elevations(name,code),version:house_plan_versions(version_number)").eq("org_id", context.orgId).eq("project_id", projectId).maybeSingle(),
     context.supabase.from("schedule_items").select("id,name,status,start_date,end_date,progress,item_type,sort_order").eq("org_id", context.orgId).eq("project_id", projectId).order("sort_order").limit(500),
     context.supabase.from("start_packages").select("id,status,actual_start_date,released_at,gates:start_package_gates(status)").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
@@ -129,7 +134,10 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<ChangeOrderRow[]>()
     }),
+    // One release baseline and one per sale; a home is sold a handful of times at most.
+    context.supabase.from("home_margin_baselines").select("stage,captured_at,sale_price_cents,cost_cents,margin_cents,margin_bps").eq("org_id", context.orgId).eq("project_id", projectId).order("captured_at", { ascending: false }).limit(20),
   ])
+  if (baselineError) throw new Error(`Unable to read this home's margin baseline: ${baselineError.message}`)
 
   const scheduleRows = schedule ?? []
   const completed = scheduleRows.filter((row) => row.status === "completed").length
@@ -138,16 +146,20 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   const elapsed = startDate ? Math.max(0, Math.floor((Date.now() - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000)) : null
   const contract = contracts?.[0]
   const pricing = (contract?.snapshot as any)?.purchase_agreement?.pricing ?? {}
-  const basePrice = Number(pricing.base_price_cents ?? 0)
-  const lotPremium = Number(pricing.lot_premium_cents ?? lot?.premium_cents ?? 0)
-  const structuralOptions = Number(pricing.structural_options_cents ?? 0)
-  const selectionPrice = Number(pricing.design_selections_cents ?? selections.reduce((total, row) => total + Number(row.price_cents_snapshot ?? 0), 0))
+  // The agreement snapshot stores PurchaseAgreementPricing (camelCase).
+  const basePrice = Number(pricing.basePriceCents ?? 0)
+  const lotPremium = Number(pricing.lotPremiumCents ?? lot?.premium_cents ?? 0)
+  const structuralOptions = Number(pricing.structuralOptionsCents ?? 0)
+  const selectionPrice = Number(pricing.designSelectionsCents ?? selections.reduce((total, row) => total + Number(row.price_cents_snapshot ?? 0), 0))
   const changeOrders = approvedCos.reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
   const salePrice = Number(contract?.total_cents ?? basePrice + lotPremium + structuralOptions + selectionPrice + changeOrders)
   const budget = Number(budgetRows?.[0]?.total_cents ?? 0)
   const actualCost = costs.reduce((total, row) => total + Number(row.cost_cents ?? 0), 0)
   const vpoCents = vpos.reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
   const margin = projectedMargin({ revenueCents: salePrice, budgetCents: budget, actualCostCents: actualCost, vpoCents })
+  const original = originalMargin((baselines ?? []).map((row) => ({
+    stage: row.stage, capturedAt: row.captured_at, salePriceCents: row.sale_price_cents, costCents: row.cost_cents, marginCents: row.margin_cents, marginBps: row.margin_bps,
+  })))
   const reasonTotals = new Map<string, number>()
   for (const row of vpos) {
     const reason = one<any>(row.reason)
@@ -227,6 +239,9 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       topVpoReason: Array.from(reasonTotals.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
       projectedMarginCents: margin.marginCents,
       projectedMarginPercent: margin.marginPercent,
+      originalMarginCents: original?.marginCents ?? null,
+      originalMarginPercent: original?.marginBps == null ? null : original.marginBps / 100,
+      originalMarginStage: original?.stage ?? null,
     },
     gates: {
       startStatus: startPackage?.status ?? "No start package",

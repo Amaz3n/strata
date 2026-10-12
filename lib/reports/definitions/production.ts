@@ -55,6 +55,7 @@ const communityPnl: ReportDefinition = {
             { key: "vpo", header: "VPO", type: "money" },
             { key: "margin", header: "Margin", type: "money" },
             { key: "margin_percent", header: "Margin %", type: "percent" },
+            { key: "original_margin_percent", header: "Original %", type: "percent" },
             { key: "target_margin_percent", header: "target_margin_percent", exportOnly: true },
           ],
           rows: report.communities.map((row) => {
@@ -78,6 +79,8 @@ const communityPnl: ReportDefinition = {
                   label: formatPercent(row.projectedMarginPercent),
                   tone: belowTarget ? "warning" : undefined,
                 },
+                // Locked at sale and release; the drift from it is the variance.
+                original_margin_percent: row.originalMarginPercent,
                 target_margin_percent: row.targetMarginPercent,
               },
             }

@@ -27,6 +27,10 @@ function portfolio({ maxRows } = {}) {
       ],
       job_cost_entries: [1, 2, 3].map((n) => ({ id: id(10 + n), org_id: ORG, project_id: HOME, status: "posted", cost_cents: 10_000_00 })),
       commitment_change_orders: [],
+      home_margin_baselines: [
+        { id: id(20), org_id: ORG, project_id: HOME, stage: "agreement", sale_price_cents: 500_000_00, cost_cents: null, margin_cents: null, margin_bps: null },
+        { id: id(21), org_id: ORG, project_id: HOME, stage: "release", sale_price_cents: 500_000_00, cost_cents: 390_000_00, margin_cents: 110_000_00, margin_bps: 2200 },
+      ],
     },
     permissions: ["report.read"],
     maxRows,
@@ -48,4 +52,18 @@ test("actual cost counts every posted entry past the API's row cap", async () =>
 
   assert.equal(report.totals.actualCostCents, 30_000_00)
   assert.equal(report.communities[0].lots[0].actualCostCents, 30_000_00)
+})
+
+test("original margin is read from the locked baseline beside the current projection", async () => {
+  const service = portfolio()
+
+  const report = await service.run(() => getProductionPortfolioReport())
+  const [community] = report.communities
+
+  assert.equal(community.lots[0].projectedMarginCents, 100_000_00)
+  assert.equal(community.lots[0].originalMarginCents, 110_000_00)
+  assert.equal(community.lots[0].originalMarginPercent, 22)
+  assert.equal(community.lots[0].originalMarginStage, "release")
+  assert.equal(community.originalMarginPercent, 22)
+  assert.equal(community.originalMarginHomes, 1)
 })

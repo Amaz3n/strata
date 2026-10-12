@@ -52,7 +52,7 @@ export function ProductionHouseOverview({ data }: { data: ProductionHouseOvervie
             <Metric label="Generated budget / actual" value={`${money(m.budgetCents)} / ${money(m.actualCostCents)}`} href={`/projects/${i.projectId}/budget`} />
             <Metric label={`${m.vpoCount} VPOs${m.topVpoReason ? ` · ${m.topVpoReason}` : ""}`} value={money(m.vpoCents)} href="/purchasing?tab=variance" />
           </div>
-          <div className="mt-4 border-l-2 pl-4"><p className="text-2xl font-semibold tabular-nums">{money(m.projectedMarginCents)} · {m.projectedMarginPercent.toFixed(1)}%</p><p className="text-xs text-muted-foreground">Projected margin after direct cost and VPOs</p></div>
+          <div className="mt-4 border-l-2 pl-4"><p className="text-2xl font-semibold tabular-nums">{money(m.projectedMarginCents)} · {m.projectedMarginPercent.toFixed(1)}%</p><p className="text-xs text-muted-foreground">Projected margin after direct cost and VPOs</p><p className="mt-2 text-sm tabular-nums text-muted-foreground">{m.originalMarginCents === null || m.originalMarginPercent === null ? "No original margin locked" : `${money(m.originalMarginCents)} · ${m.originalMarginPercent.toFixed(1)}% locked at ${m.originalMarginStage === "release" ? "release" : "sale"}`}</p></div>
         </section>
       </div>
 

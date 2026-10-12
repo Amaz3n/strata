@@ -1,5 +1,6 @@
 import "server-only"
 
+import { originalMargin, rollUpOriginalMargin, type CapturedBaseline, type HomeMarginBaselineStage } from "@/lib/financials/home-margin-baseline"
 import { projectedMargin, rollUpProjectedMargin } from "@/lib/financials/production-margin"
 import {
   getDivisionAccessForUser,
@@ -33,6 +34,13 @@ export type ProductionLotPnlRow = {
   projectedCostCents: number
   projectedMarginCents: number
   projectedMarginPercent: number
+  /**
+   * The margin the home was released at (else sold at), locked when captured;
+   * null when the home has no baseline or its cost was unknown then.
+   */
+  originalMarginCents: number | null
+  originalMarginPercent: number | null
+  originalMarginStage: HomeMarginBaselineStage | null
 }
 
 export type CommunityPnlRow = {
@@ -49,6 +57,10 @@ export type CommunityPnlRow = {
   projectedMarginCents: number
   projectedMarginPercent: number
   targetMarginPercent: number | null
+  /** Original margin over the homes that have one, as a percent of their original sale price. */
+  originalMarginCents: number | null
+  originalMarginPercent: number | null
+  originalMarginHomes: number
   lotCount: number
   lots: ProductionLotPnlRow[]
 }
@@ -97,6 +109,7 @@ type ClosingRow = IdRow & { project_id: string; status: string; settlement: unkn
 type BudgetRow = IdRow & { project_id: string; total_cents: number | null; version: number | null }
 type CostRow = IdRow & { project_id: string; cost_cents: number | null }
 type VpoRow = IdRow & { project_id: string; total_cents: number | null; reason: unknown; company: unknown }
+type BaselineRow = IdRow & { project_id: string; stage: HomeMarginBaselineStage; captured_at: string; sale_price_cents: number | null; cost_cents: number | null; margin_cents: number | null; margin_bps: number | null }
 
 /**
  * Every row matching `read` for each ID chunk, keyset-paged to the end. A
@@ -174,7 +187,7 @@ export async function getProductionPortfolioReport(
     return { ...emptyPortfolio(), communities: communities.map((row) => emptyCommunity(row)) }
   }
 
-  const [contractRows, closingRows, budgetRows, costRows, vpoRows] = await Promise.all([
+  const [contractRows, closingRows, budgetRows, costRows, vpoRows, baselineRows] = await Promise.all([
     readForIds<ContractRow>(projectIds, "Failed to load purchase agreements", (chunk, afterId, limit) => {
       let query = supabase.from("contracts").select("id,project_id,total_cents,signed_at")
         .eq("org_id", scopedOrgId).in("project_id", chunk).eq("contract_type", "purchase_agreement")
@@ -207,6 +220,12 @@ export async function getProductionPortfolioReport(
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<VpoRow[]>()
     }),
+    readForIds<BaselineRow>(projectIds, "Failed to load margin baselines", (chunk, afterId, limit) => {
+      let query = supabase.from("home_margin_baselines").select("id,project_id,stage,captured_at,sale_price_cents,cost_cents,margin_cents,margin_bps")
+        .eq("org_id", scopedOrgId).in("project_id", chunk)
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<BaselineRow[]>()
+    }),
   ])
 
   // The newest signed agreement per home (unsigned ones last), as the old
@@ -227,6 +246,12 @@ export async function getProductionPortfolioReport(
   for (const row of costRows) costs.set(row.project_id, (costs.get(row.project_id) ?? 0) + Number(row.cost_cents ?? 0))
   const vpos = new Map<string, number>()
   for (const row of vpoRows) vpos.set(row.project_id, (vpos.get(row.project_id) ?? 0) + Number(row.total_cents ?? 0))
+  const baselines = new Map<string, CapturedBaseline[]>()
+  for (const row of baselineRows) {
+    baselines.set(row.project_id, [...(baselines.get(row.project_id) ?? []), {
+      stage: row.stage, capturedAt: row.captured_at, salePriceCents: row.sale_price_cents, costCents: row.cost_cents, marginCents: row.margin_cents, marginBps: row.margin_bps,
+    }])
+  }
 
   const lotRows: Array<ProductionLotPnlRow & { communityId: string }> = lots.map((lot) => {
     const contract = contracts.get(lot.project_id)
@@ -237,6 +262,7 @@ export async function getProductionPortfolioReport(
     const actualCostCents = costs.get(lot.project_id) ?? 0
     const vpoCents = vpos.get(lot.project_id) ?? 0
     const margin = projectedMargin({ revenueCents, budgetCents, actualCostCents, vpoCents })
+    const original = originalMargin(baselines.get(lot.project_id) ?? [])
     return {
       communityId: lot.community_id,
       projectId: lot.project_id,
@@ -252,6 +278,9 @@ export async function getProductionPortfolioReport(
       projectedCostCents: margin.projectedCostCents,
       projectedMarginCents: margin.marginCents,
       projectedMarginPercent: margin.marginPercent,
+      originalMarginCents: original?.marginCents ?? null,
+      originalMarginPercent: original?.marginBps == null ? null : original.marginBps / 100,
+      originalMarginStage: original?.stage ?? null,
     }
   })
 
@@ -263,6 +292,7 @@ export async function getProductionPortfolioReport(
     const vpoCents = sum(scopedLots.map((row) => ({ amount: row.vpoCents })))
     const rollup = rollUpProjectedMargin(scopedLots.map((row) => ({ revenueCents: row.revenueCents, projectedCostCents: row.projectedCostCents, marginCents: row.projectedMarginCents })))
     const closedRevenueCents = sum(scopedLots.filter((row) => row.status === "closed").map((row) => ({ amount: row.revenueCents })))
+    const original = rollUpOriginalMargin(scopedLots.map((row) => originalMargin(baselines.get(row.projectId) ?? [])))
     return {
       communityId: community.id,
       communityName: community.name,
@@ -281,6 +311,9 @@ export async function getProductionPortfolioReport(
         : typeof (community.settings as any)?.margin_target_percent === "number"
           ? Number((community.settings as any).margin_target_percent)
           : null,
+      originalMarginCents: original.marginCents,
+      originalMarginPercent: original.marginPercent,
+      originalMarginHomes: original.homes,
       lotCount: scopedLots.length,
       lots: scopedLots.map(({ communityId: _communityId, ...row }) => row),
     }
@@ -364,6 +397,9 @@ function emptyCommunity(row: any): CommunityPnlRow {
     projectedMarginCents: 0,
     projectedMarginPercent: 0,
     targetMarginPercent: null,
+    originalMarginCents: null,
+    originalMarginPercent: null,
+    originalMarginHomes: 0,
     lotCount: 0,
     lots: [],
   }

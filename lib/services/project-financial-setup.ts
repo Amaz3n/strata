@@ -297,6 +297,11 @@ export async function saveBillingContractWithAmendment(args: {
   auditSource: string
 }) {
   const existing = args.existingContract
+  // A sold home's price is its purchase agreement, which the database keeps as
+  // signed; billing setup never rewrites it. Changes go through a change order.
+  if (existing?.contract_type === "purchase_agreement") {
+    throw new Error("This home's price is set by its signed purchase agreement. Change it with a change order, not in billing setup.")
+  }
   if (!existing?.id) {
     const { data, error } = await args.supabase.from("contracts").insert(args.contractPayload).select("*").single()
     if (error || !data) throw new Error(`Failed to create billing contract: ${error?.message}`)
