@@ -28,6 +28,7 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "plan.write", label: "Manage draft plans", category: "Plans & Production" },
   { key: "plan.release", label: "Release plan versions", category: "Plans & Production" },
   { key: "plan.instantiate", label: "Instantiate plans on lots", category: "Plans & Production" },
+  { key: "plan.adopt", label: "Decide which homes adopt a plan change", category: "Plans & Production" },
   { key: "community.read", label: "View communities and lots", category: "Land & Communities" },
   { key: "community.write", label: "Manage communities and takedowns", category: "Land & Communities" },
   { key: "lot.write", label: "Manage lots and lot status", category: "Land & Communities" },

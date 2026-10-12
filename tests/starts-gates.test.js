@@ -164,6 +164,16 @@ test("a recorded offering override clears the plan gate only for the plan it nam
   }
 })
 
+test("a home on a superseded edition clears the plan gate only once a plan change review decided it keeps that edition", async () => {
+  for (const [decision, expected] of [["defer", "pending"], ["decline", "passed"]]) {
+    const tables = gateFixture()
+    tables.lots[0].version = { status: "superseded", house_plan_id: "plan-1" }
+    tables.plan_change_proposal_homes = [{ id: "pch-1", org_id: ORG, lot_id: tables.lots[0].id, from_version_id: VERSION, decision }]
+    buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+    assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "plan_pinned"), expected, decision)
+  }
+})
+
 test("a house cannot be started on a lot a buyer is holding, or on land that was never delivered", async () => {
   const cases = [
     { lot: { project_id: null, delivered_at: "2026-01-01T00:00:00.000Z", metadata: {} }, reservations: [{ id: "res-1", org_id: ORG, lot_id: "lot-open", status: "hold", expires_at: "2999-01-01T00:00:00.000Z" }], expected: /live hold or reservation/ },

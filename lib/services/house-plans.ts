@@ -640,7 +640,16 @@ async function captureBundleSnapshot(version: HousePlanVersionDto, context: Awai
   }
 }
 
-export async function releasePlanVersion(versionId: string, orgId?: string): Promise<HousePlanVersionDto> {
+export type PlanVersionReleaseDto = {
+  version: HousePlanVersionDto
+  /**
+   * Homes still pinned to earlier editions. They stay there — a release never
+   * moves a home — until a plan change review decides which adopt this one.
+   */
+  homes_on_earlier_versions: number
+}
+
+export async function releasePlanVersion(versionId: string, orgId?: string): Promise<PlanVersionReleaseDto> {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.release", context)
   const writable = await getVersionForWrite(versionId, context)
@@ -667,7 +676,14 @@ export async function releasePlanVersion(versionId: string, orgId?: string): Pro
     await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "house_plan_version.superseded", entityType: "house_plan_version", entityId: currentReleased.id, payload: { house_plan_id: writable.house_plan_id } })
   }
   await logPlan(context, { eventType: "house_plan_version.released", entityType: "house_plan_version", entityId: versionId, action: "update", before: writable, after: { ...writable, status: "released", bundle_snapshot: snapshot, released_at: releasedAt, released_by: context.userId }, payload: { house_plan_id: writable.house_plan_id, version_number: writable.version_number } })
-  return (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId) ?? (() => { throw new Error("Released plan version not found") })()
+  const released = (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId)
+  if (!released) throw new Error("Released plan version not found")
+  return {
+    version: released,
+    homes_on_earlier_versions: versions
+      .filter((item) => item.id !== versionId && item.status !== "draft")
+      .reduce((sum, item) => sum + item.pinned_lot_count, 0),
+  }
 }
 
 export async function listCommunityAvailability(filters: { communityId?: string; housePlanId?: string }, orgId?: string): Promise<CommunityPlanAvailabilityDto[]> {

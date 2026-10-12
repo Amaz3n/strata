@@ -20,6 +20,7 @@ import {
 } from "@/lib/services/house-plans"
 import { listFloorplanModelStatuses, type FloorplanModelDto } from "@/lib/services/floorplan-models"
 import { listChecklistTemplates } from "@/lib/services/inspections"
+import { getPlanChangeReview, type PlanChangeProposalDto } from "@/lib/services/plan-change-proposals"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listTemplates } from "@/lib/services/schedule"
 
@@ -70,6 +71,7 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
     cycle,
     permissionResult,
     floorplanModels,
+    changeReview,
   ] = await Promise.all([
     planPromise,
     getPlanVersionDrift(id).catch(optional("edition drift", [])),
@@ -89,6 +91,11 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
     getCycleTimeReport({ groupBy: "plan" }).catch(optional("cycle time", [])),
     getCurrentUserPermissions(),
     modelsPromise,
+    // The review sheet says it could not load rather than offering a new review over an open one.
+    getPlanChangeReview(id).then(
+      (review): { review: PlanChangeProposalDto | null; failed: boolean } => ({ review, failed: false }),
+      (error: unknown) => optional("plan change review", { review: null, failed: true })(error),
+    ),
   ])
   if (!plan) notFound()
   const permissions = permissionResult.permissions
@@ -118,6 +125,8 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
         floorplanModels={floorplanModels}
         canWrite={elevated || permissions.includes("plan.write")}
         canRelease={elevated || permissions.includes("plan.release")}
+        changeReview={changeReview}
+        canAdopt={elevated || permissions.includes("plan.adopt")}
       />
     </PageLayout>
   )

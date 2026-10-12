@@ -20,6 +20,20 @@ import { postCutoffChangeSchema, type PostCutoffChangeInput } from "@/lib/valida
 /** The reason code every design-studio-driven variance order is filed under. */
 export const SELECTION_AFTER_CUTOFF_REASON_CODE = "selection_after_cutoff"
 
+/**
+ * What a variance order raised from an executed change order says it is for.
+ * A selection change unless told otherwise; a plan change adopted by a released
+ * home files its trade half the same way under its own title and reason.
+ */
+export type VarianceOrderSubject = { title: string; reasonCode: string; reasonLabel: string; source: string }
+
+const SELECTION_VARIANCE_SUBJECT: VarianceOrderSubject = {
+  title: "Selection change after cutoff",
+  reasonCode: SELECTION_AFTER_CUTOFF_REASON_CODE,
+  reasonLabel: "Selection after cutoff",
+  source: "design_studio_co",
+}
+
 export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChangeInput) {
   const input = postCutoffChangeSchema.parse(raw)
   const context = await requireOrgContext()
@@ -260,7 +274,9 @@ export async function createVarianceOrdersForSelectionChange(input: {
   projectId: string
   changeOrderId: string
   changes: readonly SelectionCostDelta[]
+  subject?: VarianceOrderSubject
 }): Promise<{ created: number; unrouted: number; idempotent: boolean }> {
+  const subject = input.subject ?? SELECTION_VARIANCE_SUBJECT
   const routable = input.changes.filter((change) => Math.round(Number(change.cost_delta_cents ?? 0)) !== 0)
   if (routable.length === 0) return { created: 0, unrouted: 0, idempotent: false }
 
@@ -275,7 +291,7 @@ export async function createVarianceOrdersForSelectionChange(input: {
   if (existingError) throw new Error(`Failed to check existing variance orders: ${existingError.message}`)
   if ((existing ?? []).length > 0) return { created: 0, unrouted: 0, idempotent: true }
 
-  const reasonCodeId = await resolveSelectionVarianceReasonCode(supabase, input.orgId)
+  const reasonCodeId = await resolveVarianceReasonCode(supabase, input.orgId, subject)
 
   const { data: commitments, error: commitmentsError } = await supabase
     .from("commitments")
@@ -321,7 +337,7 @@ export async function createVarianceOrdersForSelectionChange(input: {
         project_id: input.projectId,
         commitment_id: order.commitment_id,
         company_id: order.company_id,
-        title: "Selection change after cutoff",
+        title: subject.title,
         description: order.lines.map((line) => line.description).join("; "),
         status: "draft",
         total_cents: order.total_cents,
@@ -330,7 +346,7 @@ export async function createVarianceOrdersForSelectionChange(input: {
         origin: "design_studio_co",
         prime_change_order_id: input.changeOrderId,
         photo_file_ids: [],
-        metadata: { source: "design_studio_co", selection_ids: order.selection_ids },
+        metadata: { source: subject.source, selection_ids: order.selection_ids },
       })
       .select("id")
       .single()
@@ -384,25 +400,26 @@ export async function createVarianceOrdersForSelectionChange(input: {
   return { created: orders.length, unrouted: unrouted.length, idempotent: false }
 }
 
-async function resolveSelectionVarianceReasonCode(
+async function resolveVarianceReasonCode(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   orgId: string,
+  subject: VarianceOrderSubject,
 ): Promise<string> {
   const { data, error } = await supabase
     .from("variance_reason_codes")
     .select("id")
     .eq("org_id", orgId)
-    .eq("code", SELECTION_AFTER_CUTOFF_REASON_CODE)
+    .eq("code", subject.reasonCode)
     .maybeSingle()
-  if (error) throw new Error(`Failed to load the selection variance reason: ${error.message}`)
+  if (error) throw new Error(`Failed to load the variance reason: ${error.message}`)
   if (data) return data.id as string
 
   const { data: seeded, error: seedError } = await supabase
     .from("variance_reason_codes")
-    .insert({ org_id: orgId, code: SELECTION_AFTER_CUTOFF_REASON_CODE, label: "Selection after cutoff", sort_order: 3 })
+    .insert({ org_id: orgId, code: subject.reasonCode, label: subject.reasonLabel, sort_order: 3 })
     .select("id")
     .single()
-  if (seedError || !seeded) throw new Error(`Failed to seed the selection variance reason: ${seedError?.message}`)
+  if (seedError || !seeded) throw new Error(`Failed to seed the variance reason: ${seedError?.message}`)
   return seeded.id as string
 }
 

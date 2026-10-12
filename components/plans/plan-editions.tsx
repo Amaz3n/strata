@@ -19,6 +19,7 @@ import {
 import { unwrapAction } from "@/lib/action-result"
 import { describeReleasedElevations } from "@/lib/plans/product-revisions"
 import type { HousePlanDto, HousePlanVersionDto, PlanVersionDriftDto } from "@/lib/services/house-plans"
+import type { PlanChangeProposalDto } from "@/lib/services/plan-change-proposals"
 import { cn } from "@/lib/utils"
 
 /**
@@ -35,6 +36,8 @@ export function PlanEditions({
   onSelect,
   drift,
   canWrite,
+  changeReview,
+  onReviewHomes,
 }: {
   plan: HousePlanDto
   versions: HousePlanVersionDto[]
@@ -42,11 +45,16 @@ export function PlanEditions({
   onSelect: (versionId: string) => void
   drift: PlanVersionDriftDto[]
   canWrite: boolean
+  changeReview: PlanChangeProposalDto | null
+  onReviewHomes: () => void
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const ordered = [...versions].sort((left, right) => left.version_number - right.version_number)
   const draftVersion = versions.find((version) => version.status === "draft") ?? null
+  const homesBehind = versions.filter((version) => version.status === "superseded").reduce((sum, version) => sum + version.pinned_lot_count, 0)
+  const openReview = changeReview && (changeReview.status === "draft" || changeReview.status === "in_review") ? changeReview : null
+  const undecided = openReview ? openReview.homes.filter((home) => home.decision === "pending").length : 0
 
   function run(operation: () => Promise<unknown>, success: string) {
     startTransition(async () => {
@@ -123,6 +131,18 @@ export function PlanEditions({
       </div>
 
       <div className="flex items-center gap-1.5">
+        {openReview || homesBehind > 0 ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className={cn("h-7 rounded-none px-2 text-[11px] tabular-nums", openReview ? "text-warning" : "text-muted-foreground")}
+            onClick={onReviewHomes}
+          >
+            {openReview
+              ? `Review open · ${undecided} to decide`
+              : `Review ${homesBehind} ${homesBehind === 1 ? "home" : "homes"} on earlier editions`}
+          </Button>
+        ) : null}
         <PlanStatusBadge status={plan.status} />
         {canWrite ? (
           <DropdownMenu>

@@ -19,6 +19,7 @@ import { captureHomeProductRevisions } from "@/lib/services/home-product-revisio
 import { ensureReleaseSlotsForActiveCommunities } from "@/lib/services/even-flow"
 import { assertReleaseGateCompletion, assertStartCommunityAccess, syncReleaseProducedGates } from "@/lib/services/starts"
 import { requirePermission } from "@/lib/services/permissions"
+import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review"
 import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createServiceSupabaseClient, createStartsWorkerSupabaseClient } from "@/lib/supabase/server"
 import { runWithServiceSupabaseClient } from "@/lib/supabase/service-client-context"
@@ -252,7 +253,10 @@ async function executeRelease(supabase: SupabaseClient, service: SupabaseClient,
 
   const { data: version } = await supabase.from("house_plan_versions").select("status")
     .eq("org_id", job.org_id).eq("id", lot.house_plan_version_id).maybeSingle()
-  if (version?.status !== "released") throw new Error("Pinned plan version is no longer released")
+  if (version?.status !== "released"
+    && !(version?.status === "superseded" && await isPlanPinKeptByReview(supabase, job.org_id, pkg.lot_id, lot.house_plan_version_id))) {
+    throw new Error("Pinned plan version is no longer released")
+  }
   const usePurchasing = await purchasingEnabled(supabase, job.org_id, pkg.community_id)
   const input = {
     projectId: pkg.project_id, lotId: pkg.lot_id, versionId: lot.house_plan_version_id,

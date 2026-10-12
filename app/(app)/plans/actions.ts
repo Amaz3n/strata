@@ -15,12 +15,19 @@ import {
 } from "@/lib/services/house-plans"
 import { listProductDefinitionHistory } from "@/lib/services/home-product-revisions"
 import {
+  createPlanChangeProposal,
+  decidePlanChangeHome,
+  submitPlanChangeProposal,
+  withdrawPlanChangeProposal,
+} from "@/lib/services/plan-change-proposals"
+import {
   elevationInputSchema,
   housePlanInputSchema,
   housePlanUpdateSchema,
   planVersionInputSchema,
   takeoffLineInputSchema,
 } from "@/lib/validation/house-plans"
+import { createPlanChangeProposalSchema, decidePlanChangeHomeSchema } from "@/lib/validation/plan-change-proposals"
 
 async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<ActionResult<T>> {
   try {
@@ -66,3 +73,19 @@ export async function releasePlanVersionAction(planId: string, versionId: string
   return run(() => releasePlanVersion(z.string().uuid().parse(versionId)), ["/plans", `/plans/${planId}`])
 }
 
+
+export async function createPlanChangeProposalAction(planId: string, input: unknown) {
+  return run(() => createPlanChangeProposal(createPlanChangeProposalSchema.parse({ ...z.object({}).passthrough().parse(input), planId })), [`/plans/${planId}`])
+}
+
+export async function submitPlanChangeProposalAction(planId: string, proposalId: string) {
+  return run(() => submitPlanChangeProposal(z.string().uuid().parse(proposalId)), [`/plans/${planId}`])
+}
+
+export async function withdrawPlanChangeProposalAction(planId: string, proposalId: string) {
+  return run(() => withdrawPlanChangeProposal(z.string().uuid().parse(proposalId)), [`/plans/${planId}`])
+}
+
+export async function decidePlanChangeHomeAction(planId: string, input: unknown) {
+  return run(() => decidePlanChangeHome(decidePlanChangeHomeSchema.parse(input)), [`/plans/${planId}`])
+}

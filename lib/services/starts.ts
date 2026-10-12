@@ -24,6 +24,7 @@ import { verticalStartRefusal } from "@/lib/land/lot-lifecycle"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { isPlanOffered, offeringOverrideFor } from "@/lib/sales/plan-offering"
 import { checkLotFits } from "@/lib/services/lot-fit"
+import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
   gateAttestSchema,
@@ -457,7 +458,11 @@ async function deriveAutoGate(
       .eq("org_id", orgId).eq("id", String(pkg.lot_id)).maybeSingle()
     if (error) throw new Error(`Failed to check pinned plan: ${error.message}`)
     const version = relation(data?.version)
-    if (!data?.house_plan_version_id || !data.house_plan_elevation_id || version?.status !== "released" || relation(data.elevation)?.is_active === false) return false
+    if (!data?.house_plan_version_id || !data.house_plan_elevation_id || relation(data.elevation)?.is_active === false) return false
+    // A home starts on the current release, or on the superseded version it was
+    // sold at when a plan change review decided it keeps that version.
+    if (version?.status !== "released"
+      && !(version?.status === "superseded" && await isPlanPinKeptByReview(supabase, orgId, data.id, data.house_plan_version_id))) return false
     // The pin must still be on the community's price sheet today; a plan the
     // community has since withdrawn starts only under a recorded override.
     const housePlanId = text(version.house_plan_id)

@@ -12,6 +12,7 @@ import {
   type LotStatus,
 } from "@/lib/land/lot-lifecycle"
 import { readLotDimensions, storeLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
+import type { LotSwing } from "@/lib/land/lot-fit"
 import { readAllRows } from "@/lib/land/paging"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { isPlanOffered, offeringOverrideFor, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering"
@@ -466,6 +467,75 @@ export async function setLotStatus(
  * carry a recorded offering override — the same answer the start package's plan
  * gate re-derives at release.
  */
+type PinClient = { supabase: SupabaseClient; orgId: string }
+type PinnedLotFacts = { id: string; community_id: string; metadata: unknown; dimensions: Record<string, unknown> | null; swing: LotSwing | null }
+
+/**
+ * The rules every plan on a lot answers to, wherever it is pinned: the
+ * community offers the plan in that elevation today (or the lot carries an
+ * offering override for it), and the house fits the lot.
+ */
+async function assertLotTakesPlan(db: PinClient, lot: PinnedLotFacts, pin: { planId: string; elevationId: string | null; swing: "left" | "right" | null }) {
+  const { data: offering, error: offeringError } = await db.supabase.from("community_plan_availability")
+    .select("is_available, elevation_id, effective_start, effective_end")
+    .eq("org_id", db.orgId).eq("community_id", lot.community_id).eq("house_plan_id", pin.planId)
+  if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
+  const offered = isPlanOffered(offering ?? [], { elevationId: pin.elevationId, onDate: new Date().toISOString().slice(0, 10) })
+  if (!offered && !offeringOverrideFor(lot.metadata, pin.planId)) {
+    throw new Error(PLAN_OFFERING_REFUSAL)
+  }
+  const fit = (await checkLotFits(db, [{
+    key: lot.id, lotId: lot.id, communityId: lot.community_id, dimensions: lot.dimensions, lotSwing: lot.swing ?? "either",
+    planId: pin.planId, elevationId: pin.elevationId, swing: pin.swing,
+  }])).get(lot.id)
+  if (fit?.refusal) throw new Error(fit.refusal)
+}
+
+/**
+ * May this lot move from the version it carries to another version of the same
+ * plan, keeping its elevation? The version must be released, and the plan in
+ * that elevation must still be offered and still fit, as for any pin. Asked
+ * when a reviewer adopts a plan change for a home; the caller has authorized
+ * the reviewer (plan.adopt) and the home.
+ */
+export async function assertLotCanAdoptPlanVersion(db: PinClient, input: { lotId: string; fromVersionId: string; toVersionId: string }) {
+  const [lotResult, versionResult] = await Promise.all([
+    db.supabase.from("lots").select("id, community_id, metadata, dimensions, swing, house_plan_id, house_plan_version_id, house_plan_elevation_id")
+      .eq("org_id", db.orgId).eq("id", input.lotId).maybeSingle(),
+    db.supabase.from("house_plan_versions").select("id, house_plan_id, status").eq("org_id", db.orgId).eq("id", input.toVersionId).maybeSingle(),
+  ])
+  if (lotResult.error || !lotResult.data) throw new Error("Lot not found")
+  if (versionResult.error || !versionResult.data) throw new Error("Plan version not found")
+  const lot = lotResult.data
+  if (lot.house_plan_version_id !== input.fromVersionId) throw new Error("This home's plan changed since the review opened. Reopen the review.")
+  if (versionResult.data.house_plan_id !== lot.house_plan_id) throw new Error("That version belongs to another plan.")
+  if (versionResult.data.status !== "released") throw new Error("Only a released plan version can be pinned to a lot.")
+  const swing = lot.swing === "left" || lot.swing === "right" ? lot.swing : null
+  await assertLotTakesPlan(db, lot, { planId: versionResult.data.house_plan_id, elevationId: lot.house_plan_elevation_id ?? null, swing })
+}
+
+/**
+ * Move a lot's pin from one version of its plan to another — the plan and
+ * elevation stay. Written only while the lot still carries `fromVersionId`, so
+ * a second adoption or a re-sale in between is refused rather than overwritten.
+ * The rules were asked by `assertLotCanAdoptPlanVersion` when the adoption was
+ * decided; an adoption that waited on a buyer's signature is applied as signed.
+ */
+export async function writeLotPlanVersion(db: PinClient & { actorId: string | null }, input: { lotId: string; fromVersionId: string; toVersionId: string; source: string }) {
+  const { data, error } = await db.supabase.from("lots")
+    .update({ house_plan_version_id: input.toVersionId })
+    .eq("org_id", db.orgId).eq("id", input.lotId).eq("house_plan_version_id", input.fromVersionId)
+    .select("id, community_id, house_plan_id").maybeSingle()
+  if (error) throw new Error(`Failed to move the home to the new plan version: ${error.message}`)
+  if (!data) throw new Error("This home's plan changed since the review opened. Reopen the review.")
+  await Promise.all([
+    recordEvent({ orgId: db.orgId, actorId: db.actorId, eventType: "lot.plan_assigned", entityType: "lot", entityId: input.lotId,
+      payload: { community_id: data.community_id, house_plan_id: data.house_plan_id, source: input.source } }),
+    recordAudit({ orgId: db.orgId, actorId: db.actorId ?? undefined, action: "update", entityType: "lot", entityId: input.lotId,
+      before: { house_plan_version_id: input.fromVersionId }, after: { house_plan_version_id: input.toVersionId }, source: input.source }),
+  ])
+}
+
 export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInput, orgId?: string): Promise<LotDTO> {
   const parsed = lotPlanAssignmentSchema.parse(input)
   const context = await requireOrgContext(orgId)
@@ -493,19 +563,7 @@ export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInp
     throw new Error("That elevation does not belong to the plan, or is no longer offered.")
   }
 
-  const { data: offering, error: offeringError } = await context.supabase.from("community_plan_availability")
-    .select("is_available, elevation_id, effective_start, effective_end")
-    .eq("org_id", context.orgId).eq("community_id", lot.community_id).eq("house_plan_id", version.data.house_plan_id)
-  if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
-  const offered = isPlanOffered(offering ?? [], { elevationId: parsed.elevationId, onDate: new Date().toISOString().slice(0, 10) })
-  if (!offered && !offeringOverrideFor(lot.metadata, version.data.house_plan_id)) {
-    throw new Error(PLAN_OFFERING_REFUSAL)
-  }
-  const fit = (await checkLotFits(context, [{
-    key: lot.id, lotId: lot.id, communityId: lot.community_id, dimensions: lot.dimensions, lotSwing: lot.swing ?? "either",
-    planId: version.data.house_plan_id, elevationId: elevation.data.id, swing: parsed.swing ?? null,
-  }])).get(lot.id)
-  if (fit?.refusal) throw new Error(fit.refusal)
+  await assertLotTakesPlan(context, lot, { planId: version.data.house_plan_id, elevationId: elevation.data.id, swing: parsed.swing ?? null })
 
   const { data, error } = await context.supabase.from("lots")
     .update({
