@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 30.1% — a documented lower bound, not an ETA |
-| Fully verified | 28.7% |
+| Implemented | 35.6% — a documented lower bound, not an ETA |
+| Fully verified | 34.3% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 68 items |
+| Partially implemented | 61 items |
 | Known pending tasks | 22 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
@@ -80,16 +80,16 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP03-01 | Versioned product definition | partial | Give elevations a revision identity (version under house_plan_versions or snapshot in the release bundle) so post-release edits cannot change a priced home's elevation. |
+| EP03-01 | Versioned product definition | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
 | EP03-02 | Option dependency controls | verified | Approve and apply 20261003013000_selection_configuration_rules.sql (migration approval). |
 | EP03-03 | Configuration preflight | verified | Approve EP03-02 migration and enable the rules flag in the QA org. |
-| EP03-04 | Atomic configuration mutation | partial | Apply migration 20261010162000_selection_package_save (pending approval). |
-| EP03-05 | Community offering restrictions | partial | Add the screen that assigns a plan to an unsold lot (service and action exist in lib/services/lots.ts and app/(app)/communities/actions.ts). |
-| EP03-06 | Lot fit and orientation | partial | Model lot buildable constraints (dimensions, setbacks, orientation, allowed elevations) and plan/elevation footprint requirements. |
-| EP03-07 | Deterministic pricing resolution | verified | Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price. |
-| EP03-08 | Immutable commercial snapshots | partial | Apply migration 20261010161000_budget_baseline_write_once (pending approval). |
-| EP03-09 | Revision impact and rollout | partial | Revision proposal with affected-home preview (contracted vs released vs unsold) for plan, elevation and catalog changes. |
-| EP03-10 | Guided configuration correction | partial | Return structured violations (rule, source, target) from the preflight instead of a joined string. |
+| EP03-04 | Atomic configuration mutation | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
+| EP03-05 | Community offering restrictions | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
+| EP03-06 | Lot fit and orientation | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
+| EP03-07 | Deterministic pricing resolution | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
+| EP03-08 | Immutable commercial snapshots | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
+| EP03-09 | Revision impact and rollout | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
+| EP03-10 | Guided configuration correction | verified | Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval). |
 
 ### EP04: Land and inventory
 
@@ -346,6 +346,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-publication-history-db.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/configuration-rules.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/selections/configuration-rules.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/configuration-rules.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/selections.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/starts.ts
@@ -354,19 +355,25 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-eligibility.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/po-generation-preview.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/agreement-configuration-eligibility.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/catalog-group-publication.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/option-catalog.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261004065019_catalog_group_publication.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-package-publication-service.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-group-publication-db.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-group-publication-service.test.js
+- AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-price-publication-service.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-publication-intents-db.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/imports.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261003033500_starts_release_lot_plan_scope.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/validation/lots.ts
+- AUDIT-20261009-EP03-EP04: source changed since proof: lib/selections/catalog-math.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/land/paging.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/catalog-price-validation.test.js
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/production-reporting.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/budgets.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
+- AUDIT-20261009-EP03-EP04: source changed since proof: app/(app)/plans/[id]/page.tsx
+- AUDIT-20261009-EP03-EP04: source changed since proof: components/sales/purchase-agreement-sheet.tsx
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
 - AUDIT-20261009-EP03-EP04: source changed since proof: lib/services/communities.ts
 - AUDIT-20261009-EP03-EP04: source changed since proof: tests/starts-gates.test.js
@@ -418,6 +425,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/validation/selections.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selection-cutoffs.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/option-catalog-design-studio.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selection-change-orders.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/change-orders.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/starts-gates.test.js
@@ -576,6 +584,11 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/browser-seed.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/reservation-conversion.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/catalog-group-publication.ts
+- VERIFY-20261010: source changed since proof: tests/selections.test.js
+- VERIFY-20261010: source changed since proof: tests/agreement-configuration-eligibility.test.js
+- VERIFY-20261010: source changed since proof: tests/catalog-eligibility.test.js
+- VERIFY-20261010: source changed since proof: tests/option-catalog-design-studio.test.js
 - VERIFY-20261010: source changed since proof: tests/catalog-price-validation.test.js
 - VERIFY-20261010: source changed since proof: tests/land-foundation.test.js
 - VERIFY-20261010: source changed since proof: tests/land-scope.test.js
@@ -590,6 +603,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/starts-core-write-fences-db.test.js
 - VERIFY-20261010: source changed since proof: tests/drawings-pipeline-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release.test.js
+- VERIFY-20261010: source changed since proof: tests/plan-instantiation-ledger.test.js
 - VERIFY-20261010: source changed since proof: tests/bids.test.js
 - VERIFY-20261010: source changed since proof: tests/production-bid-queue.test.js
 - VERIFY-20261010: source changed since proof: tests/search-picker.test.js

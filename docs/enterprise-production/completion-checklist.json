@@ -6251,14 +6251,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "No product-definition code changed since the Oct 5 audit. Plan versions/takeoffs are properly revisioned and DB-immutable after release and lots pin the released version; agreements snapshot configuration and price. Elevations and option catalog entries remain edit-in-place without revision identity, and the catalog revision counter migration is still unapplied in production.",
       "remainingWork": [
-        "Give elevations a revision identity (version under house_plan_versions or snapshot in the release bundle) so post-release edits cannot change a priced home's elevation.",
-        "Persist an identifiable option-catalog revision on the agreement/selection/home at pricing and on start release.",
-        "Record the product-definition revision set (plan version, elevation revision, catalog revision) at start release.",
-        "Approve and apply 20261004000030_agreement_catalog_revisions.sql (migration approval).",
-        "Tests proving a released home keeps its revisions after elevation/catalog edits; QA workflow in the QA org."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/house-plans.ts",
@@ -6357,7 +6353,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -6399,6 +6395,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged from the prior review: definition revisions on elevations, options and packages with append-only history. tests/product-revisions-db.test.js passes 8/8. The plan footprint and drawn_swing are still unrevisioned. 69b3c370 now re-judges every pinned lot when they change (house-plans.ts recheckPinnedLots, FIT_FIELDS), and when an elevation's swing_applicable changes."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "1f0dff1a home-product-revisions.ts: the release record takes each option from project_selections.selected_option_revision. Packages come from product_definition_revisions as of the selection's selected_at. A legacy selection falls back to today's revision and is marked inferred:true. 20261012060000 adds selected_package_revision, set by the selection trigger. PROD-01 expects ST-LAN released at r1, its priced revision. home-product-revisions 3/3 and selections-db 9/9 pass."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -6413,14 +6457,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Plan and option version history",
-        "description": "Each house plan has numbered editions, and a home stays on the edition it was sold and released against, with its price frozen in the agreement. Elevations and the option catalog have no version history yet, so you can't point to the exact elevation or option list a home was priced from."
+        "description": "Plans, elevations, options and packages each carry a revision that moves only when what is built or sold changes, with a history nobody can rewrite. Every home records the exact plan edition, elevation and options it was sold at and released at, and its overview says what has changed since."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Sold homes already keep their plan edition and frozen price, so missing elevation/catalog version history is a traceability gap rather than a money risk for a first builder.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP03 batch by the owner on 2026-10-11.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP03-02",
@@ -7137,15 +7184,10 @@
         "EP03-02",
         "EP03-03"
       ],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Applying a package or selection change order to a home lands whole or not at all (5dc16e16; migration 20261010120200 pending). The legacy upsertPackage now saves the package and its members in one database transaction through save_selection_package (56b76687; migration 20261010162000 pending approval; the code needs it before the live package-save path works). confirmSelectionGroup, setCatalogPrice and the catalog publication cutover remain.",
       "remainingWork": [
-        "Apply migration 20261010162000_selection_package_save (pending approval).",
-        "Apply migration 20261010120200_apply_project_selection_writes (pending approval).",
-        "Move updateSingleSelection and confirmSelectionGroup onto the same transactional write and re-validate configuration and rules under a lock or revision fence.",
-        "Cut legacy catalog writers (setCatalogPrice) over to the atomic publication RPCs and delete the legacy paths.",
-        "Approve/apply the catalog publication migration chain (20261004012839, 20261004015201, 20261004025518, 20261004033000, 20261004034500, 20261004043000, 20261004065019, 20261004072434) and enable ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED in QA.",
-        "Prove rollback of failed package/group writes and multi-session catalog/rule/selection races; QA workflow."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/catalog-package-publication.ts",
@@ -7172,7 +7214,7 @@
         "tests/selections.test.js",
         "tests/selections-db.test.js",
         "tests/option-catalog.test.js",
-        "tests/option-catalog-db.test.js"
+        "tests/selection-change-orders.test.js"
       ],
       "executionLogEntries": [
         5,
@@ -7243,7 +7285,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W1",
@@ -7291,6 +7333,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "The fence is unchanged. The new selectProjectOptions (selections.ts) reads the fence first, prepares every change, runs assertProjectConfiguration once over the set, and writes it in one apply_project_selection_writes call. selectProjectOption delegates to it. selections 20/20 and selections-db 9/9 pass."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged. catalog-publication-intents-db passes 19/19. The catalog-* suites all pass."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -7308,14 +7398,17 @@
       ],
       "plain": {
         "title": "All-or-nothing option and package changes",
-        "description": "Catalog-side publishing of packages, prices and option groups is built to save all-or-nothing, but it is not switched on. Applying a package to a home, and replacing a package's contents in the catalog, are now each written to save as one unit, pending a database change that needs approval."
+        "description": "A selection change, a package or a group confirmation lands whole or not at all, and is refused if the catalog, the rules or the home's other choices changed while someone was choosing. Catalog prices, packages and groups always publish atomically."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Half-applied packages and races between catalog and selection edits corrupt what a buyer was sold and what gets ordered.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP03-05",
@@ -7336,13 +7429,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Plan instantiation now refuses a plan or elevation the lot's community does not offer (and inactive elevations) unless a plan.release holder records an audited, reasoned, per-plan override on the lot (recordPlanOfferingOverride); the start package's plan gate re-derives the same rule at release (lib/sales/plan-offering.ts, 56b76687). No screen calls the override action yet, and plan pins from imports are not checked. Found by LOT-01: the Offering tab listed no plans (fixed 4158415c) and a plan could not be pinned to an unsold lot (service and action added 12c622af, no UI yet).",
       "remainingWork": [
-        "Add the screen that assigns a plan to an unsold lot (service and action exist in lib/services/lots.ts and app/(app)/communities/actions.ts).",
-        "Wire recordPlanOfferingOverrideAction into a screen so the override can be recorded by someone with plan.release.",
-        "Apply the same offering rule to import paths that pin plans to lots (lib/services/imports.ts); approve 20261003033500_starts_release_lot_plan_scope.sql.",
-        "QA workflow for instantiation and release refusal."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -7440,7 +7530,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -7482,6 +7572,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Pin paths are unchanged. A new sale of a retired elevation is still refused: community-sales.ts:1225 filters is_active=true and lots.ts:562 refuses inactive. starts-gates 14/14 and lots 26/26 pass."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Confirmation review after bde727fc and 9ef17911. resolveOptionPricing loads the parents of override options, scoped to the org (option-catalog.ts:636-639), and passes [baseOption, override, parent] as subjects (:717-719). chooseResolvedPrice requires every subject to be on sale (catalog-math.ts:20), so a community version named by its own id is off sale when its parent is withdrawn. Every sell and price path goes through resolveOptionPricing and checks .available: selections.ts, selection-change-orders.ts, community-sales.ts and configuration-rules.ts. A package change order now also re-prices its member options. The picker list hides community versions of withdrawn options. tests/option-catalog.test.js 15/15, tests/selection-change-orders.test.js 1/1, tests/selections.test.js 21/21."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -7491,9 +7629,7 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Assigning a plan to an unsold lot (D9) has a service and action only; no screen calls it — still open."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "lib/services/plan-instantiation.ts:519-521 turns an unavailable community offering into a warning ('operations override recorded') with no override permission or evidence, so an ineligible plan can be instantiated on a lot. — fixed in 56b76687",
@@ -7503,14 +7639,17 @@
       ],
       "plain": {
         "title": "Community plan and option offerings",
-        "description": "When selling, building a spec home or releasing a start, Arc only allows plans and elevations offered in that community, unless someone with plan-release authority records a reasoned, audited exception. Importing lots with a plan already pinned still skips this check, and there is not yet a screen to record the exception."
+        "description": "A plan or elevation the lot's community doesn't offer can't be pinned, priced, built or imported without a recorded override, and an option withdrawn from sale is off sale on every plan, whatever price rows remain."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Spec homes are a large share of a production builder's starts, and building an unoffered plan on a lot is an expensive mistake.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP03-06",
@@ -7531,14 +7670,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Lot dimensions now have one stored shape (snake_case) with one reader and writer used by forms, services and imports, and an import fills only the fields a row supplies (lib/land/lot-dimensions.ts, 56b76687). There is still no lot-fit model, setbacks, allowed elevations or fit override.",
       "remainingWork": [
-        "Model lot buildable constraints (dimensions, setbacks, orientation, allowed elevations) and plan/elevation footprint requirements.",
-        "Pure, tested lot-fit evaluator called from agreement pricing, plan instantiation, imports and start release.",
-        "Permissioned, evidenced, audited override.",
-        "Enforce swing_applicable on elevations.",
-        "Migration approval; tests; QA workflow."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -7583,7 +7718,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -7623,6 +7758,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged. Plan footprint, drawn_swing and elevation swing_applicable edits now re-judge the pinned lots and emit lot.fit_violated. lot-fit 13/13 and lot-fit-db 6/6 pass."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "replace_lot_fit_override (20261012060000) runs as security invoker under a per-lot advisory lock. It revokes and inserts in one transaction, so table RLS still governs, and it raises 42501 without lot.fit_override. lot-fit-db covers it."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -7639,14 +7822,17 @@
       ],
       "plain": {
         "title": "Does the house fit the lot",
-        "description": "Arc only checks that the garage swing matches the lot when pricing a sale. Lot width and depth are now stored one consistent way (including from imports), but Arc does not yet compare them with the plan's footprint, know setbacks or allowed elevations, or record an override when someone forces a fit."
+        "description": "Plans carry a footprint and garage side, communities default setbacks, lots their own setbacks, shape and allowed elevations. A plan that doesn't fit is refused everywhere a plan meets a lot unless an override with a reason and the plot plan is recorded; unmeasured lots don't block, and edits to a lot, community or plan re-check the homes on it."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "A first builder already settles fit in plot plans with their engineer, and swing is enforced; a full fit model is valuable but not required to run on Arc.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP03 batch by the owner on 2026-10-11.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP03-07",
@@ -7670,8 +7856,7 @@
       "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Precedence and ambiguity handling are explicit and reads are bounded; medium confidence because production homes without a pinned plan version fall back to base option price instead of failing.",
       "remainingWork": [
-        "Make pricing fail explicitly for production homes without a pinned plan version instead of falling back to base price.",
-        "Verify scoped price records and every error state in QA."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/option-catalog.ts",
@@ -7989,7 +8174,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -8026,6 +8211,54 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "LOT-01 normal and --include-pending, 0 failed subcases.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Precedence is unchanged: plan+community, then plan, then the option's own price (option-catalog-design-studio test)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Duplicate, missing-version and integer-cents refusals are unchanged. homePricingScope moved to home-pricing-scope.ts, which removes the option-catalog stub problem. option-catalog passes 14/14."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -8035,14 +8268,12 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "Review 2026-10-11: resolveOptionPricing silently falls back to base price when plan-version/community context is missing and does not validate resolved money values."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [],
       "plain": {
         "title": "Predictable option pricing",
-        "description": "An option's community price beats its plan price, which beats its base price, every time; duplicate or conflicting prices stop with a clear error instead of picking one. One gap: a production home not yet tied to a plan edition quietly gets the base price instead of an error."
+        "description": "A plan's community price beats its plan price, which beats the option's own price, every time; a production home without a pinned plan edition can't be priced, and bad money or duplicates stop with a clear error."
       },
       "proposedScope": {
         "scope": "first",
@@ -8051,6 +8282,7 @@
       },
       "remainingEffort": "S",
       "scenarioIds": [
+        "PROD-01",
         "LOT-01"
       ]
     },
@@ -8073,13 +8305,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "A locked budget baseline is now write-once in the service and, once migration 20261010161000 is applied, in the database; a revised baseline is a new budget version (56b76687). There is still no immutable original cost and margin baseline captured at agreement or start release, and no database guard on the purchase-agreement snapshot.",
       "remainingWork": [
-        "Apply migration 20261010161000_budget_baseline_write_once (pending approval).",
-        "Capture an immutable original cost and margin baseline (plan takeoff/budget cost, option costs, incentives) at agreement and at start release.",
-        "DB guard making the purchase-agreement snapshot immutable; approve 20261004000100 and 20261003232615.",
-        "Tests proving catalog/price changes cannot alter stored baselines; QA workflow."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -8182,7 +8411,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04",
             "FIX-20261010-W3"
@@ -8224,6 +8453,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "99f18792: when no budget exists, the agreement baseline is costed by estimateTakeoffCost (lib/financials/home-margin-baseline.ts). It uses the released or superseded plan version's takeoff for the elevation, priced by vendor price agreement, then manual unit cost, then the cost code default, as of the signing date. Any unpriced line, a draft version or no takeoff leaves cost unknown, and the basis records cost_source and why. PROD-01 now expects an agreement base cost of 25,160,000, cost 26,760,000, margin 14,490,000, bps 3513, consistent with the release base. Tests: home-margin-baseline 8/8, home-margin-baselines 7/7, -db 6/6."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "The agreement pricing guard and the write-once baselines are unchanged."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -8240,14 +8517,17 @@
       ],
       "plain": {
         "title": "Locked-in sale price and margin",
-        "description": "A purchase agreement keeps the price, incentives and options the buyer signed, and each selection keeps its price and cost at the time. The budget's 'original' can no longer be redone once locked (pending a database change that needs approval), but Arc still does not capture the home's original cost and margin automatically when it is sold or started."
+        "description": "A signed agreement's price and configuration can't be changed by anyone; it is amended by change order. Each home's original price, cost and margin are captured once at sale (cost estimated from its plan) and at release (its budget), and reports show original margin beside projected to those with margin access."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Original margin per home is how a production builder judges every sale and community; a rewritable baseline is a money-integrity gap.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP03-09",
@@ -8271,12 +8551,10 @@
         "EP03-01",
         "EP03-08"
       ],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Homes are protected by staying on their pinned version and a drift panel counts lots on superseded versions, but there is no proposal stage, affected-home list or controlled adoption.",
       "remainingWork": [
-        "Revision proposal with affected-home preview (contracted vs released vs unsold) for plan, elevation and catalog changes.",
-        "Authorized per-home adoption decisions preserving old snapshots and producing change orders/VPOs where needed.",
-        "Tests and QA of signed/released home impact scenarios."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/house-plans.ts",
@@ -8345,7 +8623,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -8384,6 +8662,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "69b3c370: getProductChangeImpact (lib/services/product-change-impact.ts) lists the homes an edit reaches: lots pinned to the elevation, homes holding the option, and agreement/release records containing it. For each it gives state, lot, buyer, sold revision and released revision. Reads are capped (PRODUCT_CHANGE_HOME_CAP) with a visible truncated flag and narrowed to the reader's divisions. The option dialog and plan editor show the impact and confirm before saving (as decided, the edit still saves). The retired-elevation rule (isElevationKeptBySale) admits only a home whose ACTIVE purchase agreement's write-once agreement record names that elevation, at the start gate, release and instantiation. A spec home, a cancelled earlier sale, or a sale of another elevation is refused, and repinning to an inactive elevation is refused (lots.ts:562). I found no way to build an elevation that was never sold. product-change-impact 5/5 and starts-gates 14/14 pass."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "As before, plus 20261012060000: guard_plan_change_home_adoption_browser_writes refuses browser roles changing adopted_at/change_order_id. Inserts were already constrained to null. decidePlanChangeHome writes those columns with the service role, after the authority checks. plan-change-proposals 10/10 and -db 7/7 pass."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -8398,14 +8724,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Rolling plan changes to sold homes",
-        "description": "When a new plan edition is released, sold and started homes safely stay on the old one, and the plan page shows how many lots are still on older editions. There is no way to preview which contracted or started homes a proposed change would affect, or to choose which of them adopt it."
+        "description": "A new plan edition lists every home on an earlier one with its state and cost and price change, and an authorized person decides home by home: unsold homes move under the offering and fit rules, sold homes only through a change order the buyer signs. Elevation and option edits show the sold homes they reach before saving."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Pinned editions already keep sold homes safe; a controlled roll-out workflow is efficiency at higher volume.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP03 batch by the owner on 2026-10-11.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP03-10",
@@ -8426,12 +8755,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Violations are readable messages only; no guided correction in sales or buyer UI.",
       "remainingWork": [
-        "Return structured violations (rule, source, target) from the preflight instead of a joined string.",
-        "Sales and buyer-portal correction UI offering valid add/remove choices through the existing guarded write paths.",
-        "Tests that corrections cannot bypass locked selections or approvals; QA workflow."
+        "Apply the EP03 migrations (20261012010000, 20261012015000, 20261012020000, 20261012030000, 20261012040000, 20261012050000, 20261012060000) with the code (pending approval)."
       ],
       "sources": [
         "components/design-studio/option-configuration-rules.tsx",
@@ -8502,7 +8829,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP03-EP04"
           ],
@@ -8541,6 +8868,54 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PROD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "PROD01-ep03final"
+          ],
+          "head": "9ef17911",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PROD-01 9/9 subcases as real roles through the services on the acceptance stack; regression: LOT-01 81/81 run subcases, SEC-01, the DESK-01 sweep and the MFA/support journeys on the same stack.",
+          "regression": {
+            "lot01": "81/81",
+            "sec01": "passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP03-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "9ef17911",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged. configuration-fixes 17/17 pass. configuration-rules now passes 23/23 (the earlier stub failure is gone)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "applyConfigurationFixAction now applies the fix and the proposal through one selectProjectOptions fenced write, so the pair lands together or not at all."
+            }
+          ],
+          "scope": "Independent review of the EP03 batch (2c717c50..9ef17911) after two fix rounds and a confirmation review of EP03-05."
         }
       ],
       "releaseState": "unverified",
@@ -8555,14 +8930,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Fix-it suggestions for invalid options",
-        "description": "When a buyer or salesperson picks options that conflict, Arc says why in plain words ('X requires Y'). It doesn't yet offer one-click valid alternatives in the sales screen or buyer portal."
+        "description": "When a choice breaks a rule, buyers and sales see why in plain words with corrections that clear it without creating a new conflict, priced. A correction that would touch a locked choice says it needs a change order, and the server only applies fixes it suggests itself."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Clear error messages are enough to operate; guided correction is a polish item once rules are live.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP03 batch by the owner on 2026-10-11.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "PROD-01"
+      ]
     },
     {
       "id": "EP04-01",
@@ -34604,6 +34982,12 @@
       "approvedBy": "owner",
       "change": "EP02-02: no SSO; the item is required two-factor through Arc's own sign-in (criteria reworded). EP02-07 pulled into the first batch. The frozen baseline records EP02-02's reworded criteria; the denominator (items and weights) is unchanged.",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-12",
+      "approvedBy": "owner",
+      "change": "EP03-01, EP03-06, EP03-09 and EP03-10 pulled into the first batch with the rest of EP03.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -38979,6 +39363,23 @@
           "EP02-02"
         ],
         "existingSupport": "scripts/books-acceptance/journeys/required-mfa.spec.ts (playwright.support.config.ts); database enforcement in tests/division-scope-db.test.js",
+        "result": "passed"
+      },
+      {
+        "id": "PROD-01",
+        "story": "Product and configuration: a sold home keeps the revisions it was priced and released at; a selection group confirms all or nothing; a stale catalog refuses a selection write under a real concurrent publication; plan offerings and lot fit hold everywhere with evidenced overrides; production pricing never guesses; a signed price and the original margin cannot be rewritten; a plan change reaches each sold home only by an authorized decision; an invalid configuration explains itself with fixes that respect locks.",
+        "harness": "exists",
+        "covers": [
+          "EP03-01",
+          "EP03-04",
+          "EP03-05",
+          "EP03-06",
+          "EP03-07",
+          "EP03-08",
+          "EP03-09",
+          "EP03-10"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/prod-01.cjs (9 subcases)",
         "result": "passed"
       }
     ]
