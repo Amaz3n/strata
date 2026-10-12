@@ -2,6 +2,7 @@ import { expect, type Page } from "@playwright/test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
+import { createRequire } from "node:module"
 
 export const workspace = process.env.BOOKS_ACCEPTANCE_WORKSPACE as string
 
@@ -11,6 +12,16 @@ export function journey(name: string): JourneyUsers {
   const users = JSON.parse(readFileSync(join(workspace, "browser-users.json"), "utf8")) as Record<string, JourneyUsers>
   if (!users[name]) throw new Error(`Seed the ${name} journey with browser-seed.cjs first`)
   return users[name]
+}
+
+/**
+ * The acceptance stack's Data API and its public anon key (the same key the app
+ * ships to every browser), for checks that bypass the app the way an attacker would.
+ */
+export function acceptanceDataApi() {
+  const { localJwt } = createRequire(__filename)("../scenario-kit.cjs") as { localJwt: (claims: Record<string, unknown>) => string }
+  const { apiUrl } = JSON.parse(readFileSync(join(workspace, "api.json"), "utf8")) as { apiUrl: string }
+  return { apiUrl, anonKey: localJwt({ role: "anon" }) }
 }
 
 /** Harness setup SQL against the acceptance database (journeys that must recreate their starting state). */

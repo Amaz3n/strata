@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto"
 import { expect, test, type Page } from "@playwright/test"
-import { rows, setupSql, watchErrors } from "./support"
+import { acceptanceDataApi, rows, setupSql, watchErrors } from "./support"
 
 // EP02-02 (MFA-01): Arc's own sign-in enforces an organization's required
 // two-factor, and the failure and recovery paths work. A requirement applies to
@@ -198,6 +198,39 @@ commit;`)
     await memberPage.goto("/settings?tab=profile")
     await expect(memberPage.getByText("Required by your organization", { exact: true })).toBeVisible()
     await expect(memberPage.getByRole("button", { name: "Turn off" })).toHaveCount(0)
+
+    // 3b. The password alone opens nothing in the database either: a token from Supabase
+    // Auth with the public anon key (aal1, no code) reads none of the organization.
+    const api = acceptanceDataApi()
+    const grant = await fetch(`${api.apiUrl}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: { apikey: api.anonKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: member.email, password }),
+    })
+    expect(grant.status, "the password still signs in to Supabase Auth").toBe(200)
+    const { access_token: passwordOnly } = (await grant.json()) as { access_token: string }
+    expect(JSON.parse(Buffer.from(passwordOnly.split(".")[1], "base64url").toString("utf8")).aal, "that session has no code").toBe("aal1")
+    const read = (table: string) =>
+      fetch(`${api.apiUrl}/rest/v1/${table}?select=id&org_id=eq.${org.id}`, { headers: { apikey: api.anonKey, Authorization: `Bearer ${passwordOnly}` } })
+        .then(async (response) => ({ status: response.status, rows: ((await response.json()) as unknown[]).length }))
+    expect(await read("memberships"), "a password-only session reads no memberships").toEqual({ status: 200, rows: 0 })
+    expect(await read("projects"), "a password-only session reads no homes").toEqual({ status: 200, rows: 0 })
+    expect(await read("audit_log"), "a password-only session reads no history").toEqual({ status: 200, rows: 0 })
+    // The same person after the code (aal2) reads their organization: the refusal above is the rule, not an empty org.
+    const authed = (token: string) => ({ apikey: api.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" })
+    const { factors } = (await (await fetch(`${api.apiUrl}/auth/v1/user`, { headers: authed(passwordOnly) })).json()) as { factors: Array<{ id: string; status: string }> }
+    const factorId = factors.find((factor) => factor.status === "verified")?.id
+    const challenge = (await (await fetch(`${api.apiUrl}/auth/v1/factors/${factorId}/challenge`, { method: "POST", headers: authed(passwordOnly) })).json()) as { id: string }
+    const verified = await fetch(`${api.apiUrl}/auth/v1/factors/${factorId}/verify`, {
+      method: "POST",
+      headers: authed(passwordOnly),
+      body: JSON.stringify({ challenge_id: challenge.id, code: await freshCode(memberSecret) }),
+    })
+    expect(verified.status, "the code verifies through Supabase Auth").toBe(200)
+    const { access_token: withCode } = (await verified.json()) as { access_token: string }
+    const membershipsWithCode = await fetch(`${api.apiUrl}/rest/v1/memberships?select=id&org_id=eq.${org.id}`, { headers: authed(withCode) })
+      .then(async (response) => ((await response.json()) as unknown[]).length)
+    expect(membershipsWithCode, "with the code, the same read returns the organization's memberships").toBeGreaterThan(0)
 
     // 4. Failure path: signed out and back in, the member owes a code; a wrong one is refused.
     await memberPage.goto("/")

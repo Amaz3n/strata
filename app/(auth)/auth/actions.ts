@@ -6,6 +6,8 @@ import { createHash, randomBytes } from "node:crypto"
 import { redirect } from "next/navigation"
 import { z } from "zod"
 
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enforceAuthRateLimit } from "@/lib/services/auth-rate-limit"
@@ -118,8 +120,11 @@ export async function signInAction(_prevState: SignInState, formData: FormData):
     return { redirectTo, welcome: { firstName: null, orgName: null } }
   }
 
+  // Read with the service client: the password is verified but a code may still
+  // be owed, and an organization that requires two-factor hides its rows from such
+  // a session. Whether this person belongs anywhere decides the next step, not access.
   const [membershipState, profile] = await Promise.all([
-    resolveMembershipState(supabase, user.id),
+    resolveMembershipState(createServiceSupabaseClient(), user.id),
     supabase.from("app_users").select("full_name").eq("id", user.id).maybeSingle(),
   ])
 
@@ -589,7 +594,7 @@ async function clearOrgCookie() {
   }
 }
 
-async function resolveMembershipState(supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>, userId: string) {
+async function resolveMembershipState(supabase: SupabaseClient, userId: string) {
   const { data: activeMembership, error: activeError } = await supabase
     .from("memberships")
     .select("org_id, org:orgs(name)")
