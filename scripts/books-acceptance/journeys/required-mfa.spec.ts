@@ -263,7 +263,8 @@ commit;`)
     await latecomerContext.close()
     ownerErrors()
   } finally {
-    await memberContext.close()
+    // The database first: a timed-out test can no longer close its browser, and a
+    // requirement left on would hold every account in this org to it.
     setupSql(`begin;
 delete from public.org_security_policies where org_id='${org.id}';
 delete from auth.mfa_factors where user_id in (${ids});
@@ -272,5 +273,6 @@ delete from public.memberships where org_id='${org.id}';
 delete from auth.identities where user_id in (${ids});
 update auth.users set encrypted_password='', banned_until='infinity' where id in (${ids});
 commit;`)
+    await memberContext.close().catch(() => undefined)
   }
 })
