@@ -137,7 +137,7 @@ export async function getCashFlowForecast(input: ForecastLens & { orgId?: string
   const today = new Date().toISOString().slice(0, 10)
   const [, communityIds] = await Promise.all([projectCash(context, input, bucket), landScope(context, input)])
   if (communityIds === null || communityIds.length > 0) {
-    const land = await loadLandObligationRows(context.supabase, context.orgId, { communityIds, today })
+    const land = await loadLandObligationRows(context.supabase, context.orgId, { communityIds })
     for (const row of landObligationsByMonth({ ...land, today })) bucket(row.month).land_obligations_cents += row.totalCents
   }
   const months = Array.from(buckets.keys()).sort()

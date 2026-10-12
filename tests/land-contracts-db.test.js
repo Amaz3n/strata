@@ -294,3 +294,111 @@ test("a land contract's search entry carries its community's division", async (t
   await db.query("update communities set division_id = $1 where id = $2", [south.id, community.id])
   assert.deepEqual(await found(), [row.title])
 })
+
+// ---------------------------------------------------------------------------
+// Takedowns, termination and fees (20261012170000_ep04_review_fixes).
+
+/** A paid deposit's receipt and the payment itself. */
+const pay = (db, depositId, fileId) =>
+  db.query("update land_contract_deposits set status = 'paid', paid_on = '2026-10-10', evidence_file_id = $2 where id = $1", [depositId, fileId])
+
+test("a takedown under a signed contract is never deleted, and a member neither cancels it nor closes any takedown directly", async (t) => {
+  const { db, orgId, ownerId, community, contract, takedown, execute } = await land(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const as = (userId, sql, args) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+  const row = await contract()
+  const signedTranche = await takedown(row.id)
+  await execute(row.id)
+  const loose = await insert(db, "lot_takedowns", { org_id: orgId, community_id: community.id, name: "Unsigned tranche", scheduled_date: "2026-12-01", lot_count: 4 })
+
+  await assert.rejects(as(field, "delete from lot_takedowns where id = $1", [signedTranche.id]), /is kept; terminate the contract/)
+  await assert.rejects(db.query("delete from lot_takedowns where id = $1", [signedTranche.id]), /is kept; terminate the contract/)
+  await assert.rejects(as(field, "update lot_takedowns set status = 'cancelled' where id = $1", [signedTranche.id]), /only through the land workflow/)
+  for (const userId of [field, ownerId]) {
+    await assert.rejects(as(userId, "update lot_takedowns set status = 'closed', actual_date = '2026-10-10' where id = $1", [loose.id]), /closed through its closing/)
+  }
+  // A takedown outside a contract or a deal is still the community's to cancel.
+  await as(field, "update lot_takedowns set status = 'cancelled' where id = $1", [loose.id])
+})
+
+test("a land deal's takedown closes only once its acquisition is approved, whoever writes it", async (t) => {
+  const { db, orgId, ownerId, community } = await land(t)
+  const deal = await insert(db, "land_opportunities", { org_id: orgId, name: "Cypress Run west", community_id: community.id, created_by: ownerId })
+  const tranche = await insert(db, "lot_takedowns", { org_id: orgId, community_id: community.id, land_opportunity_id: deal.id, name: "West tranche", scheduled_date: "2026-12-01", lot_count: 6 })
+  const close = () => rpc(db, "close_lot_takedown", { p_org_id: orgId, p_takedown_id: tranche.id, p_actual_date: "2026-10-10", p_actor_id: ownerId })
+
+  await assert.rejects(db.query("update lot_takedowns set status = 'closed' where id = $1", [tranche.id]), /no approved acquisition review/)
+  await assert.rejects(close(), /no approved acquisition review/)
+
+  await db.query("set session_replication_role = replica")
+  await insert(db, "land_acquisition_reviews", {
+    org_id: orgId, land_opportunity_id: deal.id, revision: 1, decision: "acquire", snapshot: {}, content_hash: "a".repeat(64),
+    status: "approved", submitted_by: ownerId, decided_at: new Date().toISOString(),
+  })
+  await db.query("set session_replication_role = origin")
+  await close()
+  assert.equal((await db.query("select status from lot_takedowns where id = $1", [tranche.id])).rows[0].status, "closed")
+})
+
+test("closing a takedown applies its paid deposits and acquires its lots in one transaction", async (t) => {
+  const { db, orgId, ownerId, community, signed, contract, takedown, execute } = await land(t)
+  const row = await contract()
+  const tranche = await takedown(row.id)
+  const deposit = await insert(db, "land_contract_deposits", { org_id: orgId, land_contract_id: row.id, takedown_id: tranche.id, due_on: "2026-10-15", amount_cents: 50_000_00 })
+  const lot = await insert(db, "lots", { org_id: orgId, community_id: community.id, lot_number: "1", status: "controlled", takedown_id: tranche.id })
+  await execute(row.id)
+  const close = () => rpc(db, "close_lot_takedown", { p_org_id: orgId, p_takedown_id: tranche.id, p_actual_date: "2026-11-30", p_actor_id: ownerId })
+
+  await assert.rejects(close(), /Record the payment of every deposit/)
+  assert.equal((await db.query("select status from lot_takedowns where id = $1", [tranche.id])).rows[0].status, "scheduled")
+
+  await pay(db, deposit.id, signed.id)
+  const result = await close()
+  assert.deepEqual(result, { lot_ids: [lot.id], applied_deposit_cents: 50_000_00 })
+  const { rows: [after] } = await db.query(`
+    select t.status as takedown, t.actual_date::text as actual_date, d.status as deposit, l.status as lot, l.acquired_date::text as acquired
+      from lot_takedowns t, land_contract_deposits d, lots l
+     where t.id = $1 and d.id = $2 and l.id = $3`, [tranche.id, deposit.id, lot.id])
+  assert.deepEqual(after, { takedown: "closed", actual_date: "2026-11-30", deposit: "applied", lot: "owned", acquired: "2026-11-30" })
+  await assert.rejects(close(), /Only a scheduled takedown is closed/)
+})
+
+test("terminating a contract cancels its unpaid deposits and its scheduled takedowns; nothing else cancels a deposit", async (t) => {
+  const { db, orgId, ownerId, signed, contract, takedown, execute } = await land(t)
+  const row = await contract()
+  const tranche = await takedown(row.id)
+  const unpaid = await insert(db, "land_contract_deposits", { org_id: orgId, land_contract_id: row.id, due_on: "2026-11-15", amount_cents: 25_000_00 })
+  const paid = await insert(db, "land_contract_deposits", { org_id: orgId, land_contract_id: row.id, due_on: "2026-10-05", amount_cents: 50_000_00 })
+  await execute(row.id)
+  await pay(db, paid.id, signed.id)
+
+  await assert.rejects(db.query("update land_contract_deposits set status = 'cancelled' where id = $1", [unpaid.id]), /only by terminating its land contract/)
+
+  const ended = await rpc(db, "close_out_land_contract", { p_org_id: orgId, p_contract_id: row.id, p_status: "terminated", p_actor_id: ownerId })
+  assert.deepEqual(ended, { cancelled_deposit_ids: [unpaid.id], cancelled_takedown_ids: [tranche.id] })
+  const { rows } = await db.query("select id, status from land_contract_deposits order by due_on")
+  assert.deepEqual(rows, [{ id: paid.id, status: "paid" }, { id: unpaid.id, status: "cancelled" }])
+  assert.equal((await db.query("select status from lot_takedowns where id = $1", [tranche.id])).rows[0].status, "cancelled")
+  // The paid deposit is still refunded or forfeited on its own record.
+  await db.query("update land_contract_deposits set status = 'forfeited' where id = $1", [paid.id])
+  await assert.rejects(rpc(db, "close_out_land_contract", { p_org_id: orgId, p_contract_id: row.id, p_status: "completed", p_actor_id: ownerId }), /Only an executed land contract/)
+})
+
+test("a fee's payment is recorded once, with its receipt; the rest of the amendment never changes", async (t) => {
+  const { db, orgId, ownerId, signed, contract, execute } = await land(t)
+  const row = await contract()
+  await execute(row.id)
+  const penalty = await insert(db, "land_contract_amendments", {
+    org_id: orgId, land_contract_id: row.id, kind: "penalty", fee_cents: 10_000_00, due_on: "2026-10-01",
+    reason: "Late takedown under section 4.2", evidence_file_id: signed.id, recorded_by: ownerId,
+  })
+  const { userId: landManager } = await seedMember(db, { orgId, role: "org_land_manager" })
+  const record = (patch) => asRole(db, { role: "authenticated", userId: landManager }, (tx) =>
+    tx.query("update land_contract_amendments set fee_paid_on = $2, fee_evidence_file_id = $3 where id = $1", [penalty.id, patch.paidOn, patch.fileId]))
+
+  await assert.rejects(record({ paidOn: "2026-10-03", fileId: null }), /land_contract_amendments_fee_paid_check/)
+  await record({ paidOn: "2026-10-03", fileId: signed.id })
+  assert.equal((await db.query("select fee_paid_on::text from land_contract_amendments where id = $1", [penalty.id])).rows[0].fee_paid_on, "2026-10-03")
+  await assert.rejects(record({ paidOn: "2026-10-04", fileId: signed.id }), /kept as recorded/)
+  await assert.rejects(db.query("update land_contract_amendments set fee_cents = 1 where id = $1", [penalty.id]), /kept as recorded/)
+})

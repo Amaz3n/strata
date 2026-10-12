@@ -2,6 +2,7 @@ const assert = require("node:assert/strict")
 const test = require("node:test")
 
 const { createServiceHarness, id, ORG } = require("./support/service")
+const { landClosingRpc } = require("./support/land-closing")
 const { freshRequire } = require("./support/modules")
 
 const { closeLotTakedown, createCommunity, createLotTakedown, getCommunityIdentity, sweepTakedownReminders, updateCommunity, updateLotTakedown } = freshRequire("lib/services/communities.ts")
@@ -28,10 +29,11 @@ function community(communityId, overrides = {}) {
   }
 }
 
-function harness({ permissions = ["community.read"], divisions, tables = {} } = {}) {
+function harness({ permissions = ["community.read"], divisions, tables = {}, rpc } = {}) {
   return createServiceHarness({
     permissions,
     divisions,
+    rpc,
     tables: {
       communities: [
         community(NORTH_COMMUNITY),
@@ -97,6 +99,7 @@ const LAND_WRITER = ["community.read", "community.write", "lot.write"]
 function takedownHarness({ contractStatus = "executed", deposits = [], lots = [], books = [], landOpportunityId = null, reviews = [], deals = [], permissions = LAND_WRITER } = {}) {
   return harness({
     permissions,
+    rpc: landClosingRpc(),
     tables: {
       land_opportunities: deals,
       land_acquisition_reviews: reviews.map((review, index) => ({ id: id(450 + index), org_id: ORG, land_opportunity_id: DEAL, ...review })),
@@ -250,4 +253,21 @@ test("land money coming due is announced once per threshold: the takedown net of
   service.db.land_contract_deposits[0].contract = { ...contract, metadata: service.db.land_contracts[0].metadata }
   service.db.land_contract_amendments[0].contract = { ...contract, metadata: service.db.land_contracts[0].metadata }
   assert.deepEqual(await service.run(() => sweepTakedownReminders()), { announced: 0 })
+})
+
+test("a takedown is closed only by its closing, and a closed one stays closed", async () => {
+  const service = takedownHarness({ lots: [{ status: "controlled" }] })
+  await assert.rejects(service.run(() => updateLotTakedown(TAKEDOWN, { status: "closed", actualDate: "2026-12-01" })), /Close a takedown with its actual date/)
+  assert.deepEqual(service.writes(), [])
+  await close(service)
+  await assert.rejects(service.run(() => updateLotTakedown(TAKEDOWN, { status: "scheduled" })), /stays closed/)
+})
+
+test("cancelling a takedown under a signed contract takes land_contract.write", async () => {
+  const service = takedownHarness()
+  await assert.rejects(service.run(() => updateLotTakedown(TAKEDOWN, { status: "cancelled" })), /land_contract.write/)
+  assert.deepEqual(service.writes(), [])
+
+  const landWriter = takedownHarness({ permissions: [...LAND_WRITER, "land_contract.write"] })
+  assert.equal((await landWriter.run(() => updateLotTakedown(TAKEDOWN, { status: "cancelled" }))).status, "cancelled")
 })

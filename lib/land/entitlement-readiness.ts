@@ -195,6 +195,21 @@ export function entitlementBlockers(input: {
   })
 }
 
+/**
+ * What is due before a home closes, for a lot in `phaseId`: only items whose own
+ * milestone is closing (earlier ones are the delivery and start gates' to
+ * report). Display only -- nothing here gates a closing. Same order as
+ * `entitlementBlockers`: overdue first.
+ */
+export function closingBlockers(input: {
+  entitlements: ReadonlyArray<EntitlementFact>
+  conditions: ReadonlyArray<ConditionFact>
+  phaseId: string | null
+  today: string
+}): EntitlementBlocker[] {
+  return entitlementBlockers({ ...input, through: "closing" }).filter((blocker) => blocker.requiredBefore === "closing")
+}
+
 export interface PhaseReadiness {
   phaseId: string | null
   /** What holds lot delivery in this phase. */

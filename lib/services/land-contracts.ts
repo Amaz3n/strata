@@ -8,6 +8,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { z } from "zod"
 import {
   landAmendmentSchema,
   landContractCloseOutSchema,
@@ -18,9 +19,10 @@ import {
   landDepositPaymentSchema,
   landDepositSettlementSchema,
   landExtensionSchema,
+  landFeePaymentSchema,
   type LAND_AMENDMENT_KINDS,
   type LAND_CONTRACT_KINDS,
-  type LAND_CONTRACT_STATUSES,
+  LAND_CONTRACT_STATUSES,
   type LAND_DEPOSIT_REFUNDABILITY,
   type LAND_DEPOSIT_STATUSES,
   type LandAmendmentInput,
@@ -59,6 +61,9 @@ export interface LandAmendmentDTO {
   evidenceFileId: string
   recordedBy: string
   recordedAt: string
+  /** When the fee was paid; null while it is owed (or when there is no fee). */
+  feePaidOn: string | null
+  feeEvidenceFileId: string | null
 }
 
 export interface LandContractDTO {
@@ -125,6 +130,8 @@ type AmendmentRow = {
   evidence_file_id: string
   recorded_by: string
   recorded_at: string
+  fee_paid_on: string | null
+  fee_evidence_file_id: string | null
 }
 
 const CONTRACT_SELECT =
@@ -132,7 +139,7 @@ const CONTRACT_SELECT =
 const DEPOSIT_SELECT =
   "id, land_contract_id, takedown_id, label, due_on, amount_cents, refundability, refundable_until, status, paid_on, payment_reference, evidence_file_id"
 const AMENDMENT_SELECT =
-  "id, land_contract_id, takedown_id, kind, from_date, to_date, fee_cents, due_on, reason, evidence_file_id, recorded_by, recorded_at"
+  "id, land_contract_id, takedown_id, kind, from_date, to_date, fee_cents, due_on, reason, evidence_file_id, recorded_by, recorded_at, fee_paid_on, fee_evidence_file_id"
 
 /**
  * A ceiling on one community's contract records, not a page size. A community
@@ -142,6 +149,16 @@ const AMENDMENT_SELECT =
 const CONTRACT_RECORD_CAP = 2_000
 /** The cash plan reads every open obligation in scope; past this it refuses rather than forecasting from part. */
 const OBLIGATION_ROW_CAP = 50_000
+/** Contracts whose obligations are still to come. */
+const OPEN_CONTRACT_STATUSES: Array<LandContractDTO["status"]> = ["draft", "executed"]
+
+/** A takedown with no contract, or under one that is still open. */
+function contractIsOpen(relation: unknown) {
+  const row = Array.isArray(relation) ? relation[0] : relation
+  if (!row || typeof row !== "object") return true
+  const status = Reflect.get(row, "status")
+  return typeof status === "string" && OPEN_CONTRACT_STATUSES.some((open) => open === status)
+}
 
 function mapDeposit(row: DepositRow): LandDepositDTO {
   return {
@@ -174,6 +191,8 @@ function mapAmendment(row: AmendmentRow): LandAmendmentDTO {
     evidenceFileId: row.evidence_file_id,
     recordedBy: row.recorded_by,
     recordedAt: row.recorded_at,
+    feePaidOn: row.fee_paid_on,
+    feeEvidenceFileId: row.fee_evidence_file_id,
   }
 }
 
@@ -231,7 +250,7 @@ async function contractForWrite(contractId: string, orgId?: string) {
     .eq("id", contractId)
     .maybeSingle()
   if (error || !data) throw new Error("Land contract not found")
-  const contract = data as ContractRow
+  const contract: ContractRow = data
   await requireCommunityScope(contract.community_id, context)
   return { context, contract }
 }
@@ -249,7 +268,8 @@ async function depositForWrite(depositId: string, orgId?: string) {
   const relation = Array.isArray(data.contract) ? data.contract[0] : data.contract
   if (!relation) throw new Error("Deposit not found")
   await requireCommunityScope(String(relation.community_id), context)
-  return { context, deposit: data as DepositRow, contractStatus: String(relation.status) as LandContractDTO["status"] }
+  const deposit: DepositRow = data
+  return { context, deposit, contractStatus: z.enum(LAND_CONTRACT_STATUSES).parse(relation.status) }
 }
 
 function contractPayload(parsed: Partial<LandContractInput>) {
@@ -354,13 +374,29 @@ export async function executeLandContract(contractId: string, input: { executedO
   })
 }
 
+const closeOutResultSchema = z.object({ cancelled_deposit_ids: z.array(z.string().uuid()), cancelled_takedown_ids: z.array(z.string().uuid()) })
+
+/**
+ * End an executed contract. Terminating it ends what it still called for: its
+ * unpaid deposits are cancelled and its scheduled takedowns cancelled, in the
+ * same transaction as the status (`close_out_land_contract`), so the cash plan
+ * and the reminders stop carrying an obligation nobody owes.
+ */
 export async function closeOutLandContract(contractId: string, input: { status: "terminated" | "completed" }, orgId?: string): Promise<void> {
   const parsed = landContractCloseOutSchema.parse(input)
   const { context, contract } = await contractForWrite(contractId, orgId)
   if (contract.status !== "executed") throw new Error("Only an executed land contract is terminated or completed.")
-  const { error } = await context.supabase.from("land_contracts").update({ status: parsed.status }).eq("org_id", context.orgId).eq("id", contractId)
+  const { data, error } = await createServiceSupabaseClient().rpc("close_out_land_contract", { p_org_id: context.orgId, p_contract_id: contractId, p_status: parsed.status, p_actor_id: context.userId })
   if (error) throw new Error(`Failed to close out the land contract: ${error.message}`)
-  await logContractMutation(context, { eventType: `land_contract.${parsed.status}`, contractId, action: "update", before: { status: contract.status }, after: { status: parsed.status }, payload: { community_id: contract.community_id, title: contract.title } })
+  const ended = closeOutResultSchema.parse(data)
+  await logContractMutation(context, {
+    eventType: `land_contract.${parsed.status}`,
+    contractId,
+    action: "update",
+    before: { status: contract.status },
+    after: { status: parsed.status, cancelled_deposit_ids: ended.cancelled_deposit_ids, cancelled_takedown_ids: ended.cancelled_takedown_ids },
+    payload: { community_id: contract.community_id, title: contract.title, cancelled_deposits: ended.cancelled_deposit_ids.length, cancelled_takedowns: ended.cancelled_takedown_ids.length },
+  })
 }
 
 /** Deposits are scheduled while the contract is a draft: the schedule is a signed term. */
@@ -488,6 +524,43 @@ export async function recordLandContractExtension(input: LandExtensionInput, org
   return { id: amendmentId }
 }
 
+/** An extension or penalty fee paid to the seller, with its receipt. Recorded once. */
+export async function recordLandContractFeePayment(amendmentId: string, input: { paidOn: string; evidenceFileId: string }, orgId?: string): Promise<void> {
+  const parsed = landFeePaymentSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("land_contract.write", context)
+  const { data: amendment, error: readError } = await context.supabase
+    .from("land_contract_amendments")
+    .select("id, land_contract_id, fee_cents, fee_paid_on, contract:land_contracts!inner(community_id)")
+    .eq("org_id", context.orgId)
+    .eq("id", amendmentId)
+    .maybeSingle()
+  if (readError || !amendment) throw new Error("Amendment not found")
+  const relation = Array.isArray(amendment.contract) ? amendment.contract[0] : amendment.contract
+  if (!relation) throw new Error("Amendment not found")
+  await requireCommunityScope(String(relation.community_id), context)
+  if (Number(amendment.fee_cents) <= 0) throw new Error("This amendment carries no fee.")
+  if (amendment.fee_paid_on) throw new Error("This fee is already recorded as paid.")
+  const { data, error } = await context.supabase
+    .from("land_contract_amendments")
+    .update({ fee_paid_on: parsed.paidOn, fee_evidence_file_id: parsed.evidenceFileId })
+    .eq("org_id", context.orgId)
+    .eq("id", amendmentId)
+    .is("fee_paid_on", null)
+    .select("id")
+    .maybeSingle()
+  if (error) throw new Error(`Failed to record the fee payment: ${error.message}`)
+  if (!data) throw new Error("This fee is already recorded as paid.")
+  await logContractMutation(context, {
+    eventType: "land_contract.fee_paid",
+    contractId: String(amendment.land_contract_id),
+    action: "update",
+    before: { amendment_id: amendmentId, fee_paid_on: null },
+    after: { amendment_id: amendmentId, fee_paid_on: parsed.paidOn, fee_evidence_file_id: parsed.evidenceFileId },
+    payload: { amendment_id: amendmentId, fee_cents: Number(amendment.fee_cents), paid_on: parsed.paidOn },
+  })
+}
+
 /** A penalty or other change after signing, with its reason and the signed evidence. */
 export async function recordLandContractAmendment(contractId: string, input: LandAmendmentInput, orgId?: string): Promise<{ id: string }> {
   const parsed = landAmendmentSchema.parse(input)
@@ -521,14 +594,15 @@ export interface LandObligationRows {
 
 /**
  * The open land obligations behind the cash plan: scheduled takedowns, every
- * deposit tied to a takedown or still to be paid, and fees not yet due — read
- * to the end. `communityIds` null means the whole org; the caller has already
- * decided the scope.
+ * deposit tied to a takedown or still to be paid, and fees not yet paid — read
+ * to the end. Only draft and executed contracts call for cash: a terminated or
+ * completed contract's obligations are over. `communityIds` null means the
+ * whole org; the caller has already decided the scope.
  */
 export async function loadLandObligationRows(
   supabase: SupabaseClient,
   orgId: string,
-  { communityIds, today }: { communityIds: string[] | null; today: string },
+  { communityIds }: { communityIds: string[] | null },
 ): Promise<LandObligationRows> {
   if (communityIds?.length === 0) return { takedowns: [], deposits: [], fees: [] }
   const relation = (value: unknown) => {
@@ -536,9 +610,9 @@ export async function loadLandObligationRows(
     return row && typeof row === "object" ? String(Reflect.get(row, "community_id") ?? "") : ""
   }
   const [takedowns, deposits, fees] = await Promise.all([
-    readAllRows<{ id: string; community_id: string; name: string; scheduled_date: string | null; lot_count: number; price_per_lot_cents: number | null; status: TakedownCashInput["status"] }>(
+    readAllRows<{ id: string; community_id: string; name: string; scheduled_date: string | null; lot_count: number; price_per_lot_cents: number | null; status: TakedownCashInput["status"]; contract: unknown }>(
       (from, to) => {
-        let query = supabase.from("lot_takedowns").select("id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, status")
+        let query = supabase.from("lot_takedowns").select("id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, status, contract:land_contracts(status)")
           .eq("org_id", orgId).eq("status", "scheduled")
         if (communityIds) query = query.in("community_id", communityIds)
         return query.order("id").range(from, to)
@@ -550,7 +624,7 @@ export async function loadLandObligationRows(
     readAllRows<{ id: string; takedown_id: string | null; due_on: string; amount_cents: number; status: LandDepositCashInput["status"]; contract: unknown }>(
       (from, to) => {
         let query = supabase.from("land_contract_deposits").select("id, takedown_id, due_on, amount_cents, status, contract:land_contracts!inner(community_id)")
-          .eq("org_id", orgId).in("status", ["scheduled", "paid", "applied"])
+          .eq("org_id", orgId).in("status", ["scheduled", "paid", "applied"]).in("contract.status", OPEN_CONTRACT_STATUSES)
         if (communityIds) query = query.in("contract.community_id", communityIds)
         return query.order("id").range(from, to)
       },
@@ -559,7 +633,7 @@ export async function loadLandObligationRows(
     readAllRows<{ id: string; due_on: string | null; fee_cents: number; contract: unknown }>(
       (from, to) => {
         let query = supabase.from("land_contract_amendments").select("id, due_on, fee_cents, contract:land_contracts!inner(community_id)")
-          .eq("org_id", orgId).gt("fee_cents", 0).gte("due_on", today)
+          .eq("org_id", orgId).gt("fee_cents", 0).is("fee_paid_on", null).in("contract.status", OPEN_CONTRACT_STATUSES)
         if (communityIds) query = query.in("contract.community_id", communityIds)
         return query.order("id").range(from, to)
       },
@@ -570,7 +644,7 @@ export async function loadLandObligationRows(
     throw new Error("Land obligations in this scope exceed the supported limit")
   }
   return {
-    takedowns: takedowns.rows.map((row) => ({
+    takedowns: takedowns.rows.filter((row) => contractIsOpen(row.contract)).map((row) => ({
       id: row.id,
       communityId: row.community_id,
       name: row.name,

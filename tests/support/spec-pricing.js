@@ -1,14 +1,14 @@
 "use strict"
 
 /**
- * Fakes of the two SQL functions behind a spec home's price and incentive moves
- * (supabase/migrations/20261012130000_spec_price_approvals_and_dispositions.sql),
+ * Fakes of the two service-role SQL functions behind a spec home's price and
+ * incentive moves (supabase/migrations/20261012170000_ep04_review_fixes.sql),
  * for the service harness's `rpc` option. They do what the functions do to the
  * rows a service reads back — write the move, set the lot's price, refuse a lot
  * that changed — and nothing else: the guards and policies are proven against
  * the real functions in tests/spec-dispositions-db.test.js.
  *
- *   createServiceHarness({ tables, rpc: specPricingRpc(ACTOR) })
+ *   createServiceHarness({ tables, rpc: specPricingRpc() })
  */
 
 const { randomUUID } = require("node:crypto")
@@ -17,7 +17,7 @@ function refuse(message) {
   return { data: null, error: { message } }
 }
 
-function specPricingRpc(userId) {
+function specPricingRpc() {
   return {
     record_spec_price_move(args, store) {
       const lot = (store.lots ?? []).find((row) => row.id === args.p_lot_id && row.org_id === args.p_org_id)
@@ -41,7 +41,7 @@ function specPricingRpc(userId) {
         reason: args.p_reason,
         required_permission: args.p_required_permission,
         status: args.p_apply ? "applied" : "proposed",
-        proposed_by: userId,
+        proposed_by: args.p_actor_id,
         proposed_at: new Date().toISOString(),
         decided_by: null,
         decided_at: null,
@@ -58,7 +58,7 @@ function specPricingRpc(userId) {
       }
       Object.assign(proposal, {
         status: args.p_approve ? "approved" : "rejected",
-        decided_by: userId,
+        decided_by: args.p_actor_id,
         decided_at: new Date().toISOString(),
         decision_note: args.p_note,
       })

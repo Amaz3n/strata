@@ -41,11 +41,10 @@ const RESERVATION = id(9)
 
 const today = new Date().toISOString().slice(0, 10)
 
-function harness({ permissions = ["sales.manage"], userId = ACTOR, carryingCents = 0, disposition, impairments = [], contracts = [], reservations = [], project = {}, books = [] } = {}) {
+function harness({ permissions = ["sales.manage"], userId = ACTOR, disposition, impairments = [], contracts = [], reservations = [], project = {}, books = [] } = {}) {
   return createServiceHarness({
     permissions,
     userId,
-    rpc: { books_home_carrying_cents: () => ({ data: carryingCents, error: null }) },
     tables: {
       communities: [{ id: COMMUNITY, org_id: ORG }],
       lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, project_id: HOME, status: "started", updated_at: "2026-10-01T00:00:00+00:00" }],
@@ -109,11 +108,15 @@ describe("selling a spec off", () => {
   const propose = (service, patch = {}) =>
     service.run(() => proposeSpecDisposition({ lotId: LOT, kind: "investor_sale", counterpartyContactId: BUYER, counterpartyCompanyId: null, priceCents: 300_000_00, reason: "Standing 240 days after two price cuts", ...patch }))
 
-  test("a proposal captures what Books carries for the home", async () => {
-    const service = harness({ carryingCents: 320_000_00 })
+  test("a proposal never names its own carrying cost: the database records what Books carries", async () => {
+    const service = harness()
+    // The database's insert trigger sets carrying_cents from Books (proven in spec-dispositions-db).
+    service.tamper("spec_dispositions", (result) => ({ ...result, data: { ...result.data, carrying_cents: 320_000_00 } }), { on: "insert" })
     const result = await propose(service)
     assert.equal(result.status, "proposed")
-    assert.equal(service.db.spec_dispositions[0].carrying_cents, 320_000_00)
+    assert.equal(result.carryingCents, 320_000_00)
+    const [insert] = service.writes().filter((write) => write.table === "spec_dispositions")
+    assert.equal("carrying_cents" in insert.payload, false)
     assert.equal(service.db.spec_dispositions[0].proposed_by, ACTOR)
   })
 

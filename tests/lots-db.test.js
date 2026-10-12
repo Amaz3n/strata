@@ -231,3 +231,49 @@ test("a release is one transition: the second finds nothing, an open agreement m
   await assert.rejects(release(reservation.id), /Live reservation not found/)
   assert.equal((await db.query("select client_id from projects where id = $1", [homeId])).rows[0].client_id, null)
 })
+
+// ---------------------------------------------------------------------------
+// Member writes (20261012170000): what the services fence, the database fences.
+
+test("a started or closed lot moves back only for a member holding community.write, the force path's authority", async (t) => {
+  const { db, orgId, ownerId, lot, home } = await sales(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const as = (userId, sql, args) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+  const started = await lot({ status: "started", project_id: await home() })
+  const closed = await lot({ status: "closed", project_id: await home() })
+
+  for (const row of [started, closed]) {
+    await assert.rejects(as(field, "update lots set status = 'owned' where id = $1", [row.id]), /is a reversal/)
+  }
+  await assert.rejects(as(field, "update lots set project_id = null, status = 'assigned' where id = $1", [started.id]), /is a reversal/)
+  assert.equal((await db.query("select status from lots where id = $1", [started.id])).rows[0].status, "started")
+
+  await as(ownerId, "update lots set status = 'owned' where id = $1", [started.id])
+  assert.equal((await db.query("select status from lots where id = $1", [started.id])).rows[0].status, "owned")
+})
+
+test("a reservation keeps its buyer and lot, moves only along its lifecycle, and is never moved or deleted by a direct member write", async (t) => {
+  const { db, orgId, ownerId, lot, buyer, home, hold } = await sales(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const as = (userId, sql, args) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+  const [alma, bao] = [await buyer("Alma"), await buyer("Bao")]
+  const row = await lot({ status: "developed" })
+  const live = await hold(row, bao)
+
+  // The reviewer's case: a member rewrites a live hold to another buyer and calls it sold.
+  await assert.rejects(as(field, "update lot_reservations set buyer_contact_id = $2, status = 'converted' where id = $1", [live.id, alma]), /stays with its buyer and lot/)
+  await assert.rejects(as(ownerId, "update lot_reservations set status = 'released' where id = $1", [live.id]), /through the sales flow/)
+  await assert.rejects(as(field, "delete from lot_reservations where id = $1", [live.id]), /permission denied/)
+  // A member may still annotate a hold.
+  await as(field, "update lot_reservations set notes = 'Asked about the corner lot' where id = $1", [live.id])
+
+  // Whoever writes it, a hold never jumps to a sale, and a released one stays released.
+  await assert.rejects(db.query("update lot_reservations set status = 'converted' where id = $1", [live.id]), /cannot move from hold to converted/)
+  // A reservation becoming a sale belongs to the buyer whose home stands on the lot.
+  await db.exec("alter table lots disable trigger lots_home_reservation_guard")
+  await db.query("update lots set project_id = $2, status = 'started' where id = $1", [row.id, await home(alma)])
+  await db.exec("alter table lots enable trigger lots_home_reservation_guard")
+  await assert.rejects(db.query("update lot_reservations set status = 'reserved' where id = $1", [live.id]), /home belongs to another buyer/)
+  await db.query("update lot_reservations set status = 'released', released_at = now() where id = $1", [live.id])
+  await assert.rejects(db.query("update lot_reservations set status = 'hold' where id = $1", [live.id]), /cannot move from released to hold/)
+})

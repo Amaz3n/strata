@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { cache } from "react"
+import { z } from "zod"
 
 import { hasApprovedAcquisition } from "@/lib/land/diligence"
 import { readSetbacks, type Setbacks } from "@/lib/land/lot-dimensions"
@@ -702,6 +703,12 @@ async function takedownContractStatus(context: Awaited<ReturnType<typeof require
  * A takedown under an executed land contract keeps its signed lot count and
  * price, and its close date moves only by a recorded extension
  * (`recordLandContractExtension`). The database holds the same line.
+ *
+ * A takedown closes only through `closeLotTakedown` and a closed one stays
+ * closed. Cancelling (or restoring) one under a signed contract or from a land
+ * deal is a land decision: the database refuses a member's direct status write
+ * there, so after these checks the row is written as the system — and under a
+ * signed contract it also takes land_contract.write.
  */
 export async function updateLotTakedown(id: string, input: Partial<TakedownInput>, orgId?: string): Promise<LotTakedownDTO> {
   const parsed = takedownUpdateSchema.parse(input)
@@ -713,13 +720,20 @@ export async function updateLotTakedown(id: string, input: Partial<TakedownInput
   if (parsed.landOpportunityId && parsed.landOpportunityId !== before.land_opportunity_id) {
     await requireLinkableLandDeal(context, before.community_id, parsed.landOpportunityId)
   }
-  if ((await takedownContractStatus(context, before.land_contract_id)) === "executed") {
+  const contractStatus = await takedownContractStatus(context, before.land_contract_id)
+  const statusChanges = parsed.status !== undefined && parsed.status !== before.status
+  if (statusChanges && parsed.status === "closed") throw new Error("Close a takedown with its actual date; closing applies its deposits and acquires its lots.")
+  if (statusChanges && before.status === "closed") throw new Error("A closed takedown stays closed.")
+  const landDecision = statusChanges && ((contractStatus !== null && contractStatus !== "draft") || Boolean(before.land_opportunity_id))
+  if (landDecision && contractStatus !== null && contractStatus !== "draft") await requirePermission("land_contract.write", context)
+  if (contractStatus === "executed") {
     const changes = (value: unknown, current: unknown) => value !== undefined && value !== current
     if (changes(parsed.scheduledDate, before.scheduled_date)) throw new Error("This takedown is under an executed land contract. Record an extension with the signed evidence to move its close date.")
     if (changes(parsed.lotCount, before.lot_count) || changes(parsed.pricePerLotCents, before.price_per_lot_cents)) throw new Error("The lot count and price of a takedown under an executed land contract are signed terms. Record an amendment.")
     if (changes(parsed.landContractId, before.land_contract_id)) throw new Error("A takedown cannot move out of an executed land contract.")
   }
-  const { data, error } = await context.supabase.from("lot_takedowns").update(takedownPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(TAKEDOWN_SELECT).single()
+  const writer = landDecision ? createServiceSupabaseClient() : context.supabase
+  const { data, error } = await writer.from("lot_takedowns").update(takedownPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(TAKEDOWN_SELECT).single()
   if (error) throw new Error(`Failed to update takedown: ${error.message}`)
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot_takedown.updated", entityType: "lot_takedown", entityId: id, action: "update", before, after: data, payload: { community_id: data.community_id, name: data.name } })
   return mapTakedown(data as TakedownRow)
@@ -745,29 +759,34 @@ async function assertTakedownAcquisitionApproved(orgId: string, landOpportunityI
   }
 }
 
+const takedownClosingSchema = z.object({ lot_ids: z.array(z.string().uuid()), applied_deposit_cents: z.coerce.number().int() })
+
 /**
- * Settle a land tranche: the takedown closes and every lot it controls becomes
- * owned.
+ * Settle a land tranche: the takedown closes, the paid deposits credited
+ * against it are applied, and every lot it controls becomes owned — in one
+ * database transaction (`close_lot_takedown`), so a failure never leaves a
+ * closed takedown with its deposits still paid or its lots still controlled.
  *
- * The lot half goes through `assertLotStatusTransition` like every other status
- * change — closing a tranche used to write `status: 'owned'` straight past the
- * lifecycle — and leaves the same trail a bulk lot edit leaves: one status event
- * and one audit row naming every lot moved. Validating in the pure state machine
- * and writing once keeps a forty-lot tranche one round trip rather than forty.
+ * The lot half answers to `assertLotStatusTransition` like every other status
+ * change, and leaves the trail a bulk lot edit leaves: one status event and one
+ * audit row naming every lot moved. The database repeats the gates that are
+ * facts about the land (signed contract, paid deposits, approved acquisition).
  */
 export async function closeLotTakedown(id: string, { actualDate }: { actualDate: string }, orgId?: string): Promise<LotTakedownDTO> {
   const parsedDate = takedownUpdateSchema.pick({ actualDate: true }).parse({ actualDate }).actualDate
+  if (!parsedDate) throw new Error("A takedown closes on its actual date.")
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
   await requirePermission("lot.write", context)
   const { data: takedown, error: takedownError } = await context.supabase
     .from("lot_takedowns")
-    .select("community_id, land_contract_id, land_opportunity_id")
+    .select("community_id, status, land_contract_id, land_opportunity_id")
     .eq("org_id", context.orgId)
     .eq("id", id)
     .maybeSingle()
   if (takedownError || !takedown) throw new Error("Lot takedown not found")
   await requireCommunityScope(takedown.community_id, context)
+  if (takedown.status !== "scheduled") throw new Error("Only a scheduled takedown is closed.")
   await assertTakedownAcquisitionApproved(context.orgId, takedown.land_opportunity_id)
 
   // A tranche under a contract closes only once the contract is signed, and
@@ -777,13 +796,13 @@ export async function closeLotTakedown(id: string, { actualDate }: { actualDate:
   if (contractStatus !== null && contractStatus !== "executed") throw new Error("Execute this takedown's land contract before closing it.")
   const { data: credited, error: creditedError } = await context.supabase
     .from("land_contract_deposits")
-    .select("id, status, amount_cents")
+    .select("id")
     .eq("org_id", context.orgId)
     .eq("takedown_id", id)
-    .in("status", ["scheduled", "paid"])
+    .eq("status", "scheduled")
+    .limit(1)
   if (creditedError) throw new Error(`Failed to load the takedown's deposits: ${creditedError.message}`)
-  const deposits = (credited ?? []) as Array<{ id: string; status: "scheduled" | "paid"; amount_cents: number }>
-  if (deposits.some((deposit) => deposit.status === "scheduled")) throw new Error("Record the payment of every deposit credited against this takedown before closing it.")
+  if ((credited ?? []).length > 0) throw new Error("Record the payment of every deposit credited against this takedown before closing it.")
 
   const { data: linked, error: linkedError } = await context.supabase
     .from("lots")
@@ -792,42 +811,34 @@ export async function closeLotTakedown(id: string, { actualDate }: { actualDate:
     .eq("takedown_id", id)
     .eq("status", "controlled")
   if (linkedError) throw new Error(`Failed to load the takedown's lots: ${linkedError.message}`)
-  const advancing = (linked ?? []) as Array<{ id: string; status: LotStatus; project_id: string | null }>
+  const advancing: Array<{ id: string; status: LotStatus; project_id: string | null }> = linked ?? []
   for (const lot of advancing) {
     assertLotStatusTransition({ from: lot.status, to: "owned", hasProject: Boolean(lot.project_id) })
   }
 
-  const { data: books, error: booksError } = await createServiceSupabaseClient().from("books_settings").select("workspace_enabled,arc_ledger_mode").eq("org_id", context.orgId).maybeSingle()
+  const service = createServiceSupabaseClient()
+  const { data: books, error: booksError } = await service.from("books_settings").select("workspace_enabled,arc_ledger_mode").eq("org_id", context.orgId).maybeSingle()
   if (booksError) throw new Error(`Failed to verify land accounting posture: ${booksError.message}`)
   if (books?.workspace_enabled && books.arc_ledger_mode !== "disabled" && advancing.length > 0) throw new Error("Record the actual land acquisition and funding in Books before closing this takedown. Expected lot prices are not settlement evidence.")
-  const closed = await updateLotTakedown(id, { status: "closed", actualDate: parsedDate }, context.orgId)
 
-  if (deposits.length > 0) {
-    const { error } = await context.supabase
-      .from("land_contract_deposits")
-      .update({ status: "applied" })
-      .eq("org_id", context.orgId)
-      .eq("takedown_id", id)
-      .eq("status", "paid")
-    if (error) throw new Error(`Takedown closed, but its paid deposits could not be applied: ${error.message}`)
+  const { data: result, error: closeError } = await service.rpc("close_lot_takedown", { p_org_id: context.orgId, p_takedown_id: id, p_actual_date: parsedDate, p_actor_id: context.userId })
+  if (closeError) throw new Error(closeError.message)
+  const closing = takedownClosingSchema.parse(result)
+  const { data: closed, error: closedError } = await context.supabase.from("lot_takedowns").select(TAKEDOWN_SELECT).eq("org_id", context.orgId).eq("id", id).single()
+  if (closedError || !closed) throw new Error(`Takedown closed, but it could not be read back: ${closedError?.message ?? "not found"}`)
+  const dto = mapTakedown(closed)
+
+  const writes: Array<Promise<unknown>> = [
+    logMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot_takedown.closed", entityType: "lot_takedown", entityId: id, action: "update", before: { status: takedown.status }, after: { status: "closed", actual_date: parsedDate }, payload: { community_id: dto.communityId, actual_date: parsedDate, lot_count: closing.lot_ids.length, applied_deposit_cents: closing.applied_deposit_cents } }),
+  ]
+  if (closing.lot_ids.length > 0) {
+    writes.push(
+      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot.status_changed", entityType: "lot", entityId: closing.lot_ids[0], payload: { community_id: dto.communityId, from: "controlled", to: "owned", count: closing.lot_ids.length, takedown_id: id } }),
+      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: closing.lot_ids[0], before: { lots: advancing }, after: { lot_ids: closing.lot_ids, status: "owned", acquired_date: parsedDate, takedown_id: id } }),
+    )
   }
-
-  if (advancing.length > 0) {
-    const lotIds = advancing.map((lot) => lot.id)
-    const { error } = await context.supabase
-      .from("lots")
-      .update({ status: "owned", acquired_date: parsedDate })
-      .eq("org_id", context.orgId)
-      .in("id", lotIds)
-    if (error) throw new Error(`Takedown closed, but linked lots could not be advanced: ${error.message}`)
-    await Promise.all([
-      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot.status_changed", entityType: "lot", entityId: lotIds[0], payload: { community_id: closed.communityId, from: "controlled", to: "owned", count: lotIds.length, takedown_id: id } }),
-      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: lotIds[0], before: { lots: advancing }, after: { lot_ids: lotIds, status: "owned", acquired_date: parsedDate, takedown_id: id } }),
-    ])
-  }
-
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_takedown.closed", entityType: "lot_takedown", entityId: id, payload: { community_id: closed.communityId, actual_date: parsedDate, lot_count: advancing.length, applied_deposit_cents: deposits.reduce((sum, deposit) => sum + Number(deposit.amount_cents), 0) } })
-  return closed
+  await Promise.all(writes)
+  return dto
 }
 
 /**
@@ -897,6 +908,7 @@ export async function sweepTakedownReminders(): Promise<{ announced: number }> {
       .from("land_contract_amendments")
       .select("id, org_id, land_contract_id, kind, fee_cents, due_on, contract:land_contracts!inner(community_id, title, metadata)")
       .gt("fee_cents", 0)
+      .is("fee_paid_on", null)
       .gte("due_on", todayIso)
       .lte("due_on", horizonIso)
       .order("due_on", { ascending: true })

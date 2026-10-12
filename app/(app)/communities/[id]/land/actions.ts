@@ -14,6 +14,7 @@ import {
   recordLandContractAmendment,
   recordLandContractDepositPayment,
   recordLandContractExtension,
+  recordLandContractFeePayment,
   removeLandContractDeposit,
   scheduleLandContractDeposit,
   settleLandContractDeposit,
@@ -29,6 +30,7 @@ import {
   landDepositPaymentSchema,
   landDepositSettlementSchema,
   landExtensionSchema,
+  landFeePaymentSchema,
   phaseDevelopmentLinkSchema,
 } from "@/lib/validation/land-contracts"
 
@@ -77,6 +79,10 @@ export async function recordLandContractDepositPaymentAction(communityId: string
 
 export async function settleLandContractDepositAction(communityId: string, depositId: string, input: unknown) {
   return run(communityId, () => settleLandContractDeposit(uuid.parse(depositId), landDepositSettlementSchema.parse(input)))
+}
+
+export async function recordLandContractFeePaymentAction(communityId: string, amendmentId: string, input: unknown) {
+  return run(communityId, () => recordLandContractFeePayment(uuid.parse(amendmentId), landFeePaymentSchema.parse(input)))
 }
 
 export async function recordLandContractExtensionAction(communityId: string, input: unknown) {

@@ -12,6 +12,7 @@ import {
   recordLandContractAmendmentAction,
   recordLandContractDepositPaymentAction,
   recordLandContractExtensionAction,
+  recordLandContractFeePaymentAction,
   removeLandContractDepositAction,
   scheduleLandContractDepositAction,
   searchLandSellersAction,
@@ -32,7 +33,7 @@ import { unwrapAction } from "@/lib/action-result"
 import { parseMoneyToCents } from "@/lib/financials/money-input"
 import type { LotTakedownDTO } from "@/lib/services/communities"
 import { uploadDocumentFileDirect } from "@/lib/services/files-client"
-import type { LandContractDTO, LandDepositDTO } from "@/lib/services/land-contracts"
+import type { LandAmendmentDTO, LandContractDTO, LandDepositDTO } from "@/lib/services/land-contracts"
 import { cn } from "@/lib/utils"
 import {
   LAND_AMENDMENT_KIND_LABELS,
@@ -64,6 +65,7 @@ const DEPOSIT_TONE: Record<LandDepositDTO["status"], string> = {
   applied: "border-primary/30 bg-primary/10 text-primary",
   refunded: "border-border bg-secondary text-secondary-foreground",
   forfeited: "border-destructive/30 bg-destructive/10 text-destructive",
+  cancelled: "border-border bg-muted text-muted-foreground",
 }
 
 function Chip({ tone, children }: { tone: string; children: ReactNode }) {
@@ -85,7 +87,7 @@ function contractPosition(contract: LandContractDTO, takedowns: LotTakedownDTO[]
   const nextDue = [
     ...scheduled.map((deposit) => deposit.dueOn),
     ...under.filter((takedown) => takedown.status === "scheduled" && takedown.scheduledDate).map((takedown) => takedown.scheduledDate as string),
-    ...contract.amendments.filter((amendment) => amendment.feeCents > 0 && amendment.dueOn && amendment.dueOn >= today()).map((amendment) => amendment.dueOn as string),
+    ...contract.amendments.filter((amendment) => amendment.feeCents > 0 && amendment.dueOn && !amendment.feePaidOn).map((amendment) => amendment.dueOn as string),
   ].sort()[0] ?? null
   return {
     scheduledCents: scheduled.reduce((sum, deposit) => sum + deposit.amountCents, 0),
@@ -296,6 +298,7 @@ type SheetAction =
   | { kind: "execute" }
   | { kind: "deposit" }
   | { kind: "pay"; deposit: LandDepositDTO }
+  | { kind: "payFee"; amendment: LandAmendmentDTO }
   | { kind: "extend" }
   | { kind: "amend" }
 
@@ -474,8 +477,17 @@ function ContractSheet({
                       <span className="font-medium">{LAND_AMENDMENT_KIND_LABELS[amendment.kind]}</span>
                       {amendment.takedownId ? <span className="text-muted-foreground">{takedownName.get(amendment.takedownId) ?? "Takedown"}</span> : null}
                       {amendment.fromDate && amendment.toDate ? <span className="tabular-nums">{amendment.fromDate} → {amendment.toDate}</span> : null}
-                      {amendment.feeCents > 0 ? <span className="tabular-nums text-warning">{money(amendment.feeCents)} due {amendment.dueOn}</span> : null}
+                      {amendment.feeCents > 0 && amendment.feePaidOn ? (
+                        <span className="tabular-nums text-success">
+                          {money(amendment.feeCents)} paid {amendment.feePaidOn}
+                          {amendment.feeEvidenceFileId ? <a className="ml-1 underline underline-offset-2" href={`/api/files/${amendment.feeEvidenceFileId}/raw`} target="_blank" rel="noreferrer">receipt</a> : null}
+                        </span>
+                      ) : null}
+                      {amendment.feeCents > 0 && !amendment.feePaidOn ? (
+                        <span className={cn("tabular-nums", (amendment.dueOn ?? "") < today() ? "text-destructive" : "text-warning")}>{money(amendment.feeCents)} due {amendment.dueOn}</span>
+                      ) : null}
                       <span className="ml-auto tabular-nums text-muted-foreground">{amendment.recordedAt.slice(0, 10)}</span>
+                      {canWrite && amendment.feeCents > 0 && !amendment.feePaidOn ? <Button size="sm" variant="ghost" className="h-7 rounded-none" onClick={() => setAction({ kind: "payFee", amendment })}>Record payment</Button> : null}
                     </div>
                     <p className="whitespace-pre-wrap text-muted-foreground">{amendment.reason}</p>
                     <a className="w-fit underline underline-offset-2" href={`/api/files/${amendment.evidenceFileId}/raw`} target="_blank" rel="noreferrer">Signed evidence</a>
@@ -491,6 +503,7 @@ function ContractSheet({
       <ExecuteDialog communityId={communityId} contract={contract} open={action?.kind === "execute"} onClose={() => setAction(null)} />
       <DepositDialog communityId={communityId} contract={contract} takedowns={position.takedowns} open={action?.kind === "deposit"} onClose={() => setAction(null)} />
       <PaymentDialog communityId={communityId} deposit={action?.kind === "pay" ? action.deposit : null} onClose={() => setAction(null)} />
+      <FeePaymentDialog communityId={communityId} amendment={action?.kind === "payFee" ? action.amendment : null} onClose={() => setAction(null)} />
       <ExtensionDialog communityId={communityId} takedowns={position.takedowns.filter((takedown) => takedown.status === "scheduled")} open={action?.kind === "extend"} onClose={() => setAction(null)} />
       <AmendmentDialog communityId={communityId} contract={contract} takedowns={position.takedowns} open={action?.kind === "amend"} onClose={() => setAction(null)} />
     </Sheet>
@@ -656,6 +669,32 @@ function PaymentDialog({ communityId, deposit, onClose }: { communityId: string;
       <div className="grid gap-1.5"><Label htmlFor="payment-date">Paid on</Label><Input id="payment-date" name="paidOn" type="date" required defaultValue={today()} /></div>
       <div className="grid gap-1.5"><Label htmlFor="payment-reference">Reference</Label><Input id="payment-reference" name="reference" placeholder="Wire #" /></div>
       <EvidenceInput id="payment-receipt" label="Receipt" onFile={setFile} />
+    </FormDialog>
+  )
+}
+
+function FeePaymentDialog({ communityId, amendment, onClose }: { communityId: string; amendment: LandAmendmentDTO | null; onClose: () => void }) {
+  const { isPending, mutate } = useLandMutation()
+  const [file, setFile] = useState<File | null>(null)
+  return (
+    <FormDialog
+      open={Boolean(amendment)}
+      onClose={onClose}
+      title="Record fee payment"
+      description={amendment ? `${money(amendment.feeCents)} ${LAND_AMENDMENT_KIND_LABELS[amendment.kind].toLowerCase()} fee due ${amendment.dueOn}. Attach the wire confirmation or receipt.` : ""}
+      formId="land-fee-payment"
+      submitLabel="Record payment"
+      isPending={isPending}
+      onSubmit={(data) => mutate("Payment recorded", async () => {
+        if (!amendment) return
+        if (!file) throw new Error("Attach the payment receipt")
+        const evidenceFileId = await uploadEvidence(file, "Amendments")
+        unwrapAction(await recordLandContractFeePaymentAction(communityId, amendment.id, { paidOn: String(data.get("paidOn") ?? ""), evidenceFileId }))
+      }, onClose)}
+    >
+      <div className="grid gap-1.5"><Label htmlFor="fee-payment-date">Paid on</Label><Input id="fee-payment-date" name="paidOn" type="date" required defaultValue={today()} /></div>
+      <div />
+      <EvidenceInput id="fee-payment-receipt" label="Receipt" onFile={setFile} />
     </FormDialog>
   )
 }

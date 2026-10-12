@@ -263,7 +263,7 @@ test("a restricted member creates a project in their division, and detaching its
   const as = (fn) => asRole(db, { role: "authenticated", userId: northLead.userId }, fn)
   const community = await insert(db, "communities", { org_id: orgId, name: "Oak", division_id: north.id })
   const lot = await insert(db, "lots", {
-    org_id: orgId, community_id: community.id, division_id: north.id, lot_number: "12", status: "started", project_id: northHome.id,
+    org_id: orgId, community_id: community.id, division_id: north.id, lot_number: "12", status: "assigned", project_id: northHome.id,
   })
 
   const created = await as((tx) =>

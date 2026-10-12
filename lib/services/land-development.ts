@@ -49,7 +49,7 @@ export async function getCommunityDevelopmentLedger(communityId: string, orgId?:
   ])
   if (phases.error) throw new Error(`Failed to load phases: ${phases.error.message}`)
   if (lots.truncated) throw new Error("This community has more lots than the development ledger reads")
-  const phaseRows = (phases.data ?? []) as Array<{ id: string; development_project_id: string | null }>
+  const phaseRows: Array<{ id: string; development_project_id: string | null }> = phases.data ?? []
   const jobIds = Array.from(new Set(phaseRows.map((phase) => phase.development_project_id).filter((id): id is string => Boolean(id))))
 
   const empty = { rows: [], truncated: false }
@@ -89,14 +89,15 @@ export async function getCommunityDevelopmentLedger(communityId: string, orgId?:
   if (commitments.truncated || costEntries.truncated || allocations.truncated) {
     throw new Error("This community's development jobs exceed what the ledger reads")
   }
-  const candidateRows = (candidates.data ?? []) as Array<{ id: string; name: string }>
+  const candidateRows: Array<{ id: string; name: string }> = candidates.data ?? []
   // A home on a lot is never a development job.
   const { data: homes, error: homesError } = candidateRows.length
     ? await service.from("lots").select("project_id").eq("org_id", context.orgId).in("project_id", candidateRows.map((row) => row.id))
     : { data: [], error: null }
   if (homesError) throw new Error(`Failed to load the development ledger: ${homesError.message}`)
 
-  const budgetByJob = new Map(((budgets.data ?? []) as Array<{ project_id: string; budget_cents: number }>).map((row) => [row.project_id, Number(row.budget_cents)]))
+  const budgetRows: Array<{ project_id: string; budget_cents: number }> = budgets.data ?? []
+  const budgetByJob = new Map(budgetRows.map((row) => [row.project_id, Number(row.budget_cents)]))
   const committedByJob = new Map<string, number>()
   for (const row of commitments.rows) committedByJob.set(row.project_id, (committedByJob.get(row.project_id) ?? 0) + Number(row.total_cents ?? 0))
 
@@ -115,8 +116,10 @@ export async function getCommunityDevelopmentLedger(communityId: string, orgId?:
     lots: lots.rows.map((lot) => ({ id: lot.id, phaseId: lot.community_phase_id, delivered: Boolean(lot.delivered_at) })),
   })
 
-  const projectName = new Map(((projects.data ?? []) as Array<{ id: string; name: string }>).map((row) => [row.id, row.name]))
-  const homeIds = new Set(((homes ?? []) as Array<{ project_id: string }>).map((row) => row.project_id))
+  const projectRows: Array<{ id: string; name: string }> = projects.data ?? []
+  const projectName = new Map(projectRows.map((row) => [row.id, row.name]))
+  const homeRows: Array<{ project_id: string }> = homes ?? []
+  const homeIds = new Set(homeRows.map((row) => row.project_id))
   return {
     jobs: ledger.jobs.map((job) => ({ ...job, projectName: projectName.get(job.projectId) ?? "Development job" })),
     phases: ledger.phases,

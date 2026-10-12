@@ -127,7 +127,7 @@ function invoiceUnitCostFromCents(amountCents: number) {
  * price band, a price sort and the figure on screen agree and nobody's price depends on which
  * selections they may read. Null when the lot has no plan or the sheet does not price it.
  */
-export async function deriveLotAskingPrice(supabase: any, orgId: string, lotId: string): Promise<number | null> {
+export async function deriveLotAskingPrice(supabase: SupabaseClient, orgId: string, lotId: string): Promise<number | null> {
   const { data, error } = await supabase.from("sellable_lot_inventory").select("asking_price_cents").eq("org_id", orgId).eq("lot_id", lotId).maybeSingle()
   if (error) throw new Error(`Failed to price the lot: ${error.message}`)
   return data?.asking_price_cents == null ? null : Number(data.asking_price_cents)
@@ -332,48 +332,72 @@ async function readByIds<Row>(
 
 type SpecInventoryLot = Awaited<ReturnType<typeof mapInventoryRows>>[number]
 
+/** An embedded relation, as PostgREST's typing describes it (one row, or a list of them). */
+type Embedded<T> = T | T[] | null
+
+function embeddedOne<T>(value: Embedded<T>): T | null {
+  return Array.isArray(value) ? value[0] ?? null : value
+}
+
+/** A lot as `LOT_INVENTORY_SELECT` reads it. */
+type LotInventoryRow = {
+  id: string
+  community_id: string
+  division_id: string | null
+  lot_number: string
+  block: string | null
+  status: string
+  premium_cents: number | null
+  project_id: string | null
+  project: Embedded<{ id: string; name: string; start_date: string | null; status: string | null; completed_on: string | null }>
+  plan: Embedded<{ name: string | null; beds: number | null; baths: number | null; heated_sqft: number | null; total_sqft: number | null }>
+  community: Embedded<{ name: string | null }>
+}
+
 /** Takes held and sold lots off a batch and prices what is left. */
-async function availableInventory(context: OrgContext, lots: any[], askingPrices: Map<string, number | null>): Promise<Array<{ row: any; lot: SpecInventoryLot }>> {
-  const lotIds = lots.map((lot: any) => lot.id)
-  const projectIds = lots.map((lot: any) => lot.project_id).filter(Boolean)
+async function availableInventory(context: OrgContext, lots: LotInventoryRow[], askingPrices: Map<string, number | null>): Promise<Array<{ row: LotInventoryRow; lot: SpecInventoryLot }>> {
+  const lotIds = lots.map((lot) => lot.id)
+  const projectIds = lots.flatMap((lot) => (lot.project_id ? [lot.project_id] : []))
   const [{ data: reservations }, { data: agreements }] = await Promise.all([
     readByIds(lotIds, (slice) => context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", slice).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter())),
     readByIds(projectIds, (slice) => context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", slice).eq("contract_type", "purchase_agreement").eq("status", "active")),
   ])
-  const reserved = new Set((reservations ?? []).map((row: any) => row.lot_id))
-  const sold = new Set((agreements ?? []).map((row: any) => row.project_id))
-  const availableLots = lots.filter((lot: any) => !reserved.has(lot.id) && !sold.has(lot.project_id))
+  const reserved = new Set<string>((reservations ?? []).map((row: { lot_id: string }) => row.lot_id))
+  const sold = new Set<string>((agreements ?? []).map((row: { project_id: string }) => row.project_id))
+  const availableLots = lots.filter((lot) => !reserved.has(lot.id) && !(lot.project_id && sold.has(lot.project_id)))
   const priced = await mapInventoryRows(context, availableLots, askingPrices)
   return availableLots.map((row, index) => ({ row, lot: priced[index] }))
 }
 
-async function mapInventoryRows(context: OrgContext, availableLots: any[], askingPrices: Map<string, number | null>) {
-  const availableProjectIds = availableLots.map((lot: any) => lot.project_id).filter(Boolean) as string[]
+async function mapInventoryRows(context: OrgContext, availableLots: LotInventoryRow[], askingPrices: Map<string, number | null>) {
+  const availableProjectIds = availableLots.flatMap((lot) => (lot.project_id ? [lot.project_id] : []))
   const [{ data: completions }, terms] = await Promise.all([
     readByIds(availableProjectIds, (slice) =>
       context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", slice).not("books_inventory_completed_on", "is", null)),
-    readSpecHomeTerms(context, availableLots.flatMap((lot: any) => (lot.project_id ? [{ lotId: lot.id as string, projectId: lot.project_id as string }] : []))),
+    readSpecHomeTerms(context, availableLots.flatMap((lot) => (lot.project_id ? [{ lotId: lot.id, projectId: lot.project_id }] : []))),
   ])
-  const completedOnByProject = new Map((completions ?? []).map((row: any) => [row.project_id as string, row.books_inventory_completed_on as string]))
-  return availableLots.map((lot: any) => {
+  const completedOnByProject = new Map<string, string>((completions ?? []).map((row: { project_id: string; books_inventory_completed_on: string }) => [row.project_id, row.books_inventory_completed_on]))
+  return availableLots.map((lot) => {
     const home = terms.get(lot.id)
+    const project = embeddedOne(lot.project)
+    const plan = embeddedOne(lot.plan)
     return {
       lotId: lot.id,
       lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number,
       communityId: lot.community_id,
-      communityName: lot.community?.name ?? null,
+      communityName: embeddedOne(lot.community)?.name ?? null,
       projectId: lot.project_id,
-      projectName: lot.project?.name ?? null,
-      planLabel: lot.plan?.name ?? "Unassigned plan",
-      beds: lot.plan?.beds != null ? Number(lot.plan.beds) : null,
-      baths: lot.plan?.baths != null ? Number(lot.plan.baths) : null,
-      sqft: lot.plan?.heated_sqft ?? lot.plan?.total_sqft ?? null,
+      projectName: project?.name ?? null,
+      planLabel: plan?.name ?? "Unassigned plan",
+      beds: plan?.beds != null ? Number(plan.beds) : null,
+      baths: plan?.baths != null ? Number(plan.baths) : null,
+      sqft: plan?.heated_sqft ?? plan?.total_sqft ?? null,
       isSpec: Boolean(lot.project_id),
       status: lot.status,
-      startedAt: lot.project?.start_date ?? null,
-      ...specInventoryAge(lot.project, specCompletionDate(completedOnByProject.get(lot.project_id), lot.project?.completed_on)),
+      startedAt: project?.start_date ?? null,
+      ...specInventoryAge(project, specCompletionDate(lot.project_id ? completedOnByProject.get(lot.project_id) : null, project?.completed_on)),
       /** Whether Books owns the completion date (then sales cannot record one). */
-      completionFromBooks: completedOnByProject.has(lot.project_id),
+      completionFromBooks: lot.project_id ? completedOnByProject.has(lot.project_id) : false,
       askingPriceCents: askingPrices.get(lot.id) ?? null,
       premiumCents: Number(lot.premium_cents ?? 0),
       incentiveCents: home?.incentiveCents ?? 0,
@@ -447,8 +471,8 @@ async function readSpecHomeTerms(context: OrgContext, homes: Array<{ lotId: stri
   const lotIds = homes.map((home) => home.lotId)
   const projectIds = homes.map((home) => home.projectId)
   const [open, incentives, agreements, dispositions] = await Promise.all([
-    readByIds(lotIds, (slice) => context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).in("lot_id", slice).eq("status", "proposed")),
-    readByIds(lotIds, (slice) => context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).in("lot_id", slice)
+    readByIds<SpecMoveRow>(lotIds, (slice) => context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).in("lot_id", slice).eq("status", "proposed")),
+    readByIds<SpecMoveRow>(lotIds, (slice) => context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).in("lot_id", slice)
       .eq("kind", "incentive").in("status", ["applied", "approved"]).order("proposed_at", { ascending: false }).limit(slice.length * 10)),
     readByIds(projectIds, (slice) => context.supabase.from("contracts").select("project_id, created_at").eq("org_id", context.orgId).in("project_id", slice).eq("contract_type", "purchase_agreement")),
     readByIds(projectIds, (slice) => context.supabase.from("spec_dispositions").select("id, project_id, kind, status, counterparty_contact_id, price_cents, carrying_cents, impairment_id").eq("org_id", context.orgId).in("project_id", slice).in("status", ["proposed", "approved"])),
@@ -465,8 +489,8 @@ async function readSpecHomeTerms(context: OrgContext, homes: Array<{ lotId: stri
   }
   const today = new Date().toISOString().slice(0, 10)
   for (const home of homes) {
-    const waiting = (open.data as SpecMoveRow[]).find((row) => row.lot_id === home.lotId)
-    const incentive = (incentives.data as SpecMoveRow[]).find((row) => row.lot_id === home.lotId)
+    const waiting = open.data.find((row) => row.lot_id === home.lotId)
+    const incentive = incentives.data.find((row) => row.lot_id === home.lotId)
     const incentiveCents = specHomeIncentiveInForce(
       incentive ? { cents: Number(incentive.to_cents), expiresOn: incentive.incentive_expires_on, decidedAt: incentive.decided_at ?? incentive.proposed_at } : null,
       { latestAgreementAt: latestAgreementAt.get(home.projectId) ?? null, today },
@@ -587,7 +611,8 @@ export async function proposeSpecPriceChange(input: unknown, orgId?: string) {
   if (fromCents === parsed.toCents) throw new Error("Nothing changes: the new figure is the current one.")
   const requiredPermission = requiredSpecPricePermission({ moveCents: parsed.toCents - fromCents, askingPriceCents: home.askingPriceCents, bands })
   const apply = requiredPermission === SPEC_PRICE_SELF_SERVE_PERMISSION
-  const { data: moveId, error } = await context.supabase.rpc("record_spec_price_move", {
+  // Service role: the band computed above is the only source of the apply flag and the permission.
+  const { data: moveId, error } = await createServiceSupabaseClient().rpc("record_spec_price_move", {
     p_org_id: context.orgId,
     p_lot_id: home.lot.id,
     p_project_id: home.lot.projectId,
@@ -601,6 +626,7 @@ export async function proposeSpecPriceChange(input: unknown, orgId?: string) {
     p_required_permission: requiredPermission,
     p_apply: apply,
     p_lot_updated_at: home.lot.updatedAt,
+    p_actor_id: context.userId,
   })
   if (error) throw new Error(error.message)
   const proposalId = z.string().uuid().parse(moveId)
@@ -634,7 +660,7 @@ export async function decideSpecPriceChange(input: unknown, orgId?: string) {
   await requirePermission("sales.read", context)
   const { data: proposal, error } = await context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).eq("id", parsed.proposalId).maybeSingle()
   if (error || !proposal) throw new Error("Price change not found")
-  const move = proposal as SpecMoveRow
+  const move: SpecMoveRow = proposal
   await requirePermission(move.required_permission, context)
   const blocked = specPriceDecisionBlockReason({ status: move.status, proposedBy: move.proposed_by, deciderId: context.userId })
   if (blocked) throw new Error(blocked)
@@ -647,12 +673,13 @@ export async function decideSpecPriceChange(input: unknown, orgId?: string) {
   } else {
     await assertCommunityInSalesScope(context, move.community_id)
   }
-  const { error: decideError } = await context.supabase.rpc("decide_spec_price_proposal", {
+  const { error: decideError } = await createServiceSupabaseClient().rpc("decide_spec_price_proposal", {
     p_org_id: context.orgId,
     p_proposal_id: move.id,
     p_approve: parsed.approve,
     p_note: parsed.note ?? null,
     p_lot_updated_at: lotUpdatedAt,
+    p_actor_id: context.userId,
   })
   if (decideError) throw new Error(decideError.message)
   const status = parsed.approve ? "approved" : "rejected"
@@ -1567,14 +1594,14 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
     )
     if (!verdict.eligible && verdict.reason) throw new Error(`Incentive "${row.name}" ${describeIncentiveIneligibility(verdict.reason)}`)
   }
-  const priced: PurchaseAgreementPricedItem[] = resolved.map((item: any) => {
+  const priced: Array<PurchaseAgreementPricedItem & { scope?: string }> = resolved.map((item: any) => {
     const option = (options ?? []).find((row: any) => row.id === item.optionId)
     const selectionPackage = (packages ?? []).find((row: any) => row.id === item.packageId)
     const category = Array.isArray(option?.category) ? option.category[0] : option?.category
     return { optionId: item.optionId, packageId: item.packageId, label: option?.name ?? selectionPackage?.name ?? "Option", category: category?.name ?? null, priceCents: item.priceCents, source: item.source, scope: option?.option_scope } as PurchaseAgreementPricedItem & { scope?: string }
   })
-  const pricingBasis = { basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural") }
-  const communityIncentives: PurchaseAgreementIncentive[] = requestedIncentives.map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent }))
+  const pricingBasis = { basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item) => item.scope === "structural"), designSelections: priced.filter((item) => item.scope !== "structural") }
+  const communityIncentives: PurchaseAgreementIncentive[] = requestedIncentives.map((row) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent }))
   const pricing = composePurchaseAgreementPricing({ ...pricingBasis, incentives: communityIncentives, homeAdjustments: specHomePriceLines(homeTerms, composePurchaseAgreementPricing({ ...pricingBasis, incentives: communityIncentives }).totalCents) })
   const choicePrices = parsed.optionItems.map((choice, index) => {
     const item = resolved[index]

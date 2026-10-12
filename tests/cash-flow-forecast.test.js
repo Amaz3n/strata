@@ -73,7 +73,7 @@ const NORTH_COMMUNITY = id(30)
 const SOUTH_COMMUNITY = id(31)
 
 function landHarness(options = {}) {
-  const contract = (communityId) => ({ community_id: communityId })
+  const contract = (communityId) => ({ community_id: communityId, status: "executed" })
   return createServiceHarness({
     permissions: ["report.read", "project.read", "community.read"],
     tables: {
@@ -134,4 +134,30 @@ test("a project forecast carries no land, and neither does a reader without comm
 test("a division-limited reader's forecast carries only their division's land", async () => {
   const report = await landHarness({ divisions: [OWN_DIVISION] }).run(() => getCashFlowForecast({}))
   assert.deepEqual(landByMonth(report), [["2099-01", 50_000_00], ["2099-02", 5_000_00], ["2099-03", 670_000_00]])
+})
+
+test("a terminated contract's obligations leave the plan; a paid fee is not owed, an unpaid one past due is owed now", async () => {
+  const terminated = { community_id: NORTH_COMMUNITY, status: "terminated" }
+  const executed = { community_id: NORTH_COMMUNITY, status: "executed" }
+  const service = landHarness({
+    tables: {
+      projects: [], invoices: [], vendor_bills: [], commitments: [], lots: [],
+      communities: [{ id: NORTH_COMMUNITY, org_id: ORG, division_id: OWN_DIVISION }],
+      lot_takedowns: [
+        { id: id(52), org_id: ORG, community_id: NORTH_COMMUNITY, name: "Dead tranche", scheduled_date: "2099-03-01", lot_count: 10, price_per_lot_cents: 72_000_00, status: "scheduled", contract: { status: "terminated" } },
+      ],
+      land_contract_deposits: [
+        { id: id(61), org_id: ORG, takedown_id: null, due_on: "2099-01-15", amount_cents: 50_000_00, status: "scheduled", contract: terminated },
+      ],
+      land_contract_amendments: [
+        { id: id(71), org_id: ORG, due_on: "2020-02-01", fee_cents: 5_000_00, fee_paid_on: null, contract: executed },
+        { id: id(72), org_id: ORG, due_on: "2020-02-01", fee_cents: 7_000_00, fee_paid_on: "2020-02-01", contract: executed },
+        { id: id(73), org_id: ORG, due_on: "2099-02-01", fee_cents: 9_000_00, fee_paid_on: null, contract: terminated },
+      ],
+    },
+  })
+
+  const report = await service.run(() => getCashFlowForecast({}))
+
+  assert.deepEqual(landByMonth(report), [[new Date().toISOString().slice(0, 7), 5_000_00]])
 })

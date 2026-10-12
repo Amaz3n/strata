@@ -2,7 +2,7 @@ require("../scripts/register-ts-node-test")
 
 const assert = require("node:assert/strict")
 const test = require("node:test")
-const { communityEntitlementPressure, entitlementBlockers, phaseReadiness } = require("../lib/land/entitlement-readiness")
+const { closingBlockers, communityEntitlementPressure, entitlementBlockers, phaseReadiness } = require("../lib/land/entitlement-readiness")
 
 const TODAY = "2026-10-12"
 
@@ -83,4 +83,23 @@ test("the community header counts everything holding delivery or starts anywhere
     }),
     { open: 2, overdue: 1 },
   )
+})
+
+test("closing blockers are the closing-milestone items for the phase, overdue first", () => {
+  const entitlement = { id: "e1", name: "Plat", phaseId: null, status: "approved", requiredBefore: "closing", approvedOn: "2026-06-01", expiresOn: null, dueOn: null }
+  const condition = (id, extra) => ({ id, entitlementId: "e1", title: id, phaseId: null, status: "open", requiredBefore: "closing", dueOn: null, ...extra })
+  const found = closingBlockers({
+    entitlements: [entitlement],
+    conditions: [
+      condition("later", { dueOn: "2026-11-01" }),
+      condition("late", { dueOn: "2026-10-01" }),
+      condition("start", { requiredBefore: "vertical_start" }),
+      condition("other-phase", { phaseId: "phase-2" }),
+      condition("met", { status: "met" }),
+    ],
+    phaseId: "phase-1",
+    today: "2026-10-12",
+  })
+  assert.deepEqual(found.map((blocker) => blocker.id), ["late", "later"])
+  assert.equal(found[0].overdueDays, 11)
 })

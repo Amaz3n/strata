@@ -23,6 +23,8 @@ import {
 import { SETTLEMENT_STATEMENT_LINK_ROLE } from "@/lib/invoices/attachment-roles"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
+import { loadClosingBlockersForLot } from "@/lib/services/land-entitlements"
+import { hasPermission } from "@/lib/services/permissions"
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
 import { projectJournal } from "@/lib/services/books/projector"
 import {
@@ -150,6 +152,29 @@ export async function buildSettlement(closingId: string, orgId?: string) {
     pricing: (contract.snapshot as any)?.purchase_agreement?.pricing as PurchaseAgreementPricing | undefined, changeOrders }
 }
 
+/**
+ * Entitlement conditions due before this home closes, for display. Empty for a
+ * reader without the entitlements read permission; `null` when they could not
+ * be checked -- a closing never fails to open over an informational list.
+ */
+async function readClosingEntitlementBlockers(
+  context: Awaited<ReturnType<typeof requireOrgContext>>,
+  closing: { community_id: string | null; lot_id: string | null },
+) {
+  if (!closing.community_id || !closing.lot_id) return []
+  if (!(await hasPermission("community.read", context))) return []
+  try {
+    const { data: lot, error } = await context.supabase.from("lots").select("community_phase_id")
+      .eq("org_id", context.orgId).eq("id", closing.lot_id).maybeSingle()
+    if (error || !lot) return null
+    return await loadClosingBlockersForLot(context.supabase, context.orgId, {
+      communityId: closing.community_id, phaseId: lot.community_phase_id,
+    })
+  } catch {
+    return null
+  }
+}
+
 export async function getClosing(projectId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
@@ -158,18 +183,19 @@ export async function getClosing(projectId: string, orgId?: string) {
   const { data: closing, error } = await context.supabase.from("closings").select("*, project:projects(name, client:contacts(full_name, email)), lot:lots(lot_number, status, address, plan:house_plans(name)), community:communities(name)").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle()
   if (error) throw new Error(`Failed to load closing: ${error.message}`)
   if (!closing) return null
-  const [checklist, settlementPreview, agreementResult, managementAccess, paymentAccess] = await Promise.all([
+  const [checklist, settlementPreview, agreementResult, managementAccess, paymentAccess, entitlementBlockers] = await Promise.all([
     ensureClosingChecklist(closing.id, context.orgId, false),
     buildSettlement(closing.id, context.orgId),
     closing.status === "closed" ? Promise.resolve({ data: null }) :
     context.supabase.from("contracts").select("id, number, title, status, total_cents, signed_at, snapshot").eq("org_id", context.orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     authorize({ permission: "closing.manage", orgId: context.orgId, userId: context.userId, projectId, supabase: context.supabase }),
     authorize({ permission: "payment.release", orgId: context.orgId, userId: context.userId, projectId, supabase: context.supabase }),
+    readClosingEntitlementBlockers(context, closing),
   ])
   if ("error" in agreementResult && agreementResult.error) throw new Error(`Failed to read closing agreement: ${agreementResult.error.message}`)
   return { closing, checklist, settlementPreview, canManageClosing: managementAccess.allowed,
     canSettleClosing: managementAccess.allowed && paymentAccess.allowed,
-    canRecoverCompletion: managementAccess.allowed, agreement: closing.status === "closed" ? settlementPreview.agreement : agreementResult.data ?? null }
+    canRecoverCompletion: managementAccess.allowed, entitlementBlockers, agreement: closing.status === "closed" ? settlementPreview.agreement : agreementResult.data ?? null }
 }
 
 export async function listClosings(opts: { communityId?: string; divisionId?: string; status?: string; from?: string; to?: string; limit?: number } = {}, orgId?: string) {

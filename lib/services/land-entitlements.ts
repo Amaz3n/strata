@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { pendingReminderThreshold } from "@/lib/land/diligence"
 import {
+  closingBlockers,
   communityEntitlementPressure,
   entitlementBlockers,
   phaseReadiness,
@@ -354,19 +355,34 @@ export async function loadEntitlementBlockersForLot(
   lot: { communityId: string; phaseId: string | null },
   through: EntitlementMilestone = "vertical_start",
 ): Promise<EntitlementBlocker[]> {
+  const facts = await readLotEntitlementFacts(supabase, orgId, lot.communityId)
+  return entitlementBlockers({ ...facts, phaseId: lot.phaseId, through, today: today() })
+}
+
+/** What is due before this lot's home closes. Informational: the closing workbench shows it, nothing gates on it. */
+export async function loadClosingBlockersForLot(
+  supabase: SupabaseClient,
+  orgId: string,
+  lot: { communityId: string; phaseId: string | null },
+): Promise<EntitlementBlocker[]> {
+  const facts = await readLotEntitlementFacts(supabase, orgId, lot.communityId)
+  return closingBlockers({ ...facts, phaseId: lot.phaseId, today: today() })
+}
+
+async function readLotEntitlementFacts(supabase: SupabaseClient, orgId: string, communityId: string) {
   const [entitlements, conditions] = await Promise.all([
     supabase
       .from("land_entitlements")
       .select("id, name, community_phase_id, status, required_before, approved_on, expires_on, target_on")
       .eq("org_id", orgId)
-      .eq("community_id", lot.communityId)
+      .eq("community_id", communityId)
       .not("required_before", "is", null)
       .limit(ENTITLEMENT_CAP + 1),
     supabase
       .from("land_entitlement_conditions")
       .select("id, entitlement_id, title, community_phase_id, status, required_before, due_on")
       .eq("org_id", orgId)
-      .eq("community_id", lot.communityId)
+      .eq("community_id", communityId)
       .eq("status", "open")
       .not("required_before", "is", null)
       .limit(CONDITION_CAP + 1),
@@ -379,13 +395,7 @@ export async function loadEntitlementBlockersForLot(
   }
   const entitlementRows: EntitlementFactRow[] = entitlements.data ?? []
   const conditionRows: ConditionFactRow[] = conditions.data ?? []
-  return entitlementBlockers({
-    entitlements: entitlementRows.map(toEntitlementFact),
-    conditions: conditionRows.map(toConditionFact),
-    phaseId: lot.phaseId,
-    through,
-    today: today(),
-  })
+  return { entitlements: entitlementRows.map(toEntitlementFact), conditions: conditionRows.map(toConditionFact) }
 }
 
 /** Per community: unmet items holding delivery or starts, and how many are overdue. For the portfolio lanes. */

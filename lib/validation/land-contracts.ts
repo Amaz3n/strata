@@ -3,7 +3,7 @@ import { z } from "zod"
 export const LAND_CONTRACT_KINDS = ["purchase", "option"] as const
 export const LAND_CONTRACT_STATUSES = ["draft", "executed", "terminated", "completed"] as const
 export const LAND_DEPOSIT_REFUNDABILITY = ["refundable", "non_refundable", "refundable_until"] as const
-export const LAND_DEPOSIT_STATUSES = ["scheduled", "paid", "applied", "refunded", "forfeited"] as const
+export const LAND_DEPOSIT_STATUSES = ["scheduled", "paid", "applied", "refunded", "forfeited", "cancelled"] as const
 export const LAND_AMENDMENT_KINDS = ["extension", "penalty", "other"] as const
 
 /** Client-safe labels (the service module is server-only). */
@@ -19,6 +19,7 @@ export const LAND_DEPOSIT_STATUS_LABELS: Record<(typeof LAND_DEPOSIT_STATUSES)[n
   applied: "Applied at close",
   refunded: "Refunded",
   forfeited: "Forfeited",
+  cancelled: "Cancelled with the contract",
 }
 export const LAND_DEPOSIT_REFUNDABILITY_LABELS: Record<(typeof LAND_DEPOSIT_REFUNDABILITY)[number], string> = {
   refundable: "Refundable",
@@ -79,6 +80,12 @@ export type LandDepositInput = z.input<typeof landDepositInputSchema>
 export const landDepositPaymentSchema = z.object({
   paidOn: isoDate,
   paymentReference: optionalText(120),
+  evidenceFileId: z.string().uuid("Attach the payment receipt"),
+})
+
+/** An extension or penalty fee paid to the seller, with its receipt. */
+export const landFeePaymentSchema = z.object({
+  paidOn: isoDate,
   evidenceFileId: z.string().uuid("Attach the payment receipt"),
 })
 

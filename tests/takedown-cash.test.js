@@ -44,7 +44,7 @@ test("deposits and the closing they are credited against never count the same do
   assert.equal(months.reduce((sum, row) => sum + row.totalCents, 0), 720_000_00)
 })
 
-test("overdue scheduled obligations are owed now; closed and cancelled takedowns and past fees are not", () => {
+test("overdue obligations, unpaid fees included, are owed now; closed and cancelled takedowns and cancelled deposits are not", () => {
   const months = landObligationsByMonth({
     takedowns: [
       takedown({ id: "late", scheduledDate: "2026-08-01", lotCount: 1, pricePerLotCents: 10_000_00 }),
@@ -52,12 +52,16 @@ test("overdue scheduled obligations are owed now; closed and cancelled takedowns
       takedown({ id: "cancelled", status: "cancelled" }),
       takedown({ id: "undated", scheduledDate: null }),
     ],
-    deposits: [deposit({ takedownId: null, dueOn: "2026-09-01", amountCents: 5_000_00 }), deposit({ takedownId: null, status: "paid" })],
+    deposits: [
+      deposit({ takedownId: null, dueOn: "2026-09-01", amountCents: 5_000_00 }),
+      deposit({ takedownId: null, status: "paid" }),
+      deposit({ takedownId: null, status: "cancelled", dueOn: "2026-09-01" }),
+    ],
     fees: [{ dueOn: "2026-09-30", feeCents: 1_000_00 }, { dueOn: "2027-01-15", feeCents: 2_500_00 }, { dueOn: null, feeCents: 9_00 }],
     today: TODAY,
   })
   assert.deepEqual(months, [
-    { month: "2026-10", takedownCents: 10_000_00, depositCents: 5_000_00, feeCents: 0, totalCents: 15_000_00 },
+    { month: "2026-10", takedownCents: 10_000_00, depositCents: 5_000_00, feeCents: 1_000_00, totalCents: 16_000_00 },
     { month: "2027-01", takedownCents: 0, depositCents: 0, feeCents: 2_500_00, totalCents: 2_500_00 },
   ])
 })

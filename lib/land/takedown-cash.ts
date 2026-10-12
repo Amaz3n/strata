@@ -9,14 +9,16 @@
  *   closing, so counting both would spend the same dollars twice. A deposit
  *   that was refunded or forfeited is no longer a credit.
  * - A deposit is cash out on its due date while it is still scheduled.
- * - An extension or penalty fee is cash out on its due date. Amendments are a
- *   record, not a payable, so a fee whose date has passed is not carried.
- * - Anything scheduled but already overdue lands in the current month: it is
- *   still owed, and owed now.
+ * - An extension or penalty fee is cash out on its due date until its payment
+ *   is recorded; callers pass only unpaid fees.
+ * - Anything still owed but already overdue (takedown, deposit or fee) lands
+ *   in the current month: it is owed now.
+ * - Obligations of a terminated or completed contract are not passed in; the
+ *   loader reads only draft and executed contracts.
  */
 
 export type TakedownCashStatus = "scheduled" | "closed" | "cancelled"
-export type LandDepositStatus = "scheduled" | "paid" | "applied" | "refunded" | "forfeited"
+export type LandDepositStatus = "scheduled" | "paid" | "applied" | "refunded" | "forfeited" | "cancelled"
 
 export interface TakedownCashInput {
   id: string
@@ -97,7 +99,7 @@ export function landObligationsByMonth(input: {
     bucket(deposit.dueOn).depositCents += deposit.amountCents
   }
   for (const fee of input.fees) {
-    if (!fee.dueOn || fee.feeCents <= 0 || fee.dueOn < input.today) continue
+    if (!fee.dueOn || fee.feeCents <= 0) continue
     bucket(fee.dueOn).feeCents += fee.feeCents
   }
 

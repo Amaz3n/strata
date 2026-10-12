@@ -45,6 +45,30 @@ function formatDate(value?: string | null) {
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
 
+function EntitlementDue({ blockers }: { blockers: ClosingDetail["entitlementBlockers"] }) {
+  if (blockers === null) return <p className="border p-4 text-sm text-muted-foreground">Entitlement conditions due before closing could not be checked.</p>
+  if (blockers.length === 0) return null
+  return (
+    <section className="border bg-background">
+      <div className="border-b p-4">
+        <h2 className="font-semibold">Entitlement conditions required before closing</h2>
+        <p className="mt-1 text-xs text-muted-foreground">For awareness; these do not hold the closing.</p>
+      </div>
+      <ul className="divide-y">
+        {blockers.map((blocker) => (
+          <li key={`${blocker.kind}:${blocker.id}`} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+            <span className="min-w-0 truncate">{blocker.title}</span>
+            <span className={`shrink-0 text-xs tabular-nums ${blocker.overdueDays !== null ? "text-destructive" : "text-muted-foreground"}`}>
+              {blocker.overdueDays !== null ? `${blocker.overdueDays}d overdue · ` : blocker.dueOn ? "Due " : "No due date"}
+              {blocker.dueOn ? formatDate(blocker.dueOn) : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -76,6 +100,7 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
       {detail.closing.status === "closed" && detail.canRecoverCompletion ? <div className="flex flex-wrap items-center justify-between gap-3 border p-4 text-sm"><p>Retry lot handoff, warranty enrollment and statement filing after a completion failure.</p><Button size="sm" variant="outline" disabled={pending} onClick={() => act(() => recoverClosingCompletionAction(projectId, detail.closing.id), "Closing completion verified")}>Retry completion</Button></div> : null}
       {detail.closing.status === "closed" && detail.canManageClosing ? <ReverseClosing projectId={projectId} closingId={detail.closing.id} /> : null}
       {detail.closing.status === "cancelled" && (detail.closing.metadata as Record<string, unknown> | null)?.reversed_at ? <div role="status" className="border p-4 text-sm"><p className="font-medium">Closing reversed on {String((detail.closing.metadata as Record<string, unknown>).reversed_on)}</p><p className="text-muted-foreground">{detail.closing.cancel_reason}</p></div> : null}
+      {!["closed", "cancelled"].includes(detail.closing.status) ? <EntitlementDue blockers={detail.entitlementBlockers} /> : null}
       <SettlementStatement projectId={projectId} closing={detail.closing} settlement={settlement} />
 
       <section className="border bg-background">

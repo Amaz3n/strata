@@ -13,7 +13,6 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   specCompletionSchema,
   specDispositionDecisionSchema,
@@ -119,8 +118,9 @@ export async function recordSpecCompletion(input: unknown, orgId?: string) {
 
 /**
  * Propose selling a standing spec off to a bulk or investor buyer at a price.
- * What Books carries for the home is captured now, so the approver sees the
- * loss the price implies and the database knows whether a write-down is owed.
+ * The database captures what Books carries for the home as the row is written
+ * (never a figure the caller supplies), so the approver sees the loss the price
+ * implies and execution knows whether a write-down is owed.
  */
 export async function proposeSpecDisposition(input: unknown, orgId?: string) {
   const parsed = specDispositionSchema.parse(input)
@@ -129,8 +129,6 @@ export async function proposeSpecDisposition(input: unknown, orgId?: string) {
   const home = await readStandingSpec(context, parsed.lotId)
   if (home.disposition) throw new Error("This home already has a disposition in progress.")
   if (home.pendingChange) throw new Error("A price change is waiting for approval on this home. Decide or withdraw it first.")
-  const { data: carrying, error: carryingError } = await createServiceSupabaseClient().rpc("books_home_carrying_cents", { p_org_id: context.orgId, p_project_id: home.lot.projectId, p_as_of: today() })
-  if (carryingError) throw new Error(`Failed to read the home's cost in Books: ${carryingError.message}`)
   const { data, error } = await context.supabase.from("spec_dispositions").insert({
     org_id: context.orgId,
     lot_id: home.lot.id,
@@ -141,7 +139,6 @@ export async function proposeSpecDisposition(input: unknown, orgId?: string) {
     counterparty_company_id: parsed.counterpartyCompanyId,
     price_cents: parsed.priceCents,
     asking_price_cents: home.askingPriceCents,
-    carrying_cents: Math.max(0, Number(carrying ?? 0)),
     reason: parsed.reason,
     status: "proposed",
     proposed_by: context.userId,
