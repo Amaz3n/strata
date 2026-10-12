@@ -148,10 +148,12 @@ async function signedUpdateReconcilesAndMismatchRefused(kit, expected, check) {
   const salesCreates = await attempt(() => kit.as(home.org.team.sales, () => milestones.createMilestoneSource({ name: "Sales cannot" })))
   const { source, secret } = await kit.as(owner, () => milestones.createMilestoneSource({ name: "First Coast Title" }))
   const number = kit.rows(`select number from public.contracts where id=${kit.q(home.contractId)}`)[0].number
-  const post = (delivery, body, key = secret) => {
-    const rawBody = JSON.stringify(body), timestamp = String(Math.floor(Date.now() / 1000))
-    return kit.service(() => milestones.receiveMilestoneReport({ sourcePublicId: source.public_id, deliveryId: delivery, timestamp, signature: signInboundPayload(key, timestamp, rawBody), rawBody }))
+  // The delivery id travels inside the signed body; the header repeats it.
+  const send = (header, rawBody, key = secret) => {
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    return kit.service(() => milestones.receiveMilestoneReport({ sourcePublicId: source.public_id, deliveryId: header, timestamp, signature: signInboundPayload(key, timestamp, rawBody), rawBody }))
   }
+  const post = (delivery, body, key = secret) => send(delivery, JSON.stringify({ delivery_id: delivery, ...body }), key)
   const base = { agreement_number: number, buyer_email: home.buyer.email, lot_number: home.lot.lot_number, reported_on: seed.isoDay(0) }
   const receipts = {
     application: await post("d-app", { ...base, milestone: "loan_application", status: "satisfied" }),
@@ -161,7 +163,17 @@ async function signedUpdateReconcilesAndMismatchRefused(kit, expected, check) {
     wrongBuyer: await post("d-buyer", { ...base, buyer_email: "someone.else@acceptance.example.test", milestone: "title_commitment", status: "in_progress" }),
     wrongHome: await post("d-home", { ...base, lot_number: "999", milestone: "title_commitment", status: "in_progress" }),
     badSignature: await post("d-sig", { ...base, milestone: "title_commitment", status: "in_progress" }, "not-the-secret"),
+    // A captured report re-sent under a fresh header id is still the signed delivery it was.
+    replayedAsNew: await send("d-new", JSON.stringify({ delivery_id: "d-app", ...base, milestone: "loan_application", status: "satisfied" })),
   }
+  // A coordinator cannot dress a manual change up as the lender's report.
+  const titleId = kit.rows(`select id from public.agreement_milestones where contract_id=${kit.q(home.contractId)} and kind='title_commitment'`)[0].id
+  const memberReport = await attempt(() => kit.as(owner, async () => {
+    const { supabase } = await require("../../../lib/services/context").requireOrgContext()
+    const { data, error } = await supabase.from("agreement_milestones").update({ reported_status: "satisfied", reported_at: new Date().toISOString(), reported_on: seed.isoDay(0) }).eq("id", titleId).select("id")
+    if (error) throw new Error(error.message)
+    if (!data?.length) throw new Error("no row updated")
+  }))
   const rows = Object.fromEntries(milestonesOf(kit, home.contractId).map((row) => [row.kind, row.status]))
   const appraisal = kit.rows(`select reported_status, reported_reference from public.agreement_milestones where contract_id=${kit.q(home.contractId)} and kind='appraisal'`)[0]
   const feedLog = await kit.as(owner, () => milestones.listMilestoneSources())
@@ -174,6 +186,7 @@ async function signedUpdateReconcilesAndMismatchRefused(kit, expected, check) {
     feedRejected: feedLog.sources.find((row) => row.id === source.id).rejected_count,
     feedRefused: feedLog.deliveries.filter((row) => row.outcome === "refused").map((row) => row.reason_code).sort(),
     homeRefused: homeLog.deliveries.filter((row) => row.outcome === "refused").map((row) => row.reason_code).sort(),
+    memberReport: /only through the signed feed/.test(memberReport) ? "refused: feed only" : memberReport,
   })
   return { orgId: home.org.orgId, projectId: home.projectId }
 }
@@ -191,6 +204,8 @@ async function coGateNeedsEvidence(kit, expected, check) {
     sqlWaive: /cannot be waived/.test(sqlAttempt(kit, `update public.closing_checklist_items set status='waived', notes='Inspector approved by phone', completed_at=now(), completed_by=${kit.q(owner.userId)} where id=${kit.q(gate.id)}`)) ? "refused" : "allowed",
     otherHomesFile: /this home|another home/.test(await complete(homeFile(kit, other.org, other.projectId, "co-elsewhere.pdf"))) ? "refused" : "allowed",
     ownFile: await complete(homeFile(kit, home.org, home.projectId, "co.pdf")),
+    ungate: /identity and evidence rule are fixed/.test(sqlAttempt(kit, `update public.closing_checklist_items set is_gate=false where id=${kit.q(gate.id)}`)) ? "refused" : "allowed",
+    deleteGate: /part of the closing's record/.test(sqlAttempt(kit, `delete from public.closing_checklist_items where id=${kit.q(gate.id)}`)) ? "refused" : "allowed",
   }
   equal(check, "the certificate of occupancy gate completes only with a file on this home and cannot be waived", expected.expected.coGate, observed)
   return { orgId: home.org.orgId, projectId: home.projectId }

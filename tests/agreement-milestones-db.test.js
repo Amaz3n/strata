@@ -186,3 +186,36 @@ test("a report that does not match its agreement, buyer or home is refused, kept
   await db.query("update contracts set status = 'void' where id = $1", [home.contract.id])
   assert.equal((await report(db, feed.id, "void", base)).reason_code, "agreement_not_active")
 })
+
+test("a member never writes what a lender reported, and acts in their own name", async (t) => {
+  const db = await createDatabase(t)
+  const home = await soldHome(db, { snapshot: { financing: "financed" } })
+  const application = await home.milestone("lender:loan_application")
+  const coordinator = await seedMember(db, { orgId: home.orgId, role: "org_bookkeeper" })
+  const asMember = (member, sql, params) => asRole(db, { role: "authenticated", userId: member.userId }, (tx) => tx.query(sql, params))
+  await assert.rejects(asMember(coordinator, "update agreement_milestones set reported_status = 'satisfied', reported_at = now(), reported_on = current_date where id = $1", [application.id]),
+    /only through the signed feed/)
+  await asMember(coordinator, "update agreement_milestones set status = 'waived', resolved_on = current_date, resolved_at = now(), resolution_note = 'Buyer switched to cash at the table', resolved_by = null, updated_by = null where id = $1", [application.id])
+  const { rows: [row] } = await db.query("select resolved_by, updated_by from agreement_milestones where id = $1", [application.id])
+  assert.deepEqual([row.resolved_by, row.updated_by], [coordinator.userId, coordinator.userId])
+  const { rows: [history] } = await db.query("select source, actor_id from agreement_milestone_history where milestone_id = $1 and to_status = 'waived'", [application.id])
+  assert.deepEqual([history.source, history.actor_id], ["manual", coordinator.userId])
+})
+
+test("the certificate-of-occupancy gate stays a gate and is never deleted", async (t) => {
+  const db = await createDatabase(t)
+  const home = await soldHome(db)
+  const closing = await insert(db, "closings", { org_id: home.orgId, project_id: home.project.id, status: "scheduled", scheduled_date: "2026-11-01" })
+  const gate = await insert(db, "closing_checklist_items", { org_id: home.orgId, closing_id: closing.id, key: "final_inspection_co", title: "Final inspection / certificate of occupancy", is_gate: false, status: "open", sort_order: 2 })
+  assert.equal(gate.is_gate, true, "the certificate of occupancy is always a gate")
+  assert.equal(gate.evidence_required, true)
+  const owner = { role: "authenticated", userId: home.userId }
+  await assert.rejects(asRole(db, owner, (tx) => tx.query("update closing_checklist_items set is_gate = false where id = $1", [gate.id])), /identity and evidence rule are fixed/)
+  await assert.rejects(asRole(db, owner, (tx) => tx.query("delete from closing_checklist_items where id = $1", [gate.id])), /part of the closing's record/)
+  await assert.rejects(db.query("update closing_checklist_items set is_gate = false where id = $1", [gate.id]), /identity and evidence rule are fixed/)
+  // An optional item comes and goes, and the closing's own deletion takes its gates with it.
+  const optional = await insert(db, "closing_checklist_items", { org_id: home.orgId, closing_id: closing.id, title: "Walkthrough photos", is_gate: false, status: "open", sort_order: 9 })
+  await db.query("delete from closing_checklist_items where id = $1", [optional.id])
+  await db.query("delete from closings where id = $1", [closing.id])
+  assert.equal((await db.query("select count(*)::int n from closing_checklist_items where closing_id = $1", [closing.id])).rows[0].n, 0)
+})

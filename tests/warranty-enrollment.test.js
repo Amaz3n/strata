@@ -102,6 +102,15 @@ test('closing enrolls the program the agreement sold, not the default at settlem
  assert.equal(h.db.store.project_warranty_coverage[0].program_id,SOLD)
  assert.equal(h.db.store.project_warranty_coverage[0].terms_snapshot[0].expires_on,'2028-10-03')
 })
+test('closing enrolls on the terms the agreement captured, not the program as edited since',async()=>{
+ const h=harness(),SOLD='00000000-0000-4000-8000-0000000000aa'
+ h.db.store.warranty_programs.push({id:SOLD,org_id:ORG,is_default:false,is_active:true})
+ h.db.store.warranty_coverage_terms.push({org_id:ORG,program_id:SOLD,sort_order:1,...h.term,duration_months:6})
+ h.db.store.contracts=[{id:PROJECT,org_id:ORG,project_id:PROJECT,contract_type:'purchase_agreement',status:'active',signed_at:'2026-06-01',warranty_program_id:SOLD,warranty_terms_snapshot:[{...h.term,duration_months:24}]}]
+ await h.run()
+ assert.equal(h.db.store.project_warranty_coverage[0].program_id,SOLD)
+ assert.equal(h.db.store.project_warranty_coverage[0].terms_snapshot[0].expires_on,'2028-10-03')
+})
 test('a home whose closing was reversed enrolls again on its new closing date',async()=>{
  const h=harness()
  h.db.store.project_warranty_coverage=[{id:PACKAGE,org_id:ORG,project_id:PROJECT,program_id:PACKAGE,effective_date:'2026-09-01',effective_source:'closing',terms_snapshot:[{...h.term,expires_on:'2027-09-01'}],voided_at:'2026-09-20T00:00:00Z'}]

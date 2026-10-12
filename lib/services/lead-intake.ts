@@ -9,7 +9,7 @@ import { decryptIntegrationSecret, encryptIntegrationSecret } from "@/lib/integr
 import { shouldShowCustomBuildNavigation, normalizeProductTier } from "@/lib/product-tier"
 import { COOP_AGENT_ROLE, type InquiryChannel } from "@/lib/sales/activity"
 import { leadDealHref, type LeadDesk } from "@/lib/sales/lead-desk"
-import { leadContactKeys, leadDisplayName, type LeadContactKeys } from "@/lib/sales/lead-identity"
+import { leadContactKeys, leadDisplayName, phoneMatchIsSameBuyer, type LeadContactKeys } from "@/lib/sales/lead-identity"
 import { isLeadRoutingOutcome, routeLead, type LeadRoutingOutcome, type LeadRoutingRule } from "@/lib/sales/lead-routing"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -104,6 +104,7 @@ const receiptRowSchema = z.object({
   prospect_id: nullableString,
   matched_by: nullableString,
   prior_prospect_id: nullableString,
+  possible_duplicate_prospect_id: nullableString,
   owner_user_id: nullableString,
   routing_outcome: nullableString,
   routing_reason: nullableString,
@@ -111,13 +112,14 @@ const receiptRowSchema = z.object({
 })
 type ReceiptRow = z.infer<typeof receiptRowSchema>
 const RECEIPT_COLUMNS =
-  "id, org_id, source_id, idempotency_key, payload_hash, payload, status, failure_code, last_error, attempts, next_attempt_at, community_id, contact_name, contact_email, contact_phone, prospect_id, matched_by, prior_prospect_id, owner_user_id, routing_outcome, routing_reason, received_at"
+  "id, org_id, source_id, idempotency_key, payload_hash, payload, status, failure_code, last_error, attempts, next_attempt_at, community_id, contact_name, contact_email, contact_phone, prospect_id, matched_by, prior_prospect_id, possible_duplicate_prospect_id, owner_user_id, routing_outcome, routing_reason, received_at"
 
 const filingResultSchema = z.object({
   prospect_id: z.string(),
   outcome: z.enum(["filed", "merged"]),
   matched_by: nullableString.optional(),
   prior_prospect_id: nullableString.optional(),
+  possible_duplicate_prospect_id: nullableString.optional(),
   owner_user_id: nullableString.optional(),
   routing_outcome: nullableString.optional(),
   replayed: z.boolean(),
@@ -334,6 +336,7 @@ export async function recordLeadFiled(
         receipt_id: input.receiptId,
         matched_by: result.matched_by ?? null,
         returning_from: result.prior_prospect_id ?? null,
+        possible_duplicate_of: result.possible_duplicate_prospect_id ?? null,
         routing_outcome: result.routing_outcome ?? null,
       },
     }),
@@ -357,17 +360,20 @@ async function findDirectoryContact(service: SupabaseClient, orgId: string, keys
     if (byEmail) return byEmail
   }
   if (!keys.phone) return null
+  // A phone names the same person only when one side has no email; the cap
+  // bounds a number shared across a whole office.
   const { data, error } = await service
     .from("contacts")
-    .select("id")
+    .select("id, email")
     .eq("org_id", orgId)
     .eq("phone_normalized", keys.phone)
     .is("archived_at", null)
     .order("created_at", { ascending: true })
     .order("id", { ascending: true })
-    .limit(1)
+    .limit(25)
   if (error) throw new Error(`Failed to match contact by phone: ${error.message}`)
-  return z.array(z.object({ id: z.string() })).parse(data ?? [])[0]?.id ?? null
+  return z.array(z.object({ id: z.string(), email: z.string().nullable() })).parse(data ?? [])
+    .find((contact) => phoneMatchIsSameBuyer(keys.email, contact.email))?.id ?? null
 }
 
 async function attachCoopAgent(
@@ -819,7 +825,7 @@ async function orgShowsCustomBuildNavigation(service: SupabaseClient, orgId: str
 // The desk: what operators see and do
 // ---------------------------------------------------------------------------
 
-export type LeadAttentionKind = "failed" | "retrying" | "unrouted"
+export type LeadAttentionKind = "failed" | "retrying" | "unrouted" | "duplicate"
 
 export interface LeadAttentionRow {
   receiptId: string
@@ -848,9 +854,10 @@ export interface LeadAttention {
 
 /**
  * Deliveries a sales operator must deal with, in the desk's ambient scope:
- * failed (with why), still retrying (with when), and filed but unrouted while
- * the deal still has no owner. Row-level security keeps a division-limited
- * consultant to their own divisions.
+ * failed (with why), still retrying (with when), filed but unrouted while the
+ * deal still has no owner, and filed as a new deal that shares a phone with
+ * another buyer's open deal until someone reviews it. Row-level security keeps
+ * a division-limited consultant to their own divisions.
  */
 export async function listLeadAttention(
   input: { desk: LeadDesk; customBuildNavigation: boolean; communityIds?: string[] | null },
@@ -871,23 +878,35 @@ export async function listLeadAttention(
     return query.order("received_at", { ascending: false }).limit(ATTENTION_CAP + 1)
   }
   const display = `${RECEIPT_COLUMNS}, source:lead_intake_sources(name), community:communities(name)`
-  const [stuck, unrouted, canAct] = await Promise.all([
+  const [stuck, unrouted, duplicates, canAct] = await Promise.all([
     scoped(display).or("status.eq.failed,and(status.eq.received,attempts.gt.0)"),
     // "Unrouted" stops mattering the moment someone owns the deal.
     scoped(`${display}, prospect:prospects!lead_intake_receipts_prospect_fkey!inner(owner_user_id)`)
       .in("status", ["filed", "merged"])
       .eq("routing_outcome", "unrouted")
       .is("prospect.owner_user_id", null),
+    scoped(`${display}, duplicate:prospects!lead_intake_receipts_possible_duplicate_fkey(name)`)
+      .eq("status", "filed")
+      .not("possible_duplicate_prospect_id", "is", null)
+      .is("resolved_at", null),
     requireAnyPermission(input.desk === "sales" ? ["sales.manage"] : ["pipeline.write"], context).then(() => true, () => false),
   ])
-  if (stuck.error || unrouted.error) throw new Error(`Failed to load lead deliveries: ${(stuck.error ?? unrouted.error)?.message}`)
+  const failure = stuck.error ?? unrouted.error ?? duplicates.error
+  if (failure) throw new Error(`Failed to load lead deliveries: ${failure.message}`)
   const named = z.object({ name: z.string() }).nullable()
-  const rowsSchema = z.array(receiptRowSchema.extend({ source: named, community: named }))
-  const rows = [...rowsSchema.parse(stuck.data ?? []), ...rowsSchema.parse(unrouted.data ?? [])]
-    .sort((a, b) => b.received_at.localeCompare(a.received_at))
+  const rowsSchema = z.array(receiptRowSchema.extend({ source: named, community: named, duplicate: named.optional() }))
+  const tag = (data: unknown, kind: (row: z.infer<typeof rowsSchema>[number]) => LeadAttentionKind) =>
+    rowsSchema.parse(data ?? []).map((row) => ({ row, kind: kind(row) }))
+  const tagged = [
+    ...tag(stuck.data, (row) => (row.status === "failed" ? "failed" : "retrying")),
+    ...tag(unrouted.data, () => "unrouted"),
+    ...tag(duplicates.data, () => "duplicate"),
+  ]
+  // A lead both unrouted and flagged shows once, as unrouted: assigning it opens the deal either way.
+  const rows = tagged.filter((entry, index) => tagged.findIndex((other) => other.row.id === entry.row.id) === index)
+    .sort((a, b) => b.row.received_at.localeCompare(a.row.received_at))
 
-  const attention = rows.map((row): LeadAttentionRow => {
-    const kind: LeadAttentionKind = row.status === "failed" ? "failed" : row.status === "received" ? "retrying" : "unrouted"
+  const attention = rows.map(({ row, kind }): LeadAttentionRow => {
     return {
       receiptId: row.id,
       kind,
@@ -899,7 +918,9 @@ export async function listLeadAttention(
       communityId: row.community_id,
       communityName: row.community?.name ?? null,
       failureCode: row.failure_code,
-      detail: kind === "unrouted" ? row.routing_reason : row.last_error,
+      detail: kind === "unrouted" ? row.routing_reason
+        : kind === "duplicate" ? `Same phone as ${row.duplicate?.name ?? "another buyer"}'s open deal, different email`
+        : row.last_error,
       attempts: row.attempts,
       nextAttemptAt: row.next_attempt_at,
       routingOutcome: isLeadRoutingOutcome(row.routing_outcome) ? row.routing_outcome : null,
@@ -912,8 +933,8 @@ export async function listLeadAttention(
   const count = (kind: LeadAttentionKind) => visible.filter((row) => row.kind === kind).length
   return {
     rows: visible,
-    counts: { failed: count("failed"), retrying: count("retrying"), unrouted: count("unrouted") },
-    truncated: attention.length > ATTENTION_CAP || (stuck.data ?? []).length > ATTENTION_CAP || (unrouted.data ?? []).length > ATTENTION_CAP,
+    counts: { failed: count("failed"), retrying: count("retrying"), unrouted: count("unrouted"), duplicate: count("duplicate") },
+    truncated: attention.length > ATTENTION_CAP || [stuck, unrouted, duplicates].some((result) => (result.data ?? []).length > ATTENTION_CAP),
     canAct,
   }
 }
@@ -1008,6 +1029,52 @@ export async function dismissLeadReceipt(input: DismissLeadReceiptInput, orgId?:
       entityId: receipt.id,
       before: { status: receipt.status },
       after: { status: "dismissed", resolution_note: parsed.note, resolved_at: resolvedAt },
+    }),
+  ])
+}
+
+/**
+ * A lead flagged as a possible duplicate (same phone, different email) was
+ * looked at and is its own buyer. Merging two deals that are one buyer stays
+ * the pipeline's job; this only takes the flag off the desk.
+ */
+export async function confirmLeadNotDuplicate(receiptId: string, orgId?: string): Promise<void> {
+  const id = leadReceiptIdSchema.parse(receiptId)
+  const context = await requireOrgContext(orgId)
+  await requireAnyPermission(DEAL_WRITE_PERMISSIONS, context)
+  const receipt = await loadVisibleReceipt(context, id)
+  if (receipt.status !== "filed" || !receipt.possible_duplicate_prospect_id) throw new Error("This lead is not flagged as a possible duplicate.")
+
+  const resolvedAt = new Date().toISOString()
+  const note = "Reviewed: not the same buyer"
+  const { data, error } = await createServiceSupabaseClient()
+    .from("lead_intake_receipts")
+    .update({ resolved_by: context.userId, resolved_at: resolvedAt, resolution_note: note })
+    .eq("id", receipt.id)
+    .eq("status", "filed")
+    .is("resolved_at", null)
+    .select("id")
+    .maybeSingle()
+  if (error) throw new Error(`Failed to clear the duplicate flag: ${error.message}`)
+  if (!data) throw new Error("This lead changed. Refresh and try again.")
+
+  await Promise.all([
+    recordEvent({
+      orgId: context.orgId,
+      actorId: context.userId,
+      eventType: "lead_duplicate_reviewed",
+      entityType: "lead_intake_receipt",
+      entityId: receipt.id,
+      payload: { prospect_id: receipt.prospect_id, possible_duplicate_of: receipt.possible_duplicate_prospect_id },
+    }),
+    recordAudit({
+      orgId: context.orgId,
+      actorId: context.userId,
+      action: "update",
+      entityType: "lead_intake_receipt",
+      entityId: receipt.id,
+      before: { resolved_at: null },
+      after: { resolved_at: resolvedAt, resolution_note: note },
     }),
   ])
 }

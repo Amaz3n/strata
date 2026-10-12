@@ -27,7 +27,8 @@ function hostAndPath(url: string | null) {
  * Where the buyer came from, every time they came: the first touch and each
  * later submission that merged into this deal, newest last, with campaign and
  * landing page. A buyer won or lost before says so, because "came back" is the
- * most useful thing a consultant can know before calling.
+ * most useful thing a consultant can know before calling. A lead that shares a
+ * phone with another buyer's deal (different email) says so until reviewed.
  */
 export function DealOverviewAttribution({ history }: { history: ProspectAttributionHistory | null }) {
   const touches = history?.touches ?? []
@@ -40,6 +41,12 @@ export function DealOverviewAttribution({ history }: { history: ProspectAttribut
         <p className="mb-3 border-l-2 border-l-warning bg-warning/5 px-2.5 py-1.5 text-xs">
           Returning buyer — {history.returningFrom.status === "won" ? "bought" : "lost"} on an earlier deal
           {history.returningFrom.closedAt ? ` (${formatDealDate(history.returningFrom.closedAt)})` : ""}.
+        </p>
+      ) : null}
+      {history?.possibleDuplicateOf ? (
+        <p className="mb-3 border-l-2 border-l-warning bg-warning/5 px-2.5 py-1.5 text-xs">
+          Possible duplicate — same phone as {history.possibleDuplicateOf.name ?? "another buyer"}&apos;s open deal, with a different email.
+          Filed as its own deal; clear the flag on the website leads band once you know.
         </p>
       ) : null}
       {touches.length === 0 ? (

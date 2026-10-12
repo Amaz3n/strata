@@ -9,9 +9,11 @@ import { assertAgreementMilestonesClear } from "@/lib/services/agreement-milesto
 import { closingCommissionRefusal } from "@/lib/services/sales-commissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
-const itemSchema = z.object({ id: z.string().uuid(), title: z.string(), is_gate: z.boolean(), evidence_required: z.boolean(),
+const itemSchema = z.object({ id: z.string().uuid(), key: z.string().nullable(), title: z.string(), is_gate: z.boolean(), evidence_required: z.boolean(),
   status: z.enum(["open", "complete", "waived"]), notes: z.string().nullable(),
   file_id: z.string().uuid().nullable(), completed_at: z.string().nullable(), completed_by: z.string().uuid().nullable() })
+
+const CERTIFICATE_OF_OCCUPANCY_GATE = "final_inspection_co"
 
 type ClosingScope = {
   supabase: SupabaseClient; orgId: string; userId: string; closingId: string; projectId: string
@@ -29,7 +31,7 @@ export async function assertClosingReadiness(input: ClosingScope) {
   // closing; the closings trigger refuses the same transition in the database.
   await assertAgreementMilestonesClear(input.supabase, input.orgId, input.projectId, "closing")
   const [items, executed, punch, waivers, commission] = await Promise.all([
-    readAllRows((from, to) => input.supabase.from("closing_checklist_items").select("id,title,is_gate,evidence_required,status,notes,file_id,completed_at,completed_by")
+    readAllRows((from, to) => input.supabase.from("closing_checklist_items").select("id,key,title,is_gate,evidence_required,status,notes,file_id,completed_at,completed_by")
       .eq("org_id", input.orgId).eq("closing_id", input.closingId).order("id").range(from, to), { cap: 1001, label: "Unable to verify closing checklist" }),
     hasExecutedPurchaseAgreement(input.projectId, input.orgId),
     // An item blocks until it is closed, and a verification-required item
@@ -45,6 +47,9 @@ export async function assertClosingReadiness(input: ClosingScope) {
   if (items.truncated) throw new Error("Closing checklist exceeds the supported limit; reconcile it before settlement")
   const gates = z.array(itemSchema).parse(items.rows).filter(item => item.is_gate)
   if (!gates.length) throw new Error("Closing readiness gates are missing")
+  // The certificate of occupancy is the one gate every home closes through; the
+  // checklist guard keeps it a gate and never lets it be deleted.
+  if (!gates.some(gate => gate.key === CERTIFICATE_OF_OCCUPANCY_GATE)) throw new Error("The final inspection / certificate of occupancy gate is missing from this closing")
   for (const gate of gates) {
     if (gate.status === "open") throw new Error(`Complete or waive the closing gate: ${gate.title}`)
     if (!gate.completed_by || !gate.completed_at || !Number.isFinite(Date.parse(gate.completed_at))) throw new Error(`Closing gate completion evidence is missing: ${gate.title}`)

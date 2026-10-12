@@ -88,6 +88,9 @@ async function termsApprovedWithTheAgreement(kit, expected, check) {
   const approved = await kit.as(org.owner, () => commissions.approveCommissionPlan({ planId: proposed.plan.id }))
   const holdAfter = (await kit.as(org.owner, () => commissions.getAgreementCommissionPlan(house.contractId))).signingRefusal
   const directEdit = kit.rows(`select count(*)::int n from public.sales_commission_plan_lines where plan_id=${kit.q(proposed.plan.id)}`)[0].n
+  // Taking approved terms away is decided like granting them: "none" waits for a second person.
+  const none = await kit.as(org.consultant, () => commissions.proposeCommissionPlan({ contractId: house.contractId, plan: { coopBroker: "none", lines: [] } }))
+  const consultantApprovesNone = await refuse(kit, org.consultant, () => commissions.approveCommissionPlan({ planId: none.plan.id }))
   equal(check, "commission terms are approved by a second person and then hold nothing", expected.expected, {
     proposedStatus: proposed.plan.status,
     estimateTotalCents: proposed.estimateTotalCents,
@@ -96,6 +99,8 @@ async function termsApprovedWithTheAgreement(kit, expected, check) {
     approvedStatus: approved.plan.status,
     holdAfterApproval: holdAfter,
     lines: directEdit,
+    noneAfterApproval: none.plan.status,
+    consultantApprovesNone,
   })
   return { orgId: org.orgId }
 }
@@ -110,6 +115,14 @@ async function settlementCreatesPayablesOnce(kit, expected, check) {
   await Promise.all([1, 2].map(() => kit.as(org.owner, () => closings.recoverClosingCompletion(house.projectId, closingId)).catch(() => {})))
   await kit.drainOutbox(org.orgId)
   const net = kit.postedNet(org.orgId)
+  // AP approves the release; a consultant writing the bill's status directly is refused.
+  const brokerBill = kit.rows(`select id from public.vendor_bills where metadata->>'closing_id'=${kit.q(closingId)}`)[0]
+  const consultantApprovesBill = await lot().refusal(() => kit.as(org.consultant, async () => {
+    const { supabase } = await require("../../../lib/services/context").requireOrgContext()
+    const { data, error } = await supabase.from("vendor_bills").update({ status: "approved", approved_by: org.consultant.userId, approved_at: new Date().toISOString() }).eq("id", brokerBill.id).select("id")
+    if (error) throw new Error(error.message)
+    if (!data?.length) throw new Error("no row updated")
+  }))
   const jobCost = kit.rows(`select count(*)::int n from public.job_cost_entries j join public.bill_lines l on l.id::text=j.source_id::text
     join public.vendor_bills b on b.id=l.bill_id where b.metadata ? 'sales_commission_obligation_id' and j.org_id=${kit.q(org.orgId)}`)[0].n
   equal(check, "settlement owes each line once, on the agreement plus the signed change order", expected.expected, {
@@ -118,6 +131,8 @@ async function settlementCreatesPayablesOnce(kit, expected, check) {
     bills: kit.rows(`select count(*)::int n from public.vendor_bills where metadata->>'closing_id'=${kit.q(closingId)}`)[0].n,
     accrued2240: -(net["2240"] ?? 0),
     commissionJobCostEntries: jobCost,
+    consultantApprovesBill,
+    billStatus: kit.rows(`select status from public.vendor_bills where id=${kit.q(brokerBill.id)}`)[0].status,
   })
   return { orgId: org.orgId, closingId }
 }

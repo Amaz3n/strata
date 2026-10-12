@@ -9,6 +9,7 @@ import { booksDigest } from "@/lib/services/books/hash"
 import { readAllRows } from "@/lib/land/paging"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
 import {
   buildClosingInvoiceLines,
@@ -24,7 +25,7 @@ import { SETTLEMENT_STATEMENT_LINK_ROLE } from "@/lib/invoices/attachment-roles"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { authorizedAgreementTerms } from "@/lib/sales/agreement-versions"
-import { ensureSalesCommissionPayables, unwindSalesCommissionsForClosing } from "@/lib/services/sales-commissions"
+import { ensureSalesCommissionPayables, assertClosingCommissionsUnwindable, recordClosingCommissionUnwind } from "@/lib/services/sales-commissions"
 import { loadClosingBlockersForLot } from "@/lib/services/land-entitlements"
 import { hasPermission } from "@/lib/services/permissions"
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
@@ -638,9 +639,10 @@ export async function reverseClosing(input: { closingId: string; reason: string;
   if (error || !closing) throw new Error("Closing not found")
   await authorizeClosingProject({ ...context, projectId: closing.project_id, closingId: closing.id })
   if (closing.status !== "closed" || !closing.closing_invoice_id) throw new Error("Only a recorded closing can be reversed")
-  // Commissions come back first: a commission bill in a payment run refuses the
-  // reversal before any money moves.
-  await unwindSalesCommissionsForClosing({ orgId: context.orgId, userId: context.userId, closingId: closing.id, reason, date: input.date })
+  // A commission bill in a payment run would be paid anyway: refused before any
+  // money moves. The commissions themselves are unwound inside the reversal's
+  // transaction below, so a reversal that fails leaves them owed.
+  await assertClosingCommissionsUnwindable({ orgId: context.orgId, closingId: closing.id })
   const service = createServiceSupabaseClient()
   const { data: invoice, error: invoiceError } = await service.from("invoices").select("id, total_cents").eq("org_id", context.orgId).eq("id", closing.closing_invoice_id).single()
   if (invoiceError || !invoice) throw new Error("Closing invoice not found")
@@ -662,11 +664,23 @@ export async function reverseClosing(input: { closingId: string; reason: string;
   }
   const { data, error: reverseError } = await service.rpc("reverse_books_home_closing", { p_org_id: context.orgId, p_closing_id: closing.id, p_date: input.date, p_reason: reason, p_actor_id: context.userId })
   if (reverseError) throw new Error(reverseError.message)
+  const reversed = reversalResultSchema.parse(data)
   await projectJournal(context.orgId, {})
+  // The payroll commissions' Books entries follow from the outbox job the
+  // reversal queued in its transaction (settleCommissionUnwindBooks).
+  await recordClosingCommissionUnwind({ orgId: context.orgId, userId: context.userId, closingId: closing.id, reason, outcomes: reversed.commissions })
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_reversed", entityType: "closing", entityId: closing.id, payload: { reason, date: input.date, project_id: closing.project_id } })
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "closing", entityId: closing.id, before: closing, after: data })
-  return data as { closingId: string; projectId: string; inventoryEntryId: string | null; warrantyEntryId: string | null }
+  return { closingId: reversed.closingId, projectId: reversed.projectId, inventoryEntryId: reversed.inventoryEntryId, warrantyEntryId: reversed.warrantyEntryId }
 }
+
+const reversalResultSchema = z.object({
+  closingId: z.string(),
+  projectId: z.string(),
+  inventoryEntryId: z.string().nullable(),
+  warrantyEntryId: z.string().nullable(),
+  commissions: z.array(z.unknown()).default([]),
+})
 
 export interface BacklogReportRow {
   community_id: string

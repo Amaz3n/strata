@@ -62,7 +62,12 @@ async function sale(db) {
     }))
     return rpc(db, "record_sales_commission_payables", { p_org_id: orgId, p_closing_id: closing.id, p_actor_id: owner.userId, p_rows: JSON.stringify(rows) })
   }
-  return { orgId, owner, consultant, colleague, project, brokerage, contract, as, propose, approve, plan, close, record, planLines }
+  /** Puts a member on the home's team, as a consultant selling it or a PM building it would be. */
+  const onHome = async (member, roleKey = "org_sales_agent") => {
+    const { rows: [role] } = await db.query("select id from roles where key = $1", [roleKey])
+    await insert(db, "project_members", { org_id: orgId, project_id: project.id, user_id: member.userId, role_id: role.id, status: "active" })
+  }
+  return { orgId, owner, consultant, colleague, project, brokerage, contract, as, propose, approve, plan, close, record, planLines, onHome }
 }
 
 test("commission terms are approved by a second person who is neither the proposer nor a payee", async (t) => {
@@ -207,6 +212,101 @@ test("voiding an agreement before it closes voids its commission terms", async (
   const planId = await home.propose(home.consultant)
   await db.query("update contracts set status = 'void' where id = $1", [home.contract.id])
   assert.equal((await home.plan(planId)).status, "void")
+})
+
+test("replacing approved terms with no commissions waits for a second person", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const planId = await home.propose(home.consultant)
+  await home.approve(home.owner, planId)
+  const noneId = await home.propose(home.consultant, [], "none")
+  assert.equal((await home.plan(noneId)).status, "proposed", "the approved broker terms are not dropped by the proposer alone")
+  await assert.rejects(home.approve(home.consultant, noneId), /needs sales.commission_approve|cannot approve/)
+  const proposedByOwner = await home.propose(home.owner, [], "none")
+  await assert.rejects(home.approve(home.owner, proposedByOwner), /proposed commission terms cannot approve/)
+  const ownerAdmin = await seedMember(db, { orgId: home.orgId, role: "org_admin" })
+  await home.approve(ownerAdmin, proposedByOwner)
+  assert.equal((await home.plan(proposedByOwner)).status, "approved")
+})
+
+test("a revision is refused when it would drop terms the proposer cannot see", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  // The colleague's own comp line, which the consultant cannot read.
+  const planId = await home.propose(home.owner, [
+    { kind: "sales_consultant", payout_channel: "payroll", payee_user_id: home.colleague.userId, basis: "flat", flat_cents: 1_000_00 },
+  ], "none")
+  await assert.rejects(home.propose(home.consultant, [], "none"), /terms you cannot see/)
+  assert.equal((await home.plan(planId)).status, "proposed")
+})
+
+test("AP's authority moves a commission bill; nobody else writes its status, and a clawback credit is never touched", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const planId = await home.propose(home.consultant)
+  await home.approve(home.owner, planId)
+  const closing = await home.close()
+  const [broker] = await home.record(closing, planId)
+  await home.onHome(home.consultant)
+  const write = (member, sql) => asRole(db, home.as(member), (tx) => tx.query(sql, sql.includes("$2") ? [broker.vendor_bill_id, member.userId] : [broker.vendor_bill_id]))
+  await assert.rejects(write(home.consultant, "update vendor_bills set status = 'approved', approved_at = now(), approved_by = $2 where id = $1"), /needs bill.approve/)
+  await assert.rejects(write(home.consultant, "update vendor_bills set status = 'paid', paid_cents = total_cents where id = $1"), /needs payment.release/)
+  await assert.rejects(write(home.owner, "update vendor_bills set status = 'approved', approved_at = now(), approved_by = gen_random_uuid() where id = $1"), /own name/)
+  await write(home.owner, "update vendor_bills set status = 'approved', approved_at = now(), approved_by = $2 where id = $1")
+  await write(home.owner, "update vendor_bills set status = 'partial', paid_cents = 400000 where id = $1")
+  const outcome = await rpc(db, "unwind_sales_commission", { p_org_id: home.orgId, p_obligation_id: broker.id, p_actor_id: home.owner.userId, p_reason: "Buyer financing fell through", p_date: "2026-10-12" })
+  await assert.rejects(asRole(db, home.as(home.owner), (tx) => tx.query("update vendor_bills set status = 'paid' where id = $1", [outcome.credit_bill_id])), /clawback credit/)
+})
+
+test("a 1099 consultant's commission bill is read by the payee, AP and approvers, not by everyone on the home", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const ownCompany = await insert(db, "companies", { org_id: home.orgId, name: "Consultant LLC" })
+  const planId = await home.propose(home.owner, [
+    { kind: "sales_consultant", payout_channel: "accounts_payable", payee_user_id: home.consultant.userId, payee_company_id: ownCompany.id, basis: "flat", flat_cents: 3_000_00 },
+  ], "none")
+  const approver = await seedMember(db, { orgId: home.orgId, role: "org_admin" })
+  await home.approve(approver, planId)
+  await home.record(await home.close(), planId)
+  const pm = await seedMember(db, { orgId: home.orgId, role: "pm" })
+  await home.onHome(home.consultant)
+  await home.onHome(home.colleague)
+  await home.onHome(pm, "pm")
+  const visible = async (member) => {
+    const bills = await asRole(db, home.as(member), (tx) => tx.query("select id from vendor_bills where metadata ? 'sales_commission_obligation_id'"))
+    const lines = await asRole(db, home.as(member), (tx) => tx.query("select id from bill_lines where metadata ? 'sales_commission_obligation_id'"))
+    return [bills.rows.length, lines.rows.length]
+  }
+  assert.deepEqual(await visible(home.consultant), [1, 1], "the payee")
+  assert.deepEqual(await visible(home.owner), [1, 1])
+  assert.deepEqual(await visible(home.colleague), [0, 0], "another consultant")
+  assert.deepEqual(await visible(pm), [0, 0], "a project manager who reads bills")
+})
+
+test("the closing reversal unwinds commissions in its own transaction and queues their Books side", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const planId = await home.propose(home.consultant)
+  await home.approve(home.owner, planId)
+  const closing = await home.close()
+  await home.record(closing, planId)
+  const invoice = await insert(db, "invoices", { org_id: home.orgId, project_id: home.project.id, invoice_number: "CL-12", title: "Closing", status: "sent", total_cents: 100_00, balance_due_cents: 0, due_date: "2026-10-09" })
+  await db.query("set session_replication_role = replica")
+  await db.query("update closings set closing_invoice_id = $2 where id = $1", [closing.id, invoice.id])
+  await db.query("set session_replication_role = origin")
+  const reverse = () => rpc(db, "reverse_books_home_closing", { p_org_id: home.orgId, p_closing_id: closing.id, p_date: "2026-10-12", p_reason: "Buyer financing fell through", p_actor_id: home.owner.userId })
+  const statuses = async () => (await db.query("select status from sales_commission_obligations where closing_id = $1 and adjusts_obligation_id is null order by line_no", [closing.id])).rows.map((row) => row.status)
+
+  // The sale is not yet credited, so the reversal fails, and the commissions stay owed.
+  await assert.rejects(reverse(), /credit the sale in full/)
+  assert.deepEqual(await statuses(), ["open", "open"])
+
+  await insert(db, "receivable_adjustments", { org_id: home.orgId, project_id: home.project.id, invoice_id: invoice.id, adjustment_type: "credit_memo", amount_cents: 100_00, reason: "Closing reversed" })
+  const result = await reverse()
+  assert.deepEqual(result.commissions.map((row) => [row.payout_channel, row.action]), [["accounts_payable", "cleared"], ["payroll", "cleared"]])
+  assert.deepEqual(await statuses(), ["cleared", "cleared"])
+  const { rows: jobs } = await db.query("select payload from outbox where job_type = 'settle_sales_commission_unwind_books'")
+  assert.deepEqual(jobs.map((row) => row.payload.closing_id), [closing.id])
 })
 
 test("sales consultants propose commission terms; only owners and admins approve them", async (t) => {

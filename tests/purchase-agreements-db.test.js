@@ -216,6 +216,50 @@ test("an amendment needs the buyer's evidence, cannot be voided or repriced, and
   assert.equal((await sale.versions()).length, 2)
 })
 
+test("a member's own approval of an amendment needs change_order.approve and the buyer's signed copy on file, never a signature flag", async (t) => {
+  const sale = await signedAgreement(t)
+  const { db, orgId, owner, project } = sale
+  const superintendent = await seedMember(db, { orgId, role: "org_project_lead" })
+  const { rows: [lead] } = await db.query("select id from roles where key = 'org_project_lead'")
+  await insert(db, "project_members", { org_id: orgId, project_id: project.id, user_id: superintendent.userId, role_id: lead.id, status: "active" })
+  const asMember = (member, id, metadata) => asRole(db, { role: "authenticated", userId: member.userId }, (tx) =>
+    tx.query("update change_orders set status = 'approved', lifecycle = 'approved', approved_at = now(), approved_by = $3, metadata = $2 where id = $1",
+      [id, JSON.stringify(metadata), member.userId]))
+  const patio = await sale.changeOrder()
+  await assert.rejects(asMember(owner, patio.id, { approved_via_envelope: "true" }), /recorded when the buyer signs/)
+  await assert.rejects(asMember(owner, patio.id, { approval_method: "portal_native_signature" }), /recorded when the buyer signs/)
+  await assert.rejects(asMember(owner, patio.id, { approval_method: "manual_offline", approved_signed_file_id: "00000000-0000-4000-8000-000000000001" }), /file on this home/)
+  const elsewhere = await insert(db, "projects", { org_id: orgId, name: "Lot 48" })
+  const foreign = await insert(db, "files", { org_id: orgId, project_id: elsewhere.id, file_name: "other.pdf", storage_path: `${orgId}/other.pdf`, mime_type: "application/pdf" })
+  await assert.rejects(asMember(owner, patio.id, { approval_method: "manual_offline", approved_signed_file_id: foreign.id }), /file on this home/)
+  const signed = await insert(db, "files", { org_id: orgId, project_id: project.id, file_name: "signed.pdf", storage_path: `${orgId}/signed.pdf`, mime_type: "application/pdf" })
+  await assert.rejects(asMember(superintendent, patio.id, { approval_method: "manual_offline", approved_signed_file_id: signed.id }), /needs change_order.approve/)
+  await asMember(owner, patio.id, { approval_method: "manual_offline", approved_signed_file_id: signed.id })
+  assert.equal((await sale.versions()).length, 2)
+  // Binding to the agreement happens at approval, never on a member's insert.
+  await assert.rejects(asRole(db, { role: "authenticated", userId: owner.userId }, (tx) =>
+    tx.query("insert into change_orders (org_id, project_id, contract_id, title, status, total_cents) values ($1, $2, $3, 'Pool', 'approved', 100)", [orgId, project.id, sale.contract.id])),
+  /set when the buyer's signed approval is recorded/)
+})
+
+test("a member never creates, executes, re-terms or voids a purchase agreement through the data API", async (t) => {
+  const sale = await signedAgreement(t)
+  const { db, orgId, owner, project } = sale
+  const asOwner = (sql, params) => asRole(db, { role: "authenticated", userId: owner.userId }, (tx) => tx.query(sql, params))
+  const draft = await insert(db, "contracts", { org_id: orgId, project_id: (await insert(db, "projects", { org_id: orgId, name: "Lot 50" })).id,
+    title: "Draft", status: "draft", contract_type: "purchase_agreement", total_cents: 300_000_00, snapshot: JSON.stringify({ purchase_agreement: {} }) })
+  await assert.rejects(asOwner("insert into contracts (org_id, project_id, title, status, contract_type, total_cents) values ($1, $2, 'Forged', 'active', 'purchase_agreement', 1)", [orgId, project.id]), /created from its reservation/)
+  await assert.rejects(asOwner("update contracts set status = 'active', signed_at = now() where id = $1", [draft.id]), /only through the sales desk/)
+  await assert.rejects(asOwner("update contracts set snapshot = '{}'::jsonb, buyer_contact_id = null, total_cents = 1 where id = $1", [draft.id]), /only through the sales desk/)
+  await assert.rejects(asOwner("update contracts set status = 'void' where id = $1", [sale.contract.id]), /only through the sales desk/)
+  await assert.rejects(asOwner("delete from contracts where id = $1", [draft.id]), /a record; cancel the sale/)
+  // A member still edits an ordinary contract.
+  const fixedPrice = await insert(db, "contracts", { org_id: orgId, project_id: project.id, title: "Prime", status: "draft", contract_type: "fixed", total_cents: 100 })
+  await asOwner("update contracts set status = 'active', total_cents = 200 where id = $1", [fixedPrice.id])
+  const { rows: [{ status }] } = await db.query("select status from contracts where id = $1", [sale.contract.id])
+  assert.equal(status, "active")
+})
+
 test("cancelling a sale voids it and reconciles what it committed, once, against the plan that was reviewed", async (t) => {
   const sale = await signedAgreement(t)
   const { db, orgId } = sale

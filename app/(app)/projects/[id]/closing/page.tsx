@@ -57,7 +57,9 @@ async function ProjectClosingData({ params }: ClosingPageProps) {
   ])
   if (!detail) notFound()
   const contractId = detail.agreement?.id ? String(detail.agreement.id) : null
+  // The slots render among the workbench's own children; Flight can hand them
+  // over as lazy references, which only a key keeps out of the list warning.
   return <><div className="border-b p-4 text-sm"><a className="underline" href={waivers.href}>Final waivers</a> · {waivers.ready?"Ready":`${waivers.missing.length} outstanding`}</div><Suspense fallback={null}><ProjectInventoryLink projectId={id} /></Suspense><ClosingWorkbench key={`${id}:${detail.closing.id}`} projectId={id} detail={detail} milestones={milestones} canCancelSale={canManageSale}
-    agreementRecord={contractId ? <Suspense fallback={<PurchaseAgreementRecordSkeleton />}><PurchaseAgreementRecord contractId={contractId} canManageSale={canManageSale} /></Suspense> : null}
-    commissions={<Suspense fallback={<ClosingCommissionsSkeleton />}><ClosingCommissionsSection projectId={id} /></Suspense>} /></>
+    agreementRecord={contractId ? <Suspense key="agreement-record" fallback={<PurchaseAgreementRecordSkeleton />}><PurchaseAgreementRecord contractId={contractId} canManageSale={canManageSale} /></Suspense> : null}
+    commissions={<Suspense key="commissions" fallback={<ClosingCommissionsSkeleton />}><ClosingCommissionsSection projectId={id} /></Suspense>} /></>
 }

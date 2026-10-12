@@ -83,12 +83,14 @@ test("a reversed closing clears an unpaid commission and credits a paid one, but
 })
 
 test("commission terms are approved by a second person who is not a payee", () => {
-  const base = { actorUserId: "manager", proposedBy: "consultant", payeeUserIds: ["consultant"], lineCount: 2, canApprove: true }
+  const base = { actorUserId: "manager", proposedBy: "consultant", payeeUserIds: ["consultant"], canApprove: true }
   assert.equal(commissionApprovalRefusal(base), null)
   assert.match(commissionApprovalRefusal({ ...base, actorUserId: "consultant", payeeUserIds: [] }), /proposed/)
   assert.match(commissionApprovalRefusal({ ...base, payeeUserIds: ["manager"] }), /payee/)
   assert.match(commissionApprovalRefusal({ ...base, canApprove: false }), /permission/)
-  assert.equal(commissionApprovalRefusal({ ...base, lineCount: 0, actorUserId: "consultant", canApprove: false }), null, "declaring none stands on its own")
+  // A waiting "no commissions" replaces approved terms: taking them away is a second person's decision too.
+  assert.match(commissionApprovalRefusal({ ...base, payeeUserIds: [], actorUserId: "consultant" }), /proposed/)
+  assert.match(commissionApprovalRefusal({ ...base, payeeUserIds: [], canApprove: false }), /permission/)
 })
 
 test("signing and closing wait for approved terms or an explicit none", () => {

@@ -27,14 +27,17 @@
       }
     },
     "signing-is-refused-without-a-required-addendum": {
-      "derivation": "A draft with no signing document is not prepared. Publishing a newly required flood addendum makes it stale; a refresh against a hash the seller did not review is refused; the refresh on the reviewed packet clears it (the stack has no storage, so signing stays unprepared) and leaves four documents (community agreement, HOA, warranty v2, flood). Withdrawing the flood version makes it stale again.",
+      "derivation": "A draft with no signing document is not prepared. Publishing a newly required flood addendum makes it stale; a refresh against a hash the seller did not review is refused; the refresh on the reviewed packet clears it (the stack has no storage, so signing stays unprepared) and leaves four documents (community agreement, HOA, warranty v2, flood). Withdrawing the flood version makes it stale again. EP05 review: the sales consultant writing the draft row directly through the data API (executing it, or replacing its snapshot and price) is refused by the database, so it stays a draft.",
       "expected": {
         "before": "not_prepared",
         "afterRequired": "packet_stale",
         "staleRefresh": "AGREEMENT_PACKET_CHANGED",
         "afterRefresh": "not_prepared",
         "afterWithdrawal": "packet_stale",
-        "refreshedDocuments": 4
+        "refreshedDocuments": 4,
+        "memberActivates": "refused: sales desk only",
+        "memberEditsSnapshot": "refused: sales desk only",
+        "stillDraft": "draft"
       }
     },
     "no-agreement-without-a-published-template": {
@@ -64,11 +67,13 @@
       }
     },
     "amendment-requires-the-buyers-signature": {
-      "derivation": "An offline approval without the buyer's signed copy is refused; once the buyer signs, the amendment cannot be voided by the service or by SQL. After the sale is cancelled, a change the buyer signs amends nothing, so the voided agreement keeps its original and one amendment.",
+      "derivation": "An offline approval without the buyer's signed copy is refused; once the buyer signs, the amendment cannot be voided by the service or by SQL. After the sale is cancelled, a change the buyer signs amends nothing, so the voided agreement keeps its original and one amendment. EP05 review: the owner writing the approval directly through the data API with an e-signature flag, or with a signed-copy id that is no file on the home, is refused.",
       "expected": {
         "unsignedApproval": "refused: needs the buyer's signed copy",
         "voidAmendment": "refused: amendment cannot be voided",
         "sqlVoid": "refused: amendment cannot be voided",
+        "forgedEnvelope": "refused: needs the buyer's signature",
+        "forgedSignedCopy": "refused: needs the signed copy on file",
         "versionsAfterCancellation": ["original", "amendment"]
       }
     },
@@ -82,10 +87,11 @@
       }
     },
     "cancelling-a-sale-reconciles-what-was-committed": {
-      "derivation": "A $10,000 received deposit, one unsigned $2,000 change order and a projected closing are what the plan shows. A stale plan hash is refused. Cancelling with a split forfeits $2,500 and refunds $7,500, voids the agreement and the unsigned change order, releases the reservation, cancels the closing and records one receipt; a second cancellation finds nothing to cancel.",
+      "derivation": "A $10,000 received deposit, one unsigned $2,000 change order and a projected closing are what the plan shows. A stale plan hash is refused. Cancelling with a split forfeits $2,500 and refunds $7,500, voids the agreement and the unsigned change order, releases the reservation, cancels the closing and records one receipt; a second cancellation finds nothing to cancel. EP05 review: voiding the agreement row directly through the data API is refused, so the deposit, lot and receipt are always reconciled by the cancellation.",
       "expected": {
         "plan": { "availableCents": 1000000, "pendingChangeOrders": 1, "closing": "projected" },
         "stalePlan": "AGREEMENT_CANCELLATION_CHANGED",
+        "memberVoid": "refused: sales desk only",
         "contract": "void",
         "pendingChangeOrder": "cancelled",
         "reservation": "released",
@@ -154,7 +160,7 @@
       }
     },
     "signed-update-reconciles-and-mismatch-refused": {
-      "derivation": "A sales consultant cannot create a feed. The owner's title feed posts: a loan application satisfied (no evidence needed, applied), an appraisal satisfied (evidence required, so reported, still open), the same delivery again (duplicate), the same delivery id with a different body (conflict), a wrong buyer email and a wrong lot (refused with their reasons, kept on the feed log and the home), and a bad signature (401, counted on the feed).",
+      "derivation": "A sales consultant cannot create a feed. The owner's title feed posts: a loan application satisfied (no evidence needed, applied), an appraisal satisfied (evidence required, so reported, still open), the same delivery again (duplicate), the same delivery id with a different body (conflict), a wrong buyer email and a wrong lot (refused with their reasons, kept on the feed log and the home), and a bad signature (401, counted on the feed). EP05 review: the delivery id is part of the signed body, so a captured report re-sent under a new header id is refused (400) and records nothing; a coordinator writing a reported status directly is refused.",
       "expected": {
         "feed": {
           "salesCreates": "refused",
@@ -165,25 +171,29 @@
             "altered": { "status": 409, "outcome": "conflict", "reason": "delivery_conflict" },
             "wrongBuyer": { "status": 422, "outcome": "refused", "reason": "buyer_mismatch" },
             "wrongHome": { "status": 422, "outcome": "refused", "reason": "home_mismatch" },
-            "badSignature": { "status": 401, "outcome": "unauthorized", "reason": null }
+            "badSignature": { "status": 401, "outcome": "unauthorized", "reason": null },
+            "replayedAsNew": { "status": 400, "outcome": "delivery_id is required in the signed body and must match x-arc-delivery", "reason": null }
           },
           "statuses": { "loan_application": "satisfied", "appraisal": "open", "title_commitment": "open" },
           "appraisalReported": { "reported_status": "satisfied", "reported_reference": "APR-77" },
           "feedRejected": 1,
           "feedRefused": ["buyer_mismatch", "home_mismatch"],
-          "homeRefused": ["buyer_mismatch", "home_mismatch"]
+          "homeRefused": ["buyer_mismatch", "home_mismatch"],
+          "memberReport": "refused: feed only"
         }
       }
     },
     "co-gate-needs-evidence": {
-      "derivation": "The certificate of occupancy gate refuses completion without a file, refuses a waiver through the service and SQL, refuses another home's file, and completes with a file on this home.",
+      "derivation": "The certificate of occupancy gate refuses completion without a file, refuses a waiver through the service and SQL, refuses another home's file, and completes with a file on this home. EP05 review: the gate cannot be un-gated or deleted, even by SQL.",
       "expected": {
         "coGate": {
           "withoutFile": "refused",
           "waived": "refused",
           "sqlWaive": "refused",
           "otherHomesFile": "refused",
-          "ownFile": "allowed"
+          "ownFile": "allowed",
+          "ungate": "refused",
+          "deleteGate": "refused"
         }
       }
     },
@@ -201,7 +211,7 @@
       }
     },
     "commission-terms-approved-with-the-agreement": {
-      "derivation": "On a $450,000 agreement the sales consultant (org_sales_agent holds sales.commission_manage) proposes a co-op broker at 2.5% ($11,250) and their own flat $2,500 consultant comp: $13,750 estimated. The consultant cannot approve (no sales.commission_approve). Signing is held until the owner approves; then nothing holds it. Both lines are recorded.",
+      "derivation": "On a $450,000 agreement the sales consultant (org_sales_agent holds sales.commission_manage) proposes a co-op broker at 2.5% ($11,250) and their own flat $2,500 consultant comp: $13,750 estimated. The consultant cannot approve (no sales.commission_approve). Signing is held until the owner approves; then nothing holds it. Both lines are recorded. EP05 review: once those terms are approved, the consultant declaring no commissions does not stand on its own; it waits as proposed, and the consultant cannot approve it.",
       "expected": {
         "proposedStatus": "proposed",
         "estimateTotalCents": 1375000,
@@ -209,11 +219,13 @@
         "heldBeforeApproval": true,
         "approvedStatus": "approved",
         "holdAfterApproval": null,
-        "lines": 2
+        "lines": 2,
+        "noneAfterApproval": "proposed",
+        "consultantApprovesNone": "Missing permission: sales.commission_approve"
       }
     },
     "settlement-creates-commission-payables-once": {
-      "derivation": "The buyer signs a $12,500 change order (version 2 of the agreement) and the closing carries a $4,000 seller credit. The basis is the authorized price, $462,500, never reduced by the credit: the broker is owed 2.5% = $11,562.50 on one pending AP bill, the consultant $2,500 accrued for payroll (Cr 2240). Three completion attempts record each line once; commissions never reach job cost.",
+      "derivation": "The buyer signs a $12,500 change order (version 2 of the agreement) and the closing carries a $4,000 seller credit. The basis is the authorized price, $462,500, never reduced by the credit: the broker is owed 2.5% = $11,562.50 on one pending AP bill, the consultant $2,500 accrued for payroll (Cr 2240). Three completion attempts record each line once; commissions never reach job cost. EP05 review: the consultant (not on the home's team) writing the broker bill's status directly changes nothing and the bill stays pending for AP; a team member without bill.approve is refused by the database (tests/sales-commissions-db.test.js).",
       "expected": {
         "obligations": [
           { "line": 1, "channel": "accounts_payable", "amountCents": 1156250, "basisCents": 46250000, "status": "open", "billStatus": "pending", "commissionBill": true },
@@ -222,7 +234,9 @@
         "agreementVersions": ["original", "amendment"],
         "bills": 1,
         "accrued2240": 250000,
-        "commissionJobCostEntries": 0
+        "commissionJobCostEntries": 0,
+        "consultantApprovesBill": "no row updated",
+        "billStatus": "pending"
       }
     },
     "closing-reversal-reconciles-commissions-without-duplicate-payment": {

@@ -82,17 +82,25 @@ test("a routed lead nobody owns sits under Unassigned until someone takes it", (
   assert.equal(matchesDealFilter(lead({ prospectId: null }), "unassigned", now), false, "an imported agreement has no lead to hand out")
 })
 
-test("an unknown feed or a bad signature learns nothing and the rejection is counted", async () => {
+test("an unknown feed or a bad signature learns nothing and the rejection is counted; the delivery id is signed", async () => {
   process.env.TOKEN_ENCRYPTION_KEY = "0".repeat(64)
   const { encryptIntegrationSecret } = require("../lib/integrations/secrets")
   const { signInboundPayload } = require("../lib/inbound/signature")
   const db = createFakeSupabase({
     agreement_milestone_sources: [{ id: ORG, org_id: ORG, public_id: `ams_${"a".repeat(24)}`, status: "active", signing_secret_encrypted: encryptIntegrationSecret("secret-1"), previous_secret_encrypted: null, previous_secret_expires_at: null, rejected_count: 0 }],
-  }, { apply_agreement_milestone_report: async (args) => ({ data: { outcome: "refused", reason_code: "buyer_mismatch", delivery_id: ORG, milestone_id: null }, error: null, args }) })
+  }, {
+    apply_agreement_milestone_report: async (args) => ({ data: { outcome: "refused", reason_code: "buyer_mismatch", delivery_id: ORG, milestone_id: null }, error: null, args }),
+    record_agreement_milestone_rejection: async (args) => {
+      const source = db.store.agreement_milestone_sources.find((row) => row.id === args.p_source_id)
+      source.rejected_count += 1
+      source.last_rejection_reason = args.p_reason
+      return { data: null, error: null }
+    },
+  })
   stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => db })
   delete require.cache[require.resolve("../lib/services/agreement-milestones")]
   const { receiveMilestoneReport } = require("../lib/services/agreement-milestones")
-  const now = new Date("2026-10-12T15:00:00Z"), timestamp = String(Math.floor(now.getTime() / 1000)), rawBody = "{}"
+  const now = new Date("2026-10-12T15:00:00Z"), timestamp = String(Math.floor(now.getTime() / 1000)), rawBody = JSON.stringify({ delivery_id: "d-1" })
   const input = { sourcePublicId: `ams_${"a".repeat(24)}`, deliveryId: "d-1", timestamp, rawBody, now }
 
   assert.equal((await receiveMilestoneReport({ ...input, sourcePublicId: `ams_${"b".repeat(24)}`, signature: signInboundPayload("secret-1", timestamp, rawBody) })).status, 401)
@@ -102,4 +110,10 @@ test("an unknown feed or a bad signature learns nothing and the rejection is cou
 
   const refused = await receiveMilestoneReport({ ...input, signature: signInboundPayload("secret-1", timestamp, rawBody) })
   assert.deepEqual(refused, { status: 422, body: { outcome: "refused", reason_code: "buyer_mismatch" } })
+
+  // The delivery id is the signed body's: a captured report re-sent under a new header id is refused.
+  const replayed = await receiveMilestoneReport({ ...input, deliveryId: "d-2", signature: signInboundPayload("secret-1", timestamp, rawBody) })
+  assert.equal(replayed.status, 400)
+  const unnamed = await receiveMilestoneReport({ ...input, rawBody: "{}", signature: signInboundPayload("secret-1", timestamp, "{}") })
+  assert.equal(unnamed.status, 400)
 })

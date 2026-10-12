@@ -349,6 +349,9 @@ export function AgreementCommissionPlan({ contractId, projectId, onChange }: {
           </tbody>
         </table>
       ) : null}
+      {plan.lineCount === 0 && plan.status === "proposed" ? (
+        <p className="text-sm">No commissions on this sale. This replaces terms that were already approved, so a second person approves it.</p>
+      ) : null}
       {plan.hiddenLineCount > 0 ? <p className="text-xs text-muted-foreground">{plan.hiddenLineCount} consultant {plan.hiddenLineCount === 1 ? "line is" : "lines are"} private to the payee and approvers.</p> : null}
       {plan.lines.length ? (
         <p className="text-xs text-muted-foreground">Estimated on today&apos;s authorized price of {formatMoneyCentsExact(view.authorizedPriceCents)}; settled on the price at closing.</p>

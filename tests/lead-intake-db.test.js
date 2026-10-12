@@ -13,7 +13,7 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 
 const { asRole, createDatabase, insert, rpc, seedMember } = require("./support/pglite")
-const { normalizeEmail, normalizePhone } = require("../lib/sales/lead-identity.ts")
+const { normalizeEmail, normalizePhone, phoneMatchIsSameBuyer } = require("../lib/sales/lead-identity.ts")
 
 async function member(db, orgId, { role, divisions = null }) {
   const { userId } = await seedMember(db, { orgId, role })
@@ -88,6 +88,31 @@ test("a returning buyer merges into their open deal by email, then by phone, and
   assert.deepEqual(traffic.rows, [{ web_inquiries: 1 }], "a merge is not a new visitor")
   const owner = await org.db.query("select owner_user_id from prospects where id = $1", [filed.prospect_id])
   assert.equal(owner.rows[0].owner_user_id, org.ownerId, "a merge never moves the owner")
+})
+
+test("a phone merges only when one side has no email; two emails on one phone are two buyers, the second flagged", async (t) => {
+  const org = await intakeOrg(t)
+  const office = "(239) 555-0100"
+  const first = await file(org, (await receipt(org)).id, lead({ phone: office }))
+  // A co-op agent sends a second buyer with the agent's own number.
+  const flaggedReceipt = await receipt(org)
+  const second = await file(org, flaggedReceipt.id, lead({ name: "Lee Park", email: "lee.park@example.test", phone: office }))
+  assert.deepEqual([second.outcome, second.matched_by, second.possible_duplicate_prospect_id], ["filed", null, first.prospect_id])
+  assert.notEqual(second.prospect_id, first.prospect_id)
+  const { rows: [saved] } = await org.db.query("select possible_duplicate_prospect_id from lead_intake_receipts where id = $1", [flaggedReceipt.id])
+  assert.equal(saved.possible_duplicate_prospect_id, first.prospect_id)
+  const { rows: [contact] } = await org.db.query("select email from prospect_contacts where prospect_id = $1 and is_primary", [second.prospect_id])
+  assert.equal(contact.email, "lee.park@example.test", "the second buyer's email is theirs, not dropped")
+
+  // With no email to tell them apart, the phone is the buyer.
+  const phoneOnly = await file(org, (await receipt(org)).id, lead({ email: null, phone: office }))
+  assert.deepEqual([phoneOnly.outcome, phoneOnly.matched_by, phoneOnly.prospect_id], ["merged", "phone", first.prospect_id])
+
+  // The TypeScript twin (directory matching) reads the same rule.
+  assert.equal(phoneMatchIsSameBuyer("lee.park@example.test", "dana@example.test"), false)
+  assert.equal(phoneMatchIsSameBuyer(null, "dana@example.test"), true)
+  assert.equal(phoneMatchIsSameBuyer("Dana@Example.test ", null), true)
+  assert.equal(phoneMatchIsSameBuyer(" DANA@example.test", "dana@example.test"), true)
 })
 
 test("a name alone never merges, and a lost buyer who returns is a new deal flagged as returning", async (t) => {

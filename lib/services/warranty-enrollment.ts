@@ -55,8 +55,8 @@ export async function enrollSystemWarrantyCoverage(supabase: SupabaseClient, raw
   }
   let coverage = await readExisting(), enrolled = false
   if (!coverage) {
-    const programId = await readHandoffProgram(supabase, input, ensureDefaults)
-    const parsedTerms = await readWarrantyEnrollmentTerms(supabase, input.orgId, programId)
+    const { programId, soldTerms } = await readHandoffProgram(supabase, input, ensureDefaults)
+    const parsedTerms = soldTerms ?? await readWarrantyEnrollmentTerms(supabase, input.orgId, programId)
     const inserted = await supabase.from("project_warranty_coverage").insert({ id: randomUUID(), org_id: input.orgId, project_id: input.projectId, program_id: programId,
       effective_date: input.effectiveDate, effective_source: input.source, terms_snapshot: buildCoverageSnapshot(input.effectiveDate, parsedTerms) }).select("id").single()
     if (inserted.error && inserted.error.code !== "23505") throw new Error(`Failed to enroll warranty coverage: ${inserted.error.message}`)
@@ -80,23 +80,30 @@ export async function enrollSystemWarrantyCoverage(supabase: SupabaseClient, raw
   return { id: coverage.id, enrolled }
 }
 
+const soldWarrantySchema = z.object({
+  warranty_program_id: z.string().uuid().nullable().optional(),
+  // Captured from the program when the agreement was executed; null on an agreement the program had no terms for.
+  warranty_terms_snapshot: z.array(termSchema).min(1).max(1000).nullable().optional(),
+})
+
 /**
  * The program the buyer bought: the one bound to the executed purchase
- * agreement. A home sold before the org had any program, or handed over at
- * completion without a sale, takes the org's default.
+ * agreement, on the terms it had when the agreement was signed. A home sold
+ * before the org had any program, or handed over at completion without a sale,
+ * takes the org's default on its current terms.
  */
 async function readHandoffProgram(supabase: SupabaseClient, input: z.infer<typeof inputSchema>, ensureDefaults: () => Promise<void>) {
   if (input.source === "closing") {
-    const agreement = await supabase.from("contracts").select("warranty_program_id").eq("org_id", input.orgId).eq("project_id", input.projectId)
+    const agreement = await supabase.from("contracts").select("warranty_program_id, warranty_terms_snapshot").eq("org_id", input.orgId).eq("project_id", input.projectId)
       .eq("contract_type", "purchase_agreement").eq("status", "active").order("signed_at", { ascending: false }).limit(2)
     if (agreement.error) throw new Error(`Unable to read the agreement's warranty program: ${agreement.error.message}`)
     if ((agreement.data?.length ?? 0) > 1) throw new Error("The home has more than one active purchase agreement; reconcile it before enrolling warranty")
-    const bound = z.string().uuid().nullable().optional().parse(agreement.data?.[0]?.warranty_program_id)
-    if (bound) return bound
+    const sold = soldWarrantySchema.parse(agreement.data?.[0] ?? {})
+    if (sold.warranty_program_id) return { programId: sold.warranty_program_id, soldTerms: sold.warranty_terms_snapshot ?? null }
   }
   await ensureDefaults()
   const program = await supabase.from("warranty_programs").select("id").eq("org_id", input.orgId).eq("is_default", true).eq("is_active", true).order("id").limit(2)
   if (program.error) throw new Error(`Unable to read default warranty program: ${program.error.message}`)
   if (program.data?.length !== 1) throw new Error("Exactly one active default warranty program is required")
-  return z.string().uuid().parse(program.data[0].id)
+  return { programId: z.string().uuid().parse(program.data[0].id), soldTerms: null }
 }

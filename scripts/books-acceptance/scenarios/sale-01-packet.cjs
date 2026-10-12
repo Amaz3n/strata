@@ -35,6 +35,18 @@ const attempt = async (work) => {
   try { await work(); return "allowed" } catch (error) { return error.code ?? error.message }
 }
 
+/**
+ * A member's write straight through the data API (PostgREST with their session), as a script
+ * or a browser console would send it: what the database itself allows a member.
+ */
+const viaDataApi = (kit, actor, table, id, patch) => attempt(() => kit.as(actor, async () => {
+  const { supabase } = await require("../../../lib/services/context").requireOrgContext()
+  const { data, error } = await supabase.from(table).update(patch).eq("id", id).select("id")
+  if (error) throw new Error(error.message)
+  if (!data?.length) throw new Error("no row updated")
+}))
+const deskOnly = (text) => (/change only through the sales desk/.test(text) ? "refused: sales desk only" : text)
+
 const PACKET_ORGS = new WeakMap()
 /** A production builder with Cypress Landing (FL), the plans and the base agreement seeded. Built once per run. */
 function packetOrg(kit) {
@@ -147,9 +159,14 @@ async function signingIsRefusedWithoutARequiredAddendum(kit, expected, check) {
   const afterRefresh = await stage()
   await kit.as(org.owner, () => templates.withdrawAgreementTemplateVersion({ versionId: flood.versionId, reason: "Counsel recalled the flood disclosure" }))
   const afterWithdrawal = await stage()
+  // The draft cannot be executed or re-termed by a member writing the row directly.
+  const memberActivates = deskOnly(await viaDataApi(kit, org.team.sales, "contracts", sale.contractId, { status: "active", signed_at: new Date().toISOString() }))
+  const memberEditsSnapshot = deskOnly(await viaDataApi(kit, org.team.sales, "contracts", sale.contractId, { snapshot: {}, total_cents: 1 }))
   equal(check, "a newly required addendum and a withdrawn version each make the unsigned draft stale; a refresh on the reviewed packet clears it", expected.expected, {
     before, afterRequired, staleRefresh, afterRefresh, afterWithdrawal,
     refreshedDocuments: titles(packetOf(kit, sale.contractId)).length,
+    memberActivates, memberEditsSnapshot,
+    stillDraft: kit.rows(`select status from public.contracts where id=${kit.q(sale.contractId)}`)[0].status,
   })
   return { orgId: org.orgId, contractId: sale.contractId }
 }
@@ -222,6 +239,10 @@ async function amendmentRequiresTheBuyersSignature(kit, expected, check) {
   const sale = await fx.agreementFor(kit, org, buyer)
   const patio = await changeOrder(kit, org, sale.projectId, "Covered patio", 8_000_00)
   const unsignedApproval = await attempt(() => kit.as(org.owner, () => changes.approveChangeOrder({ changeOrderId: patio.id, approval: { signerName: "Careful Buyer", note: "Agreed by phone" } })))
+  // A member cannot forge the buyer's signature by writing the approval flags directly.
+  const approvedNow = { status: "approved", lifecycle: "approved", approved_by: org.owner.userId, approved_at: new Date().toISOString() }
+  const forgedEnvelope = await viaDataApi(kit, org.owner, "change_orders", patio.id, { ...approvedNow, metadata: { approved_via_envelope: "true" } })
+  const forgedSignedCopy = await viaDataApi(kit, org.owner, "change_orders", patio.id, { ...approvedNow, metadata: { approval_method: "manual_offline", approved_signed_file_id: randomUUID() } })
   await buyerSigns(kit, org, sale.projectId, patio.id, "Careful Buyer")
   const voidAmendment = await attempt(() => kit.as(org.owner, () => changes.voidChangeOrder({ changeOrderId: patio.id, reason: "Buyer changed their mind" })))
   const sqlVoid = (() => { try { kit.sql(`update public.change_orders set status='cancelled', lifecycle='void' where id=${kit.q(patio.id)}`); return "allowed" } catch (error) { return /cannot be voided/.test(error.message) ? "refused: amendment cannot be voided" : error.message } })()
@@ -233,6 +254,8 @@ async function amendmentRequiresTheBuyersSignature(kit, expected, check) {
     unsignedApproval: /amends the buyer's signed purchase agreement/.test(unsignedApproval) ? "refused: needs the buyer's signed copy" : unsignedApproval,
     voidAmendment: /cannot be voided/.test(voidAmendment) ? "refused: amendment cannot be voided" : voidAmendment,
     sqlVoid,
+    forgedEnvelope: /recorded when the buyer signs/.test(forgedEnvelope) ? "refused: needs the buyer's signature" : forgedEnvelope,
+    forgedSignedCopy: /must be a file on this home/.test(forgedSignedCopy) ? "refused: needs the signed copy on file" : forgedSignedCopy,
     versionsAfterCancellation: versionsOf(kit, sale.contractId).map((row) => row.kind),
   })
   return { orgId: org.orgId, contractId: sale.contractId }
@@ -267,6 +290,8 @@ async function cancellingASaleReconcilesWhatWasCommitted(kit, expected, check) {
   const pending = await changeOrder(kit, org, sale.projectId, "Unsigned gutters", 2_000_00)
   const plan = await kit.as(org.owner, () => sales.previewAgreementCancellation(sale.contractId))
   const stale = await attempt(() => kit.as(org.owner, () => sales.voidPurchaseAgreement({ contractId: sale.contractId, reason: "Buyer walked", depositDisposition: "refund", expectedPlanHash: "0".repeat(64) })))
+  // Voiding the row directly would skip the deposit, the lot and the receipt.
+  const memberVoid = deskOnly(await viaDataApi(kit, org.owner, "contracts", sale.contractId, { status: "void" }))
   const cancellation = await kit.as(org.owner, () => sales.voidPurchaseAgreement({ contractId: sale.contractId, reason: "Buyer walked away after the appraisal", depositDisposition: "split", forfeitCents: 2_500_00, expectedPlanHash: plan.hash }))
   const status = (table, id) => kit.rows(`select status from public.${table} where id=${q(id)}`)[0].status
   const refunds = kit.rows(`select coalesce(sum(amount_cents),0)::bigint cents from public.payment_reversals where metadata->>'agreement_cancellation_id'=${q(cancellation.id)}`)[0].cents
@@ -275,6 +300,7 @@ async function cancellingASaleReconcilesWhatWasCommitted(kit, expected, check) {
   equal(check, "cancelling voids the agreement and its unsigned change orders, returns the lot, splits the deposit as decided and records it once", expected.expected, {
     plan: { availableCents: plan.deposit.available_cents, pendingChangeOrders: plan.pending_change_orders.length, closing: plan.closing?.status ?? null },
     stalePlan: stale,
+    memberVoid,
     contract: status("contracts", sale.contractId),
     pendingChangeOrder: status("change_orders", pending.id),
     reservation: status("lot_reservations", buyer.reservation.id),

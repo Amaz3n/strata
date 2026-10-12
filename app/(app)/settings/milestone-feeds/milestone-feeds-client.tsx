@@ -50,7 +50,7 @@ export function MilestoneFeedsClient({ feeds }: { feeds: Feeds }) {
 
   return (
     <div className={CONTAINER}>
-      <SettingsGroup title="Feeds" description={`Each feed posts to ${ENDPOINT} with x-arc-source, x-arc-delivery, x-arc-timestamp and x-arc-signature (HMAC-SHA256 of "timestamp.body" with the feed's secret). Updates reconcile to the agreement number, the buyer's email and the lot; anything that does not match is refused and listed below.`}>
+      <SettingsGroup title="Feeds" description={`Each feed posts to ${ENDPOINT} with x-arc-source, x-arc-timestamp and x-arc-signature (HMAC-SHA256 of "timestamp.body" with the feed's secret); the body carries a unique delivery_id. Updates reconcile to the agreement number, the buyer's email and the lot; anything that does not match is refused and listed below.`}>
         <div className="flex gap-2">
           <Label htmlFor="feed-name" className="sr-only">Feed name</Label>
           <Input id="feed-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="First Coast Title" />

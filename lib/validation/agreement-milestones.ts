@@ -44,6 +44,8 @@ export const createMilestoneSourceSchema = z.object({ name: z.string().trim().mi
  * and the lot are the reconciliation keys; the milestone is named by its kind.
  */
 export const milestoneReportSchema = z.object({
+  // Inside the signed body, so a captured report cannot be replayed as a new delivery.
+  delivery_id: z.string().trim().min(1).max(200),
   agreement_number: z.string().trim().min(1).max(100),
   buyer_email: z.string().trim().email().max(320),
   lot_number: z.string().trim().min(1).max(50),

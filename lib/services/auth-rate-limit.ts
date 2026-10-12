@@ -23,6 +23,7 @@ export type RateLimitAction =
   | "account_lookup"
   | "password_setup"
   | "lead_intake"
+  | "agreement_milestone_report"
 
 interface RateLimitRule {
   limit: number
@@ -40,6 +41,8 @@ const RULES: Record<RateLimitAction, RateLimitRule> = {
   // Signed website lead deliveries, per source and sending IP. The signature is
   // the real gate; this bounds a flood of unsigned requests.
   lead_intake: { limit: 120, windowSeconds: 15 * 60 },
+  // Signed lender/title milestone reports, per feed and sending IP, on the same terms.
+  agreement_milestone_report: { limit: 120, windowSeconds: 15 * 60 },
 }
 
 export class RateLimitError extends Error {

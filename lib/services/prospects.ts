@@ -1355,6 +1355,8 @@ export interface ProspectAttributionHistory {
   touches: ProspectAttribution[];
   /** The earlier deal this buyer was won or lost on, when they came back. */
   returningFrom: { prospectId: string; status: string; closedAt: string | null } | null;
+  /** Another buyer's open deal with the same phone and a different email, until someone reviews it. */
+  possibleDuplicateOf: { prospectId: string; name: string | null } | null;
   truncated: boolean;
 }
 
@@ -1387,7 +1389,7 @@ export async function listProspectAttributions(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId });
 
-  const [touches, returning] = await Promise.all([
+  const [touches, returning, duplicate] = await Promise.all([
     supabase
       .from("prospect_attributions")
       .select("id, touch, channel, source_label, utm_source, utm_medium, utm_campaign, utm_term, utm_content, referrer_url, landing_url, occurred_at, community:communities(name)")
@@ -1403,9 +1405,19 @@ export async function listProspectAttributions(
       .not("prior_prospect_id", "is", null)
       .order("received_at", { ascending: true })
       .limit(1),
+    supabase
+      .from("lead_intake_receipts")
+      .select("possible_duplicate_prospect_id, duplicate:prospects!lead_intake_receipts_possible_duplicate_fkey(name)")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospectId)
+      .not("possible_duplicate_prospect_id", "is", null)
+      .is("resolved_at", null)
+      .order("received_at", { ascending: true })
+      .limit(1),
   ]);
   if (touches.error) throw new Error(`Failed to load lead attribution: ${touches.error.message}`);
   if (returning.error) throw new Error(`Failed to load the buyer's earlier deal: ${returning.error.message}`);
+  if (duplicate.error) throw new Error(`Failed to load a possible duplicate deal: ${duplicate.error.message}`);
 
   const named = z.object({ name: z.string() }).nullable();
   const rows = z.array(attributionRowSchema.extend({ community: named })).parse(touches.data ?? []);
@@ -1415,6 +1427,9 @@ export async function listProspectAttributions(
       prior: z.object({ status: z.string(), won_at: z.string().nullable(), lost_at: z.string().nullable() }).nullable(),
     }))
     .parse(returning.data ?? [])[0] ?? null;
+  const twin = z
+    .array(z.object({ possible_duplicate_prospect_id: z.string(), duplicate: z.object({ name: z.string().nullable() }).nullable() }))
+    .parse(duplicate.data ?? [])[0] ?? null;
   return {
     touches: rows.slice(0, ATTRIBUTION_CAP).map((row) => ({
       id: row.id,
@@ -1434,6 +1449,7 @@ export async function listProspectAttributions(
     returningFrom: prior
       ? { prospectId: prior.prior_prospect_id, status: prior.prior?.status ?? "lost", closedAt: prior.prior?.won_at ?? prior.prior?.lost_at ?? null }
       : null,
+    possibleDuplicateOf: twin ? { prospectId: twin.possible_duplicate_prospect_id, name: twin.duplicate?.name ?? null } : null,
     truncated: rows.length > ATTRIBUTION_CAP,
   };
 }

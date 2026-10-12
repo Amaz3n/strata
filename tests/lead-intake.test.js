@@ -38,7 +38,7 @@ function receipt(overrides = {}) {
   return {
     id: id(50), org_id: ORG, source_id: SOURCE, idempotency_key: "web-1", payload_hash: null, payload: {}, status: "received",
     failure_code: null, last_error: null, attempts: 0, next_attempt_at: null, community_id: null, contact_name: null,
-    contact_email: null, contact_phone: null, prospect_id: null, matched_by: null, prior_prospect_id: null, owner_user_id: null,
+    contact_email: null, contact_phone: null, prospect_id: null, matched_by: null, prior_prospect_id: null, possible_duplicate_prospect_id: null, owner_user_id: null,
     routing_outcome: null, routing_reason: null, received_at: "2026-10-12T14:00:00Z", ...overrides,
   }
 }

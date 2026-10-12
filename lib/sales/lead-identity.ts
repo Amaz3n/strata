@@ -25,6 +25,18 @@ export interface LeadContactKeys {
   phone: string | null
 }
 
+/**
+ * Whether a phone match is the same buyer. Twin of `file_lead()`: a phone is
+ * trusted only when one side has no email to tell the two apart. Two different
+ * emails on one number (a co-op agent's line, a shared office phone) are two
+ * buyers; the database files the new deal and flags it as a possible duplicate.
+ */
+export function phoneMatchIsSameBuyer(incomingEmail: string | null | undefined, matchedEmail: string | null | undefined): boolean {
+  const incoming = normalizeEmail(incomingEmail)
+  const matched = normalizeEmail(matchedEmail)
+  return !incoming || !matched || incoming === matched
+}
+
 /** The lead's match keys, or null when it carries neither. */
 export function leadContactKeys(input: { email?: string | null; phone?: string | null }): LeadContactKeys | null {
   const keys = { email: normalizeEmail(input.email), phone: normalizePhone(input.phone) }

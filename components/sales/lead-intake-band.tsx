@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
 import { toast } from "sonner"
 
-import { dismissLeadReceiptAction, retryLeadReceiptAction } from "@/app/(app)/sales/lead-actions"
+import { confirmLeadNotDuplicateAction, dismissLeadReceiptAction, retryLeadReceiptAction } from "@/app/(app)/sales/lead-actions"
 import { InquiryRegistrationSheet, type InquiryFromLead } from "@/components/sales/new-inquiry-sheet"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,6 +26,7 @@ const KIND_LABELS: Record<LeadAttentionKind, string> = {
   failed: "Not filed",
   retrying: "Retrying",
   unrouted: "No owner",
+  duplicate: "Possible duplicate",
 }
 
 const FAILURE_LABELS: Record<string, string> = {
@@ -42,14 +43,17 @@ function why(row: LeadAttentionRow) {
     return `Attempt ${row.attempts} failed${row.nextAttemptAt ? ` · next try ${time.format(new Date(row.nextAttemptAt))}` : ""}`
   }
   if (row.kind === "unrouted") return row.detail ?? "Nobody could take this lead"
+  if (row.kind === "duplicate") return row.detail ?? "Shares a phone with another buyer's open deal"
   return (row.failureCode && FAILURE_LABELS[row.failureCode]) ?? row.detail ?? "Not filed"
 }
 
 /**
  * Website leads that need a person, on the desk that works them: deliveries
  * that could not be filed (and why), ones still retrying (and when), and leads
- * filed with no owner. Absent when nothing waits. Retry and Dismiss call the
- * lead intake service; an ownerless lead opens its deal, where the owner is set.
+ * filed with no owner, and leads filed as their own deal that share a phone with
+ * another buyer's (a possible duplicate, until someone looks). Absent when
+ * nothing waits. Retry, Dismiss and Not a duplicate call the lead intake
+ * service; an ownerless lead opens its deal, where the owner is set.
  * Given the registration card's options (the Sales desk), a failed delivery can
  * also be filed by hand: the card opens with what the form sent, and
  * registering files the delivery onto the deal.
@@ -81,6 +85,18 @@ export function LeadIntakeBand({ attention, compact = false, registration }: {
     })
   }
 
+  function confirmDistinct(row: LeadAttentionRow) {
+    startTransition(async () => {
+      try {
+        unwrapAction(await confirmLeadNotDuplicateAction(row.receiptId))
+        toast.success(`${row.contactName ?? "Lead"} kept as their own deal`)
+        router.refresh()
+      } catch (error) {
+        toast.error("That did not go through", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
+
   function dismiss() {
     const row = dismissing
     if (!row) return
@@ -102,6 +118,7 @@ export function LeadIntakeBand({ attention, compact = false, registration }: {
     counts.failed ? `${counts.failed} not filed` : null,
     counts.retrying ? `${counts.retrying} retrying` : null,
     counts.unrouted ? `${counts.unrouted} without an owner` : null,
+    counts.duplicate ? `${counts.duplicate} possible ${counts.duplicate === 1 ? "duplicate" : "duplicates"}` : null,
   ].filter(Boolean).join(" · ")
 
   return (
@@ -176,6 +193,16 @@ export function LeadIntakeBand({ attention, compact = false, registration }: {
             ) : row.kind === "unrouted" && row.dealHref ? (
               <Button asChild size="sm" variant="outline" className="h-6 shrink-0 rounded-none px-2 text-[11px]">
                 <Link href={row.dealHref}>Assign owner</Link>
+              </Button>
+            ) : row.kind === "duplicate" && attention.canAct ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 shrink-0 rounded-none px-2 text-[11px]"
+                disabled={isPending}
+                onClick={() => confirmDistinct(row)}
+              >
+                Not a duplicate
               </Button>
             ) : null}
           </li>

@@ -407,12 +407,13 @@ export async function sweepAgreementMilestoneDeadlines(now: Date = new Date()) {
     .order("due_on").order("id").limit(500)
   if (error) throw new Error(`Failed to load due milestones: ${error.message}`)
   // A home that has closed owes nothing more; its leftover tracked rows stay quiet.
+  // Batched: a sweep across every org's homes would overflow one request's URL.
   const homeIds = [...new Set((data ?? []).map((row) => String(row.project_id)))]
-  const closed = homeIds.length
-    ? await service.from("closings").select("project_id").in("project_id", homeIds).eq("status", "closed")
-    : { data: [], error: null }
-  if (closed.error) throw new Error(`Failed to read closed homes: ${closed.error.message}`)
-  const closedHomes = new Set((closed.data ?? []).map((row) => String(row.project_id)))
+  const closed = await Promise.all(chunk(homeIds, 100).map((batch) =>
+    service.from("closings").select("project_id").in("project_id", batch).eq("status", "closed")))
+  const closedError = closed.find((result) => result.error)?.error
+  if (closedError) throw new Error(`Failed to read closed homes: ${closedError.message}`)
+  const closedHomes = new Set(closed.flatMap((result) => (result.data ?? []).map((row) => String(row.project_id))))
   let announced = 0
   for (const row of data ?? []) {
     if (closedHomes.has(String(row.project_id))) continue
@@ -566,7 +567,7 @@ export async function receiveMilestoneReport(input: {
   if (!input.sourcePublicId || !/^ams_[a-z2-7]{24}$/.test(input.sourcePublicId)) return unauthorized
   const service = createServiceSupabaseClient()
   const { data: source, error } = await service.from("agreement_milestone_sources")
-    .select("id,org_id,status,signing_secret_encrypted,previous_secret_encrypted,previous_secret_expires_at,rejected_count")
+    .select("id,org_id,status,signing_secret_encrypted,previous_secret_encrypted,previous_secret_expires_at")
     .eq("public_id", input.sourcePublicId).maybeSingle()
   if (error) throw new Error(`Unable to read the milestone feed: ${error.message}`)
   if (!source || source.status !== "active") return unauthorized
@@ -577,30 +578,31 @@ export async function receiveMilestoneReport(input: {
   }
   const verdict = verifyInboundSignature({ secrets, timestamp: input.timestamp, signature: input.signature, rawBody: input.rawBody, now })
   if (!verdict.ok) {
-    const { error: rejectError } = await service.from("agreement_milestone_sources").update({
-      rejected_count: Number(source.rejected_count) + 1, last_rejected_at: now.toISOString(), last_rejection_reason: verdict.reason,
-    }).eq("id", source.id)
+    const { error: rejectError } = await service.rpc("record_agreement_milestone_rejection", {
+      p_source_id: source.id, p_reason: verdict.reason, p_at: now.toISOString(),
+    })
     if (rejectError) throw new Error(`Unable to record the rejected delivery: ${rejectError.message}`)
     return unauthorized
   }
-  if (!input.deliveryId || input.deliveryId.length > 200) return { status: 400, body: { error: "x-arc-delivery is required" } }
 
-  let payload: Record<string, unknown> = {}
-  let invalid: string | null = null
+  // The delivery id is read from the signed body; the header, when sent, must agree.
+  let raw: unknown = null
   try {
-    const raw: unknown = JSON.parse(input.rawBody)
-    const parsed = milestoneReportSchema.safeParse(raw)
-    if (parsed.success) payload = parsed.data
-    else {
-      invalid = "invalid_payload"
-      payload = z.record(z.string(), z.unknown()).safeParse(raw).data ?? {}
-    }
+    raw = JSON.parse(input.rawBody)
   } catch {
-    invalid = "invalid_payload"
+    raw = null
   }
+  const body = z.record(z.string(), z.unknown()).safeParse(raw).data ?? {}
+  const deliveryId = typeof body.delivery_id === "string" ? body.delivery_id.trim() : ""
+  if (!deliveryId || deliveryId.length > 200 || (input.deliveryId && input.deliveryId !== deliveryId)) {
+    return { status: 400, body: { error: "delivery_id is required in the signed body and must match x-arc-delivery" } }
+  }
+  const parsed = milestoneReportSchema.safeParse(body)
+  const payload: Record<string, unknown> = parsed.success ? parsed.data : body
+  const invalid = parsed.success ? null : "invalid_payload"
   const digest = createHash("sha256").update(input.rawBody).digest("hex")
   const { data, error: applyError } = await service.rpc("apply_agreement_milestone_report", {
-    p_source_id: source.id, p_delivery_id: input.deliveryId, p_digest: digest, p_payload: payload, p_invalid_reason: invalid,
+    p_source_id: source.id, p_delivery_id: deliveryId, p_digest: digest, p_payload: payload, p_invalid_reason: invalid,
   })
   if (applyError) throw new Error(`Unable to apply the milestone report: ${applyError.message}`)
   const result = reportResultSchema.parse(data)

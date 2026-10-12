@@ -4,7 +4,7 @@ Date: 2026-10-04. Contract: E09-03.INSPECTION-CLOSING-CONTRACT in the existing n
 
 ## Owning workflow
 
-The existing inspection service and workbench own the workflow. `INSPECTION_LIFECYCLE_ENABLED` defaults to false. It controls the atomic completion branch, required-inspection reads and lifecycle controls; organization tier never gates access.
+The existing inspection service and workbench own the workflow. The lifecycle is always on: the atomic completion branch, required-inspection reads (closing readiness calls `read_inspection_closing_readiness` unconditionally) and lifecycle controls run for every home, and organization tier never gates access.
 
 A writer opens an inspection and selects **Require before closing**. The obligation binds that original home, inspection and reviewed source. Each attempt retains its own checklist. Completion records the original source, actor, result, event and audit in one SQL transaction. A failed or partial attempt does not complete its scheduled work. A passing required attempt remains pending an independent review.
 
@@ -26,7 +26,7 @@ Required-obligation discovery uses bounded keyset pages; the selected attempt re
 
 The isolated PGlite fixture executes this candidate migration and original RPCs. It exercises failure → resolved corrective work → passing reinspection → independent acceptance → closing; rejected review replacement; original history; receipt/event/audit rollback; stale source and corrective association; membership/permission/division failures; session actor mismatch; raw completion/schedule bypass; bounded discovery; reopened work; altered audit evidence; and same-request recovery. The real Supabase SDK transport and actual React declarations separately exercise role controls, exact request bodies, uncertain retries, selected-attempt reads and closing-service rejection. These fixtures are deliberately partial-schema and sequential.
 
-Required before activation:
+Required before release:
 
 - Review/apply the migration through the human-controlled release process; run the full compatible schema chain and current JWT/RLS tests in an isolated QA environment.
 - Exercise independently concurrent actor revocation, home movement, source/child writes, obligation insertion versus closing, competing completion/review and lock-order/deadlock recovery. Sequential PGlite is not concurrency acceptance.

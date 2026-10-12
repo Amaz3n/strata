@@ -6,10 +6,13 @@ const {stubModule,ORG,ACTOR,PACKAGE,PROJECT}=require('./support/starts-harness')
 // whichever home the current test built.
 const service={db:null}
 stubModule('@/lib/supabase/server',{createServiceSupabaseClient:()=>service.db})
+const CO_GATE='00000000-0000-4000-8000-0000000000c1',CO_FILE='00000000-0000-4000-8000-0000000000c2'
 function harness(){
- const gate={id:PACKAGE,org_id:ORG,closing_id:PACKAGE,title:'Occupancy clearance',is_gate:true,evidence_required:false,status:'complete',notes:null,file_id:null,completed_at:'2026-10-03T00:00:00Z',completed_by:ACTOR}
+ const gate={id:PACKAGE,org_id:ORG,closing_id:PACKAGE,key:null,title:'Occupancy clearance',is_gate:true,evidence_required:false,status:'complete',notes:null,file_id:null,completed_at:'2026-10-03T00:00:00Z',completed_by:ACTOR}
  const inspections={result:{data:{ready:true},error:null},calls:0}
- const db=createFakeSupabase({closing_checklist_items:[gate],punch_items:[],files:[]},{read_inspection_closing_readiness:async()=>{inspections.calls++;return inspections.result}}),calls=[]
+ // Every closing carries the certificate-of-occupancy gate, complete with its file.
+ const occupancy={id:CO_GATE,org_id:ORG,closing_id:PACKAGE,key:'final_inspection_co',title:'Final inspection / certificate of occupancy',is_gate:true,evidence_required:true,status:'complete',notes:null,file_id:CO_FILE,completed_at:'2026-10-03T00:00:00Z',completed_by:ACTOR}
+ const db=createFakeSupabase({closing_checklist_items:[gate,occupancy],punch_items:[],files:[{id:CO_FILE,org_id:ORG,project_id:PROJECT}]},{read_inspection_closing_readiness:async()=>{inspections.calls++;return inspections.result}}),calls=[]
  service.db=db
  let executed=true,waivers={ready:true,missing:[]},denied=false
  const milestones=[]
@@ -64,11 +67,18 @@ test('completed or waived gates need attribution, timestamp and a meaningful wai
  h.gate.notes='Documented exception approved';await h.check()
 })
 test('foreign home files and absent or overflowing gate sets cannot establish readiness',async()=>{
- const h=harness();h.gate.file_id=ACTOR;h.db.store.files=[{id:ACTOR,org_id:ORG,project_id:'another-home'}]
+ const h=harness();h.gate.file_id=ACTOR;h.db.store.files.push({id:ACTOR,org_id:ORG,project_id:'another-home'})
  await assert.rejects(h.check(),/another home/)
- h.db.store.files[0].project_id=PROJECT;await h.check()
+ h.db.store.files.find(file=>file.id===ACTOR).project_id=PROJECT;await h.check()
  h.db.store.closing_checklist_items=[];await assert.rejects(h.check(),/gates are missing/)
  h.db.store.closing_checklist_items=Array.from({length:1001},()=>({...h.gate}));await assert.rejects(h.check(),/exceeds the supported limit/)
+})
+test('a closing without its certificate-of-occupancy gate is not ready, whatever else is done',async()=>{
+ const h=harness()
+ h.db.store.closing_checklist_items=h.db.store.closing_checklist_items.filter(item=>item.key!=='final_inspection_co')
+ await assert.rejects(h.check(),/certificate of occupancy gate is missing/)
+ const h2=harness();h2.db.store.closing_checklist_items.find(item=>item.key==='final_inspection_co').is_gate=false
+ await assert.rejects(h2.check(),/certificate of occupancy gate is missing/)
 })
 test('waiver input validation rejects empty and abbreviated reasons',()=>{
  const {updateClosingChecklistItemSchema}=require('../lib/validation/closings')
@@ -303,7 +313,7 @@ test('the certificate of occupancy gate needs its evidence file and cannot stand
  const h=harness();h.gate.evidence_required=true
  await assert.rejects(h.check(),/Attach the evidence file to complete Occupancy clearance/)
  h.gate.status='waived';h.gate.notes='Inspector verbally approved';await assert.rejects(h.check(),/cannot be waived/)
- h.gate.status='complete';h.gate.file_id=ACTOR;h.db.store.files=[{id:ACTOR,org_id:ORG,project_id:PROJECT}];await h.check()
+ h.gate.status='complete';h.gate.file_id=ACTOR;h.db.store.files.push({id:ACTOR,org_id:ORG,project_id:PROJECT});await h.check()
 })
 test('the agreement in force closes only with approved commission terms or an explicit none',async()=>{
  const h=harness()

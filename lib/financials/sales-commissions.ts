@@ -151,17 +151,17 @@ export function commissionUnwindPlan(bill: { totalCents: number; paidCents: numb
 }
 
 /**
- * Who may approve a plan: a second person, never a payee. A plan with no lines is
- * the explicit "no commissions" declaration and stands on its own.
+ * Who may approve a waiting plan: a second person, never a payee. "No
+ * commissions" waits for approval only when it replaces approved terms with
+ * lines (otherwise it stood at once), and taking those terms away is decided
+ * the same way.
  */
 export function commissionApprovalRefusal(input: {
   actorUserId: string
   proposedBy: string
   payeeUserIds: Array<string | null>
-  lineCount: number
   canApprove: boolean
 }): string | null {
-  if (input.lineCount === 0) return null
   if (!input.canApprove) return "Approving commission terms needs the commission approval permission"
   if (input.actorUserId === input.proposedBy) return "The person who proposed commission terms cannot approve them"
   if (input.payeeUserIds.includes(input.actorUserId)) return "A payee cannot approve their own commission"

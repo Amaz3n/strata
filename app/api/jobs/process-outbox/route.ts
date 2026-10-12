@@ -59,6 +59,7 @@ import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceI
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import { AUDIT_RETRY_JOB_TYPE, writeDeferredAudit } from "@/lib/services/audit"
 import { LEAD_INTAKE_JOB_TYPE, runLeadIntakeJob } from "@/lib/services/lead-intake"
+import { SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE, settleCommissionUnwindBooks } from "@/lib/services/sales-commissions"
 import { withCorrelation } from "@/lib/observability/correlation"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
@@ -170,6 +171,7 @@ const OUTBOX_JOB_TYPES = [
   FLOORPLAN_INTERPRET_JOB,
   AUDIT_RETRY_JOB_TYPE,
   LEAD_INTAKE_JOB_TYPE,
+  SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE,
 ]
 
 // Create a VISIBLE test image for the tiled viewer
@@ -658,6 +660,10 @@ async function processOutboxQueue(request: NextRequest) {
           await writeDeferredAudit(job.org_id, job.payload)
         } else if (job.job_type === LEAD_INTAKE_JOB_TYPE) {
           await runLeadIntakeJob(job.org_id, job.payload ?? {})
+        } else if (job.job_type === SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE) {
+          const closingId = typeof job.payload?.closing_id === "string" ? job.payload.closing_id : null
+          if (!closingId) throw new Error("Commission unwind settlement is missing closing_id")
+          await settleCommissionUnwindBooks({ orgId: job.org_id, closingId })
         } else {
           return false
         }

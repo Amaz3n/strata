@@ -246,7 +246,7 @@ async function buildAgreementView(context: Context, contractId: string): Promise
       payeeName: payeeName(row), agentName: row.agent_name, estimateCents: estimateByLine.get(row.line_no) ?? 0 })),
   } : null
   const approvalRefusal = plan?.status === "proposed"
-    ? commissionApprovalRefusal({ actorUserId: context.userId, proposedBy: plan.proposed_by, lineCount: plan.line_count,
+    ? commissionApprovalRefusal({ actorUserId: context.userId, proposedBy: plan.proposed_by,
       payeeUserIds: lines.map((row) => row.payee_user_id), canApprove: canApprove && plan.line_count === lines.length })
     : null
   return {
@@ -273,7 +273,9 @@ export async function getAgreementCommissionPlan(contractId: string, orgId?: str
 /**
  * Propose (or revise) the agreement's commission terms. A revision supersedes the
  * live plan and needs approval again; it is refused once the home has closed.
- * With no lines this is the explicit "no commissions" declaration and stands at once.
+ * With no lines this is the explicit "no commissions" declaration: it stands at
+ * once, unless it replaces approved terms with lines, which a second person
+ * approves like any revision. The database applies the same rules.
  */
 export async function proposeCommissionPlan(input: unknown, orgId?: string): Promise<AgreementCommissionView> {
   const parsed = proposeCommissionPlanSchema.parse(input)
@@ -284,11 +286,8 @@ export async function proposeCommissionPlan(input: unknown, orgId?: string): Pro
   if (error || !contract) throw new Error("Purchase agreement not found")
   await requireAuthorization({ permission: "sales.commission_manage", userId: context.userId, orgId: context.orgId,
     projectId: contract.project_id, supabase: context.supabase, resourceType: "contract", resourceId: contract.id, logDecision: true })
+  // propose_sales_commission_plan refuses a revision that would drop lines this member cannot read.
   const before = await readLivePlan(context.supabase, context.orgId, contract.id)
-  if (before) {
-    const visible = await readVisibleLines(context.supabase, context.orgId, before.id)
-    if (visible.length !== before.line_count) throw new Error("This plan includes commission terms you cannot see; ask a sales manager to revise it")
-  }
   const lines = parsed.plan.lines.map((line) => ({
     kind: line.kind,
     payout_channel: line.kind === "coop_broker" ? "accounts_payable" : line.payoutChannel,
@@ -303,15 +302,16 @@ export async function proposeCommissionPlan(input: unknown, orgId?: string): Pro
     p_org_id: context.orgId, p_contract_id: contract.id, p_coop_broker: parsed.plan.coopBroker, p_lines: lines, p_reason: parsed.reason ?? null,
   })
   if (proposeError || typeof planId !== "string") throw new Error(proposeError?.message ?? "The commission terms were not saved")
-  const none = lines.length === 0
+  const view = await buildAgreementView(context, contract.id)
+  const declaredNone = lines.length === 0 && view.plan?.status === "approved"
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: none ? "sales_commission_none_declared" : before ? "sales_commission_plan_revised" : "sales_commission_plan_proposed",
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: declaredNone ? "sales_commission_none_declared" : before ? "sales_commission_plan_revised" : "sales_commission_plan_proposed",
       entityType: "sales_commission_plan", entityId: planId, payload: { contract_id: contract.id, project_id: contract.project_id, line_count: lines.length, superseded_plan_id: before?.id ?? null } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "sales_commission_plan", entityId: planId,
       before: before ? { id: before.id, status: before.status, revision: before.revision } : null,
       after: { contract_id: contract.id, coop_broker: parsed.plan.coopBroker, line_count: lines.length } }),
   ])
-  return buildAgreementView(context, contract.id)
+  return view
 }
 
 /**
@@ -331,7 +331,7 @@ export async function approveCommissionPlan(input: unknown, orgId?: string): Pro
     projectId: plan.project_id, supabase: context.supabase, resourceType: "sales_commission_plan", resourceId: plan.id, logDecision: true })
   if (plan.status !== "proposed") throw new Error("These commission terms are no longer waiting for approval")
   const lines = await readVisibleLines(context.supabase, context.orgId, plan.id)
-  const refusal = commissionApprovalRefusal({ actorUserId: context.userId, proposedBy: plan.proposed_by, lineCount: plan.line_count,
+  const refusal = commissionApprovalRefusal({ actorUserId: context.userId, proposedBy: plan.proposed_by,
     payeeUserIds: lines.map((row) => row.payee_user_id), canApprove: lines.length === plan.line_count })
   if (refusal) throw new Error(refusal)
   const { data: approved, error: approveError } = await context.supabase.from("sales_commission_plans")
@@ -457,62 +457,101 @@ export async function ensureSalesCommissionPayables(input: { orgId: string; user
   return obligations
 }
 
+/** The outbox job that brings Books in line with a reversal's commission unwind. */
+export const SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE = "settle_sales_commission_unwind_books"
+
+const unwindOutcomeSchema = z.object({
+  obligation_id: z.string(),
+  payout_channel: z.enum(["accounts_payable", "payroll"]),
+  action: z.enum(["cleared", "reversed", "none"]),
+  credit_bill_id: z.string().optional(),
+  adjustment_id: z.string().optional(),
+})
+
 /**
- * The closing reversal's commission step, run before the home goes back to
- * inventory. Refuses up front when any commission bill sits in a payment run, so
- * nothing is half-unwound; otherwise clears what was never paid and claws back
- * what was (`unwind_sales_commission`), reversing payroll accruals in Books.
- * Idempotent: a settled commission is skipped on replay.
+ * The closing reversal's pre-flight, before any money moves: a commission bill
+ * sitting in a payment run would be paid anyway, so the reversal is refused up
+ * front. `reverse_books_home_closing` refuses the same thing inside its
+ * transaction, where the commissions are actually unwound.
  */
-export async function unwindSalesCommissionsForClosing(input: { orgId: string; userId: string; closingId: string; reason: string; date: string }) {
+export async function assertClosingCommissionsUnwindable(input: { orgId: string; closingId: string }) {
   const service = createServiceSupabaseClient()
-  const { data, error } = await service.from("sales_commission_obligations").select("id, project_id, line_no, payout_channel, payee_company_id, amount_cents, status, vendor_bill_id, adjusts_obligation_id")
-    .eq("org_id", input.orgId).eq("closing_id", input.closingId).is("adjusts_obligation_id", null).eq("status", "open").order("line_no")
+  const { data, error } = await service.from("sales_commission_obligations").select("vendor_bill_id")
+    .eq("org_id", input.orgId).eq("closing_id", input.closingId).is("adjusts_obligation_id", null).eq("status", "open").not("vendor_bill_id", "is", null)
   if (error) throw new Error(`Unable to read the closing's commissions: ${error.message}`)
-  const open = z.array(obligationRowSchema).parse(data ?? [])
-  if (!open.length) return []
-  const billIds = open.flatMap((row) => row.vendor_bill_id ? [row.vendor_bill_id] : [])
-  if (billIds.length) {
-    const { data: runItems, error: runError } = await service.from("payment_run_items").select("bill_id, run_id")
-      .eq("org_id", input.orgId).in("bill_id", billIds).in("status", ACTIVE_RUN_ITEM_STATUSES)
-    if (runError) throw new Error(`Unable to check payment runs: ${runError.message}`)
-    const { data: bills, error: billError } = await service.from("vendor_bills").select("id, bill_number, total_cents, paid_cents, retainage_cents")
-      .eq("org_id", input.orgId).in("id", billIds)
-    if (billError) throw new Error(`Unable to read commission payables: ${billError.message}`)
-    const inRun = new Set((runItems ?? []).map((row) => String(row.bill_id)))
-    for (const bill of bills ?? []) {
-      const plan = commissionUnwindPlan({ totalCents: Number(bill.total_cents ?? 0), paidCents: Number(bill.paid_cents ?? 0), retainageCents: Number(bill.retainage_cents ?? 0), inActiveRun: inRun.has(String(bill.id)) })
-      if (plan.action === "refuse") throw new Error(`Commission payable ${bill.bill_number}: ${plan.reason}`)
+  const billIds = (data ?? []).map((row) => String(row.vendor_bill_id))
+  if (!billIds.length) return
+  const [runItems, bills] = await Promise.all([
+    service.from("payment_run_items").select("bill_id").eq("org_id", input.orgId).in("bill_id", billIds).in("status", ACTIVE_RUN_ITEM_STATUSES),
+    service.from("vendor_bills").select("id, bill_number, total_cents, paid_cents, retainage_cents").eq("org_id", input.orgId).in("id", billIds),
+  ])
+  if (runItems.error) throw new Error(`Unable to check payment runs: ${runItems.error.message}`)
+  if (bills.error) throw new Error(`Unable to read commission payables: ${bills.error.message}`)
+  const inRun = new Set((runItems.data ?? []).map((row) => String(row.bill_id)))
+  for (const bill of bills.data ?? []) {
+    const plan = commissionUnwindPlan({ totalCents: Number(bill.total_cents ?? 0), paidCents: Number(bill.paid_cents ?? 0), retainageCents: Number(bill.retainage_cents ?? 0), inActiveRun: inRun.has(String(bill.id)) })
+    if (plan.action === "refuse") throw new Error(`Commission payable ${bill.bill_number}: ${plan.reason}`)
+  }
+}
+
+/**
+ * What the reversal did to each commission, as `reverse_books_home_closing`
+ * returned it (the unwind committed with the reversal): one event and audit row
+ * per commission it cleared or clawed back.
+ */
+export async function recordClosingCommissionUnwind(input: { orgId: string; userId: string; closingId: string; reason: string; outcomes: unknown }) {
+  const outcomes = z.array(unwindOutcomeSchema).parse(input.outcomes ?? []).filter((row) => row.action !== "none")
+  await Promise.all(outcomes.flatMap((row) => [
+    recordEvent({ orgId: input.orgId, actorId: input.userId, eventType: row.action === "cleared" ? "sales_commission_cleared" : "sales_commission_reversed",
+      entityType: "sales_commission_obligation", entityId: row.obligation_id,
+      payload: { closing_id: input.closingId, credit_bill_id: row.credit_bill_id ?? null, adjustment_id: row.adjustment_id ?? null } }),
+    recordAudit({ orgId: input.orgId, actorId: input.userId, action: "update", entityType: "sales_commission_obligation", entityId: row.obligation_id,
+      before: { status: "open" }, after: { status: row.action, reason: input.reason } }),
+  ]))
+}
+
+const unwoundPayrollSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  line_no: z.number().int(),
+  amount_cents: z.coerce.number().int(),
+  status: z.enum(["open", "cleared", "reversed"]),
+  adjusts_obligation_id: z.string().nullable(),
+})
+
+/**
+ * The Books side of a reversed closing's payroll commissions, run from the
+ * outbox job the reversal queues in its transaction (so a Books failure is
+ * retried, never lost): a cleared accrual is reversed, and a clawback of
+ * commission already paid accrues as a deduction. Idempotent: it reads what the
+ * unwind recorded, a reversed accrual is no longer posted, and each clawback
+ * posts under its own key.
+ */
+export async function settleCommissionUnwindBooks(input: { orgId: string; closingId: string }) {
+  const service = createServiceSupabaseClient()
+  const [closingResult, books, obligationsResult] = await Promise.all([
+    service.from("closings").select("id, status, cancel_reason, metadata").eq("org_id", input.orgId).eq("id", input.closingId).maybeSingle(),
+    service.from("books_settings").select("workspace_enabled, arc_ledger_mode").eq("org_id", input.orgId).maybeSingle(),
+    service.from("sales_commission_obligations").select("id, project_id, line_no, amount_cents, status, adjusts_obligation_id")
+      .eq("org_id", input.orgId).eq("closing_id", input.closingId).eq("payout_channel", "payroll").order("line_no"),
+  ])
+  if (closingResult.error || !closingResult.data) throw new Error(`Closing not found: ${closingResult.error?.message ?? input.closingId}`)
+  if (books.error) throw new Error(`Unable to verify Books posture: ${books.error.message}`)
+  if (obligationsResult.error) throw new Error(`Unable to read the closing's commissions: ${obligationsResult.error.message}`)
+  if (!isBooksPosting(books.data)) return
+  const reversal = z.object({ status: z.literal("cancelled"), cancel_reason: z.string(), metadata: z.object({ reversed_on: z.string() }) })
+    .parse(closingResult.data)
+  const reason = `Closing reversed: ${reversal.cancel_reason}`.slice(0, 500)
+  for (const row of z.array(unwoundPayrollSchema).parse(obligationsResult.data ?? [])) {
+    if (row.adjusts_obligation_id) {
+      await postBooksJournalEntryForService(accrualDraft(row, reversal.metadata.reversed_on, true), input.orgId)
+    } else if (row.status === "cleared") {
+      const { data: entry, error: entryError } = await service.from("journal_entries").select("id").eq("org_id", input.orgId)
+        .eq("posting_key", buildPostingKey(`sales_commission_accrual:${row.id}`, { projectionVersion: 1 })).eq("status", "posted").maybeSingle()
+      if (entryError) throw new Error(`Unable to read the commission accrual: ${entryError.message}`)
+      if (entry) await reverseBooksJournalEntryForService({ entryId: String(entry.id), reversalDate: reversal.metadata.reversed_on, reason, orgId: input.orgId })
     }
   }
-  const { data: books, error: booksError } = await service.from("books_settings").select("workspace_enabled, arc_ledger_mode").eq("org_id", input.orgId).maybeSingle()
-  if (booksError) throw new Error(`Unable to verify Books posture: ${booksError.message}`)
-  const results: Array<{ obligationId: string; action: string }> = []
-  for (const row of open) {
-    const { data: outcome, error: unwindError } = await service.rpc("unwind_sales_commission", {
-      p_org_id: input.orgId, p_obligation_id: row.id, p_actor_id: input.userId, p_reason: input.reason, p_date: input.date,
-    })
-    if (unwindError) throw new Error(`Unable to unwind commission line ${row.line_no}: ${unwindError.message}`)
-    const result = z.object({ action: z.string(), adjustment_id: z.string().optional(), credit_bill_id: z.string().optional() }).parse(outcome)
-    if (row.payout_channel === "payroll" && isBooksPosting(books)) {
-      if (result.action === "cleared") {
-        const { data: entry, error: entryError } = await service.from("journal_entries").select("id").eq("org_id", input.orgId)
-          .eq("posting_key", buildPostingKey(`sales_commission_accrual:${row.id}`, { projectionVersion: 1 })).eq("status", "posted").maybeSingle()
-        if (entryError) throw new Error(`Unable to read the commission accrual: ${entryError.message}`)
-        if (entry) await reverseBooksJournalEntryForService({ entryId: String(entry.id), reversalDate: input.date, reason: `Closing reversed: ${input.reason}`.slice(0, 500), orgId: input.orgId })
-      } else if (result.action === "reversed" && result.adjustment_id) {
-        await postBooksJournalEntryForService(accrualDraft({ ...row, id: result.adjustment_id }, input.date, true), input.orgId)
-      }
-    }
-    results.push({ obligationId: row.id, action: result.action })
-    await Promise.all([
-      recordEvent({ orgId: input.orgId, actorId: input.userId, eventType: result.action === "cleared" ? "sales_commission_cleared" : "sales_commission_reversed",
-        entityType: "sales_commission_obligation", entityId: row.id, payload: { closing_id: input.closingId, credit_bill_id: result.credit_bill_id ?? null, adjustment_id: result.adjustment_id ?? null } }),
-      recordAudit({ orgId: input.orgId, actorId: input.userId, action: "update", entityType: "sales_commission_obligation", entityId: row.id,
-        before: { status: "open" }, after: { status: result.action === "cleared" ? "cleared" : "reversed", reason: input.reason } }),
-    ])
-  }
-  return results
 }
 
 /** Payroll reports a commission (or a clawback deduction) as carried by one of its runs. */
