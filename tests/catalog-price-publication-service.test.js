@@ -39,7 +39,7 @@ test('publication validation requires exactly one subject, a review baseline, un
   const input=structuredClone(r);change(input.items);assert.throws(()=>catalogPricePublicationSchema.parse(input))
  }
 })
-function service({atomic=false,canMargin=false,rowCap=7,fail=null}={}){
+function service({canMargin=false,rowCap=7,fail=null}={}){
  const reads=[],rpcCalls=[],delegations=[]
  const plans=Array.from({length:60},(_,n)=>({id:id(1000+n),org_id:ORG,name:`Plan ${String(n).padStart(3,'0')}`,status:'active'}))
  const versions=plans.flatMap((plan,n)=>[1,2,3].map(v=>({id:id(2000+n*3+v),org_id:ORG,house_plan_id:plan.id,status:'released',version_number:v,label:null,plan})))
@@ -50,7 +50,7 @@ function service({atomic=false,canMargin=false,rowCap=7,fail=null}={}){
  const supabase={from(table){let rows=tables[table]??[],limit=500,after=null,select;const filters=[];const q={
   select(value){select=value;return q},eq(key,value){filters.push([key,value]);rows=rows.filter(row=>key.includes('.')?row[key.split('.')[0]]?.[key.split('.')[1]]===value:row[key]===value);return q},in(key,values){rows=rows.filter(row=>values.includes(row[key]));return q},is(key,value){rows=rows.filter(row=>row[key]===value);return q},or(){rows=rows.filter(row=>row.community_id===null||row.community_id===COMMUNITY);return q},order(){rows=[...rows].sort((a,b)=>a.id.localeCompare(b.id));return q},limit(value){limit=value;return q},gt(key,value){after=value;rows=rows.filter(row=>row[key]>value);return q},maybeSingle:async()=>({data:rows[0],error:null}),then(resolve,reject){reads.push({table,select,filters,after});return Promise.resolve({data:rows.slice(0,Math.min(limit,rowCap)),error:fail===table&&after?{message:'Late read failure'}:null}).then(resolve,reject)}};return q}}
  const context={orgId:ORG,userId:ACTOR,supabase}
- const compiled=compile('lib/services/option-catalog.ts',{process:{env:{ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED:atomic?'true':'false'}},require(name){
+ const compiled=compile('lib/services/option-catalog.ts',{process:{env:{}},require(name){
   if(name==='zod')return require('zod')
   if(name==='@/lib/validation/selections')return require('../lib/validation/selections')
   if(name==='@/lib/services/context')return {requireOrgContext:async()=>context}
@@ -63,34 +63,19 @@ function service({atomic=false,canMargin=false,rowCap=7,fail=null}={}){
  }})
  return {module:compiled,options,prices,reads,rpcCalls,delegations,rpcFail:()=>rpcError={message:'Read RPC unavailable'},alter:fn=>alter=fn,deny:()=>denied=true}
 }
-test('compatibility matrix exhausts short provider pages, reaches options beyond 200 and redacts cost unless permitted',async()=>{
- const h=service(),first=await h.module.listPlanPricingMatrix({optionIds:h.options})
- assert.equal(first.plans.length,20);assert.equal(first.hasMorePlans,true);assert.equal(first.optionIds.length,20);assert.equal(first.hasMoreOptions,true)
- assert.ok(first.plans.every(plan=>plan.versionLabel==='v3'))
- const last=await h.module.listPlanPricingMatrix({optionIds:h.options,optionPage:11,planPage:1})
- assert.equal(last.optionIds.length,5);assert.equal(last.hasMoreOptions,false)
- assert.equal(Object.values(last.cells).length,5);assert.ok(Object.values(last.cells).every(cell=>!Object.hasOwn(cell,'costCents')))
- assert.ok(h.reads.filter(read=>read.table==='selection_catalog_prices').every(read=>!read.select.includes('cost_cents')))
- assert.ok(h.reads.every(read=>read.filters.some(([key,value])=>key==='org_id'&&value===ORG)))
- const older=await h.module.listPlanPricingMatrix({optionIds:h.options,includeOlderVersions:true});assert.equal(older.plans[0].planId,older.plans[1].planId);assert.equal(older.plans[0].versionLabel,'v3');assert.equal(older.plans[2].versionLabel,'v1')
- const seen=new Set();for(let page=1;page<=3;page++){const result=await h.module.listPlanPricingMatrix({optionIds:h.options,planPage:page});for(const plan of result.plans){assert.ok(!seen.has(plan.planId));seen.add(plan.planId)}}assert.equal(seen.size,60)
- const margin=service({canMargin:true}),result=await margin.module.listPlanPricingMatrix({optionIds:margin.options});assert.equal(Object.values(result.cells)[0].costCents,777)
- const broken=service({fail:'house_plan_versions'});await assert.rejects(broken.module.listPlanPricingMatrix({optionIds:broken.options}),/Late read failure/)
-})
 test('indexed matrix requests only its visible window and refuses fallback or out-of-window replies',async()=>{
- const h=service({atomic:true}),result=await h.module.listPlanPricingMatrix({optionIds:h.options,optionPage:11,planPage:3})
+ const h=service(),result=await h.module.listPlanPricingMatrix({optionIds:h.options,optionPage:11,planPage:3})
  assert.equal(result.optionIds.length,5);assert.equal(h.rpcCalls[0].args.p_option_ids.length,5);assert.equal(h.rpcCalls[0].args.p_page,3);assert.equal(h.reads.length,0)
  assert.ok(Object.values(result.cells).every(cell=>!Object.hasOwn(cell,'costCents')))
  h.rpcFail();await assert.rejects(h.module.listPlanPricingMatrix({optionIds:h.options}),/Read RPC unavailable/);assert.equal(h.reads.length,0)
- const bad=service({atomic:true});bad.alter(reply=>reply.cells[`${id(99)}:${id(20)}`]={priceCents:1,isAvailable:true,isOverride:true,ownPrice:null})
+ const bad=service();bad.alter(reply=>reply.cells[`${id(99)}:${id(20)}`]={priceCents:1,isAvailable:true,isOverride:true,ownPrice:null})
  await assert.rejects(bad.module.listPlanPricingMatrix({optionIds:bad.options}),/outside|inconsistent/)
 })
-test('price service verifies current context and permission, batches complete inputs and refuses disabled cutover',async()=>{
- const h=service({atomic:true}),input={...request(),expectedOrgId:ORG,expectedActorId:ACTOR}
+test('price service verifies current context and permission and batches complete inputs',async()=>{
+ const h=service(),input={...request(),expectedOrgId:ORG,expectedActorId:ACTOR}
  await h.module.publishCatalogPrices(input);assert.equal(h.delegations.length,1);assert.equal(h.delegations[0].input.items.length,2)
  await assert.rejects(h.module.publishCatalogPrices({...input,expectedOrgId:id(99)}),/organization/);assert.equal(h.delegations.length,1)
  h.deny();await assert.rejects(h.module.publishCatalogPrices(input),/Denied/)
- const disabled=service();await assert.rejects(disabled.module.publishCatalogPrices(input),/not enabled/);assert.equal(disabled.delegations.length,0)
 })
 
 test('actual price publisher confirms durable registration of the same canonical body before dispatch; failed registration blocks all price writes',async()=>{

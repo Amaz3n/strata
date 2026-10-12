@@ -5,7 +5,7 @@ let requestIdentity=50
 function form(storage=new Map(),locks={request:(_key,fn)=>fn()}){
  const slots=[],requests=[],toasts=[],effects=[];let cursor=0,pending=false
  const hooks={useEffect(fn){const n=cursor++;if(!slots[n]){slots[n]={};effects.push(fn)}},useState(initial){const n=cursor++;slots[n]??={value:initial};return [slots[n].value,value=>slots[n].value=typeof value==='function'?value(slots[n].value):value]},useRef(value){const n=cursor++;slots[n]??={current:value};return slots[n]},useMemo(fn){cursor++;return fn()},useTransition(){return [pending,fn=>{pending=true;Promise.resolve(fn()).finally(()=>pending=false)}]}}
- const props={atomicPublication:true,orgId:id(1),actorId:id(2),groups:[],catalog:{can_read_margin:true,packages:[],categories:[{id:id(3),name:'Kitchen',community_id:null,parent_category_id:null,options:[{id:id(4),name:'Cabinets'}]}]},canManage:true}
+ const props={orgId:id(1),actorId:id(2),groups:[],catalog:{can_read_margin:true,packages:[],categories:[{id:id(3),name:'Kitchen',community_id:null,parent_category_id:null,options:[{id:id(4),name:'Cabinets'}]}]},canManage:true}
  const exports={}
  vm.runInNewContext(ts.transpileModule(fs.readFileSync('components/design-studio/cutoff-rules.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,navigator:{locks},window:{localStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},crypto:{randomUUID:()=>id(++requestIdentity)},Intl,require(name){
   if(name==='react')return hooks
@@ -71,9 +71,9 @@ test('storage failures and concurrent tabs cannot send a new package over an unr
  const denied=new Map();denied.set=()=>{throw new Error('Quota')};const f=form(denied);start(f);await f.flush();assert.equal(f.requests.length,0)
  const unsupported=form(new Map(),null);start(unsupported);assert.equal(unsupported.requests.length,0)
 })
-test('disabled cutover, revoked access and rejected retry preserve possibly committed recovery',async()=>{
+test('revoked access and a rejected retry preserve possibly committed recovery',async()=>{
  const f=form();start(f);f.requests[0].resolve({success:false,error:'Unknown',code:'CATALOG_PUBLICATION_UNCONFIRMED'});await f.flush();const saved=[...f.storage.values()][0]
- for(const changed of [{atomicPublication:false},{canManage:false}]){
+ for(const changed of [{canManage:false}]){
   const restored=form(f.storage);Object.assign(restored.props,changed);restored.render();const tree=restored.render();restored.packageForm(tree).props.action(restored.data);assert.equal(restored.requests.length,0);assert.equal([...f.storage.values()][0],saved)
  }
  const restored=form(f.storage);restored.render();restored.packageForm(restored.render()).props.action(restored.data);restored.requests[0].resolve({success:false,error:'Package changed'});await restored.flush();assert.equal([...f.storage.values()][0],saved)
@@ -104,9 +104,8 @@ test('edit without margin permission strips a previously visible baseline cost a
  const f=form();f.props.catalog.packages=[existingPackage()];f.props.catalog.can_read_margin=false;f.render();f.button(f.render(),'Edit package').props.onClick();const tree=f.render();assert.equal(f.nodes(f.packageDialog(tree),n=>n.type==='Input'&&n.props.name==='cost').length,0)
  f.packageForm(tree).props.action(f.data);assert.equal(f.requests.length,1);assert.equal(Object.hasOwn(f.requests[0].input,'costCents'),false);assert.equal(Object.hasOwn(f.requests[0].input.expectedPackage,'cost_cents'),false);f.requests[0].resolve({success:true,data:{id:id(80)}});await f.flush()
 })
-test('inherited packages cannot be moved to the ambient scope and disabled cutover cannot fall back to a legacy edit',async()=>{
+test('inherited packages cannot be moved to the ambient scope',async()=>{
  const f=form();f.props.catalog.packages=[existingPackage()];f.props.communityId=id(13);f.render();let tree=f.render();const edit=f.button(tree,'Edit package');assert.equal(edit.props.disabled,true);edit.props.onClick();assert.equal(f.packageDialog(f.render()).props.open,false)
- const g=form();g.props.catalog.packages=[existingPackage()];g.render();g.button(g.render(),'Edit package').props.onClick();g.props.atomicPublication=false;g.packageForm(g.render()).props.action(g.data);assert.equal(g.requests.length,0)
 })
 test('recovery uses only the verified original review and never a cached-cost or current-name details preview',async()=>{
  const f=form();start(f);f.requests[0].resolve({success:false,error:'Unknown',code:'CATALOG_PUBLICATION_UNCONFIRMED'});await f.flush();const tree=f.render();assert.equal(f.nodes(f.packageDialog(tree),n=>n.type==='details').length,0);assert.equal(f.nodes(f.packageDialog(tree),n=>n.type==='CatalogPublicationReconciliation').length,1);assert.equal(f.nodes(f.packageDialog(tree),n=>n.type==='Input'&&n.props.name==='cost').length,0)
@@ -166,19 +165,14 @@ test('cutoff rule rows resolve inherited category names and expose unavailable o
 })
 
 test('editing an inherited org cutoff rule retains its original org scope and explains its shared effect',async()=>{
- const f=form();f.props.atomicPublication=false;f.props.communityId=id(12);f.props.groups=[{id:id(50),name:'Org deadline',category_ids:[],schedule_task_key:'frame',cutoff_offset_days:-14,cutoff_anchor:'start',community_id:null,sort_order:7}];f.render();f.button(f.render(),'Edit').props.onClick();let tree=f.render()
+ const f=form();f.props.communityId=id(12);f.props.groups=[{id:id(50),name:'Org deadline',category_ids:[],schedule_task_key:'frame',cutoff_offset_days:-14,cutoff_anchor:'start',community_id:null,sort_order:7,is_archived:false}];f.render();f.button(f.render(),'Edit').props.onClick();let tree=f.render()
  const dialog=f.nodes(tree,n=>n.type==='Dialog'&&f.nodes(n,x=>x.type==='DialogTitle'&&x.props.children==='Edit Org deadline').length)[0]
  assert.ok(f.nodes(dialog,n=>n.type==='DialogDescription'&&String(n.props.children).includes('shared by communities')).length)
- f.nodes(dialog,n=>n.type==='form')[0].props.action({get:k=>({name:'Reviewed',scheduleTaskKey:'frame',cutoffOffsetDays:'-14'})[k]});assert.equal(f.requests[0].input.communityId,null);assert.equal(f.requests[0].input.sortOrder,7);f.requests[0].resolve({success:true,data:{community_id:null}});await f.flush()
+ f.nodes(dialog,n=>n.type==='form')[0].props.action({get:k=>({name:'Reviewed',scheduleTaskKey:'frame',cutoffOffsetDays:'-14'})[k]});assert.equal(f.requests[0].review,true);assert.equal(f.requests[0].input.communityId,null)
+ f.requests[0].resolve({success:true,data:groupReviewReply(f.requests[0].input)});await f.flush()
+ const attempt=f.nodes(groupDialog(f,f.render()),n=>n.type==='CatalogPublicationReview')[0].props.publication.attempt;assert.equal(attempt.communityId,null);assert.equal(attempt.sortOrder,7)
 })
 
-
-test('shared rule category editing recognizes inherited roots, removes unavailable references and retains org-compatible assignments',async()=>{
- const f=form();f.props.atomicPublication=false;f.props.communityId=id(12);f.props.catalog.categories=[{id:id(14),parent_category_id:id(13),community_id:id(12),name:'Override kitchen',options:[]},{id:id(15),parent_category_id:null,community_id:id(12),name:'Community only',options:[]}];f.props.groups=[{id:id(50),name:'Shared',category_ids:[id(13),id(999)],community_id:null,cutoff_anchor:'start',cutoff_offset_days:-14,schedule_task_key:'frame',sort_order:0}]
- f.render();f.button(f.render(),'Edit').props.onClick();let tree=f.render();const dialog=()=>f.nodes(tree,n=>n.type==='Dialog'&&f.nodes(n,x=>x.type==='DialogTitle'&&x.props.children==='Edit Shared').length)[0]
- let checks=f.nodes(dialog(),n=>n.type==='Checkbox');assert.equal(checks.length,2);assert.equal(checks[0].props.checked,true);checks[1].props.onCheckedChange();tree=f.render();checks=f.nodes(dialog(),n=>n.type==='Checkbox');assert.equal(checks.length,1);checks[0].props.onCheckedChange();tree=f.render();f.nodes(dialog(),n=>n.type==='Checkbox')[0].props.onCheckedChange();tree=f.render()
- f.nodes(dialog(),n=>n.type==='form')[0].props.action({get:k=>({name:'Reviewed',scheduleTaskKey:'frame',cutoffOffsetDays:'-14'})[k]});assert.deepEqual([...f.requests[0].input.categoryIds],[id(13)]);assert.equal(f.requests[0].input.communityId,null);f.requests[0].resolve({success:true,data:{community_id:null}});await f.flush()
-})
 
 function groupDialog(f,tree){return f.nodes(tree,n=>n.type==='Dialog'&&f.nodes(n,x=>x.type==='DialogTitle'&&(x.props.children==='Add a cutoff rule'||String(x.props.children).startsWith('Edit '))&&!String(x.props.children).includes('package')).length)[0]}
 function groupSubmit(f,data={get:k=>({name:'Reviewed deadline',scheduleTaskKey:'frame',cutoffOffsetDays:'-14'})[k]}){const dialog=groupDialog(f,f.render());f.nodes(dialog,n=>n.type==='form')[0].props.action(data)}

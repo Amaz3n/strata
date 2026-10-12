@@ -2,8 +2,8 @@
 
 /**
  * `lib/services/option-catalog.ts` — design studio appointments (who can read
- * the calendar, who can book or move an appointment on a home) and the legacy
- * package save.
+ * the calendar, who can book or move an appointment on a home) and how a home
+ * prices its options.
  */
 
 const assert = require("node:assert/strict")
@@ -12,7 +12,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { listAppointments, resolveOptionPricing, upsertAppointment, upsertPackage } = freshRequire("lib/services/option-catalog.ts")
+const { homePricingScope, listAppointments, resolveOptionPricing, upsertAppointment } = freshRequire("lib/services/option-catalog.ts")
 
 const MINE = id(1)
 const THEIRS = id(2)
@@ -95,68 +95,6 @@ describe("upsertAppointment", () => {
   })
 })
 
-describe("upsertPackage", () => {
-  const PACKAGE = id(20)
-  const OPTION = id(21)
-  const stored = { id: PACKAGE, org_id: ORG, community_id: null, name: "Bundle", description: null, image_url: null, price_cents: 123, cost_cents: 7777, is_available: true, is_archived: false, sort_order: 0 }
-
-  function packageHarness({ permissions = ["selections.catalog.manage"], rpc } = {}) {
-    const saves = []
-    const service = createServiceHarness({
-      permissions,
-      tables: { selection_packages: [stored] },
-      rpc: {
-        save_selection_package: rpc ?? ((args) => {
-          saves.push(args)
-          return { data: PACKAGE, error: null }
-        }),
-      },
-    })
-    return { service, saves }
-  }
-
-  const request = { id: PACKAGE, name: "Bundle", priceCents: 123, optionIds: [OPTION] }
-
-  test("the package row and its members are saved by one database call", async () => {
-    const { service, saves } = packageHarness()
-    const saved = await service.run(() => upsertPackage(request))
-    assert.equal(saves.length, 1)
-    assert.deepEqual(saves[0].p_option_ids, [OPTION])
-    assert.equal(saved.id, PACKAGE)
-    assert.deepEqual(saved.option_ids, [OPTION])
-    assert.deepEqual(service.writes("selection_package_items"), [])
-  })
-
-  test("a failed save reports the failure and writes nothing else", async () => {
-    const { service } = packageHarness({ rpc: () => ({ data: null, error: { message: "member write failed" } }) })
-    await assert.rejects(service.run(() => upsertPackage(request)), /member write failed/)
-    assert.deepEqual(service.audits, [])
-    assert.deepEqual(service.writes("selection_package_items"), [])
-  })
-
-  test("a cost left out of the request is not sent, and cost stays hidden from a reader without margin access", async () => {
-    const { service, saves } = packageHarness()
-    const saved = await service.run(() => upsertPackage(request))
-    assert.equal(Object.hasOwn(saves[0].p_fields, "cost_cents"), false)
-    assert.equal(Object.hasOwn(saved, "cost_cents"), false)
-
-    const privileged = packageHarness({ permissions: ["selections.catalog.manage", "financials.margin.read"] })
-    const visible = await privileged.service.run(() => upsertPackage(request))
-    assert.equal(visible.cost_cents, 7777)
-  })
-
-  test("assigning or clearing a cost takes margin access, checked before anything is written", async () => {
-    for (const costCents of [null, 0, 100]) {
-      const { service, saves } = packageHarness()
-      await assert.rejects(service.run(() => upsertPackage({ ...request, costCents })), /Missing permission/)
-      assert.deepEqual(saves, [])
-    }
-    const { service, saves } = packageHarness({ permissions: ["selections.catalog.manage", "financials.margin.read"] })
-    await service.run(() => upsertPackage({ ...request, costCents: null }))
-    assert.equal(saves[0].p_fields.cost_cents, null)
-  })
-})
-
 describe("resolveOptionPricing context and money", () => {
   const OPTION = id(31)
   const CATEGORY = id(32)
@@ -165,13 +103,13 @@ describe("resolveOptionPricing context and money", () => {
     id: OPTION, org_id: ORG, category_id: CATEGORY, parent_option_id: null, community_id: null,
     price_cents: 5000, cost_cents: 3000, is_available: true, is_archived: false, ...overrides,
   })
-  function pricing(rows) {
+  function pricing(rows, prices = []) {
     return createServiceHarness({
       tables: {
         selection_options: rows,
         selection_packages: [],
         selection_categories: [{ id: CATEGORY, org_id: ORG, parent_category_id: null, community_id: null, is_archived: false }],
-        selection_catalog_prices: [],
+        selection_catalog_prices: prices,
       },
     })
   }
@@ -195,6 +133,29 @@ describe("resolveOptionPricing context and money", () => {
     const service = pricing([option()])
     const [row] = await service.run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], housePlanVersionId: VERSION }))
     assert.equal(row.baseReason, null)
+  })
+
+  test("a production home is priced from its plan version, never silently at the base price", async () => {
+    const noLot = homePricingScope({ lot: null, production: true })
+    await assert.rejects(
+      pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...noLot })),
+      /no pinned plan version/,
+    )
+
+    const pinned = homePricingScope({ lot: { community_id: null, house_plan_version_id: VERSION }, production: true })
+    await assert.rejects(
+      pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned })),
+      /This option has no price for this plan version/,
+    )
+
+    const planPrice = { id: id(34), org_id: ORG, option_id: OPTION, package_id: null, house_plan_version_id: VERSION, community_id: null, price_cents: 7200, cost_cents: 4000, is_available: true }
+    const [row] = await pricing([option()], [planPrice]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned }))
+    assert.deepEqual([row.priceCents, row.source], [7200, "plan"])
+  })
+
+  test("a custom home outside a community still prices at the option's base price", async () => {
+    const [row] = await pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...homePricingScope({ lot: null, production: false }) }))
+    assert.deepEqual([row.priceCents, row.source], [5000, "option_base"])
   })
 
   test("resolved money must be non-negative whole cents", async () => {

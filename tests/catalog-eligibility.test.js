@@ -62,58 +62,6 @@ test("a community override keeps the selection category and resolves the correct
   await assert.rejects(invalid({ orgId: "org", communityId: "oak", items: [{ optionId: "option" }] }), /different selection category/)
 })
 
-function selectionMutation(pricing, lotFailure = false) {
-  const writes = []
-  const selection = { id: "selection", org_id: "org", project_id: "home", category_id: "category", selected_option_id: "option", group_id: null, locked_at: null }
-  const tables = {
-    project_selections: [selection], selection_options: [{ id: "option", option_scope: "finish" }],
-    lots: [{ community_id: "oak", house_plan_version_id: "plan" }], projects: [{ property_type: "production" }], orgs: [{ product_tier: "production" }],
-    selection_package_items: [{ option_id: "option", option: { category_id: "category" } }],
-  }
-  const supabase = { from(table) {
-    const result = () => ({ data: tables[table] ?? [], error: lotFailure && table === "lots" ? { message: "lookup failed" } : null })
-    const query = { select() { return query }, eq() { return query }, in() { return query },
-      async maybeSingle() { const response = result(); return { ...response, data: response.data[0] } },
-      update(payload) { writes.push({ table, payload }); return query },
-      then(resolve, reject) { return Promise.resolve(result()).then(resolve, reject) },
-    }; return query
-  } }
-  const compiled = { exports: {} }
-  const source = fs.readFileSync(require.resolve("../lib/services/selections.ts"), "utf8")
-  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { exports: compiled.exports, require(id) {
-    if (id === "@/lib/land/paging") return require("../lib/land/paging")
-    if (id === "@/lib/supabase/server") return { createServiceSupabaseClient: () => supabase }
-    if (id === "@/lib/product-tier") return { getProjectPosture: () => "production", normalizeProductTier: (value) => value, isProductionProjectPosture: () => true }
-    if (id === "@/lib/selections/selection-variance") return require("../lib/selections/selection-variance")
-    if (id === "@/lib/services/option-catalog") return { resolveOptionPricing: async ({ items }) => items.map((item) => item.packageId ? { available: true, priceCents: 100, costCents: 50 } : pricing), allocatePackageTotal: require("../lib/selections/catalog-math").allocatePackageTotal }
-    if (id === "@/lib/services/configuration-rules") return { assertProjectConfiguration: async () => {} }
-    if (id === "@/lib/services/events") return { recordEvent: async () => {} }
-    return {}
-  } })
-  return { service: compiled.exports, writes }
-}
-
-test("confirmation revalidates availability and category before writing status or snapshots", async () => {
-  for (const pricing of [{ available: false, categoryId: "category", categoryIds: ["category"] }, { available: true, categoryId: "different", categoryIds: ["different"] }]) {
-    const { service, writes } = selectionMutation(pricing)
-    await assert.rejects(service.confirmSelection({ orgId: "org", projectId: "home", selectionId: "selection", portalAccess: true }), /available|category/)
-    assert.equal(writes.length, 0)
-  }
-})
-
-test("package member eligibility is checked before any package member is updated", async () => {
-  const { service, writes } = selectionMutation({ available: false, categoryId: "category", categoryIds: ["category"] })
-  await assert.rejects(service.selectProjectPackage({ orgId: "org", projectId: "home", packageId: "package", portalAccess: true }), /no longer available/)
-  assert.equal(writes.length, 0)
-})
-
-test("failed home lookup cannot fall back to organization-wide package pricing", async () => {
-  const { service, writes } = selectionMutation({ available: true, categoryId: "category", categoryIds: ["category"] }, true)
-  await assert.rejects(service.selectProjectPackage({ orgId: "org", projectId: "home", packageId: "package", portalAccess: true }), /lookup failed/)
-  assert.equal(writes.length, 0)
-})
-
-
 test("pricing a requested item does not truncate behind a large unrelated plan catalog", async () => {
   const prices = Array.from({ length: 1203 }, (_, index) => ({ option_id: `unrelated-${index}`, community_id: null, price_cents: 1, cost_cents: 1, is_available: true }))
   prices.push({ option_id: "option", community_id: null, price_cents: 900, cost_cents: 400, is_available: true })

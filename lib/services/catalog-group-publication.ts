@@ -17,7 +17,6 @@ export async function reviewCatalogGroupCategories(raw: unknown) {
   const input = reviewInput.parse(raw), context = await requireOrgContext()
   if (input.expectedOrgId !== context.orgId || input.expectedActorId !== context.userId) throw new Error("Cutoff rule review context changed; reopen under the original organization and user")
   await requirePermission("selections.catalog.manage", context)
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Cutoff rule publication review is unavailable until the approved catalog cutover")
   const { data, error } = await createServiceSupabaseClient().rpc("review_catalog_group_categories", { p_org_id: context.orgId, p_actor_id: context.userId, p_community_id: input.communityId, p_ids: input.categoryIds })
   if (error) throw new Error(`Could not review cutoff rule categories: ${error.message}`)
   const parsed = reviewReply.safeParse(data)
@@ -49,7 +48,6 @@ export function catalogGroupRequest(raw: CatalogGroupPublicationInput) {
 export async function publishCatalogGroup(context: OrgServiceContext, raw: unknown) {
   const input = catalogGroupPublicationSchema.parse(raw)
   if (input.expectedOrgId !== context.orgId || input.expectedActorId !== context.userId) throw new Error("Cutoff rule publication context changed; reopen the workspace")
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Atomic cutoff rule publication is unavailable until the approved catalog cutover")
   const request = catalogGroupRequest(input)
   await registerCatalogPublicationIntent(context, "group", input.publicationKey, request)
   const { data, error } = await Promise.resolve(createServiceSupabaseClient().rpc("publish_catalog_group_atomic", { p_org_id: context.orgId, p_actor_id: context.userId, p_key: input.publicationKey, p_request: request }))

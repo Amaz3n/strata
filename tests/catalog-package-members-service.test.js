@@ -1,9 +1,9 @@
 const fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript'),test=require('node:test'),assert=require('node:assert/strict')
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`
 function harness(){
- const calls=[],scope={expectedOrgId:id(1),expectedActorId:id(2),communityId:null},member={id:id(10),name:'Cabinets',categoryId:id(20),categoryKey:id(20),categoryName:'Kitchen',available:true},page={orgId:id(1),actorId:id(2),communityId:null,query:'',selectedIds:null,items:[member],nextCursor:null};let data=page,denied=false,flag='true';const compiled={exports:{}}
- vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/services/catalog-package-members.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:{get ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED(){return flag}}},require(name){if(name==='zod')return require('zod');if(name.endsWith('/context'))return {requireOrgContext:async()=>({orgId:id(1),userId:id(2)})};if(name.endsWith('/permissions'))return {requirePermission:async()=>{if(denied)throw new Error('Denied')}};if(name.endsWith('/supabase/server'))return {createServiceSupabaseClient:()=>({rpc:async(name,args)=>{calls.push({name,args});return {data,error:null}}})};return {}}})
- return {scope,page,member,calls,data:v=>data=v,deny:()=>denied=true,flag:v=>flag=v,discover:compiled.exports.discoverCatalogPackageMembers}
+ const calls=[],scope={expectedOrgId:id(1),expectedActorId:id(2),communityId:null},member={id:id(10),name:'Cabinets',categoryId:id(20),categoryKey:id(20),categoryName:'Kitchen',available:true},page={orgId:id(1),actorId:id(2),communityId:null,query:'',selectedIds:null,items:[member],nextCursor:null};let data=page,denied=false;const compiled={exports:{}}
+ vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/services/catalog-package-members.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:{}},require(name){if(name==='zod')return require('zod');if(name.endsWith('/context'))return {requireOrgContext:async()=>({orgId:id(1),userId:id(2)})};if(name.endsWith('/permissions'))return {requirePermission:async()=>{if(denied)throw new Error('Denied')}};if(name.endsWith('/supabase/server'))return {createServiceSupabaseClient:()=>({rpc:async(name,args)=>{calls.push({name,args});return {data,error:null}}})};return {}}})
+ return {scope,page,member,calls,data:v=>data=v,deny:()=>denied=true,discover:compiled.exports.discoverCatalogPackageMembers}
 }
 test('server member search validates scope, bounded ordering and continuation and returns no cost fields',async()=>{
  const h=harness();const result=await h.discover(h.scope);assert.equal(result.items.length,1);assert.equal(h.calls[0].name,'discover_catalog_package_members');assert.equal(h.calls[0].args.p_ids,null)
@@ -16,6 +16,6 @@ test('selected lookup verifies every original UUID and permits explicit missing 
  for(const patch of [{items:[h.member]},{selectedIds:[id(10),id(10)]},{nextCursor:id(99)},{items:[h.member,{...missing,id:id(98)}]}]){h.data({...h.page,selectedIds:[id(10),id(99)],items:[h.member,missing],...patch});await assert.rejects(h.discover({...h.scope,selectedIds:[id(10),id(99)]}),/verified/)}
  await assert.rejects(h.discover({...h.scope,selectedIds:[id(10),id(10)]}));await assert.rejects(h.discover({...h.scope,selectedIds:[id(10)],query:'search'}));await assert.rejects(h.discover({...h.scope,selectedIds:[id(10)],cursor:id(1)}))
 })
-test('context, permission and disabled cutover reject before private discovery',async()=>{
- const h=harness();await assert.rejects(h.discover({...h.scope,expectedActorId:id(99)}),/context/);h.flag('false');await assert.rejects(h.discover(h.scope),/cutover/);h.flag('true');h.deny();await assert.rejects(h.discover(h.scope),/Denied/);assert.equal(h.calls.length,0)
+test('context and permission reject before private discovery',async()=>{
+ const h=harness();await assert.rejects(h.discover({...h.scope,expectedActorId:id(99)}),/context/);h.deny();await assert.rejects(h.discover(h.scope),/Denied/);assert.equal(h.calls.length,0)
 })

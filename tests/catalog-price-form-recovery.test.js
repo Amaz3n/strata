@@ -5,7 +5,7 @@ function form(storage=new Map(),locks={request:(_key,fn)=>fn()}){
  const slots=[],requests=[],paths=[],refreshes=[],effects=[];let cursor=0,pending=false
  const hooks={useEffect(fn){const n=cursor++;if(!slots[n]){slots[n]={};effects.push(fn)}},useState(initial){const n=cursor++;slots[n]??={value:initial};return [slots[n].value,value=>slots[n].value=typeof value==='function'?value(slots[n].value):value]},useRef(value){const n=cursor++;slots[n]??={current:value};return slots[n]},useMemo(fn){cursor++;return fn()},useTransition(){return [pending,fn=>{pending=true;Promise.resolve(fn()).finally(()=>pending=false)}]}}
  const options=[10,11].map(n=>({id:id(n),name:`Option ${n}`,price_cents:1000,category_id:id(3),is_default:false}))
- const props={orgId:id(1),actorId:id(2),initialView:'pricing',initialCategoryId:id(3),canManage:true,catalog:{categories:[{id:id(3),name:'Kitchen',options}],packages:[],can_read_margin:false},matrix:{plans:[{planId:id(19),versionId:id(20),planName:'Plan',versionLabel:'v1'}],cells:Object.fromEntries(options.map((option,n)=>[`${option.id}:${id(20)}`,{priceCents:123+n,isAvailable:n===0,ownPrice:{id:id(30+n),price_cents:123+n,is_available:n===0},isOverride:true}])),optionIds:options.map(option=>option.id),optionPage:1,planPage:1,hasMoreOptions:true,hasMorePlans:true,atomicPricing:true}}
+ const props={orgId:id(1),actorId:id(2),initialView:'pricing',initialCategoryId:id(3),canManage:true,catalog:{categories:[{id:id(3),name:'Kitchen',options}],packages:[],can_read_margin:false},matrix:{plans:[{planId:id(19),versionId:id(20),planName:'Plan',versionLabel:'v1'}],cells:Object.fromEntries(options.map((option,n)=>[`${option.id}:${id(20)}`,{priceCents:123+n,isAvailable:n===0,ownPrice:{id:id(30+n),price_cents:123+n,is_available:n===0},isOverride:true}])),optionIds:options.map(option=>option.id),optionPage:1,planPage:1,hasMoreOptions:true,hasMorePlans:true}}
  const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync('components/design-studio/catalog-workbench.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,URLSearchParams,navigator:{locks},window:{localStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},crypto:{randomUUID:()=>id(90)},require(name){
   if(name==='react')return hooks
   if(name==='react/jsx-runtime')return {jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props})}
@@ -14,7 +14,7 @@ function form(storage=new Map(),locks={request:(_key,fn)=>fn()}){
   if(name==='@/lib/action-result')return {unwrapAction:result=>{if(!result.success)throw new Error(result.error);return result.data}}
   if(name==='@/lib/selections/price-publication-recovery')return require('../lib/selections/price-publication-recovery')
   if(name==='@/lib/selections/swatch')return {swatchHue:()=>''}
-  if(name.endsWith('/design-studio/actions'))return {publishCatalogPricesAction:input=>new Promise((resolve,reject)=>requests.push({input,resolve,reject})),setCatalogPriceAction:async()=>({success:true,data:{}})}
+  if(name.endsWith('/design-studio/actions'))return {publishCatalogPricesAction:input=>new Promise((resolve,reject)=>requests.push({input,resolve,reject}))}
   return new Proxy({},{get:(_,key)=>key})
  }})
  function nodes(tree,predicate,result=[]){if(!tree||typeof tree!=='object')return result;if(predicate(tree))result.push(tree);for(const child of [tree.props?.children].flat(Infinity))nodes(child,predicate,result);return result}
@@ -79,14 +79,9 @@ test('failed storage write blocks sending; another tab cannot replace a pending 
  const f=form(denied),tree=f.render();f.inputs(tree)[0].props.onBlur({target:{value:'2.45'}});f.button(tree,'Publish prices').props.onClick();await f.flush()
  assert.equal(f.requests.length,0,'cannot send an unrecoverable attempt')
 })
-test('malformed recovery blocks publication and a disabled cutover retains the saved request',async()=>{
+test('malformed recovery blocks publication',async()=>{
  const storage=new Map([[`arc:catalog-price-publication:v1:${id(1)}:${id(2)}:org`,'{broken']])
  const f=form(storage),tree=f.render();f.inputs(tree)[0].props.onBlur({target:{value:'2.45'}});f.button(tree,'Publish prices').props.onClick();await f.flush();assert.equal(f.requests.length,0);assert.equal(storage.size,1)
- const active=form(),t=active.render();active.inputs(t)[0].props.onBlur({target:{value:'2.45'}});active.button(t,'Publish prices').props.onClick()
- active.requests[0].resolve({success:false,error:'Unknown',code:'CATALOG_PUBLICATION_UNCONFIRMED'});await active.flush()
- const disabled=form(active.storage);disabled.props.matrix.atomicPricing=false;disabled.render();const current=disabled.render()
- assert.equal(disabled.button(current,'Retry reviewed batch').props.disabled,true)
- disabled.button(current,'Retry reviewed batch').props.onClick();assert.equal(disabled.requests.length,0);assert.equal(disabled.storage.size,1)
 })
 test('a rejection after an unconfirmed attempt does not erase possible committed publication evidence',async()=>{
  const f=form(),tree=f.render();f.inputs(tree)[0].props.onBlur({target:{value:'2.45'}});f.button(tree,'Publish prices').props.onClick()

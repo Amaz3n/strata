@@ -6,7 +6,6 @@ import { toast } from "sonner"
 
 import {
   archiveCatalogEntityAction,
-  setCatalogPriceAction,
   publishCatalogPricesAction,
   upsertCategoryAction,
 } from "@/app/(app)/design-studio/actions"
@@ -92,7 +91,7 @@ export function CatalogWorkbench({ catalog, matrix, communityId, canManage, orgI
       setPriceError("Saved price publication could not be read. Restore browser storage and reload to reconcile it before publishing again.")
     }
   }, [scope])
-  const navigationBlocked = pending || (matrix.atomicPricing && !recoveryReady) || Boolean(priceRecovery) || Object.keys(drafts).length > 0 || Object.keys(invalidPrices).length > 0
+  const navigationBlocked = pending || !recoveryReady || Boolean(priceRecovery) || Object.keys(drafts).length > 0 || Object.keys(invalidPrices).length > 0
   function changeWindow(values: Record<string,string>) {
     if (navigationBlocked || publicationBusy.current || publicationAttempt.current || Object.keys(priceDrafts.current).length || invalidPriceKeys.current.size) return
     const params = new URLSearchParams(searchParams.toString())
@@ -144,7 +143,7 @@ export function CatalogWorkbench({ catalog, matrix, communityId, canManage, orgI
 
   /** Edits are reviewed together; uncertain retries retain the exact batch. */
   function savePlanPrice(optionId: string, versionId: string, raw: string) {
-    if ((matrix.atomicPricing && !recoveryChecked.current) || publicationBusy.current || publicationAttempt.current || priceRecovery) return
+    if (!recoveryChecked.current || publicationBusy.current || publicationAttempt.current || priceRecovery) return
     const key = `${optionId}:${versionId}`, trimmed = raw.trim()
     if (trimmed === "") {
       invalidPriceKeys.current.delete(key)
@@ -166,22 +165,13 @@ export function CatalogWorkbench({ catalog, matrix, communityId, canManage, orgI
       delete priceDrafts.current[key];setDrafts({ ...priceDrafts.current });return
     }
     const item: PriceItem = { optionId, housePlanVersionId: versionId, priceCents: cents, isAvailable: cell?.isAvailable ?? true, expectedPrice: cell?.ownPrice ?? null }
-    if (matrix.atomicPricing) {
-      publicationKey.current ??= crypto.randomUUID()
-      priceDrafts.current[key] = item
-      setDrafts({ ...priceDrafts.current })
-      return
-    }
-    startTransition(async () => {
-      try {
-        unwrapAction(await setCatalogPriceAction({ ...item, communityId: communityId ?? null, expectedOrgId: orgId, expectedActorId: actorId }))
-        router.refresh()
-      } catch (error) { toast.error("Could not save that price", { description: error instanceof Error ? error.message : undefined }) }
-    })
+    publicationKey.current ??= crypto.randomUUID()
+    priceDrafts.current[key] = item
+    setDrafts({ ...priceDrafts.current })
   }
 
   function publishPrices() {
-    if (!canManage || !recoveryChecked.current || publicationBusy.current || invalidPriceKeys.current.size>0 || !matrix.atomicPricing) return
+    if (!canManage || !recoveryChecked.current || publicationBusy.current || invalidPriceKeys.current.size>0) return
     const items = Object.values(priceDrafts.current)
     const recovering = publicationAttempt.current !== null
     const attempt = publicationAttempt.current ?? (publicationKey.current && items.length ? { publicationKey: publicationKey.current, expectedOrgId: orgId, expectedActorId: actorId, communityId: communityId ?? null, items } : null)
@@ -312,16 +302,15 @@ export function CatalogWorkbench({ catalog, matrix, communityId, canManage, orgI
               </>}
             </div>
           </div>
-          {view === "pricing" && (matrix.atomicPricing || priceRecovery || priceError) && (canManage || priceRecovery || priceError) && <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2">
+          {view === "pricing" && (canManage || priceRecovery || priceError) && <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2">
             <span className="text-sm">{Object.keys(drafts).length} price edits ready to publish</span>
-            <Button size="sm" disabled={!canManage || !matrix.atomicPricing || !recoveryReady || pending || (!priceRecovery && Object.keys(drafts).length===0) || Object.keys(invalidPrices).length>0} onClick={publishPrices}>{priceRecovery ? "Retry reviewed batch" : "Publish prices"}</Button>
+            <Button size="sm" disabled={!canManage || !recoveryReady || pending || (!priceRecovery && Object.keys(drafts).length===0) || Object.keys(invalidPrices).length>0} onClick={publishPrices}>{priceRecovery ? "Retry reviewed batch" : "Publish prices"}</Button>
             <Button size="sm" variant="outline" disabled={pending || Boolean(priceRecovery)} onClick={discardPrices}>Discard edits and reload</Button>
             {Object.keys(invalidPrices).length>0 && <p role="alert" className="text-sm text-destructive">Correct the highlighted prices before publishing.</p>}
             {priceRecovery && !canManage && <p role="alert" className="text-sm">Your catalog management access has changed. The saved batch is retained for reconciliation.</p>}
-            {priceRecovery && !matrix.atomicPricing && <p role="alert" className="text-sm">Price publication is currently unavailable. The reviewed batch is retained until publication is enabled again.</p>}
             {priceRecovery && <p role="alert" className="text-sm">Publication is unconfirmed. Retry the same {priceRecovery.items.length} prices to recover the save.</p>}
             {priceError && <p role="alert" className="text-sm text-destructive">{priceError}</p>}
-            {priceRecovery && <CatalogPublicationReconciliation key={priceRecovery.publicationKey} publication={{ kind: "prices", attempt: priceRecovery }} disabled={!canManage || !matrix.atomicPricing || pending} onReconciled={() => {
+            {priceRecovery && <CatalogPublicationReconciliation key={priceRecovery.publicationKey} publication={{ kind: "prices", attempt: priceRecovery }} disabled={!canManage || pending} onReconciled={() => {
               publicationAttempt.current=null;publicationKey.current=null;priceDrafts.current={};invalidPriceKeys.current.clear()
               setDrafts({});setTexts({});setInvalidPrices({});setPriceRecovery(null);setPriceError(null);router.refresh()
             }} />}
@@ -489,7 +478,7 @@ export function CatalogWorkbench({ catalog, matrix, communityId, canManage, orgI
                                 type="number"
                                 min="0"
                                 step="0.01"
-                                disabled={!canManage || (matrix.atomicPricing && !recoveryReady) || pending || Boolean(priceRecovery) || option.is_default}
+                                disabled={!canManage || !recoveryReady || pending || Boolean(priceRecovery) || option.is_default}
                                 value={texts[`${option.id}:${plan.versionId}`] ?? (cell?.priceCents != null ? (cell.priceCents / 100).toFixed(2) : "")}
                                 aria-invalid={Boolean(invalidPrices[`${option.id}:${plan.versionId}`])}
                                 title={invalidPrices[`${option.id}:${plan.versionId}`]}

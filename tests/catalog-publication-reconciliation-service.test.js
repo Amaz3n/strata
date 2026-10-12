@@ -4,12 +4,12 @@ const schemas=require('../lib/validation/selections'),id=n=>`00000000-0000-4000-
 const context={orgId:id(1),userId:id(2)}
 function compile(file,dependencies){const compiled={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:dependencies.env??{}},require:name=>dependencies[name]??(name==='zod'?require('zod'):name==='@/lib/validation/selections'?schemas:name==='@/lib/validation/catalog-publication-review'?require('../lib/validation/catalog-publication-review'):{})});return compiled.exports}
 function harness(){
- const calls=[];let flag='true',denied=false,alter=null,error=null
+ const calls=[];let denied=false,alter=null,error=null
  const packageService=compile('lib/services/catalog-package-publication.ts',{})
  const priceService=compile('lib/services/catalog-price-publication.ts',{'@/lib/services/catalog-package-publication':packageService})
  const groupService=compile('lib/services/catalog-group-publication.ts',{'@/lib/services/catalog-package-publication':packageService})
  const service=compile('lib/services/catalog-publication-reconciliation.ts',{
-  env:{get ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED(){return flag}},
+  env:{},
   '@/lib/services/context':{requireOrgContext:async()=>context},
   '@/lib/services/permissions':{requirePermission:async()=>{if(denied)throw new Error('Denied')}},
   '@/lib/services/catalog-group-publication':groupService,'@/lib/services/catalog-package-publication':packageService,'@/lib/services/catalog-price-publication':priceService,
@@ -20,7 +20,7 @@ function harness(){
  })
  const publication={kind:'prices',attempt:schemas.catalogPricePublicationSchema.parse({expectedOrgId:context.orgId,expectedActorId:context.userId,publicationKey:id(80),communityId:null,items:[{optionId:id(50),housePlanVersionId:id(31),priceCents:123,isAvailable:true,expectedPrice:null}]})}
  const acknowledgment={publication,receiptId:id(100),ackKey:id(100),reason:'Reviewed original committed receipt'}
- return {service,publication,acknowledgment,calls,flag:value=>flag=value,deny:()=>denied=true,alter:fn=>alter=fn,error:value=>error=value}
+ return {service,publication,acknowledgment,calls,deny:()=>denied=true,alter:fn=>alter=fn,error:value=>error=value}
 }
 test('receipt inspection and acknowledgment use exact publisher canonical inputs and never call publication writes',async()=>{
  const h=harness();const inspected=await h.service.inspectCatalogPublication(h.publication);assert.equal(inspected.sourceState,'changed')
@@ -31,10 +31,9 @@ test('receipt inspection and acknowledgment use exact publisher canonical inputs
  const packageInput=schemas.packageSchema.parse({requireAtomicPublication:true,publicationKey:id(90),expectedOrgId:context.orgId,expectedActorId:context.userId,name:'Bundle',priceCents:100,optionIds:[id(51),id(50)]})
  await h.service.inspectCatalogPublication({kind:'package',attempt:packageInput});assert.deepEqual([...h.calls[2].args.p_request.optionIds],[id(50),id(51)])
 })
-test('current context, permission, exact flag and missing identity reject before any service RPC',async()=>{
+test('current context, permission and missing identity reject before any service RPC',async()=>{
  const h=harness();for(const patch of [{expectedOrgId:id(99)},{expectedActorId:id(99)},{expectedActorId:null},{publicationKey:null}])await assert.rejects(h.service.inspectCatalogPublication({...h.publication,attempt:{...h.publication.attempt,...patch}}))
- for(const flag of ['false','TRUE',undefined]){h.flag(flag);await assert.rejects(h.service.inspectCatalogPublication(h.publication),/unavailable/)}
- h.flag('true');h.deny();await assert.rejects(h.service.acknowledgeCatalogPublication(h.acknowledgment),/Denied/);assert.equal(h.calls.length,0)
+ h.deny();await assert.rejects(h.service.acknowledgeCatalogPublication(h.acknowledgment),/Denied/);assert.equal(h.calls.length,0)
 })
 test('malformed, mismatched and incomplete inspection replies fail closed; only metadata is returned',async()=>{
  const h=harness();for(const alter of [r=>r.orgId=id(99),r=>r.kind='package',r=>r.requestKey=id(99),r=>r.receiptId=null,r=>r.entityIds=[],r=>r.entityIds=[id(101),id(101)],r=>r.sourceState=null,r=>r.committedAt='bad']){h.alter(alter);await assert.rejects(h.service.inspectCatalogPublication(h.publication),/verified|incomplete/)}

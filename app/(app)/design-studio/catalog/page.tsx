@@ -46,7 +46,7 @@ async function CatalogPageContent({ searchParams }: PageProps) {
       breadcrumbs={[{ label: "Design Studio", href: "/design-studio" }, { label: "Catalog" }]}
       fullBleed
     >
-      {canManage && process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED === "true" && <div className="px-6 py-2 text-sm">
+      {canManage && <div className="px-6 py-2 text-sm">
         <Link className="text-muted-foreground underline underline-offset-4 hover:text-foreground" href={`/design-studio/catalog/history${communityId ? `?community=${encodeURIComponent(communityId)}` : ""}`}>Publication history</Link>
       </div>}
       <CatalogWorkbench

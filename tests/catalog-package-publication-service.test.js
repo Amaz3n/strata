@@ -55,10 +55,10 @@ test('transport rejection and malformed success retain an explicit unconfirmed r
  const h=harness();h.reject();await assert.rejects(h.publish(input()),error=>error.code==='CATALOG_PUBLICATION_UNCONFIRMED')
  const malformed=harness();malformed.alter(r=>r.receiptId=null);await assert.rejects(malformed.publish(input()),error=>error.code==='CATALOG_PUBLICATION_UNCONFIRMED')
 })
-test('actual upsert service gates atomic publication by current permission, workspace identity and literal flag',async()=>{
- const h=harness(),permissions=[],compiled={exports:{}};let denied=false,flag='true',legacy=0
+test('actual upsert service gates atomic publication by current permission and workspace identity',async()=>{
+ const h=harness(),permissions=[],compiled={exports:{}};let denied=false,legacy=0
  const current={...context,supabase:{from(){legacy++;throw new Error('Legacy path reached')}}}
- vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/services/option-catalog.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:{get ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED(){return flag}}},require(name){
+ vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/services/option-catalog.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:{}},require(name){
   if(name==='@/lib/validation/selections')return require('../lib/validation/selections')
   if(name==='zod')return require('zod')
   if(name==='@/lib/services/context')return {requireOrgContext:async()=>current}
@@ -72,10 +72,6 @@ test('actual upsert service gates atomic publication by current permission, work
  assert.equal(h.calls.length,0)
  denied=true;await assert.rejects(compiled.exports.upsertPackage(input()),/Denied/);assert.equal(h.calls.length,0)
  denied=false;await compiled.exports.upsertPackage(input());assert.equal(h.calls.length,1);assert.equal(legacy,0);assert.equal(permissions.at(-1),'selections.catalog.manage')
- for(const value of ['TRUE','1',undefined]){flag=value;await assert.rejects(compiled.exports.upsertPackage(input()),/Legacy path/)}
- assert.equal(legacy,3);assert.equal(h.calls.length,1)
- for(const value of ['false','TRUE','1',undefined]){flag=value;await assert.rejects(compiled.exports.upsertPackage({...input(),requireAtomicPublication:true}),/unavailable/)}
- assert.equal(legacy,3,'recovered atomic requests must never fall through to legacy creation');assert.equal(h.calls.length,1)
 })
 
 test('publisher preserves omitted costs and defensively strips costs from unprivileged replies',async()=>{

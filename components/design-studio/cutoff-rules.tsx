@@ -53,7 +53,6 @@ interface Props {
   catalog: CatalogDto
   communityId?: string
   canManage: boolean
-  atomicPublication: boolean
 }
 
 function money(cents: number | null | undefined) {
@@ -61,7 +60,7 @@ function money(cents: number | null | undefined) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(cents / 100)
 }
 
-export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, categoryLabels, communityId, canManage, orgId, actorId, atomicPublication }: Props) {
+export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, categoryLabels, communityId, canManage, orgId, actorId }: Props) {
   const router = useRouter()
   const [groupTarget, setGroupTarget] = useState<{ group: SelectionGroupDto | null } | null>(null)
   const groupSaving = useRef(false)
@@ -109,12 +108,11 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
 
   const groupCommunityId = groupRecovery ? groupRecovery.communityId ?? null : groupTarget?.group ? groupTarget.group.community_id : communityId ?? null
   const groupStorageScope = useMemo(() => ({ orgId, actorId, communityId: groupCommunityId }), [orgId, actorId, groupCommunityId])
-  const groupContextKey = `${orgId}:${actorId}:${communityId ?? "org"}:${groupCommunityId ?? "org"}:${atomicPublication}:${canManage}`
+  const groupContextKey = `${orgId}:${actorId}:${communityId ?? "org"}:${groupCommunityId ?? "org"}:${canManage}`
   const groupContext = useRef(groupContextKey)
   groupContext.current = groupContextKey
   useEffect(() => {
     setGroupRecoveryReady(false)
-    if (!atomicPublication) { setGroupRecoveryReady(true); return }
     try {
       const saved = readGroupPublication(window.localStorage, groupStorageScope)
       groupAttempt.current = saved
@@ -129,17 +127,16 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
     } catch {
       setGroupError("Saved cutoff rule publication could not be read. Restore browser storage and reload before publishing again.")
     }
-  }, [groupStorageScope, atomicPublication])
+  }, [groupStorageScope])
   useEffect(() => { groupEpoch.current++;setGroupReview(null) }, [groupContextKey])
   useEffect(() => () => { groupEpoch.current++ }, [])
 
-  const packageOptions = useMemo(() => new Map((atomicPublication ? [] : catalog.categories).flatMap(category => category.options.map(option => [option.id.toLowerCase(), { available: option.is_available !== false && !option.is_archived && !category.is_archived, categoryId: category.parent_category_id ?? category.id }] as const))), [catalog.categories, atomicPublication])
   function togglePackageOption(id: string, members?: CatalogPackageMemberPage["items"]) {
     if (packageSaving.current || packageAttempt.current || !canManage) return
     setPackageOptionIds(previous => {
       const identity = id.toLowerCase()
       if (previous.some(value => value.toLowerCase() === identity)) return previous.filter(value => value.toLowerCase() !== identity)
-      const options = atomicPublication ? new Map((members ?? []).map(row => [row.id.toLowerCase(), { available: row.available, categoryId: row.categoryKey }])) : packageOptions
+      const options = new Map((members ?? []).map(row => [row.id.toLowerCase(), { available: row.available, categoryId: row.categoryKey }]))
       const option = options.get(identity)
       if (!option?.available || !option.categoryId) return previous
       const retained = previous.filter(value => options.get(value.toLowerCase())?.categoryId !== option.categoryId)
@@ -158,7 +155,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
   }, [catalog.categories, categoryLabels])
 
   function openGroup(group: SelectionGroupDto | null) {
-    if (!canManage || groupSaving.current || atomicPublication && !groupRecoveryReady) return
+    if (!canManage || groupSaving.current || !groupRecoveryReady) return
     groupEpoch.current++
     setGroupError(null)
     setGroupReview(null)
@@ -169,7 +166,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
   }
 
   function saveGroup(formData: FormData) {
-    if (!canManage || groupSaving.current || groupAttempt.current || groupReview || atomicPublication && !groupRecoveryReady) return
+    if (!canManage || groupSaving.current || groupAttempt.current || groupReview || !groupRecoveryReady) return
     const group = groupTarget?.group ?? null
     const parsed = selectionGroupSchema.safeParse({
       expectedOrgId: orgId, expectedActorId: actorId, id: group?.id ?? null,
@@ -184,20 +181,12 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
     setGroupError(null)
     startTransition(async () => {
       try {
-        if (atomicPublication) {
-          const reviewed = unwrapAction(await reviewCatalogGroupCategoriesAction({ expectedOrgId: orgId, expectedActorId: actorId, communityId: draft.communityId ?? null, categoryIds: draft.categoryIds }))
-          if (epoch !== groupEpoch.current || context !== groupContext.current) return
-          const attempt = catalogGroupPublicationSchema.parse({ ...draft, publicationKey: crypto.randomUUID(), requireAtomicPublication: true,
-            expectedGroup: group, expectedCategoryVersions: reviewed.categories.map(row => ({ id: row.id, definitionHash: row.definitionHash })),
-          })
-          setGroupReview({ attempt, labels: { kind: "group", categories: reviewed.categories }, contextKey: context })
-        } else {
-          unwrapAction(await upsertSelectionGroupAction(draft))
-          if (epoch !== groupEpoch.current || context !== groupContext.current) return
-          setGroupTarget(null)
-          toast.success(group ? "Cutoff rule updated" : "Cutoff rule added")
-          router.refresh()
-        }
+        const reviewed = unwrapAction(await reviewCatalogGroupCategoriesAction({ expectedOrgId: orgId, expectedActorId: actorId, communityId: draft.communityId ?? null, categoryIds: draft.categoryIds }))
+        if (epoch !== groupEpoch.current || context !== groupContext.current) return
+        const attempt = catalogGroupPublicationSchema.parse({ ...draft, publicationKey: crypto.randomUUID(), requireAtomicPublication: true,
+          expectedGroup: group, expectedCategoryVersions: reviewed.categories.map(row => ({ id: row.id, definitionHash: row.definitionHash })),
+        })
+        setGroupReview({ attempt, labels: { kind: "group", categories: reviewed.categories }, contextKey: context })
       } catch (error) {
         if (epoch === groupEpoch.current && context === groupContext.current) setGroupError(error instanceof Error ? error.message : "Could not review the cutoff rule")
       } finally { groupSaving.current = false }
@@ -205,7 +194,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
   }
 
   function confirmGroup() {
-    if (!canManage || !atomicPublication || !groupRecoveryReady || groupSaving.current || groupAttempt.current || !groupReview || groupReview.contextKey !== groupContextKey) return
+    if (!canManage || !groupRecoveryReady || groupSaving.current || groupAttempt.current || !groupReview || groupReview.contextKey !== groupContextKey) return
     if (!navigator.locks) { setGroupError("This browser cannot protect rule publication across tabs. Use a browser with Web Locks support."); return }
     const attempt = groupReview.attempt, scope = groupStorageScope, context = groupContextKey, epoch = groupEpoch.current
     groupSaving.current = true
@@ -239,7 +228,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
   }
 
   function openPackage(target: SelectionPackageDto | null, lifecycle: "archive" | "restore" | null = null, repair = false) {
-    if (!canManage || archiveBrowsing.current || packageSaving.current || !recoveryChecked.current || packageAttempt.current || target && (!atomicPublication || target.is_archived && lifecycle !== "restore" && !repair || (target.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null))) return
+    if (!canManage || archiveBrowsing.current || packageSaving.current || !recoveryChecked.current || packageAttempt.current || target && (target.is_archived && lifecycle !== "restore" && !repair || (target.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null))) return
     if (repair && (!target?.is_archived || lifecycle)) return
     setPackageRepair(repair)
     setPackageLifecycle(lifecycle)
@@ -252,7 +241,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
   }
 
   function loadArchived(cursor: string | null) {
-    if (!canManage || !atomicPublication || packageSaving.current || packageAttempt.current || archiveBrowsing.current) return
+    if (!canManage || packageSaving.current || packageAttempt.current || archiveBrowsing.current) return
     archiveBrowsing.current = true
     setPackageError(null)
     startTransition(async () => {
@@ -264,13 +253,12 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
 
   function savePackage(formData: FormData) {
     if (!canManage || archiveBrowsing.current || packageSaving.current || !recoveryChecked.current) return
-    if (packageAttempt.current?.requireAtomicPublication && !atomicPublication) return
-    if (packageTarget && (!atomicPublication || (packageTarget.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null))) { setPackageError("Reopen this package in its original catalog scope after publication becomes available."); return }
+    if (packageTarget && (packageTarget.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null)) { setPackageError("Reopen this package in its original catalog scope."); return }
     if (!packageKey) { toast.error("Reopen the package form before saving"); return }
     const { cost_cents: reviewedCost, ...publicSource } = packageTarget ?? {}
     const canEditCost = !packageLifecycle && catalog.can_read_margin && (!packageTarget || reviewedCost !== undefined)
     const parsed = packageSchema.safeParse(packageAttempt.current ?? {
-      ...(atomicPublication ? { requireAtomicPublication: true } : {}),
+      requireAtomicPublication: true,
       publicationKey: packageKey, expectedOrgId: orgId, expectedActorId: actorId,
       ...(packageTarget ? { id: packageTarget.id, expectedPackage: { ...publicSource, ...(!packageLifecycle && catalog.can_read_margin && reviewedCost !== undefined ? { cost_cents: reviewedCost } : {}) }, imageUrl: packageTarget.image_url } : {}),
       communityId: communityId ?? null, name: packageLifecycle && packageTarget ? packageTarget.name : String(formData.get("name") ?? ""),
@@ -284,7 +272,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
     if (!parsed.success) { toast.error(parsed.error.issues[0]?.message ?? "Review the package values"); return }
     const attempt = parsed.data
     const recovering = packageAttempt.current !== null
-    if (attempt.requireAtomicPublication && !navigator.locks) {
+    if (!navigator.locks) {
       setPackageError("This browser cannot protect package publication across tabs. Use a browser with Web Locks support.")
       return
     }
@@ -292,17 +280,17 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
     startTransition(async () => {
       try {
         const publish = async () => {
-          if (attempt.requireAtomicPublication) persistPackagePublication(window.localStorage, scope, attempt)
+          persistPackagePublication(window.localStorage, scope, attempt)
           packageAttempt.current = attempt
           const result = await upsertPackageAction(attempt)
           if (!recovering && !result.success && result.code !== "CATALOG_PUBLICATION_UNCONFIRMED") {
-            if (attempt.requireAtomicPublication) clearPackagePublication(window.localStorage, scope, attempt)
+            clearPackagePublication(window.localStorage, scope, attempt)
             packageAttempt.current = null
             setPackageRecovery(null)
           }
           if (!result.success && result.code === "CATALOG_PUBLICATION_UNCONFIRMED") setPackageRecovery(attempt)
           unwrapAction(result)
-          if (attempt.requireAtomicPublication) clearPackagePublication(window.localStorage, scope, attempt)
+          clearPackagePublication(window.localStorage, scope, attempt)
           setPackageOpen(false)
           setPackageKey(null)
           packageAttempt.current = null
@@ -316,8 +304,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
           toast.success(attempt.isArchived !== undefined ? (attempt.isArchived ? "Package archived" : "Package restored") : attempt.editArchived ? "Archived package updated" : attempt.id ? "Package updated" : "Package created")
           router.refresh()
         }
-        if (attempt.requireAtomicPublication) await navigator.locks.request(packagePublicationLockName(scope), publish)
-        else await publish()
+        await navigator.locks.request(packagePublicationLockName(scope), publish)
       } catch (error) {
         if (packageAttempt.current) setPackageRecovery(attempt)
         setPackageError(error instanceof Error ? error.message : "Could not confirm package publication")
@@ -346,8 +333,6 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
   }
 
   const groupScope = groupCommunityId
-  const groupCategories = catalog.categories.filter(category => groupScope !== null || category.community_id === null || category.parent_category_id)
-  const visibleGroupIds = new Set(groupCategories.flatMap(category => [category.id, ...(category.parent_category_id ? [category.parent_category_id] : [])]))
   function toggleDiscoveredGroupCategory(id: string, members?: CatalogGroupCategoryPage["items"]) {
     if (!canManage || pending || groupSaving.current || groupAttempt.current || groupReview || groupRecovery) return
     const identity = id.toLowerCase(), metadata = new Map((members ?? []).map(row => [row.id.toLowerCase(), row]))
@@ -357,16 +342,6 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
       if (!row?.available || !row.categoryKey) return previous
       const retained = previous.filter(value => metadata.get(value.toLowerCase())?.categoryKey !== row.categoryKey)
       return retained.length < 100 ? [...retained, id] : previous
-    })
-  }
-
-  function toggleGroupCategory(category: CatalogDto["categories"][number]) {
-    if (pending || !canManage || groupSaving.current || groupReview || groupRecovery) return
-    const aliases = [category.id, ...(category.parent_category_id ? [category.parent_category_id] : [])]
-    setCategoryIds(previous => {
-      if (previous.some(id => aliases.includes(id))) return previous.filter(id => !aliases.includes(id))
-      if (previous.length === 100) return previous
-      return [...previous, groupScope === null ? category.parent_category_id ?? category.id : category.id]
     })
   }
 
@@ -381,7 +356,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
                 Copy org rules
               </Button>
             )}
-            <Button size="sm" className="h-8 rounded-none" disabled={pending || atomicPublication && !groupRecoveryReady} onClick={() => openGroup(null)}>
+            <Button size="sm" className="h-8 rounded-none" disabled={pending || !groupRecoveryReady} onClick={() => openGroup(null)}>
               <Plus className="mr-1 h-3.5 w-3.5" />
               Cutoff rule
             </Button>
@@ -409,7 +384,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
                 {groupCursor ? "Return to the first page to review current rules." : "Without a rule, a sold home gets no selection deadlines and nothing appears on the runway."}
               </p>
               {canManage && !groupCursor && (
-                <Button size="sm" variant="outline" disabled={pending || atomicPublication && !groupRecoveryReady} className="mt-2 h-8 rounded-none" onClick={() => openGroup(null)}>
+                <Button size="sm" variant="outline" disabled={pending || !groupRecoveryReady} className="mt-2 h-8 rounded-none" onClick={() => openGroup(null)}>
                   Add the first rule
                 </Button>
               )}
@@ -450,7 +425,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
                       </td>
                       <td className="border-b px-3 py-2.5 text-right border-border">
                         {canManage && (
-                          <Button size="sm" variant="outline" disabled={pending || atomicPublication && !groupRecoveryReady} className="h-6 rounded-none px-2 text-[11px]" onClick={() => openGroup(group)}>
+                          <Button size="sm" variant="outline" disabled={pending || !groupRecoveryReady} className="h-6 rounded-none px-2 text-[11px]" onClick={() => openGroup(group)}>
                             <Edit className="mr-1 h-3 w-3" />
                             Edit
                           </Button>
@@ -486,7 +461,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
           </div>
           {packageError && <p role="alert" className="text-sm text-destructive">{packageError}</p>}
           {packageRecovery && <div className="flex items-center gap-3 border p-3 text-sm"><span>Recover the save for {packageRecovery.name} ({money(packageRecovery.priceCents)}).</span><Button size="sm" variant="outline" onClick={() => setPackageOpen(true)}>Review pending package</Button></div>}
-          {canManage && atomicPublication && <section aria-label="Archived packages" className="space-y-2">
+          {canManage && <section aria-label="Archived packages" className="space-y-2">
             <div className="flex items-center gap-2"><Button type="button" size="sm" variant="outline" disabled={pending || Boolean(packageRecovery)} onClick={() => loadArchived(null)}>Archived packages</Button>{archivedPage && <Button type="button" size="sm" variant="outline" disabled={pending || Boolean(packageRecovery) || !archivedPage.nextCursor} onClick={() => { if (archivedPage.nextCursor) loadArchived(archivedPage.nextCursor) }}>Next 25 archived packages</Button>}</div>
             {archivedPage && <><p className="text-xs text-muted-foreground">Archived packages in this scope · {archivedPage.packages.length} on this page. At most 25 per page.</p><ul className="divide-y">{archivedPage.packages.map(item => <li key={item.id} className="flex items-center justify-between gap-3 py-2 text-sm"><div><p>{item.name}</p><p className="font-mono text-xs text-muted-foreground">{item.id}</p></div><div className="flex items-center gap-2"><Button type="button" size="sm" variant="outline" disabled={pending || Boolean(packageRecovery)} onClick={() => openPackage(item, null, true)}>Edit archived contents</Button><Button type="button" size="sm" variant="outline" disabled={pending || Boolean(packageRecovery)} onClick={() => openPackage(item, "restore")}>Restore package</Button></div></li>)}</ul>{archivedPage.packages.length === 0 && <p className="text-sm text-muted-foreground">No archived packages on this page.</p>}</>}
           </section>}
@@ -503,7 +478,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
               <table className="w-full border-collapse text-[12.5px]">
                 <thead>
                   <tr>
-                    {["Package", "Scope", "Options", "Price", ...(catalog.can_read_margin ? ["Cost"] : []), ...(canManage && atomicPublication ? ["Edit"] : [])].map((heading) => (
+                    {["Package", "Scope", "Options", "Price", ...(catalog.can_read_margin ? ["Cost"] : []), ...(canManage ? ["Edit"] : [])].map((heading) => (
                       <th
                         key={heading}
                         className="microlabel border-b px-3 py-2.5 text-left border-[var(--line-strong)]"
@@ -538,7 +513,7 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
                           {money(item.cost_cents)}
                         </td>
                       )}
-                      {canManage && atomicPublication && <td className="border-b px-3 py-2.5 border-border"><Button type="button" size="sm" variant="ghost" disabled={!recoveryReady || pending || Boolean(packageRecovery) || item.is_archived || (item.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null)} onClick={() => openPackage(item)}>Edit package</Button><Button type="button" size="sm" variant="ghost" disabled={!recoveryReady || pending || Boolean(packageRecovery) || item.is_archived || (item.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null)} onClick={() => openPackage(item, "archive")}>Archive package</Button>{(item.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null) && <p className="text-xs text-muted-foreground">Manage in its original catalog scope.</p>}</td>}
+                      {canManage && <td className="border-b px-3 py-2.5 border-border"><Button type="button" size="sm" variant="ghost" disabled={!recoveryReady || pending || Boolean(packageRecovery) || item.is_archived || (item.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null)} onClick={() => openPackage(item)}>Edit package</Button><Button type="button" size="sm" variant="ghost" disabled={!recoveryReady || pending || Boolean(packageRecovery) || item.is_archived || (item.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null)} onClick={() => openPackage(item, "archive")}>Archive package</Button>{(item.community_id?.toLowerCase() ?? null) !== (communityId?.toLowerCase() ?? null) && <p className="text-xs text-muted-foreground">Manage in its original catalog scope.</p>}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -559,10 +534,10 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
             </DialogHeader>
             {groupError && <p role="alert" className="mt-3 text-sm text-destructive">{groupError}</p>}
             {groupReview && groupReview.contextKey === groupContextKey && <div className="mt-3"><CatalogPublicationReview publication={{ kind: "group", attempt: groupReview.attempt }} labels={groupReview.labels} canReadMargin={false} disabled={pending || !canManage} /></div>}
-            {groupRecovery && <CatalogPublicationReconciliation key={groupRecovery.publicationKey} publication={{ kind: "group", attempt: groupRecovery }} allowRetry disabled={!canManage || !atomicPublication || pending} onReconciled={() => {
+            {groupRecovery && <CatalogPublicationReconciliation key={groupRecovery.publicationKey} publication={{ kind: "group", attempt: groupRecovery }} allowRetry disabled={!canManage || pending} onReconciled={() => {
               groupAttempt.current = null;setGroupRecovery(null);setGroupReview(null);setGroupTarget(null);setGroupError(null);router.refresh()
             }} />}
-            <fieldset disabled={!canManage || pending || Boolean(groupReview) || Boolean(groupRecovery) || atomicPublication && !groupRecoveryReady} className="grid grid-cols-2 gap-3 py-4">
+            <fieldset disabled={!canManage || pending || Boolean(groupReview) || Boolean(groupRecovery) || !groupRecoveryReady} className="grid grid-cols-2 gap-3 py-4">
               <div className="col-span-2 space-y-1.5">
                 <Label htmlFor="group-name">Name</Label>
                 <Input id="group-name" name="name" required defaultValue={groupTarget?.group?.name ?? ""} className="rounded-none" />
@@ -602,36 +577,15 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
                   </SelectContent>
                 </Select>
               </div>
-              {atomicPublication ? <CatalogMemberPicker domain="group" scope={{ expectedOrgId: orgId, expectedActorId: actorId, communityId: groupScope }} selectedIds={categoryIds} disabled={!canManage || pending || Boolean(groupReview) || Boolean(groupRecovery) || !groupRecoveryReady} onToggle={toggleDiscoveredGroupCategory} /> : (
-              <fieldset className="col-span-2 space-y-2 border-t pt-3">
-                <legend className="microlabel mb-1">Categories in this group</legend>
-                {groupCategories.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Add categories to the catalog first.</p>
-                ) : (
-                  groupCategories.map((category) => (
-                    <label key={category.id} className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={categoryIds.includes(category.id) || category.parent_category_id !== null && categoryIds.includes(category.parent_category_id)}
-                        disabled={Boolean(groupReview) || Boolean(groupRecovery) || pending || !canManage || categoryIds.length === 100 && !categoryIds.includes(category.id) && !(category.parent_category_id && categoryIds.includes(category.parent_category_id))}
-                        onCheckedChange={() => toggleGroupCategory(category)}
-                      />
-                      {category.name}
-                    </label>
-                  ))
-                )}
-                {categoryIds.filter(id => !visibleGroupIds.has(id)).map(id => <label key={id} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked disabled={Boolean(groupReview) || Boolean(groupRecovery) || pending || !canManage} onCheckedChange={() => { if (!pending && canManage && !groupSaving.current && !groupReview && !groupRecovery) setCategoryIds(previous => previous.filter(value => value !== id)) }} />
-                  <span>Unavailable original category · <span className="font-mono">{id}</span></span>
-                </label>)}
-              </fieldset>              )}
+              <CatalogMemberPicker domain="group" scope={{ expectedOrgId: orgId, expectedActorId: actorId, communityId: groupScope }} selectedIds={categoryIds} disabled={!canManage || pending || Boolean(groupReview) || Boolean(groupRecovery) || !groupRecoveryReady} onToggle={toggleDiscoveredGroupCategory} />
 
             </fieldset>
             <DialogFooter>
               {!groupRecovery && (groupReview ? <>
                 <Button type="button" variant="outline" disabled={!canManage || pending} onClick={() => { if (!groupSaving.current && canManage) { groupEpoch.current++;setGroupReview(null);setGroupError(null) } }}>Edit reviewed values</Button>
-                <Button type="button" disabled={!canManage || !atomicPublication || pending || !groupRecoveryReady} onClick={confirmGroup}>Confirm rule save</Button>
-              </> : <Button type="submit" disabled={!canManage || pending || atomicPublication && !groupRecoveryReady} className="rounded-none">
-                {atomicPublication ? "Review rule" : groupTarget?.group ? "Save rule" : "Add rule"}
+                <Button type="button" disabled={!canManage || pending || !groupRecoveryReady} onClick={confirmGroup}>Confirm rule save</Button>
+              </> : <Button type="submit" disabled={!canManage || pending || !groupRecoveryReady} className="rounded-none">
+                Review rule
               </Button>)}
             </DialogFooter>
           </form>
@@ -646,14 +600,13 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
               <DialogDescription>{packageLifecycle === "archive" ? "Retire this package from new selections while preserving its original contents." : packageLifecycle === "restore" ? "Restore the original contents only if every member is currently eligible." : packageRepair ? "Replace obsolete members while keeping this package archived. Restoration is a separate reviewed step." : "Choose no more than one option from each category."}</DialogDescription>
             </DialogHeader>
             {packageRecovery && <p role="alert" className="mt-3 text-sm">The save for {packageRecovery.name} ({money(packageRecovery.priceCents)}) is unconfirmed. Retry the same request to recover it.</p>}
-            {packageRecovery && !packageRecovery.requireAtomicPublication && <CatalogPublicationReview publication={{ kind: "package", attempt: packageRecovery }} labels={null} canReadMargin={false} disabled={pending} />}
-            {packageRecovery && (!atomicPublication || !canManage) && <p role="alert" className="mt-3 text-sm">Package publication is unavailable or your access has changed. This request remains saved for reconciliation.</p>}
+            {packageRecovery && !canManage && <p role="alert" className="mt-3 text-sm">Your catalog access has changed. This request remains saved for reconciliation.</p>}
             {packageError && <p role="alert" className="mt-3 text-sm text-destructive">{packageError}</p>}
-            {packageRecovery?.requireAtomicPublication && <CatalogPublicationReconciliation key={packageRecovery.publicationKey} publication={{ kind: "package", attempt: packageRecovery }} disabled={!canManage || !atomicPublication || pending} onReconciled={() => {
+            {packageRecovery && <CatalogPublicationReconciliation key={packageRecovery.publicationKey} publication={{ kind: "package", attempt: packageRecovery }} disabled={!canManage || pending} onReconciled={() => {
               packageAttempt.current=null;setPackageRecovery(null);setPackageKey(null);setPackageOptionIds([]);setPackageError(null);setPackageTarget(null);setPackageOpen(false);router.refresh()
             }} />}
             {!packageRecovery && packageLifecycle && packageTarget && <div className="space-y-2 py-4 text-sm"><p className="font-medium">{packageTarget.name}</p><p>{money(packageTarget.price_cents)} · {packageTarget.option_ids.length} members · {packageTarget.is_available ? "Available" : "Unavailable"}</p><p>{packageTarget.description}</p><p className="text-muted-foreground">The request preserves names, prices, availability, scope, members and hidden cost. {packageLifecycle === "restore" ? "Unavailable members prevent restoration." : "Existing selection records remain intact."}</p></div>}
-            <fieldset disabled={!canManage || pending || Boolean(packageRecovery) || (atomicPublication && !recoveryReady)} className="grid grid-cols-2 gap-3 py-4">
+            <fieldset disabled={!canManage || pending || Boolean(packageRecovery) || !recoveryReady} className="grid grid-cols-2 gap-3 py-4">
               {!packageRecovery && !packageLifecycle && <>
               <div className="col-span-2 space-y-1.5">
                 <Label htmlFor="package-name">Name</Label>
@@ -675,11 +628,11 @@ export function CutoffRules({ groups, groupCursor, nextGroupCursor, catalog, cat
               )}
               <label className="col-span-2 flex items-center gap-2 text-sm"><Checkbox checked={packageAvailable} onCheckedChange={value => setPackageAvailable(value === true)} />Available for new selections</label>
               <p className="col-span-2 text-xs text-muted-foreground">{packageOptionIds.length} requested members. Leave cost blank to clear a recorded cost; existing signed selections retain their snapshots.</p>
-              <PackageMemberPicker discoveryScope={atomicPublication ? { expectedOrgId: orgId, expectedActorId: actorId, communityId: communityId ?? null } : undefined} categories={catalog.categories} selectedIds={packageOptionIds} disabled={!canManage || pending} onToggle={togglePackageOption} />
+              <PackageMemberPicker discoveryScope={{ expectedOrgId: orgId, expectedActorId: actorId, communityId: communityId ?? null }} categories={catalog.categories} selectedIds={packageOptionIds} disabled={!canManage || pending} onToggle={togglePackageOption} />
               </>}
             </fieldset>
             <DialogFooter>
-              <Button type="submit" disabled={!canManage || pending || (atomicPublication && !recoveryReady) || Boolean(packageRecovery?.requireAtomicPublication && !atomicPublication)} className="rounded-none">
+              <Button type="submit" disabled={!canManage || pending || !recoveryReady} className="rounded-none">
                 {packageRecovery ? "Retry package save" : packageLifecycle ? (packageLifecycle === "archive" ? "Confirm archive" : "Confirm restoration") : packageRepair ? "Save archived changes" : packageTarget ? "Save package changes" : "Create package"}
               </Button>
             </DialogFooter>

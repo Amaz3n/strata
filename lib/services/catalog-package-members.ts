@@ -12,7 +12,6 @@ export async function discoverCatalogPackageMembers(raw: unknown): Promise<Catal
   const input = inputSchema.parse(raw), context = await requireOrgContext()
   if (input.expectedOrgId !== context.orgId || input.expectedActorId !== context.userId) throw new Error("Catalog member context changed; reload the workspace")
   await requirePermission("selections.catalog.manage", context)
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Catalog member discovery requires the approved publication cutover")
   const { data, error } = await createServiceSupabaseClient().rpc("discover_catalog_package_members", { p_org_id: context.orgId, p_actor_id: context.userId, p_community_id: input.communityId ?? null, p_query: input.query, p_before: input.cursor ?? null, p_ids: input.selectedIds ?? null })
   if (error) throw new Error(`Could not discover catalog members: ${error.message}`)
   const parsed = pageSchema.safeParse(data)

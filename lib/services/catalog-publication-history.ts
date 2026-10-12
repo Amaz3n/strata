@@ -32,7 +32,6 @@ async function authorized(scope: CatalogPublicationHistoryScope) {
   const context = await requireOrgContext()
   if (scope.expectedOrgId !== context.orgId || scope.expectedActorId !== context.userId) throw new Error("Publication history context changed; reload under the original user and organization")
   await requirePermission("selections.catalog.manage", context)
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Publication history is unavailable until the approved catalog cutover")
   return context
 }
 function validOutcome(row: Pick<CatalogPublicationHistoryEntry, "type" | "kind" | "status">) {

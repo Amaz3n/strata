@@ -23,17 +23,16 @@ async function CutoffRulesPageContent({ searchParams }: PageProps) {
     requireOrgContext(),
   ])
   const communityId = community || ambient.communityId
-  const atomicPublication = process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED === "true"
 
   const [groupPage, catalog, canManage] = await Promise.all([
     listSelectionGroupPage({ communityId, cursor: groupsAfter }),
-    listCatalog({ communityId, includeOptions: !atomicPublication, includeCategories: !atomicPublication }),
+    listCatalog({ communityId, includeOptions: false, includeCategories: false }),
     hasPermission("selections.catalog.manage", context),
   ])
 
-  const categoryLabels = atomicPublication ? await readCatalogGroupCategoryLabels({ expectedOrgId: context.orgId, expectedActorId: context.userId, communityId: communityId ?? null,
+  const categoryLabels = await readCatalogGroupCategoryLabels({ expectedOrgId: context.orgId, expectedActorId: context.userId, communityId: communityId ?? null,
     groupIds: groupPage.groups.map(group => group.id), categoryIds: groupPage.groups.flatMap(group => group.category_ids),
-  }) : []
+  })
 
   return (
     <PageLayout
@@ -41,7 +40,7 @@ async function CutoffRulesPageContent({ searchParams }: PageProps) {
       breadcrumbs={[{ label: "Design Studio", href: "/design-studio" }, { label: "Cutoff rules" }]}
       fullBleed
     >
-      {canManage && atomicPublication && <div className="px-6 py-2 text-sm">
+      {canManage && <div className="px-6 py-2 text-sm">
         <Link className="text-muted-foreground underline underline-offset-4 hover:text-foreground" href={`/design-studio/catalog/history${communityId ? `?community=${encodeURIComponent(communityId)}` : ""}`}>Publication history</Link>
       </div>}
       <CutoffRules
@@ -54,7 +53,6 @@ async function CutoffRulesPageContent({ searchParams }: PageProps) {
         catalog={catalog}
         categoryLabels={categoryLabels}
         communityId={communityId}
-        atomicPublication={atomicPublication}
         canManage={canManage}
       />
     </PageLayout>

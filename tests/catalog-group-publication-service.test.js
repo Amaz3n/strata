@@ -3,16 +3,16 @@ const fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript'),test=
 const schemas=require('../lib/validation/selections'),id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`
 function compile(file,dependencies){const compiled={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:dependencies.env??{}},require:name=>dependencies[name]??(name==='zod'?require('zod'):name==='@/lib/validation/selections'?schemas:{})});return compiled.exports}
 function harness(){
- const context={orgId:id(1),userId:id(2)},calls=[];let flag='true',denied=false,alter=null,error=null,fail=null
+ const context={orgId:id(1),userId:id(2)},calls=[];let denied=false,alter=null,error=null,fail=null
  const request={expectedOrgId:context.orgId,expectedActorId:context.userId,publicationKey:id(190),requireAtomicPublication:true,id:null,communityId:null,name:'Kitchen cutoff',scheduleTaskKey:'frame',cutoffOffsetDays:-14,cutoffAnchor:'start',sortOrder:0,categoryIds:[id(40),id(41)],expectedGroup:null,expectedCategoryVersions:[{id:id(40),definitionHash:'a'.repeat(64)},{id:id(41),definitionHash:'b'.repeat(64)}]}
  const categories=request.expectedCategoryVersions.map(row=>({...row,definition:{id:row.id,community_id:null,parent_category_id:null,name:'Original category',description:null,image_url:null,sort_order:0,is_archived:false}}))
- const deps={env:{get ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED(){return flag}},'@/lib/services/context':{requireOrgContext:async()=>context},'@/lib/services/permissions':{requirePermission:async()=>{if(denied)throw new Error('Denied')}},'@/lib/supabase/server':{createServiceSupabaseClient:()=>({rpc:async(name,args)=>{
+ const deps={env:{},'@/lib/services/context':{requireOrgContext:async()=>context},'@/lib/services/permissions':{requirePermission:async()=>{if(denied)throw new Error('Denied')}},'@/lib/supabase/server':{createServiceSupabaseClient:()=>({rpc:async(name,args)=>{
   calls.push({name,args});if(fail===name)throw new Error('Lost response')
   let data=name==='register_catalog_publication'?{orgId:context.orgId,actorId:context.userId,kind:'group',requestKey:args.p_key,intentId:id(180),status:'prepared'}:name==='review_catalog_group_categories'?{orgId:context.orgId,actorId:context.userId,communityId:args.p_community_id,categories}: {orgId:context.orgId,actorId:context.userId,receiptId:id(200),historySequence:'2',created:true,group:{id:args.p_request.id??id(210),community_id:args.p_request.communityId,name:args.p_request.name,schedule_task_key:args.p_request.scheduleTaskKey,cutoff_offset_days:args.p_request.cutoffOffsetDays,cutoff_anchor:args.p_request.cutoffAnchor,sort_order:args.p_request.sortOrder,is_archived:false,category_ids:args.p_request.categoryIds}}
   if(alter)alter(data,name);return {data,error:error?.name===name?error.value:null}
  }})}}
  const packageService=compile('lib/services/catalog-package-publication.ts',deps);deps['@/lib/services/catalog-package-publication']=packageService
- return {context,request,categories,calls,service:compile('lib/services/catalog-group-publication.ts',deps),flag:v=>flag=v,deny:()=>denied=true,alter:v=>alter=v,error:(name,value)=>error={name,value},fail:v=>fail=v}
+ return {context,request,categories,calls,service:compile('lib/services/catalog-group-publication.ts',deps),deny:()=>denied=true,alter:v=>alter=v,error:(name,value)=>error={name,value},fail:v=>fail=v}
 }
 test('group publication durably registers and dispatches the same original versioned body without a fresh review or legacy writes',async()=>{
  const h=harness(),saved=await h.service.publishCatalogGroup(h.context,{...h.request,categoryIds:[id(41),id(40)]})
@@ -22,7 +22,7 @@ test('group publication durably registers and dispatches the same original versi
 test('publication requires original identity, active source scope, unique references and reviewed versions before any RPC',async()=>{
  const h=harness()
  for(const patch of [{expectedActorId:id(99)},{expectedOrgId:id(99)},{publicationKey:null},{requireAtomicPublication:undefined},{categoryIds:[id(40),id(40)]},{expectedCategoryVersions:[]},{expectedCategoryVersions:[...h.request.expectedCategoryVersions].reverse()},{id:id(210)},{unknown:true}])await assert.rejects(h.service.publishCatalogGroup(h.context,{...h.request,...patch}))
- for(const flag of ['false','TRUE',undefined]){h.flag(flag);await assert.rejects(h.service.publishCatalogGroup(h.context,h.request),/unavailable/)}assert.equal(h.calls.length,0)
+ assert.equal(h.calls.length,0)
 })
 test('registration failures never dispatch a publication; lost responses and rejected committed replies preserve uncertainty',async()=>{
  for(const mode of ['lost','invalid','cancelled','rejected']){
@@ -44,5 +44,5 @@ test('authorized original review verifies selected/root coverage and rejects hid
  for(const alter of [r=>r.orgId=id(99),r=>r.actorId=id(99),r=>r.communityId=id(13),r=>r.categories.pop(),r=>r.categories.reverse(),r=>r.categories[0].definition.id=id(99),r=>r.categories[0].definition.cost_cents=999,r=>r.categories[0].definition.is_archived=true,r=>r.categories[0].definition.parent_category_id=id(41),r=>r.categories[0].definitionHash='bad']){
   const h=harness();h.alter(alter);await assert.rejects(h.service.reviewCatalogGroupCategories(input(h)))
  }
- const gated=harness();await assert.rejects(gated.service.reviewCatalogGroupCategories({...input(gated),expectedActorId:id(99)}));gated.flag('false');await assert.rejects(gated.service.reviewCatalogGroupCategories(input(gated)),/unavailable/);gated.flag('true');gated.deny();await assert.rejects(gated.service.reviewCatalogGroupCategories(input(gated)),/Denied/);assert.equal(gated.calls.length,0)
+ const gated=harness();await assert.rejects(gated.service.reviewCatalogGroupCategories({...input(gated),expectedActorId:id(99)}));gated.deny();await assert.rejects(gated.service.reviewCatalogGroupCategories(input(gated)),/Denied/);assert.equal(gated.calls.length,0)
 })

@@ -4,16 +4,16 @@ const schemas=require('../lib/validation/selections'),id=n=>`00000000-0000-4000-
 function compile(file,dependencies){const compiled={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:compiled.exports,process:{env:dependencies.env??{}},require:name=>dependencies[name]??(name==='zod'?require('zod'):name==='@/lib/validation/selections'?schemas:{})});return compiled.exports}
 function harness(){
  const context={orgId:id(1),userId:id(2)},scope={expectedOrgId:context.orgId,expectedActorId:context.userId,communityId:null},calls=[]
- let data,error=null,denied=false,flag='true'
+ let data,error=null,denied=false
  const pack=compile('lib/services/catalog-package-publication.ts',{}),price=compile('lib/services/catalog-price-publication.ts',{'@/lib/services/catalog-package-publication':pack})
  const groupService=compile('lib/services/catalog-group-publication.ts',{'@/lib/services/catalog-package-publication':pack})
- const service=compile('lib/services/catalog-publication-history.ts',{env:{get ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED(){return flag}},'@/lib/services/context':{requireOrgContext:async()=>context},'@/lib/services/permissions':{requirePermission:async()=>{if(denied)throw new Error('Denied')}},'@/lib/services/catalog-group-publication':groupService,'@/lib/services/catalog-package-publication':pack,'@/lib/services/catalog-price-publication':price,'@/lib/supabase/server':{createServiceSupabaseClient:()=>({rpc:async(name,args)=>{calls.push({name,args});return {data,error}}})}})
+ const service=compile('lib/services/catalog-publication-history.ts',{env:{},'@/lib/services/context':{requireOrgContext:async()=>context},'@/lib/services/permissions':{requirePermission:async()=>{if(denied)throw new Error('Denied')}},'@/lib/services/catalog-group-publication':groupService,'@/lib/services/catalog-package-publication':pack,'@/lib/services/catalog-price-publication':price,'@/lib/supabase/server':{createServiceSupabaseClient:()=>({rpc:async(name,args)=>{calls.push({name,args});return {data,error}}})}})
  const entry={id:id(100),requestKey:id(80),kind:'prices',type:'prices',status:'committed',occurredAt:'2026-10-03T10:00:00Z',sequence:'1',itemCount:1}
  const page={orgId:context.orgId,actorId:context.userId,communityId:null,entries:[entry],nextCursor:null,pendingRequests:[]}
  const request={communityId:null,items:[{optionId:id(50),packageId:null,housePlanVersionId:id(31),priceCents:123,isAvailable:true,expectedPrice:null}]}
  const recovered={orgId:context.orgId,actorId:context.userId,communityId:null,outcomeId:entry.id,requestKey:entry.requestKey,kind:'prices',type:'prices',status:'committed',request}
  data=page
- return {context,scope,service,entry,page,recovered,calls,data:v=>data=v,error:v=>error=v,deny:()=>denied=true,flag:v=>flag=v,pack}
+ return {context,scope,service,entry,page,recovered,calls,data:v=>data=v,error:v=>error=v,deny:()=>denied=true,pack}
 }
 test('history reads are scoped and bounded; cursor and outcome metadata are validated without returning costs or requests',async()=>{
  const h=harness();h.data({...h.page,cost_cents:999,request:{costCents:999}});const page=await h.service.listCatalogPublicationHistory(h.scope)
@@ -44,10 +44,9 @@ test('recovery rejects mismatched scope/identity, mixed outcomes, invalid or non
  for(const patch of [{orgId:id(99)},{actorId:id(99)},{communityId:id(99)},{outcomeId:id(99)},{type:'package'},{status:'cancelled'},{request:{...h.recovered.request,communityId:id(13)}},{request:{...h.recovered.request,ignored:true}},{request:{...h.recovered.request,items:[]}}]){h.data({...h.recovered,...patch});await assert.rejects(h.service.recoverCatalogPublicationRequest(input))}
  h.data(h.recovered);h.error({message:'Margin permission required'});await assert.rejects(h.service.recoverCatalogPublicationRequest(input),/Margin permission/)
 })
-test('context, permission and disabled cutover reject history and body recovery before any backend read',async()=>{
+test('context and permission reject history and body recovery before any backend read',async()=>{
  const h=harness();await assert.rejects(h.service.listCatalogPublicationHistory({...h.scope,expectedActorId:id(99)}),/context/)
- for(const flag of ['false','TRUE',undefined]){h.flag(flag);await assert.rejects(h.service.listCatalogPublicationHistory(h.scope),/unavailable/)}
- h.flag('true');h.deny();await assert.rejects(h.service.recoverCatalogPublicationRequest({...h.scope,id:h.entry.id,type:h.entry.type}),/Denied/);assert.equal(h.calls.length,0)
+ h.deny();await assert.rejects(h.service.recoverCatalogPublicationRequest({...h.scope,id:h.entry.id,type:h.entry.type}),/Denied/);assert.equal(h.calls.length,0)
 })
 
 test('package recovery preserves original community UUID casing while verifying the same actual scope',async()=>{
@@ -73,11 +72,11 @@ test('cross-scope pending metadata validates actor, bounded live pagination and 
  h.deny();await assert.rejects(h.service.listPendingCatalogPublications({expectedOrgId:h.context.orgId,expectedActorId:h.context.userId}),/Denied/)
 })
 
-test('cross-scope queue rejects changed actor, organization and cutover before requesting private metadata',async()=>{
+test('cross-scope queue rejects changed actor and organization before requesting private metadata',async()=>{
  const h=harness(),input={expectedOrgId:h.context.orgId,expectedActorId:h.context.userId}
  await assert.rejects(h.service.listPendingCatalogPublications({...input,expectedOrgId:id(999)}),/context/)
  await assert.rejects(h.service.listPendingCatalogPublications({...input,expectedActorId:id(999)}),/context/)
- h.flag('false');await assert.rejects(h.service.listPendingCatalogPublications(input),/unavailable/);assert.equal(h.calls.length,0)
+ assert.equal(h.calls.length,0)
 })
 
 test('archived package pages validate original scope, ordering, archived status and cost visibility',async()=>{

@@ -2,8 +2,13 @@
 
 /**
  * The database contract behind `lib/services/selections.ts`:
- * `apply_project_selection_writes` lands a package or a change order on a home
- * whole, or not at all.
+ * `apply_project_selection_writes` lands a package, a group confirmation or a
+ * change order on a home whole, or not at all — and only against the catalog
+ * revision and home state (`read_project_selection_fence`) it was validated on.
+ *
+ * Two sessions writing the same home serialize on a transaction lock; PGlite
+ * has one connection, so that interleaving is proven in the acceptance
+ * scenario. Here the second writer is the one that read a stale fence.
  */
 
 const test = require("node:test")
@@ -22,6 +27,18 @@ async function home(t) {
   return { db, orgId, project, kitchen: await selection("Kitchen"), bath: await selection("Bath") }
 }
 
+const fence = (db, orgId, project) => rpc(db, "read_project_selection_fence", { p_org_id: orgId, p_project_id: project.id })
+
+async function apply(db, orgId, project, writes, validatedOn) {
+  const { catalogRevision, homeState } = validatedOn ?? await fence(db, orgId, project)
+  return rpc(db, "apply_project_selection_writes", {
+    p_org_id: orgId, p_project_id: project.id, p_writes: JSON.stringify(writes),
+    p_expected_catalog_revision: catalogRevision, p_expected_home_state: homeState,
+  })
+}
+
+const statuses = async (db) => (await db.query("select status from project_selections order by id")).rows.map((row) => row.status)
+
 const write = (selection, overrides = {}) => ({
   id: selection.id, selected_option_id: null, package_id: null, status: "selected", selected_at: "2026-10-10T12:00:00Z",
   selected_by_contact_id: null, price_cents_snapshot: 1200_00, cost_cents_snapshot: 600_00, ...overrides,
@@ -29,10 +46,7 @@ const write = (selection, overrides = {}) => ({
 
 test("every selection in the set is written, and signing evidence on the row survives", async (t) => {
   const { db, orgId, project, kitchen, bath } = await home(t)
-  const applied = await rpc(db, "apply_project_selection_writes", {
-    p_org_id: orgId, p_project_id: project.id,
-    p_writes: JSON.stringify([write(kitchen, { metadata: { package_allocated: true } }), write(bath, { price_cents_snapshot: 800_00 })]),
-  })
+  const applied = await apply(db, orgId, project, [write(kitchen, { metadata: { package_allocated: true } }), write(bath, { price_cents_snapshot: 800_00 })])
   assert.equal(applied, 2)
   const { rows } = await db.query("select id, status, price_cents_snapshot, metadata from project_selections order by price_cents_snapshot")
   assert.deepEqual(rows.map((row) => [row.status, row.price_cents_snapshot]), [["selected", 800_00], ["selected", 1200_00]])
@@ -41,22 +55,64 @@ test("every selection in the set is written, and signing evidence on the row sur
 
 test("one write that is not on this home rolls back the whole set", async (t) => {
   const { db, orgId, project, kitchen } = await home(t)
-  await assert.rejects(
-    rpc(db, "apply_project_selection_writes", {
-      p_org_id: orgId, p_project_id: project.id,
-      p_writes: JSON.stringify([write(kitchen), write({ id: uuid() })]),
-    }),
-    /not on this home/,
-  )
+  await assert.rejects(apply(db, orgId, project, [write(kitchen), write({ id: uuid() })]), /not on this home/)
   const { rows } = await db.query("select status from project_selections where id = $1", [kitchen.id])
   assert.equal(rows[0].status, "pending")
 })
 
-test("signed-in users cannot call the set write directly", async (t) => {
+test("a confirmation keeps the choice it confirms; only the columns a write carries change", async (t) => {
+  const { db, orgId, project, kitchen } = await home(t)
+  await apply(db, orgId, project, [write(kitchen, { package_id: null, metadata: { package_allocated: true } })])
+  await apply(db, orgId, project, [{ id: kitchen.id, status: "confirmed", confirmed_at: "2026-10-11T09:00:00Z", price_cents_snapshot: 1200_00, cost_cents_snapshot: 600_00 }])
+  const { rows } = await db.query("select status, selected_at, confirmed_at, metadata from project_selections where id = $1", [kitchen.id])
+  assert.equal(rows[0].status, "confirmed")
+  assert.ok(rows[0].selected_at && rows[0].confirmed_at)
+  assert.deepEqual(rows[0].metadata, { approved_envelope_id: "env-1", package_allocated: true })
+})
+
+test("a catalog edit published after the fence was read refuses the write and writes nothing", async (t) => {
+  const { db, orgId, project, kitchen, bath } = await home(t)
+  const validatedOn = await fence(db, orgId, project)
+  await insert(db, "selection_categories", { org_id: orgId, name: "Exterior" })
+  await assert.rejects(
+    apply(db, orgId, project, [write(kitchen), write(bath)], validatedOn),
+    (error) => /catalog changed while you were choosing/.test(error.message) && error.detail === "SELECTION_CATALOG_CHANGED",
+  )
+  assert.deepEqual(await statuses(db), ["pending", "pending"])
+})
+
+test("a write that landed on the same home after the fence was read refuses the second write", async (t) => {
+  const { db, orgId, project, kitchen, bath } = await home(t)
+  const first = await fence(db, orgId, project)
+  const second = await fence(db, orgId, project)
+  await apply(db, orgId, project, [write(kitchen)], first)
+  await assert.rejects(
+    apply(db, orgId, project, [write(bath)], second),
+    (error) => /selections changed while you were choosing/.test(error.message) && error.detail === "SELECTION_HOME_CHANGED",
+  )
+  const { rows } = await db.query("select status from project_selections where id = $1", [bath.id])
+  assert.equal(rows[0].status, "pending")
+})
+
+test("a write without the fence it was validated on is refused", async (t) => {
+  const { db, orgId, project, kitchen } = await home(t)
+  const { catalogRevision } = await fence(db, orgId, project)
+  for (const validatedOn of [{ catalogRevision: null, homeState: "0".repeat(32) }, { catalogRevision, homeState: "stale" }]) {
+    await assert.rejects(apply(db, orgId, project, [write(kitchen)], validatedOn), /validated on/)
+  }
+  assert.deepEqual(await statuses(db), ["pending", "pending"])
+})
+
+test("signed-in users cannot read the fence or call the set write directly", async (t) => {
   const { db, orgId, project, kitchen } = await home(t)
   const member = await seedMember(db, { orgId })
+  const caller = { role: "authenticated", userId: member.userId }
+  await assert.rejects(rpc(db, "read_project_selection_fence", { p_org_id: orgId, p_project_id: project.id }, caller), /permission denied/)
   await assert.rejects(
-    rpc(db, "apply_project_selection_writes", { p_org_id: orgId, p_project_id: project.id, p_writes: JSON.stringify([write(kitchen)]) }, { role: "authenticated", userId: member.userId }),
+    rpc(db, "apply_project_selection_writes", {
+      p_org_id: orgId, p_project_id: project.id, p_writes: JSON.stringify([write(kitchen)]),
+      p_expected_catalog_revision: "1", p_expected_home_state: "0".repeat(32),
+    }, caller),
     /permission denied/,
   )
 })

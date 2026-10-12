@@ -25,17 +25,27 @@ const CHANGE_ORDER = id(7)
 const PACKAGE = id(8)
 const COMMUNITY_UPGRADE = id(9)
 
+// How a home prices is decided by the real catalog module; only the price
+// lookup itself is replaced.
+const { homePricingScope } = freshRequire("lib/services/option-catalog.ts")
 let catalog = {}
+const pricingScopes = []
 stubModule("@/lib/services/option-catalog", {
   allocatePackageTotal: require("@/lib/selections/catalog-math").allocatePackageTotal,
-  resolveOptionPricing: async ({ items }) =>
-    items.map((item) => catalog[item.optionId ?? item.packageId] ?? { available: false, categoryIds: [] }),
+  homePricingScope,
+  resolveOptionPricing: async ({ items, orgId: _orgId, ...scope }) => {
+    pricingScopes.push(scope)
+    return items.map((item) => catalog[item.optionId ?? item.packageId] ?? { available: false, categoryIds: [] })
+  },
 })
 // The rules themselves have their own suite; here a rejection is injected to
-// prove every selection mutation stops on it.
+// prove every selection mutation stops on it. `duringValidation` runs while a
+// mutation validates — the window another session can publish into.
 let configurationFailure = null
+let duringValidation = null
 stubModule("@/lib/services/configuration-rules", {
   assertProjectConfiguration: async () => {
+    duringValidation?.()
     if (configurationFailure) throw new Error(configurationFailure)
   },
 })
@@ -47,9 +57,14 @@ const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionG
 
 const priced = (optionId, priceCents) => ({ available: true, optionId, priceCents, costCents: priceCents / 2, categoryIds: [CATEGORY] })
 
-function harness({ selections, changeOrder, groups = [] } = {}) {
+function harness({ selections, changeOrder, groups = [], lots = [] } = {}) {
   configurationFailure = null
+  duringValidation = null
+  pricingScopes.length = 0
   const applied = []
+  // What the database fences a write on: the org catalog revision and the
+  // home's selection state, as they stand when the write commits.
+  const fence = { catalogRevision: "41", homeState: "0".repeat(32) }
   const service = createServiceHarness({
     permissions: ["selections.write"],
     tables: {
@@ -62,13 +77,20 @@ function harness({ selections, changeOrder, groups = [] } = {}) {
       ],
       projects: [{ id: HOME, org_id: ORG, property_type: "production" }],
       orgs: [{ id: ORG, product_tier: "production" }],
-      lots: [],
+      lots,
       selection_package_items: [{ org_id: ORG, package_id: PACKAGE, option_id: UPGRADE, option: { category_id: CATEGORY } }],
       change_orders: changeOrder ? [changeOrder] : [],
       project_selection_groups: groups,
     },
     rpc: {
+      read_project_selection_fence: () => ({ data: { ...fence }, error: null }),
       apply_project_selection_writes: (args, store) => {
+        if (args.p_expected_catalog_revision !== fence.catalogRevision) {
+          return { data: null, error: { message: "The catalog changed while you were choosing; review and try again", details: "SELECTION_CATALOG_CHANGED" } }
+        }
+        if (args.p_expected_home_state !== fence.homeState) {
+          return { data: null, error: { message: "This home's selections changed while you were choosing; review and try again", details: "SELECTION_HOME_CHANGED" } }
+        }
         applied.push(args)
         for (const write of args.p_writes) {
           Object.assign(store.project_selections.find((row) => row.id === write.id), write)
@@ -77,7 +99,7 @@ function harness({ selections, changeOrder, groups = [] } = {}) {
       },
     },
   })
-  return { service, applied }
+  return { service, applied, fence }
 }
 
 const stored = (service, selectionId = SELECTION) => service.db.project_selections.find((row) => row.id === selectionId)
@@ -115,6 +137,28 @@ describe("confirmSelectionGroup", () => {
     const result = await service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP }))
     assert.equal(result.confirmed, 2)
     assert.deepEqual([stored(service).status, stored(service, SECOND).status], ["confirmed", "confirmed"])
+  })
+
+  test("the whole group is confirmed in one write, at the prices each member was chosen at", async () => {
+    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
+    const { service, applied } = harness({ selections: members() })
+    await service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP }))
+    assert.equal(applied.length, 1)
+    assert.deepEqual(applied[0].p_writes.map((write) => [write.id, write.status, write.price_cents_snapshot, Boolean(write.confirmed_at)]), [
+      [SELECTION, "confirmed", 1_200_00, true],
+      [SECOND, "confirmed", 800_00, true],
+    ])
+  })
+
+  test("a member that cannot be confirmed leaves every member unconfirmed", async () => {
+    catalog = { [OPTION]: priced(OPTION, 1_500_00) }
+    const selections = members()
+    selections[1].selected_option_id = UPGRADE
+    const { service, applied } = harness({ selections })
+    await assert.rejects(service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP })), /no longer available/)
+    assert.deepEqual(applied, [])
+    assert.deepEqual([stored(service).status, stored(service, SECOND).status], ["selected", "selected"])
+    assert.deepEqual(service.events, [])
   })
 
   test("without selections.write nothing is read or confirmed", async () => {
@@ -207,7 +251,7 @@ describe("an invalid effective configuration", () => {
       configurationFailure = CHAIN
       await assert.rejects(mutate(service), /requires Electrical upgrade/, name)
       assert.deepEqual(applied, [], name)
-      assert.deepEqual(service.writes(), [], name)
+      assert.deepEqual(service.writes("project_selections"), [], name)
       assert.equal(stored(service).selected_option_id, OPTION, name)
       assert.equal(stored(service).status, "selected", name)
     }
@@ -229,9 +273,9 @@ describe("selection cutoffs on mutations", () => {
     catalog = { [OPTION]: priced(OPTION, 1_500_00), [UPGRADE]: priced(UPGRADE, 2_000_00) }
     for (const cutoff of [daysFromToday(10), today()]) {
       for (const [name, attempt] of Object.entries(attempts)) {
-        const { service } = harness({ selections: [grouped()], groups: [instance({ cutoff_date: cutoff })] })
+        const { service, applied } = harness({ selections: [grouped()], groups: [instance({ cutoff_date: cutoff })] })
         await attempt(service)
-        assert.ok(service.writes("project_selections").length > 0, `${name} on ${cutoff}`)
+        assert.equal(applied.length, 1, `${name} on ${cutoff}`)
       }
     }
   })
@@ -244,9 +288,9 @@ describe("selection cutoffs on mutations", () => {
     ]
     for (const [name, group] of closed) {
       for (const [action, attempt] of Object.entries(attempts)) {
-        const { service } = harness({ selections: [grouped()], groups: [group] })
+        const { service, applied } = harness({ selections: [grouped()], groups: [group] })
         await assert.rejects(attempt(service), (error) => error.code === "SELECTION_LOCKED_CUTOFF" && /selection deadline for Flooring was/.test(error.message), `${action}: ${name}`)
-        assert.deepEqual(service.writes(), [], `${action}: ${name}`)
+        assert.deepEqual(applied, [], `${action}: ${name}`)
       }
     }
     const { service } = harness({ selections: [grouped()], groups: [instance({ cutoff_date: daysFromToday(-1) })] })
@@ -257,9 +301,9 @@ describe("selection cutoffs on mutations", () => {
   })
 
   test("a selection the cutoff sweep locked stays locked even if its group looks open", async () => {
-    const { service } = harness({ selections: [grouped({ locked_at: "2026-10-01T00:00:00Z" })], groups: [instance()] })
+    const { service, applied } = harness({ selections: [grouped({ locked_at: "2026-10-01T00:00:00Z" })], groups: [instance()] })
     await assert.rejects(attempts.select(service), (error) => error.code === "SELECTION_LOCKED_CUTOFF")
-    assert.deepEqual(service.writes(), [])
+    assert.deepEqual(applied, [])
   })
 
   test("a manual override that moves the cutoff forward reopens a change the schedule had closed", async () => {
@@ -269,6 +313,52 @@ describe("selection cutoffs on mutations", () => {
 
     const overridden = harness({ selections: [grouped()], groups: [instance({ cutoff_date: daysFromToday(14), cutoff_source: "manual_override" })] })
     await attempts.select(overridden.service)
-    assert.ok(overridden.service.writes("project_selections").length > 0)
+    assert.equal(overridden.applied.length, 1)
+  })
+})
+
+describe("a catalog or home that moves while a selection is validated", () => {
+  const GROUP = id(10)
+  const mutations = {
+    "a selection change": (service) => service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE })),
+    "a confirmation": (service) => service.run(() => confirmSelection({ orgId: ORG, projectId: HOME, selectionId: SELECTION })),
+    "a group confirmation": (service) => service.run(() => confirmSelectionGroup({ orgId: ORG, projectId: HOME, groupId: GROUP })),
+    "a package": (service) => service.run(() => selectProjectPackage({ orgId: ORG, projectId: HOME, packageId: PACKAGE })),
+    "a change order": (service) => service.run(() => applySelectionChangeFromChangeOrder(CHANGE_ORDER, ORG)),
+  }
+  const moves = {
+    "a price, rule or availability published": [(fence) => { fence.catalogRevision = "42" }, /catalog changed while you were choosing/],
+    "another session changing the same home": [(fence) => { fence.homeState = "1".repeat(32) }, /selections changed while you were choosing/],
+  }
+
+  test("refuses the write instead of landing a configuration nobody validated", async () => {
+    for (const [move, [change, message]] of Object.entries(moves)) {
+      for (const [name, mutate] of Object.entries(mutations)) {
+        catalog = {
+          [OPTION]: priced(OPTION, 1_500_00),
+          [UPGRADE]: priced(UPGRADE, 2_000_00),
+          [PACKAGE]: { available: true, priceCents: 900_00, costCents: 400_00, categoryIds: [] },
+        }
+        const { service, applied, fence } = harness({
+          selections: [{ id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: GROUP, package_id: null, price_cents_snapshot: 1_200_00, cost_cents_snapshot: 600_00, locked_at: null, metadata: {} }],
+          changeOrder: { id: CHANGE_ORDER, org_id: ORG, project_id: HOME, metadata: { selection_change: { changes: [{ selection_id: SELECTION, new_option_id: UPGRADE }] } } },
+        })
+        duringValidation = () => change(fence)
+        await assert.rejects(mutate(service), (error) => error.code === "SELECTION_CONFIGURATION_CHANGED" && message.test(error.message), `${name}: ${move}`)
+        assert.deepEqual(applied, [], `${name}: ${move}`)
+        assert.deepEqual([stored(service).selected_option_id, stored(service).status], [OPTION, "selected"], `${name}: ${move}`)
+      }
+    }
+  })
+})
+
+describe("how a home's selections are priced", () => {
+  test("a production home always prices from its plan version, with or without a community", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00) }
+    for (const lots of [[], [{ org_id: ORG, project_id: HOME, community_id: null, house_plan_version_id: id(30) }]]) {
+      const { service } = harness({ lots })
+      await service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE }))
+      assert.deepEqual(pricingScopes.map((scope) => [scope.requirePlanVersion, scope.requirePlanPrice]), [[true, true]])
+    }
   })
 })

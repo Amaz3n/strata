@@ -162,35 +162,11 @@ test('cutoff group continuations reject malformed identifiers before any databas
 })
 
 const groupInput={id:id(500),name:'Reviewed rule',scheduleTaskKey:'frame',cutoffOffsetDays:-14,categoryIds:[]}
-test('cutoff rule edits cannot relocate an org rule into a community or mutate archived targets',async()=>{
- for(const change of [{communityId:COMMUNITY},{communityId:null,archived:true}]){
-  const rows=groupRows(1);if(change.archived)rows[0].is_archived=true;const h=catalog({groupRows:rows});await assert.rejects(h.saveGroup({...groupInput,communityId:change.communityId}),/scope mismatch/);assert.equal(h.writes.length,0);assert.equal(h.audits.length,0)
- }
- const h=catalog({groupRows:groupRows(1)}),saved=await h.saveGroup({...groupInput,communityId:null});assert.equal(saved.community_id,null);assert.ok(!Object.hasOwn(h.writes[0].payload,'community_id'));assert.ok(h.writes[0].filters.some(([k,v])=>k==='is_archived'&&v===false));assert.equal(h.audits.length,1)
-})
-test('cutoff rule writes enforce current division scope before every create/update or category replacement',async()=>{
+test('cutoff rule writes enforce current division scope before any write',async()=>{
  for(const existing of [true,false]){
   const h=catalog({divisionAccess:{assignedOnly:true,divisionIds:[]}});await assert.rejects(h.saveGroup({...groupInput,id:existing?id(500):null,communityId:COMMUNITY}),/division access/);assert.equal(h.writes.length,0);assert.equal(h.audits.length,0)
  }
- const rows=groupRows(1);rows[0].community_id=COMMUNITY;const h=catalog({groupRows:rows,divisionAccess:{assignedOnly:true,divisionIds:[id(90)]}});const saved=await h.saveGroup({...groupInput,communityId:COMMUNITY.toUpperCase()});assert.equal(saved.community_id,COMMUNITY);assert.equal(h.writes[0].filters.find(([k])=>k==='community_id')[1],COMMUNITY)
 })
-
-test('rule category validation rejects foreign, missing, archived and wrong-scope references before any write',async()=>{
- const base={id:id(100),org_id:ORG,community_id:null,parent_category_id:null,is_archived:false}
- for(const category of [null,{...base,org_id:id(99)},{...base,is_archived:true},{...base,community_id:id(99)},{...base,parent_category_id:id(200)}]){
-  const h=catalog({groupRows:groupRows(1),categories:category?[category]:[]});await assert.rejects(h.saveGroup({...groupInput,categoryIds:[id(100)]}),/original organization\/community scope/);assert.equal(h.writes.length,0);assert.equal(h.audits.length,0)
- }
- const h=catalog({categories:[base]});await assert.rejects(h.saveGroup({...groupInput,categoryIds:[id(100),id(100)]}),/unique/);assert.equal(h.reads.length,0)
-})
-test('rule category ancestry must resolve an active org root and short provider pages retain all selected references',async()=>{
- const base={id:id(100),org_id:ORG,community_id:null,parent_category_id:null,is_archived:false},child={...base,id:id(101),community_id:COMMUNITY,parent_category_id:id(100)}
- for(const root of [null,{...base,org_id:id(99)},{...base,community_id:COMMUNITY},{...base,parent_category_id:id(300)},{...base,is_archived:true}]){
-  const h=catalog({categories:[child,...(root?[root]:[])]});await assert.rejects(h.saveGroup({...groupInput,id:null,communityId:COMMUNITY,categoryIds:[id(101)]}),/ancestry/);assert.equal(h.writes.length,0)
- }
- const rows=Array.from({length:100},(_,n)=>({...base,id:id(1000+n)})),h=catalog({categories:rows,rowCap:3});const saved=await h.saveGroup({...groupInput,categoryIds:rows.map(r=>r.id)});assert.equal(saved.category_ids.length,100);assert.equal(h.writes.find(w=>w.table==='selection_group_categories'&&w.mutation==='insert').payload.length,100)
- const valid=catalog({categories:[base,child]});assert.equal((await valid.saveGroup({...groupInput,id:null,communityId:COMMUNITY,categoryIds:[id(101)]})).category_ids[0],id(101))
-})
-
 
 test('rule requests carrying a changed org or actor cannot create headers or replace categories',async()=>{
  for(const identity of [{expectedOrgId:id(99)},{expectedActorId:id(99)}]){

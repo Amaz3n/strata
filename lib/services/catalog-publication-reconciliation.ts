@@ -32,7 +32,6 @@ async function reviewed(raw: unknown) {
   const context = await requireOrgContext()
   if (input.attempt.expectedOrgId !== context.orgId || input.attempt.expectedActorId !== context.userId || !input.attempt.publicationKey) throw new Error("Saved publication context changed; reconcile under its original organization and actor")
   await requirePermission("selections.catalog.manage", context)
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Catalog receipt reconciliation is unavailable until the approved publication cutover")
   return { input, context, request: input.kind === "prices" ? catalogPriceRequest(input.attempt) : input.kind === "group" ? catalogGroupRequest(input.attempt) : catalogPackageRequest(input.attempt) }
 }
 

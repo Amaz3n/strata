@@ -17,7 +17,6 @@ import {
   cloneOrgGroupsToCommunity,
   findCatalogImageByChecksum,
   listModelOptions,
-  setCatalogPrice,
   upsertAppointment,
   upsertCategory,
   upsertOption,
@@ -81,10 +80,6 @@ export async function inspectCatalogPublicationAction(input: unknown) {
 
 export async function acknowledgeCatalogPublicationAction(input: unknown) {
   return run(() => acknowledgeCatalogPublication(input), ["/design-studio/catalog", "/design-studio/rules"])
-}
-
-export async function setCatalogPriceAction(input: unknown) {
-  return run(() => setCatalogPrice(input as Parameters<typeof setCatalogPrice>[0]), ["/design-studio/catalog"])
 }
 
 export async function upsertSelectionGroupAction(input: unknown) {

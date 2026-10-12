@@ -1,5 +1,6 @@
-import { publishCatalogGroup } from "@/lib/services/catalog-group-publication"
+import { publishCatalogGroup, reviewCatalogGroupCategories } from "@/lib/services/catalog-group-publication"
 import { publishCatalogPriceBatch } from "@/lib/services/catalog-price-publication"
+import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { resolveVisibleProjectIds } from "@/lib/services/projects"
@@ -547,78 +548,45 @@ export async function archiveCatalogEntity(input: {
   })
 }
 
+/** The package row and its members commit together through atomic publication, or not at all. */
 export async function upsertPackage(raw: SelectionPackageInput): Promise<SelectionPackageDto> {
   const input = packageSchema.parse(raw)
   const context = await requireOrgContext()
   if ((input.expectedOrgId && input.expectedOrgId !== context.orgId) || (input.expectedActorId && input.expectedActorId !== context.userId)) throw new Error("The catalog organization or signed-in actor changed; reopen this workspace before saving")
   await requirePermission("selections.catalog.manage", context)
-  if ((input.requireAtomicPublication || input.isArchived !== undefined || input.editArchived) && process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Atomic package publication is unavailable. Retain the saved request until publication is enabled")
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED === "true") return publishCatalogPackage(context, input)
-  const canReadMargin = await hasPermission("financials.margin.read", context)
-  if (input.costCents !== undefined || input.expectedPackage?.cost_cents !== undefined) await requirePermission("financials.margin.read", context)
-  const payload = {
-    community_id: input.communityId ?? null,
-    name: input.name,
-    description: input.description ?? null,
-    image_url: input.imageUrl ?? null,
-    price_cents: input.priceCents,
-    ...(input.costCents !== undefined ? { cost_cents: input.costCents } : {}),
-    is_available: input.isAvailable,
-    sort_order: input.sortOrder,
-  }
-  // The package row and its members commit together: a failed member write
-  // leaves the previous package exactly as it was.
-  const { data: packageId, error: saveError } = await createServiceSupabaseClient().rpc("save_selection_package", {
-    p_org_id: context.orgId, p_package_id: input.id ?? null, p_fields: payload, p_option_ids: input.optionIds,
-  })
-  if (saveError || typeof packageId !== "string") throw new Error(`Failed to save package: ${saveError?.message ?? "missing row"}`)
-  const saved = context.supabase.from("selection_packages")
-  const { data, error } = await (canReadMargin
-    ? saved.select("id, community_id, name, description, image_url, price_cents, cost_cents, is_available, is_archived, sort_order")
-    : saved.select("id, community_id, name, description, image_url, price_cents, is_available, is_archived, sort_order")
-  ).eq("org_id", context.orgId).eq("id", packageId).single()
-  if (error || !data) throw new Error(`Failed to save package: ${error?.message ?? "missing row"}`)
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "selection_package", entityId: data.id, after: { ...payload, option_ids: input.optionIds } })
-  const visible: SelectionPackageDto = { ...data, option_ids: input.optionIds }
-  if (!canReadMargin) delete visible.cost_cents
-  return visible
+  return publishCatalogPackage(context, input)
 }
 
+/**
+ * Sets one price cell through atomic publication. A caller that reviewed the
+ * cell passes the price it saw; a programmatic caller that did not is fenced
+ * against the price as read here, so a concurrent publication still refuses.
+ */
 export async function setCatalogPrice(raw: CatalogPriceInput) {
   const input = catalogPriceSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("selections.catalog.manage", context)
   if ((input.expectedOrgId && input.expectedOrgId !== context.orgId) || (input.expectedActorId && input.expectedActorId !== context.userId)) throw new Error("Catalog organization or actor changed; reopen the workspace")
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED === "true") {
-    if (!input.publicationKey || input.expectedPrice === undefined) throw new Error("Review the current price and retain its publication key before saving")
-    return publishCatalogPriceBatch(context, catalogPricePublicationSchema.parse({ ...input, items: [input] }))
+  let expectedPrice = input.expectedPrice
+  if (expectedPrice === undefined) {
+    let lookup = context.supabase
+      .from("selection_catalog_prices")
+      .select("id, price_cents, is_available")
+      .eq("org_id", context.orgId)
+      .eq(input.optionId ? "option_id" : "package_id", input.optionId ?? input.packageId)
+      .eq("house_plan_version_id", input.housePlanVersionId)
+    lookup = input.communityId ? lookup.eq("community_id", input.communityId) : lookup.is("community_id", null)
+    const { data, error } = await lookup.maybeSingle()
+    if (error) throw new Error(`Failed to find catalog price: ${error.message}`)
+    expectedPrice = data ? catalogPriceSourceSchema.parse(data) : null
   }
-  const subjectColumn = input.optionId ? "option_id" : "package_id"
-  const subjectId = input.optionId ?? input.packageId
-  let lookup = context.supabase
-    .from("selection_catalog_prices")
-    .select("id")
-    .eq("org_id", context.orgId)
-    .eq(subjectColumn, subjectId)
-    .eq("house_plan_version_id", input.housePlanVersionId)
-  lookup = input.communityId ? lookup.eq("community_id", input.communityId) : lookup.is("community_id", null)
-  const { data: existing, error: lookupError } = await lookup.maybeSingle()
-  if (lookupError) throw new Error(`Failed to find catalog price: ${lookupError.message}`)
-  return saveCatalogEntity({
-    table: "selection_catalog_prices",
-    id: existing?.id,
-    payload: {
-      option_id: input.optionId ?? null,
-      package_id: input.packageId ?? null,
-      house_plan_version_id: input.housePlanVersionId,
-      community_id: input.communityId ?? null,
-      price_cents: input.priceCents,
-      ...(input.costCents !== undefined ? { cost_cents: input.costCents } : {}),
-      is_available: input.isAvailable,
-    },
-    select: "id, option_id, package_id, house_plan_version_id, community_id, price_cents, cost_cents, is_available",
-    entityType: "selection_catalog_price",
-  })
+  return publishCatalogPriceBatch(context, catalogPricePublicationSchema.parse({
+    publicationKey: input.publicationKey ?? randomUUID(),
+    expectedOrgId: input.expectedOrgId,
+    expectedActorId: input.expectedActorId,
+    communityId: input.communityId,
+    items: [{ optionId: input.optionId, packageId: input.packageId, housePlanVersionId: input.housePlanVersionId, priceCents: input.priceCents, costCents: input.costCents, isAvailable: input.isAvailable, expectedPrice }],
+  }))
 }
 
 export async function publishCatalogPrices(raw: unknown) {
@@ -626,8 +594,29 @@ export async function publishCatalogPrices(raw: unknown) {
   const context = await requireOrgContext()
   await requirePermission("selections.catalog.manage", context)
   if ((input.expectedOrgId && input.expectedOrgId !== context.orgId) || (input.expectedActorId && input.expectedActorId !== context.userId)) throw new Error("Catalog organization or actor changed; reopen the workspace")
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED !== "true") throw new Error("Atomic price publication is not enabled; no prices were changed")
   return publishCatalogPriceBatch(context, input)
+}
+
+export type HomePricingScope = {
+  housePlanVersionId?: string
+  communityId?: string
+  requirePlanVersion: boolean
+  requirePlanPrice: boolean
+}
+
+/**
+ * How a home prices its options — the one place that decides it. A production
+ * home sells from its plan version's price sheet whether or not it sits in a
+ * community, so it needs a pinned version and a price row for every item; a
+ * community home needs its plan version. Anything else may price at the base.
+ */
+export function homePricingScope(home: { lot: { community_id: string | null; house_plan_version_id: string | null } | null; production: boolean }): HomePricingScope {
+  return {
+    housePlanVersionId: home.lot?.house_plan_version_id ?? undefined,
+    communityId: home.lot?.community_id ?? undefined,
+    requirePlanVersion: home.production || Boolean(home.lot?.community_id),
+    requirePlanPrice: home.production,
+  }
 }
 
 export async function resolveOptionPricing(opts: {
@@ -635,12 +624,14 @@ export async function resolveOptionPricing(opts: {
   items: Array<{ optionId?: string; packageId?: string }>
   housePlanVersionId?: string
   communityId?: string
-  /** Set for a home that sells from a community price sheet: pricing without its plan version would silently quote base prices. */
+  /** Set for a home that sells from a plan price sheet: pricing without its plan version would silently quote base prices. */
   requirePlanVersion?: boolean
+  /** Set for a production home: an item with no price for the plan version is refused, never priced at its base. */
+  requirePlanPrice?: boolean
 }): Promise<ResolvedOptionPricing[]> {
   const supabase = createServiceSupabaseClient()
   if (opts.items.some((item) => Boolean(item.optionId) === Boolean(item.packageId))) throw new Error("Choose exactly one option or package for each pricing item")
-  if (opts.requirePlanVersion && !opts.housePlanVersionId) throw new Error("This home is in a community but has no pinned plan version; pin the plan version before pricing its options")
+  if ((opts.requirePlanVersion || opts.requirePlanPrice) && !opts.housePlanVersionId) throw new Error("This home has no pinned plan version; pin the plan version before pricing its options")
   const optionIds = [...new Set(opts.items.map((item) => item.optionId).filter((value): value is string => Boolean(value)))]
   const packageIds = [...new Set(opts.items.map((item) => item.packageId).filter((value): value is string => Boolean(value)))]
   type CatalogRow = { id: string; category_id?: string; parent_option_id?: string | null; community_id: string | null; price_cents: number; cost_cents: number | null; cost_code_id?: string | null; vendor?: string | null; sku?: string | null; lead_time_days?: number | null; is_available: boolean; is_archived: boolean }
@@ -747,6 +738,9 @@ export async function resolveOptionPricing(opts: {
       planPrice: pickPrice(null) ?? null,
       isCommunityOption: Boolean(option?.community_id ?? selectionPackage?.community_id),
     })
+    if (opts.requirePlanPrice && chosen.source !== "plan" && chosen.source !== "plan_community") {
+      throw new Error(item.optionId ? "This option has no price for this plan version" : "This package has no price for this plan version")
+    }
     const priceCents = Number(chosen.price_cents)
     const costCents = chosen.cost_cents == null ? null : Number(chosen.cost_cents)
     if (!Number.isInteger(priceCents) || priceCents < 0) throw new Error("A resolved option price is not a non-negative whole number of cents; reconcile the catalog before proceeding")
@@ -792,7 +786,6 @@ export type PlanPricingMatrix = {
   optionPage: number
   hasMoreOptions: boolean
   optionIds: string[]
-  atomicPricing: boolean
   includeOlderVersions: boolean
 }
 
@@ -811,54 +804,13 @@ export async function listPlanPricingMatrix(opts: { communityId?: string; option
   const uniqueIds = [...new Set(input.optionIds.map(id => id.toLowerCase()))]
   const optionIds = uniqueIds.slice((input.optionPage - 1) * 20, input.optionPage * 20)
   const window = { optionPage: input.optionPage, hasMoreOptions: uniqueIds.length > input.optionPage * 20, optionIds, includeOlderVersions: input.includeOlderVersions }
-  if (process.env.ARC_CATALOG_ATOMIC_PUBLICATION_ENABLED === "true") {
-    const { data, error } = await createServiceSupabaseClient().rpc("read_catalog_price_matrix", { p_org_id: context.orgId, p_actor_id: context.userId, p_community_id: input.communityId ?? null, p_option_ids: optionIds, p_page: input.planPage, p_latest_only: !input.includeOlderVersions })
-    if (error) throw new Error(`Unable to load pricing window: ${error.message}`)
-    const parsed = matrixReplySchema.parse(data)
-    if (parsed.orgId !== context.orgId || parsed.planPage !== input.planPage || Object.keys(parsed.cells).length > optionIds.length * parsed.plans.length) throw new Error("Pricing window reply is inconsistent")
-    for (const key of Object.keys(parsed.cells)) if (!optionIds.some(id => parsed.plans.some(plan => key === `${id}:${plan.versionId}`))) throw new Error("Pricing reply contains a cell outside the requested window")
-    if (!parsed.canReadMargin) for (const cell of Object.values(parsed.cells)) { delete cell.costCents; if (cell.ownPrice) delete cell.ownPrice.cost_cents }
-    return { plans: parsed.plans, cells: parsed.cells, planPage: parsed.planPage, hasMorePlans: parsed.hasMorePlans, ...window, atomicPricing: true }
-  }
-  // Complete bounded compatibility reads until the indexed RPC is approved.
-  if (input.communityId) {
-    const [access, community] = await Promise.all([getDivisionAccessForUser(context), context.supabase.from("communities").select("division_id").eq("org_id", context.orgId).eq("id", input.communityId).maybeSingle()])
-    if (community.error || !community.data || (access.assignedOnly && !access.divisionIds.includes(community.data.division_id))) throw new Error("Pricing community is outside your division access")
-  }
-  const canReadMargin = await hasPermission("financials.margin.read", context)
-  const versions = await readAllRowsById((cursor,take) => {
-    const query = context.supabase.from("house_plan_versions").select("id,house_plan_id,version_number,label,plan:house_plans!inner(name,status,org_id)").eq("org_id",context.orgId).eq("status","released").eq("plan.org_id",context.orgId).eq("plan.status","active").order("id").limit(take)
-    return cursor ? query.gt("id",cursor) : query
-  }, { cap: 20000, pageSize: 500, label: "Released plan pricing versions" })
-  versions.sort((a,b) => b.version_number-a.version_number || a.id.localeCompare(b.id))
-  const seen = new Set<string>(), columns: PlanColumn[] = []
-  for (const row of versions) {
-    if (!input.includeOlderVersions && seen.has(row.house_plan_id)) continue
-    seen.add(row.house_plan_id)
-    const plan = Array.isArray(row.plan) ? row.plan[0] : row.plan
-    columns.push({ versionId: row.id, planId: row.house_plan_id, planName: plan.name, versionLabel: row.label ?? `v${row.version_number}` })
-  }
-  columns.sort((a,b) => a.planName.toLowerCase().localeCompare(b.planName.toLowerCase()) || a.planId.localeCompare(b.planId))
-  const plans = columns.slice((input.planPage-1)*20,input.planPage*20)
-  const versionIds = plans.map(plan => plan.versionId)
-  const rows = optionIds.length && versionIds.length ? await readAllRowsById((cursor,take) => {
-    const table = context.supabase.from("selection_catalog_prices")
-    let query = (canReadMargin
-      ? table.select("id,option_id,house_plan_version_id,community_id,price_cents,is_available,cost_cents")
-      : table.select("id,option_id,house_plan_version_id,community_id,price_cents,is_available"))
-      .eq("org_id",context.orgId).in("option_id",optionIds).in("house_plan_version_id",versionIds).order("id").limit(take)
-    query = input.communityId ? query.or(`community_id.is.null,community_id.eq.${input.communityId}`) : query.is("community_id",null)
-    return cursor ? query.gt("id",cursor) : query
-  }, { cap: 800, pageSize: 500, label: "Plan pricing cells" }) : []
-  const cells: Record<string, PlanPriceCell> = {}
-  for (const row of rows) {
-    const key = `${row.option_id}:${row.house_plan_version_id}`, own = row.community_id === (input.communityId ?? null)
-    if (cells[key]?.ownPrice && !own) continue
-    cells[key] = { priceCents: row.price_cents, isAvailable: row.is_available, isOverride: true,
-      ownPrice: own ? { id: row.id, price_cents: row.price_cents, is_available: row.is_available } : null,
-      ...(canReadMargin && "cost_cents" in row ? { costCents: z.number().int().nullable().parse(row.cost_cents) } : {}) }
-  }
-  return { plans,cells,planPage:input.planPage,hasMorePlans:columns.length>input.planPage*20,...window,atomicPricing:false }
+  const { data, error } = await createServiceSupabaseClient().rpc("read_catalog_price_matrix", { p_org_id: context.orgId, p_actor_id: context.userId, p_community_id: input.communityId ?? null, p_option_ids: optionIds, p_page: input.planPage, p_latest_only: !input.includeOlderVersions })
+  if (error) throw new Error(`Unable to load pricing window: ${error.message}`)
+  const parsed = matrixReplySchema.parse(data)
+  if (parsed.orgId !== context.orgId || parsed.planPage !== input.planPage || Object.keys(parsed.cells).length > optionIds.length * parsed.plans.length) throw new Error("Pricing window reply is inconsistent")
+  for (const key of Object.keys(parsed.cells)) if (!optionIds.some(id => parsed.plans.some(plan => key === `${id}:${plan.versionId}`))) throw new Error("Pricing reply contains a cell outside the requested window")
+  if (!parsed.canReadMargin) for (const cell of Object.values(parsed.cells)) { delete cell.costCents; if (cell.ownPrice) delete cell.ownPrice.cost_cents }
+  return { plans: parsed.plans, cells: parsed.cells, planPage: parsed.planPage, hasMorePlans: parsed.hasMorePlans, ...window }
 }
 
 export type SelectionGroupPage = { groups: SelectionGroupDto[]; nextCursor: string | null }
@@ -915,28 +867,12 @@ export async function listSelectionGroups(opts: { communityId?: string } = {}): 
   return groups.sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
 }
 
-async function validateGroupCategories(context: Awaited<ReturnType<typeof requireOrgContext>>, categoryIds: string[], communityId: string | null) {
-  if (!categoryIds.length) return
-  const read = async (ids: string[]) => {
-    const rows = await readAllRowsById((afterId, take) => {
-      const query = context.supabase.from("selection_categories").select("id, org_id, community_id, parent_category_id, is_archived")
-        .eq("org_id", context.orgId).in("id", ids).order("id").limit(take)
-      return afterId ? query.gt("id", afterId) : query
-    }, { cap: ids.length, label: "Cutoff rule categories", pageSize: 100 })
-    if (rows.some(row => !ids.includes(row.id))) throw new Error("Cutoff rule category identities could not be verified")
-    return rows
-  }
-  const categories = await read(categoryIds)
-  if (categories.length !== categoryIds.length || categories.some(row => row.org_id !== context.orgId || row.is_archived || row.community_id !== null && row.community_id !== communityId || row.parent_category_id && row.community_id === null)) {
-    throw new Error("Cutoff rule categories must be active and belong to the original organization/community scope")
-  }
-  const parentIds = Array.from(new Set(categories.flatMap(row => row.parent_category_id ? [row.parent_category_id] : [])))
-  if (parentIds.length) {
-    const parents = await read(parentIds)
-    if (parents.length !== parentIds.length || parents.some(row => row.org_id !== context.orgId || row.community_id !== null || row.parent_category_id !== null || row.is_archived)) throw new Error("Cutoff rule category override ancestry could not be verified")
-  }
-}
-
+/**
+ * A cutoff rule and its categories commit together through atomic publication.
+ * A reviewed save carries the category versions its author saw; a programmatic
+ * create (copying org rules into a community, seeding) has no reviewer, so its
+ * categories are reviewed here and published the same way.
+ */
 export async function upsertSelectionGroup(raw: SelectionGroupInput): Promise<SelectionGroupDto> {
   const input = selectionGroupSchema.parse(raw)
   const categoryIds = input.categoryIds.map(id => id.toLowerCase())
@@ -946,42 +882,16 @@ export async function upsertSelectionGroup(raw: SelectionGroupInput): Promise<Se
   await requirePermission("selections.catalog.manage", context)
   const communityId = input.communityId?.toLowerCase() ?? null
   await requireCatalogCommunityAccess(context, communityId ?? undefined)
-  if (input.requireAtomicPublication || input.publicationKey || input.expectedGroup !== undefined || input.expectedCategoryVersions !== undefined) return publishCatalogGroup(context, input)
-  await validateGroupCategories(context, categoryIds, communityId)
-  const payload = {
-    community_id: communityId,
-    name: input.name,
-    schedule_task_key: input.scheduleTaskKey,
-    cutoff_offset_days: input.cutoffOffsetDays,
-    cutoff_anchor: input.cutoffAnchor,
-    sort_order: input.sortOrder,
+  const scope = { expectedOrgId: context.orgId, expectedActorId: context.userId }
+  if (input.requireAtomicPublication || input.publicationKey || input.expectedGroup !== undefined || input.expectedCategoryVersions !== undefined) {
+    return publishCatalogGroup(context, { ...input, ...scope })
   }
-  const { community_id: _scope, ...changes } = payload
-  let query = input.id
-    ? context.supabase.from("selection_groups").update(changes).eq("org_id", context.orgId).eq("id", input.id).eq("is_archived", false)
-    : context.supabase.from("selection_groups").insert({ org_id: context.orgId, ...payload })
-  if (input.id) query = communityId ? query.eq("community_id", communityId) : query.is("community_id", null)
-  const { data, error } = await query.select("id, community_id, name, schedule_task_key, cutoff_offset_days, cutoff_anchor, sort_order, is_archived").single()
-  if (error || !data) throw new Error(`Failed to save selection group: ${error?.message ?? "missing row"}`)
-  await setGroupCategories(data.id, categoryIds, context)
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "selection_group", entityId: data.id, after: { ...payload, category_ids: categoryIds } })
-  return { ...data, cutoff_anchor: data.cutoff_anchor as "start" | "end", category_ids: categoryIds }
-}
-
-async function setGroupCategories(
-  groupId: string,
-  categoryIds: string[],
-  existingContext?: Awaited<ReturnType<typeof requireOrgContext>>,
-) {
-  const context = existingContext ?? (await requireOrgContext())
-  if (!existingContext) await requirePermission("selections.catalog.manage", context)
-  const { error: deleteError } = await context.supabase.from("selection_group_categories").delete().eq("org_id", context.orgId).eq("group_id", groupId)
-  if (deleteError) throw new Error(`Failed to replace group categories: ${deleteError.message}`)
-  if (categoryIds.length === 0) return
-  const { error } = await context.supabase.from("selection_group_categories").insert(
-    categoryIds.map((categoryId) => ({ org_id: context.orgId, group_id: groupId, category_id: categoryId })),
-  )
-  if (error) throw new Error(`Failed to save group categories: ${error.message}`)
+  if (input.id) throw new Error("Review the current cutoff rule before changing it")
+  const reviewed = await reviewCatalogGroupCategories({ ...scope, communityId, categoryIds })
+  return publishCatalogGroup(context, {
+    ...input, ...scope, communityId, categoryIds, publicationKey: randomUUID(), requireAtomicPublication: true, expectedGroup: null,
+    expectedCategoryVersions: reviewed.categories.map(row => ({ id: row.id, definitionHash: row.definitionHash })),
+  })
 }
 
 export async function cloneOrgGroupsToCommunity(communityId: string) {
