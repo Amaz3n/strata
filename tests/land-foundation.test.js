@@ -120,4 +120,8 @@ test("a house cannot start on a lot land development has not delivered, unless a
   assert.equal(verticalStartRefusal({ status: "assigned", deliveredAt: null, deliveryExceptions: [exception] }), null)
   assert.match(verticalStartRefusal({ status: "assigned", deliveredAt: null, deliveryExceptions: [{ ...exception, revoked_at: "2026-10-02T00:00:00Z" }] }), /not been delivered/)
   assert.match(verticalStartRefusal({ status: "owned", deliveredAt: "2026-06-01T00:00:00Z", deliveryExceptions: [] }), /Only developed or assigned/)
+  // Owned land is undelivered by definition: only an exception lets it start.
+  assert.equal(verticalStartRefusal({ status: "owned", deliveredAt: null, deliveryExceptions: [exception] }), null)
+  assert.match(verticalStartRefusal({ status: "owned", deliveredAt: null, deliveryExceptions: [{ ...exception, revoked_at: "2026-10-02T00:00:00Z" }] }), /Only developed or assigned/)
+  assert.match(verticalStartRefusal({ status: "controlled", deliveredAt: null, deliveryExceptions: [exception] }), /Only developed or assigned/)
 })

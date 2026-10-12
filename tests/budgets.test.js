@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { lockBudgetBaseline } = freshRequire("lib/services/budgets.ts")
+const { createBudget, lockBudgetBaseline } = freshRequire("lib/services/budgets.ts")
 
 const PROJECT = id(1)
 const BUDGET = id(2)
@@ -60,5 +60,23 @@ describe("lockBudgetBaseline", () => {
     const service = harness({ permissions: ["budget.read", "project.read"] })
     await assert.rejects(service.run(() => lockBudgetBaseline(PROJECT)))
     assert.deepEqual(service.writes(), [])
+  })
+})
+
+describe("createBudget", () => {
+  test("every new line is written with its own id, so a batch never sends a null id", async () => {
+    const service = harness()
+    service.db.budgets = []
+
+    await service.run(() => createBudget({ project_id: PROJECT, status: "approved", lines: [
+      { description: "Mass grading", amount_cents: 300_000_00 },
+      { id: LINE, description: "Paving", amount_cents: 120_000_00 },
+    ] }))
+
+    const [insert] = service.writes("budget_lines")
+    const rows = Array.isArray(insert.payload) ? insert.payload : [insert.payload]
+    assert.equal(rows.length, 2)
+    assert.ok(rows.every((row) => typeof row.id === "string" && row.id.length > 0))
+    assert.equal(rows[1].id, LINE)
   })
 })

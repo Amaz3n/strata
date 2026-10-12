@@ -1158,7 +1158,7 @@ export async function listStartPackageCandidates(
       project:projects(client:contacts(full_name)),
       packages:start_packages!start_packages_lot_id_fkey(id,status),
       ${LOT_DELIVERY_EXCEPTIONS_EMBED}
-    `).eq("org_id", context.orgId).in("status", ["developed", "assigned"])
+    `).eq("org_id", context.orgId).in("status", ["owned", "developed", "assigned"])
     if (filters.communityId) query = query.eq("community_id", filters.communityId)
     if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
     else if (divisionAccess.assignedOnly) query = query.in("division_id", divisionAccess.divisionIds)

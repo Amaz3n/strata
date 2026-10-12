@@ -112,8 +112,10 @@ export async function createBudget(
   }
 
   if (parsed.lines.length > 0) {
+    // Every row names its id: a batch insert lists the union of its keys, so a
+    // row without one would write NULL instead of taking the column default.
     const linesToInsert = parsed.lines.map((line, idx) => ({
-      id: line.id ?? undefined,
+      id: line.id ?? crypto.randomUUID(),
       org_id: resolvedOrgId,
       budget_id: budget.id,
       cost_code_id: line.cost_code_id ?? null,

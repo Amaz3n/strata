@@ -165,8 +165,11 @@ export function verticalStartRefusal(lot: {
   deliveredAt: string | null
   deliveryExceptions: unknown
 }): string | null {
-  if (!["developed", "assigned"].includes(lot.status)) {
-    return "Only developed or assigned lots can enter the start pipeline."
+  // Delivering land is what makes a lot developed, so an owned lot can only
+  // start under an authorized delivery exception.
+  const excepted = lot.status === "owned" && activeDeliveryException(lot.deliveryExceptions) !== null
+  if (!["developed", "assigned"].includes(lot.status) && !excepted) {
+    return "Only developed or assigned lots, or owned lots with a delivery exception, can enter the start pipeline."
   }
   return lotDeliveryRefusal(lot)
 }
