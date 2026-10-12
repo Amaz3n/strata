@@ -11039,13 +11039,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Manual model-home/desk lead capture works and records channel/source, co-op agent and community traffic; a lead now counts toward community traffic exactly once (5dc16e16). No inbound website/CRM ingestion, deduplication or routing/retry visibility. Doc 06 lines 70-84 explicitly scope OSC/lead nurture out, conflicting with this mandatory item.",
       "remainingWork": [
-        "Product decision: which CRM / website form contract is in scope (doc 06 currently scopes lead ingestion out).",
-        "Signed public lead ingestion route (add to PUBLIC_API_ROUTES) writing through createProspect with idempotency key and org-scoped dedupe on normalized email/phone, preserving source/campaign attribution (migration needs approval).",
-        "Owner routing rules (community/division) plus an outbox job with retry and a failed-delivery queue on the Sales desk.",
-        "Automated tests for dedupe/attribution/routing; QA-org workflow."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/sales-inquiries.ts",
@@ -11132,7 +11129,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -11175,6 +11172,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LEAD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "LEAD-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LEAD-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "file_lead merges on normalized email into open deals only. A phone match merges only when one side has no email; otherwise the lead becomes a new deal flagged possible_duplicate_prospect_id (supabase/migrations/20261013050000_ep05_review_fixes.sql:737-972). Attribution is kept per touch. The lead-intake, lead-intake-db and lead-routing suites pass. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Lead band on /sales and /pipeline shows failed attempts with the next retry, unrouted rows and possible-duplicate rows (components/sales/lead-intake-band.tsx). The signed /api/leads/intake route is in PUBLIC_API_ROUTES (proxy.ts). Routing is round-robin with rules first (lead-routing suite). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -11192,15 +11235,18 @@
         "Double-counted community traffic: createProspect calls recordLeadTraffic when community_id is set (lib/services/prospects.ts:541-546) and registerProductionInquiry then calls incrementCommunityTraffic again for sales.manage users (lib/services/sales-inquiries.ts:59-70), possibly on a different date. — fixed in 5dc16e16"
       ],
       "plain": {
-        "title": "Web and CRM lead intake",
-        "description": "Sales staff can register a walk-in or phone buyer at the model home, with the source and co-op agent recorded, and each lead is counted once in community traffic. Leads from the builder's website or CRM don't flow in automatically, duplicates aren't merged, and there's no automatic assignment or failed-lead queue."
+        "title": "Website leads into the pipeline",
+        "description": "A builder's website (or form tool) posts leads to a signed endpoint and they land in Arc's own pipeline: a returning buyer's lead joins their open deal instead of duplicating it, every touch keeps its source and campaign, the lead is routed in turn to the community's sales consultants, and failed, unrouted or possible-duplicate deliveries sit in a queue on the Sales desk with retry, dismiss and file-by-hand."
       },
       "proposedScope": {
-        "scope": "client",
-        "reason": "Ingestion depends on which website form and CRM the first builder actually uses (doc 06 deferred it); only the small double-count fix is needed regardless.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Brought into the EP05 batch by the owner on 2026-10-12 (Arc's pipeline is the CRM; tracked lender/title milestones; co-op and internal commissions).",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "LEAD-01"
+      ]
     },
     {
       "id": "EP05-02",
@@ -11224,10 +11270,7 @@
       "status": "verified",
       "implementationNotes": "Every criterion has code; the transactional versions remain in migrations 20261003221905/20261003232615/20261004000100/20261005121409 that are still NOT in the production ledger (checked 2026-10-09) and behind three env flags. The Oct 5 fixture failure in tests/reservation-conversion-db.test.js is fixed: all 8 cases (atomic commit, replay, rollback, competing actors) now pass.",
       "remainingWork": [
-        "Obtain approval and apply 20261003221905, 20261004000100, 20261003232615, 20261005121409; enable ARC_RESERVATION_CONVERSION_ENABLED, ARC_AGREEMENT_ATOMIC_CREATION_ENABLED, ARC_AGREEMENT_DURABLE_SIGNING_ENABLED.",
-        "Delete the legacy sequential conversion/creation branches and the flags (leave-no-trash).",
-        "Full-schema and multi-session concurrency proof for competing hold conversions and agreement creation.",
-        "QA-org walkthrough prospect -> hold -> reservation -> agreement -> closing."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -11478,7 +11521,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -11506,7 +11549,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -11515,6 +11558,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Reservation -> create_purchase_agreement_atomic (20261013020000_*.sql) -> execution (lib/services/community-sales.ts) -> closing. The reservation, contract_id and lot are re-verified under lock. Member writes to purchase agreements are blocked by tg_purchase_agreement_member_write_guard (20261013050000:54-99). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "An agreement requires a reserved reservation with no prior contract_id, and hold expiry is checked on hold->reserved (lib/services/community-sales.ts). Members cannot insert, update or delete a purchase agreement (20261013050000:54-99). The purchase-agreements-db suite passes. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -11527,26 +11616,24 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "The reviewed reservation conversion path still creates a placeholder fixed contract (lib/services/reservation-conversion.ts; unapplied SQL 20261005121409 requires billingContract), which blocks Books adoption of the home — open (see EP10-02).",
-        "Acceptance (LOT-01, 2026-10-11): voiding-a-signed-agreement-unwinds-the-sale"
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "tests/reservation-conversion-db.test.js fixture drift (missing public.budget_lines) fixed by the test overhaul; 8/8 cases pass on 2026-10-09."
       ],
       "plain": {
         "title": "Buyer from lead to signed agreement",
-        "description": "A buyer can be followed from lead to lot hold, reservation and purchase agreement as one record, and expired or invalid reservations can't produce an agreement. The safer all-or-nothing versions of these steps are built and tested but still waiting on database approval and being switched on."
+        "description": "A buyer can be followed from lead to lot hold, reservation and purchase agreement as one record, through the single all-or-nothing conversion and creation paths; an expired or released hold can't produce an agreement."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Every sale runs through this path, and without the gated all-or-nothing versions an interrupted conversion can leave an orphan home or stray deposit invoice.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S",
       "scenarioIds": [
-        "LOT-01"
+        "LOT-01",
+        "SALE-01"
       ]
     },
     {
@@ -11568,13 +11655,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "No change since Oct 5. Signing binds buyer identity, configuration snapshot and a hashed PDF, with durable ownership/recovery tested but gated. There is no versioned agreement template or jurisdiction/community addenda, so the packet is a priced proposal plus free-text terms.",
       "remainingWork": [
-        "Model versioned agreement templates and addenda with org/community/jurisdiction applicability and immutable published versions (new entity: RLS, RBAC seed, search registration; migration needs approval).",
-        "Assemble the packet from applicable template+addenda versions at creation, store version ids in the contract snapshot, refuse signing when a required addendum is missing.",
-        "Apply 20261003004822 and 20261003232615 after approval and enable durable signing.",
-        "Tests for template/addendum selection and packet-hash binding; legal review of packet content with the customer; QA signing walkthrough."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -11651,7 +11735,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -11697,6 +11781,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Templates and addenda are versioned with community and state applicability (20261013020000:58-300). The guard makes a published version immutable even to postgres (:167-230). Probe on published version aaf17760 confirmed. Drafts are now editable through the UI (agreement-template-library.tsx:299-330). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "The packet is resolved and hash-checked inside create_purchase_agreement_atomic. Execution records the envelope, executed file, packet_hash and source sha256 (lib/services/community-sales.ts). Snapshot, buyer and terms are frozen against members (20261013050000:54-99). purchase-agreement-packet and agreement-versions pass. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -11714,14 +11844,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Versioned purchase agreement packets",
-        "description": "When a buyer signs, Arc locks in who signed, the home's configuration and the exact document. But there are no versioned agreement templates or required state/community addenda — the agreement is a priced proposal with typed-in terms."
+        "description": "Builders upload their own agreement and addenda PDFs as versioned templates that apply by community and state. A home's packet is assembled from the versions in force, its hash is stored with the agreement and bound at signing, and signing is refused when a required addendum is missing or a version was withdrawn. Published versions can't be changed."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "A production builder cannot sign real buyers on Arc without its own legal agreement and required addenda in the packet.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "SALE-01"
+      ]
     },
     {
       "id": "EP05-04",
@@ -11742,13 +11875,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Close-readiness gating is real and tested, but financing/appraisal/sale contingencies are not modelled (no owner, deadline, evidence or type). Doc 06 lists mortgage/lender tracking as out of scope.",
       "remainingWork": [
-        "Model agreement contingencies (type, owner, due date, evidence file, status, waiver) linked to the purchase agreement (migration needs approval).",
-        "Generate a closing gate per required contingency so assertClosingReadiness blocks until satisfied or waived with reason.",
-        "Show due/overdue contingencies on the closing workbench and Sales desk.",
-        "Tests; QA-org workflow."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/closings.ts",
@@ -11808,7 +11938,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -11847,6 +11977,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "agreement_milestones carry owner, due_on and evidence, with constraints that require evidence or a reason (20261013030000). Members cannot write reported_* fields (20261013050000:977-1018). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "assertAgreementMilestonesClear runs at lib/services/closing-readiness.ts:32. The guard_closing_agreement_milestones trigger checks cleared_to_close and closed (20261013030000). Closing status is member-proof (20261013050000:1110-1145). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -11863,14 +12039,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Financing and sale contingencies",
-        "description": "A closing can't settle while a required checklist item is open, and that check works. But financing, appraisal and home-sale contingencies aren't tracked as their own items with an owner, deadline and proof, so nothing stops a closing because one is unresolved."
+        "description": "Contingencies written into the signed agreement — financing, appraisal, sale of a home and others — become tracked items with an owner, a deadline and evidence. A required one that isn't satisfied or waived with a reason blocks closing, in the app and in the database."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Nearly every production sale carries a financing contingency, and closings must be blocked until it clears.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SALE-01"
+      ]
     },
     {
       "id": "EP05-05",
@@ -11891,13 +12070,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Nothing new since Oct 5. Only a manual financing attestation gate on start packages exists; the workstream plan deferred lender/title.",
       "remainingWork": [
-        "Product decision on lender/title scope and partner(s).",
-        "Model financing/title milestones per buyer+home with due dates, dependencies and aging; closing-coordinator view.",
-        "Inbound update channel (manual first, integration later) that reconciles by agreement/buyer/home, with mismatched-update tests.",
-        "QA workflow."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/starts.ts",
@@ -11935,7 +12111,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -11955,6 +12131,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "A default lender/title milestone set has due days and dependency edges, and dependencies are enforced on satisfy (20261013030000). Aging is computed in lib/sales/agreement-milestones.ts and shown on the closing panel. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "apply_agreement_milestone_report reconciles the agreement number, buyer and lot, and logs refusals (app/api/inbound/v1/agreement-milestones/route.ts). The rejection counter is atomic (20261013050000:1020-1038). inbound-signature passes. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -11972,14 +12194,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Lender and title milestone tracking",
-        "description": "Not built. Apart from one manual 'financing cleared' check before a start, Arc doesn't track loan or title milestones, their due dates or how late they are, and can't take updates from a lender or title company."
+        "description": "Each sale carries lender and title milestones (application through clear to close) with owners, due dates, dependencies and aging on the closing and Sales desk. Updates come in by hand or from a signed feed that must match the agreement, buyer and home; mismatches are refused and shown."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "A first builder can run lender/title follow-up through contingencies and the closing checklist; milestone tracking with outside integrations is enterprise-scale and was deferred by doc 06.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Brought into the EP05 batch by the owner on 2026-10-12 (Arc's pipeline is the CRM; tracked lender/title milestones; co-op and internal commissions).",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "SALE-01"
+      ]
     },
     {
       "id": "EP05-06",
@@ -12000,13 +12225,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Nothing new since Oct 5. Only the co-op agent's identity is captured on the lead; doc 06 open question 3 (line 970) defers commissions.",
       "remainingWork": [
-        "Product decision on commission plans (co-op %, internal sales comp) and payout source.",
-        "Model approved commission terms on the agreement; derive obligations at settlement idempotently (keyed by closing) into payables.",
-        "Cancellation/amendment clawback and adjustments without duplicate payout; idempotent-retry tests.",
-        "QA."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/sales/activity.ts",
@@ -12045,7 +12267,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -12065,6 +12287,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Plan lines are frozen. Approving, or replacing approved terms with 'none', needs a second person (guard_sales_commission_plan 20261013050000:316-417; propose RPC :419-513). sales-commissions and sales-commissions-db pass. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Exactly-once keys and the unwind inside reverse_books_home_closing hold (supabase/migrations/20261013050000_ep05_review_fixes.sql:552-669, called at :699-707). The round-4 gap is closed: guard_sales_commission_bill (:240-245) refuses any move out of 'rejected' or into approved/partial/paid while the obligation is not 'open', before the definer/service-role early return (:248), via sales_commission_obligation_open (:290-304). Re-probed on the acceptance DB (rolled back) with bill a12a04a0 rejected and obligation 7b6c023c cleared: owner reopen, service-role reopen, service-role paid, postgres reopen and approve_vendor_bills_atomic on a pending bill with a cleared obligation were all refused. Open commission bills still go approve, reopen, reject, reopen, RPC approve and pay. Ordinary bills go approve, reject, reopen, approve and pay. tests/sales-commissions-db.test.js:295-310 passes, along with all 377 EP05 test cases."
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -12081,14 +12349,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Broker and sales commissions",
-        "description": "Not built. Arc records which co-op agent brought a buyer, but doesn't calculate, approve or pay broker or salesperson commissions, or adjust them when a sale cancels or changes."
+        "description": "Co-op broker and sales consultant commissions are set on the agreement and approved by a second person. Settlement creates them once from the authorized price — broker commissions as payables AP releases, consultant commissions through payroll — and a reversed closing turns anything already paid into a credit that nets against the next payment, never a second payout."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Co-op commissions are normally paid by the title company on the settlement statement and Arc pays none today, so there is no duplicate-payment risk to close before a first builder.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Brought into the EP05 batch by the owner on 2026-10-12 (Arc's pipeline is the CRM; tracked lender/title milestones; co-op and internal commissions).",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "SALE-01"
+      ]
     },
     {
       "id": "EP05-07",
@@ -12109,12 +12380,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "voidPurchaseAgreement is now fenced on the contract status before money moves, checks every write, revokes buyer access through revokePortalToken and records audit and event (5dc16e16). It does not yet unwind start packages, POs, incentives or open signing envelopes, and the agreement itself is still not re-versioned.",
       "remainingWork": [
-        "Cancel/hold start packages, POs/variance orders and open signing envelopes on void; release incentive capacity.",
-        "Decide the amendment model (versioned agreement amendment vs signed COs) so the current authorized price/scope reads as one version with history.",
-        "Tests for cancellation reconciliation and amendment history; QA."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/community-sales.ts",
@@ -12180,7 +12449,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -12221,6 +12490,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Signed amendments append immutable purchase_agreement_versions (20261013020000:~900, 1090-1138). Members cannot forge an amendment (20261013050000:104-157). A change order out for e-signature is frozen (:1175-1312). Settlement reads the versions (lib/services/closings.ts:99). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "void_purchase_agreement_atomic reconciles deposits, inventory, change orders, the start package and selections in one transaction. A direct member void is refused. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -12240,14 +12555,17 @@
       ],
       "plain": {
         "title": "Agreement changes and cancellations",
-        "description": "Changes after signing go through signed change orders that carry into the closing price, and cancelling a sale now refunds or keeps the deposit, frees the lot, closes the buyer's portal sign-in and leaves a record, with every step checked. The agreement itself isn't re-versioned, and a cancellation doesn't yet unwind purchase orders or starts already committed."
+        "description": "Each buyer-signed change order becomes the agreement's next version, so the current price and scope read as one version with history. Cancelling a sale reviews and then applies, in one step, the deposit refund or forfeit, the lot and reservation release, open signature requests, selections and the start."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Cancellations happen in every production community, and the current path has security (live buyer access) and money-integrity (partial void) gaps.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SALE-01"
+      ]
     },
     {
       "id": "EP05-08",
@@ -12271,8 +12589,7 @@
       "status": "verified",
       "implementationNotes": "Money math is pure, integer-cent and unit tested; settlement refuses mismatched invoice totals and now also refuses when another invoice already bills part of the home's price, and counts deposits net of refunds. Database enforcement still depends on the unapplied closing evidence guard migration.",
       "remainingWork": [
-        "Apply 20261003050000_closing_evidence_guards after approval.",
-        "Verify settlement statements and deposit application against reconciled QA-org records."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/financials/purchase-agreement-pricing.ts",
@@ -12526,7 +12843,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -12554,7 +12871,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -12563,6 +12880,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Settlement is integer-cents arithmetic from the signed versions and settlement adjustments (lib/services/closings.ts:86-160). Closing settlement and metadata are member-proof (20261013050000:1110-1145). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "settleClosing refuses when the invoice lines differ from finalPriceCents (lib/services/closings.ts:494-495), and re-checks the issued total (:536-537) and the existing invoice (:438). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -12574,9 +12937,7 @@
       "sourceAcceptanceIndices": [
         3
       ],
-      "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): approved-change-order-counts-once-in-the-final-price"
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "Settlement could double-bill a price already invoiced outside the closing - now refused by assertNoBillingOutsideClosing (lib/services/closing-readiness.ts:66-80).",
@@ -12584,16 +12945,17 @@
       ],
       "plain": {
         "title": "Home price and settlement math",
-        "description": "Base price, lot premium, options, incentives, approved changes, deposits and closing credits add up to the cent, and a closing won't settle if the closing invoice doesn't equal the agreed final price or another invoice already billed part of it. The matching database safeguard is waiting on approval."
+        "description": "Base price, lot premium, options, incentives, signed changes, deposits and closing credits add up to exact cents, and the closing invoice equals the authorized final price."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Every closing statement depends on this arithmetic being exact.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
-        "LOT-01"
+        "LOT-01",
+        "SALE-01"
       ]
     },
     {
@@ -12622,10 +12984,7 @@
       "status": "verified",
       "implementationNotes": "Settlement is fenced by a unique closing-invoice index, bills the signed agreement's buyer and checks deposit writes (5dc16e16); retry-after-failure, refund-net deposits and closing reversal were already in place. The unique index is migration 20261010120000, pending approval; inventory relief and closing reversal depend on Books migrations 20261007180000-220000. The deposit invoice now goes to the buyer (4158415c; found by LOT-01).",
       "remainingWork": [
-        "Apply migration 20261010120000_closing_invoice_unique (pending approval).",
-        "Approve the Books migrations 20261007180000-220000 that inventory relief and closing reversal depend on.",
-        "Full-schema interruption and multi-session concurrency tests; QA reconciliation in the QA org.",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/closings.ts",
@@ -12956,7 +13315,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -12984,7 +13343,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -12998,7 +13357,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -13007,6 +13366,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "invoices_closing_source_unique fences the closing invoice. The cleared_to_close->closed move happens once, guarded by .eq('status','cleared_to_close') (lib/services/closings.ts:613). Commission payables are idempotent per (closing, plan_line). closings and closings-db pass. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Deposits are filtered to the agreement's buyer, and the closing invoice bills that buyer. The reversal refunds or corrects closing payments before reverse_books_home_closing (lib/services/closings.ts:648-666). [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -13018,9 +13423,7 @@
       "sourceAcceptanceIndices": [
         3
       ],
-      "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): voiding-a-signed-agreement-unwinds-the-sale"
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "Deposits applied at settlement are now the home's own, net of refunds and earlier applications (lib/services/closings.ts:107-125, 96c1987b).",
@@ -13031,17 +13434,18 @@
       ],
       "plain": {
         "title": "Safe closing settlement and deposits",
-        "description": "If a closing fails halfway, retrying finishes it without double-applying deposits or double-recording the balance, deposits count net of refunds, and a recorded closing can be reversed. Settlement now bills the buyer on the signed agreement and is written to prevent a second closing invoice, once the supporting database change is approved."
+        "description": "If a closing fails halfway, retrying finishes it without double-applying deposits or double-billing, two simultaneous settlements can't both run, and every payment and refund belongs to the right buyer."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Money integrity at closing — duplicate invoices or misattributed buyer payments — must be closed before any real home settles.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "SALE-01"
       ]
     },
     {
@@ -13067,13 +13471,10 @@
         "EP09-05",
         "EP11-02"
       ],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Readiness and enrollment are well tested, settlement now blocks on unverified punch (bb8d2c74), and coverage immutability is written in migration 20261010120100 (5dc16e16, pending approval). Remaining gaps: inspection readiness is flag- and migration-gated, and CO evidence is optional. Closing evidence keeps every key of the agreement quote, so a real closing reconciles and queues warranty enrollment (4158415c; found by LOT-01).",
       "remainingWork": [
-        "Apply migration 20261010120100_warranty_coverage_write_scope (pending approval).",
-        "Require an evidence file on the final inspection / CO gate.",
-        "Apply 20261005031540 and enable INSPECTION_LIFECYCLE_ENABLED; apply 20261003050000.",
-        "QA close-to-coverage walkthrough including retry after enqueue failure."
+        "Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/closings.ts",
@@ -13146,7 +13547,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -13189,6 +13590,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-12",
+          "runIds": [
+            "SALE-01-ep05final"
+          ],
+          "head": "b2b686e9",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SALE-01 as real roles through the services on the acceptance stack (LEAD-01 7/7, SALE-01 19/19); regression on the same stack: LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP05-FINAL"
+          ],
+          "date": "2026-10-12",
+          "head": "b2b686e9",
+          "confidence": "high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Readiness requires the gates, the final_inspection_co gate with an evidence file, punch clear, waivers ready and commission terms decided (lib/services/closing-readiness.ts:16,32-64). Gates stay gates (20261013050000:162-206, 1147-1172). closing-readiness passes. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "The warranty program and terms snapshot are bound at execution and immutable (20261013050000:1040-1105). Enrollment uses the sold terms (lib/services/warranty-enrollment.ts). One live coverage per home (unique index WHERE voided_at IS NULL). warranty-enrollment passes. [Re-checked round 5: unchanged by d346e771. The EP05 suites pass (377/377).]"
+            }
+          ],
+          "scope": "Independent review of the EP05 batch (128f7230..d346e771) after four fix rounds; the fifth review judged every criterion."
         }
       ],
       "releaseState": "unverified",
@@ -13209,14 +13656,17 @@
       ],
       "plain": {
         "title": "Closing to warranty handoff",
-        "description": "A home can't close until the checklist, signed agreement, punch list (verified where required) and final lien waivers are done, and closing signs the home up for warranty exactly once. Locking a home's warranty terms against later edits is written but waits for an approved database change; required inspections only count once a waiting feature is switched on, and the certificate of occupancy can be checked off without a document."
+        "description": "A home can't close until its inspections, waivers, signed agreement, contingencies and certificate-of-occupancy evidence are in place. Settlement enrolls the warranty terms captured at signing exactly once, and a reversed closing voids that coverage so the next closing enrolls again."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Every closing hands off to warranty, and editable coverage terms are a data-integrity gap.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "SALE-01"
+      ]
     },
     {
       "id": "EP06-01",
@@ -35453,6 +35903,12 @@
       "approvedBy": "owner",
       "change": "EP04-01, EP04-02 and EP04-03 pulled into the first batch with the rest of EP04.",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-12",
+      "approvedBy": "owner",
+      "change": "EP05-01 (Arc's pipeline is the CRM), EP05-05 (tracked lender/title milestones, no partner integration) and EP05-06 (co-op and internal commissions) brought into the first batch with the rest of EP05.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -39701,13 +40157,20 @@
       },
       {
         "id": "SALE-01",
-        "story": "Reservation to signed purchase agreement: lot hold, incentive within capacity, catalog revision locked, buyer signs, deposit received and applied only to that home.",
-        "harness": "partial",
+        "story": "Reservation to closing on a real agreement: the packet comes from the org's published agreement and the community/state addenda and is bound by hash at signing; buyer-signed change orders become the agreement's next versions; contingencies and lender/title milestones with owners, deadlines and evidence gate closing and reconcile signed external updates; the certificate-of-occupancy gate needs evidence; settlement enrolls warranty once and a reversal re-enrolls; commission terms are approved by a second person and paid once per closing, with reversals netting instead of paying twice; a cancellation reconciles deposits, inventory and committed work in one step.",
+        "harness": "exists",
         "covers": [
+          "EP05-03",
+          "EP05-04",
+          "EP05-05",
+          "EP05-06",
+          "EP05-07",
+          "EP05-10",
           "EP14-01",
           "EP14-06"
         ],
-        "existingSupport": "agreement-creation-db, reservation-conversion-db, agreement-incentive-capacity-db suites; BILL-01 deposit handling"
+        "existingSupport": "scripts/books-acceptance/scenarios/sale-01.cjs (sale-01-packet, sale-01-milestones, sale-01-commissions; 19 subcases)",
+        "result": "passed"
       },
       {
         "id": "SEL-01",
@@ -39894,6 +40357,16 @@
           "EP04-08"
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/land-01.cjs (9 subcases); races in RACE-02 (scripts/books-acceptance/scenarios/lot-01-sales.cjs race-* subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "LEAD-01",
+        "story": "A website lead posted to the signed endpoint files into Arc's pipeline once: duplicates merge only into the same buyer's open deal and keep every touch's attribution, routing rotates through the community's consultants within their divisions, and bad, unrouted or failing deliveries stay visible to sales with retry; secrets rotate with a grace window and only sales roles can touch leads.",
+        "harness": "exists",
+        "covers": [
+          "EP05-01"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/lead-01.cjs (7 subcases)",
         "result": "passed"
       }
     ]

@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 40.1% — a documented lower bound, not an ETA |
-| Fully verified | 38.8% |
+| Implemented | 45.3% — a documented lower bound, not an ETA |
+| Fully verified | 43.9% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 57 items |
-| Known pending tasks | 20 items |
+| Partially implemented | 52 items |
+| Known pending tasks | 18 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
 
@@ -108,16 +108,16 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP05-01 | Lead ingestion and routing | partial | Product decision: which CRM / website form contract is in scope (doc 06 currently scopes lead ingestion out). |
-| EP05-02 | Buyer and reservation continuity | verified | Obtain approval and apply 20261003221905, 20261004000100, 20261003232615, 20261005121409; enable ARC_RESERVATION_CONVERSION_ENABLED, ARC_AGREEMENT_ATOMIC_CREATION_ENABLED, ARC_AGREEMENT_DURABLE_SIGNING_ENABLED. |
-| EP05-03 | Agreement packet versions | partial | Model versioned agreement templates and addenda with org/community/jurisdiction applicability and immutable published versions (new entity: RLS, RBAC seed, search registration; migration needs approval). |
-| EP05-04 | Contingency management | partial | Model agreement contingencies (type, owner, due date, evidence file, status, waiver) linked to the purchase agreement (migration needs approval). |
-| EP05-05 | Lender and title milestones | pending | Product decision on lender/title scope and partner(s). |
-| EP05-06 | Commission controls | pending | Product decision on commission plans (co-op %, internal sales comp) and payout source. |
-| EP05-07 | Agreement amendments and cancellation | partial | Cancel/hold start packages, POs/variance orders and open signing envelopes on void; release incentive capacity. |
-| EP05-08 | Purchase and settlement arithmetic | verified | Apply 20261003050000_closing_evidence_guards after approval. |
-| EP05-09 | Atomic closing and deposit reconciliation | verified | Apply migration 20261010120000_closing_invoice_unique (pending approval). |
-| EP05-10 | Closing to warranty handoff | partial | Apply migration 20261010120100_warranty_coverage_write_scope (pending approval). |
+| EP05-01 | Lead ingestion and routing | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-02 | Buyer and reservation continuity | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-03 | Agreement packet versions | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-04 | Contingency management | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-05 | Lender and title milestones | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-06 | Commission controls | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-07 | Agreement amendments and cancellation | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-08 | Purchase and settlement arithmetic | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-09 | Atomic closing and deposit reconciliation | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
+| EP05-10 | Closing to warranty handoff | verified | Apply the EP05 migrations (20261013010000, 20261013020000, 20261013030000, 20261013040000, 20261013050000 (with the staged agreement migrations 20261003004822, 20261003050000, 20261003221905, 20261003232615, 20261004000100, 20261005031540, 20261005121409, 20261010120000 and 20261010120100, which EP05 makes the only paths)) with the code (pending approval). |
 
 ### EP06: Selections and permits
 
@@ -266,6 +266,25 @@ This side conversation cannot access the persistent main-thread goal, and expose
 
 ## Tracking issues
 
+- EP03-03: missing source tests/agreement-configuration-eligibility.test.js.
+- EP03-05: missing source tests/agreement-configuration-eligibility.test.js.
+- EP03-06: missing source tests/agreement-configuration-eligibility.test.js.
+- EP03-07: missing source tests/agreement-configuration-eligibility.test.js.
+- EP05-02: missing source tests/agreement-creation-service.test.js.
+- EP05-02: missing source tests/agreement-configuration-eligibility.test.js.
+- EP05-02: verified without a current passing LOT-01 run.
+- EP05-03: missing source tests/agreement-signing-ownership-service.test.js.
+- EP05-03: missing source tests/agreement-signing-recovery-service.test.js.
+- EP05-03: missing source tests/agreement-signing-identity.test.js.
+- EP05-03: missing source tests/agreement-signing-status.test.js.
+- EP05-08: verified without a current passing LOT-01 run.
+- EP05-09: verified without a current passing LOT-01 run.
+- EP05-09: verified without a current passing RACE-02 run.
+- EP09-04: missing source tests/inspection-completion-handoff.test.js.
+- EP13-07: missing source tests/agreement-quote-concurrency.test.js.
+- EP14-06: missing source tests/agreement-quote-concurrency.test.js.
+- surfaceInventory: app/(app)/settings/lead-intake/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
+- surfaceInventory: app/(app)/settings/milestone-feeds/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/layout/app-sidebar.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/home/production-home.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-home.ts
@@ -399,20 +418,31 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP03-EP04: source changed since proof: supabase/migrations/20261007235000_books_inventory_impairment.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/sales-inquiries.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/sales-deals.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/community-traffic.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/prospects.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: app/(app)/sales/actions.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: docs/production-expansion/06-sales-contracts-closings.md
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/prospect-write-access.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/prospects.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/sales-deal-file.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/reservation-conversion.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/agreement-creation.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: components/sales/reservation-review-dialog.tsx
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261005121409_reservation_conversion_ownership.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-conversion.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-conversion-db.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/reservation-creation-preparation.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-creation-db.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-creation-service.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/agreement-signing-ownership.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/agreement-signing-status.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-signing-ownership-service.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-signing-recovery-service.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-signing-identity.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-signing-state.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-signing-status.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/agreement-quote-fingerprint.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/closings.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/closing-readiness.ts
@@ -428,8 +458,12 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/financials/closing-settlement-evidence.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/books/inventory.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261007180000_books_home_sale_relief.sql
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/warranty-enrollment.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/warranty-operations.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: lib/inspections/lifecycle.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: app/api/jobs/process-outbox/route.ts
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/warranty-enrollment.test.js
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/inspection-lifecycle-workbench.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/option-catalog.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/design-studio.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/validation/selections.ts
@@ -518,7 +552,11 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/plan-instantiation-ledger.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/inspections.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/inspections/lifecycle.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/closing-readiness.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: app/(app)/projects/[id]/inspections/page.tsx
+- AUDIT-20261009-EP08-EP09: source changed since proof: docs/enterprise-production/inspection-obligation-lifecycle.md
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/inspection-lifecycle-workbench.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/inspection-completion-handoff.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/inspections.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/punch-lists.ts
@@ -537,6 +575,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: docs/books-entities.md
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-acceptance-scenarios.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/inventory.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/inventory-rules.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/starts-pipeline.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/closings.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: components/books/inventory-allocation.tsx
@@ -558,7 +597,9 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-close-control-integrity.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/books-close-review.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/arc-books.test.js
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty-enrollment.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty-operations.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: tests/warranty-enrollment.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/warranty/domain.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/warranty-program-usage.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: app/(app)/warranty/warranty-desk-client.tsx
@@ -572,6 +613,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261003051000_warranty_visit_completion_receipts.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: app/p/[token]/warranty/actions.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/vendor-bills.ts
+- AUDIT-20261009-EP10-EP11: source changed since proof: lib/services/books/projector.ts
 - AUDIT-20261009-EP10-EP11: source changed since proof: supabase/migrations/20261007190000_books_warranty_consumption_accounts.sql
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/closing-readiness.test.js
 - AUDIT-20261009-EP10-EP11: source changed since proof: tests/closing-evidence-guards-db.test.js
@@ -579,9 +621,12 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/imports.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/imports-open-wip.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: supabase/migrations/20261008040000_books_opening_inventory.sql
+- AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/warranty-enrollment.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/warranty-operations.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: tests/warranty-enrollment.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: proxy.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: docs/mobile-api-v1.openapi.yaml
+- AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/auth-rate-limit.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/runtime.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: app/api/jobs/process-outbox/route.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-job-leases-db.test.js
@@ -590,6 +635,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release-actor-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-drawing-fences-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-core-write-fences-db.test.js
+- AUDIT-20261009-EP12-EP14: source changed since proof: tests/agreement-quote-concurrency.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/scenario-runner.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/scenarios/home-01.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/catalog.cjs
@@ -613,7 +659,10 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/spec-inventory-aging.test.js
 - VERIFY-20261010: source changed since proof: tests/agreement-creation-db.test.js
 - VERIFY-20261010: source changed since proof: tests/reservation-creation-preparation.test.js
+- VERIFY-20261010: source changed since proof: tests/agreement-creation-service.test.js
 - VERIFY-20261010: source changed since proof: tests/purchase-agreement-pricing.test.js
+- VERIFY-20261010: source changed since proof: tests/closings.test.js
+- VERIFY-20261010: source changed since proof: tests/closing-readiness.test.js
 - VERIFY-20261010: source changed since proof: tests/closings-db.test.js
 - VERIFY-20261010: source changed since proof: tests/selection-cutoffs.test.js
 - VERIFY-20261010: source changed since proof: tests/imports-open-wip.test.js
@@ -630,12 +679,15 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/search-picker.test.js
 - VERIFY-20261010: source changed since proof: tests/purchasing-page.test.js
 - VERIFY-20261010: source changed since proof: tests/variance-analysis.test.js
+- VERIFY-20261010: source changed since proof: tests/inspection-lifecycle-workbench.test.js
 - VERIFY-20261010: source changed since proof: tests/inspection-completion-handoff.test.js
 - VERIFY-20261010: source changed since proof: tests/inspections.test.js
 - VERIFY-20261010: source changed since proof: tests/closeout-preparation.test.js
 - VERIFY-20261010: source changed since proof: tests/books-legal-entities-db.test.js
+- VERIFY-20261010: source changed since proof: tests/books-statement-correctness.test.js
 - VERIFY-20261010: source changed since proof: tests/books-historical-aging.test.js
 - VERIFY-20261010: source changed since proof: tests/books-close-control-integrity.test.js
 - VERIFY-20261010: source changed since proof: tests/books-close-review.test.js
+- VERIFY-20261010: source changed since proof: tests/warranty-enrollment.test.js
 - VERIFY-20261010: source changed since proof: tests/warranty-program-usage.test.js
 
