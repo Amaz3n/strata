@@ -455,8 +455,9 @@ Organization → Security). Arc signs everyone in itself; there is no SSO.
   applies to their whole account.
 - **What happens.** A member with no factor is sent to set one up before any
   page opens, and API calls answer 403 `mfa_enrollment_required`. A member with
-  a factor enters a code at every sign-in. Members already signed in fall under
-  a newly enabled policy within 10 minutes (the cached "no policy" proof).
+  a factor enters a code at every sign-in. The admin who turns the rule on is
+  held to it on their next page; other members already signed in fall under it
+  within 10 minutes (their cached "no policy" proof).
 - **Failure.** A wrong code is refused and the code page stays. If Arc cannot
   read the factor or the policy, the request is refused with a retry message;
   it never passes unchallenged.

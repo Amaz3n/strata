@@ -13,7 +13,7 @@ const digest = (x) => createHash("sha256").update(x).digest("hex");
 const acceptanceProjectId = (instanceId) =>
   "arc-books-acceptance-" + instanceId.replace(/-/g, "").slice(0, 12);
 function configuration(projectId, port) {
-  return `project_id = "${projectId}"\n[api]\nenabled=false\nport=${port + 2}\n[db]\nport=${port}\nshadow_port=${port + 1}\nmajor_version=17\n[db.migrations]\nenabled=true\nschema_paths=[]\n[db.seed]\nenabled=false\nsql_paths=[]\n[auth]\nenabled=true\nsite_url="http://127.0.0.1:3000"\nenable_signup=false\n[storage]\nenabled=true\n[realtime]\nenabled=false\n[studio]\nenabled=false\n[inbucket]\nenabled=false\n[analytics]\nenabled=false\n`;
+  return `project_id = "${projectId}"\n[api]\nenabled=false\nport=${port + 2}\n[db]\nport=${port}\nshadow_port=${port + 1}\nmajor_version=17\n[db.migrations]\nenabled=true\nschema_paths=[]\n[db.seed]\nenabled=false\nsql_paths=[]\n[auth]\nenabled=true\nsite_url="http://127.0.0.1:3000"\nenable_signup=false\n[auth.mfa.totp]\nenroll_enabled=true\nverify_enabled=true\n[storage]\nenabled=true\n[realtime]\nenabled=false\n[studio]\nenabled=false\n[inbucket]\nenabled=false\n[analytics]\nenabled=false\n`;
 }
 // A baseline route replays only the listed migrations, e.g. the files the
 // production ledger records, so an upgrade can start from that schema.

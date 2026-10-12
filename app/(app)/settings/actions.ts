@@ -3,6 +3,8 @@
 import { getOrganizationSettings, updateOrganizationSettings, type OrganizationSettingsInput } from "@/lib/services/organization-settings"
 
 import { revalidatePath } from "next/cache"
+import { cookies } from "next/headers"
+import { ORG_MFA_POLICY_COOKIE } from "@/lib/auth/mfa-gate-cookie"
 import { z } from "zod"
 
 import { requireOrgMembership } from '@/lib/auth/context'
@@ -937,6 +939,9 @@ export async function getOrgSecurityPolicyAction() {
 export async function setOrgRequireMfaAction(input: SetOrgRequireMfaInput) {
   return run(async () => {
     const policy = await setOrgRequireMfa(input)
+    // The session that turns the rule on holds a cached "no policy" proof; drop
+    // it so the admin is held to the rule on their very next page, not 10 minutes on.
+    if (policy.requireMfa) (await cookies()).delete(ORG_MFA_POLICY_COOKIE)
     revalidatePath("/settings")
     return policy
   })
