@@ -55,6 +55,7 @@ function signing({ contractPatch = {}, contactPatch = {}, missingContact = null,
       }
       if (name === '@/lib/esign/unified-contracts') return { buildUnifiedSigningUrl: () => 'https://example.test/sign' }
       if (name === '@/lib/esign/signing-tokens') return { createRecoverableSigningToken: () => 'test-recoverable-token' }
+      if (name === '@/lib/financials/purchase-agreement-pricing') return require('../lib/financials/purchase-agreement-pricing')
       if (name === '@/lib/services/signature-delivery') return { sendSignerRequestEmail: async input => { captured.emails.push(input); if (!emailAccepted) throw new Error('Signature email delivery failed') } }
       return {}
     },
