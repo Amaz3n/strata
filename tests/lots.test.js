@@ -185,9 +185,53 @@ describe("assignPlanToLot", () => {
     assert.deepEqual(await found(undefined), ["A100", "B200", "B300"])
   })
 
+  test("a plan whose footprint does not fit the lot is refused, and a recorded fit override lets it stand", async () => {
+    const tooWide = () => {
+      const service = planHarness({ lot: { dimensions: { width_ft: 40, depth_ft: 120, side_setback_ft: 5 } } })
+      service.db.house_plans = [{ id: PLAN, org_id: ORG, footprint_width_ft: 34, footprint_depth_ft: 60, drawn_swing: null }]
+      return service
+    }
+    const refused = tooWide()
+    await assert.rejects(assign(refused), /does not fit the lot: The plan is 34 ft wide; the lot builds 30 ft/)
+    assert.deepEqual(refused.writes(), [])
+
+    const overridden = tooWide()
+    overridden.db.lot_fit_overrides = [{
+      id: id(63), org_id: ORG, lot_id: LOT, house_plan_id: PLAN, house_plan_elevation_id: ELEVATION, swing: null,
+      violations: [{ code: "footprint_too_wide" }], reason: "Variance on file", evidence_file_id: id(64),
+      approved_by: id(900002), approved_at: "2026-10-01T00:00:00Z", revoked_at: null,
+    }]
+    await assign(overridden)
+    assert.equal(overridden.db.lots[0].house_plan_version_id, VERSION)
+  })
+
+  test("a garage handing the lot does not take is refused", async () => {
+    const service = planHarness({ lot: { swing: "left" } })
+    await assert.rejects(service.run(() => assignPlanToLot(LOT, { versionId: VERSION, elevationId: ELEVATION, swing: "right" })), /takes only a left garage/)
+    assert.deepEqual(service.writes(), [])
+  })
+
   test("assigning a plan takes plan authority as well as lot authority", async () => {
     const clerk = harness({ permissions: ["lot.write", "community.read"] })
     await assert.rejects(assign(clerk), /Missing permission/)
+  })
+})
+
+describe("updateLot", () => {
+  test("narrowing a lot under a pinned home flags the home that stops fitting, and leaves it pinned", async () => {
+    const PLAN = id(60)
+    const service = harness()
+    Object.assign(service.db.lots[0], { house_plan_id: PLAN, house_plan_elevation_id: null, dimensions: { width_ft: 50, depth_ft: 120 } })
+    service.db.house_plans = [{ id: PLAN, org_id: ORG, footprint_width_ft: 44, footprint_depth_ft: 60, drawn_swing: null }]
+
+    const widened = await service.run(() => updateLot(LOT, { dimensions: { widthFt: 50, depthFt: 120, sideSetbackFt: 3 } }))
+    assert.equal(widened.fitRefusal, null)
+
+    const narrowed = await service.run(() => updateLot(LOT, { dimensions: { widthFt: 50, depthFt: 120, sideSetbackFt: 5 } }))
+    assert.match(narrowed.fitRefusal, /44 ft wide; the lot builds 40 ft/)
+    assert.equal(service.db.lots[0].house_plan_id, PLAN)
+    assert.deepEqual(service.db.lots[0].dimensions, { width_ft: 50, depth_ft: 120, side_setback_ft: 5 })
+    assert.deepEqual(service.events.map((event) => event.eventType), ["lot.updated", "lot.updated", "lot.fit_violated"])
   })
 })
 

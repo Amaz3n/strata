@@ -33,6 +33,21 @@ export function ProductionHouseOverview({ data }: { data: ProductionHouseOvervie
           {i.planId ? <Link className="font-medium hover:underline" href={`/plans/${i.planId}`}>{i.planName}</Link> : <span>{i.planName}</span>}
           <span>{[i.elevation, i.swing].filter(Boolean).join(" · ") || "Standard elevation"}</span>
           <span>Plan v{i.version ?? "—"}</span>
+          {data.productRevisions ? (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">
+                {data.productRevisions.stage === "release" ? "Released at" : "Priced at"} {data.productRevisions.summary}
+              </span>
+              {data.productRevisions.changes.length > 0 ? (
+                <span
+                  className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-warning"
+                  title={data.productRevisions.changes.join("\n")}
+                >
+                  {data.productRevisions.changes.length} changed since
+                </span>
+              ) : null}
+            </span>
+          ) : null}
           <span>Released {i.startReleasedDate ?? "—"}</span>
           <span>Closing {i.projectedClosing ?? "—"}</span>
         </div>

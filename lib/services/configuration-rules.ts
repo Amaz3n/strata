@@ -1,3 +1,4 @@
+import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
 import { resolveOptionPricing } from "@/lib/services/option-catalog"
 import { z } from "zod"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -9,7 +10,6 @@ import { recordAudit } from "@/lib/services/audit"
 import { ConfigurationViolationError, evaluateConfigurationRules, type ConfigurationRule, type ConfigurationViolation } from "@/lib/selections/configuration-rules"
 import { CONFIGURATION_LOCK_REASONS, suggestConfigurationFixes, type ConfigurationFix, type ConfigurationLockReason } from "@/lib/selections/configuration-fixes"
 import { agreementLocksStructuralOptions } from "@/lib/selections/selection-variance"
-import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
 import { agreementConfigurationSchema } from "@/lib/validation/community-sales"
 
 export const CONFIGURATION_RULES_FLAG = "production_configuration_rules"
@@ -149,11 +149,8 @@ export async function assertProjectConfiguration(orgId: string, projectId: strin
   }
   const optionIds = [...new Set([...choices.values()].filter((id): id is string => Boolean(id)))]
   if (!optionIds.length) return
-  const { data: lot, error: lotError } = await supabase.from("lots").select("community_id,house_plan_version_id")
-    .eq("org_id", orgId).eq("project_id", projectId).maybeSingle()
-  if (lotError) throw new Error(`Unable to verify home configuration scope: ${lotError.message}`)
-  const resolved = await resolveOptionPricing({ orgId, items: optionIds.map((optionId) => ({ optionId })),
-    communityId: lot?.community_id ?? undefined, requirePlanVersion: Boolean(lot?.community_id), housePlanVersionId: lot?.house_plan_version_id ?? undefined })
+  const home = await readHomePricingScope(supabase, orgId, projectId)
+  const resolved = await resolveOptionPricing({ orgId, items: optionIds.map((optionId) => ({ optionId })), ...home.pricing })
   if (resolved.length !== optionIds.length) throw new Error("Unable to resolve the complete home configuration")
   const byRequestedId = new Map(optionIds.map((id, index) => [id, resolved[index]]))
   const changed = new Set(changes.map((change) => change.selectionId))
@@ -207,7 +204,7 @@ export type ConfigurationIssues = { violations: ConfigurationViolation[]; fixes:
 
 const NO_ISSUES: ConfigurationIssues = { violations: [], fixes: [] }
 
-type CatalogScope = { communityId?: string; housePlanVersionId?: string }
+type CatalogScope = { communityId?: string; housePlanVersionId?: string; requirePlanVersion: boolean }
 type OptionRow = { id: string; name: string; parent_option_id: string | null; option_scope: string | null; category_id: string | null; community_id: string | null; is_archived: boolean; is_available: boolean }
 type OptionFact = { optionId: string; name: string; parentOptionId: string | null; categoryIds: string[]; priceCents: number; available: boolean; structural: boolean }
 
@@ -228,7 +225,7 @@ async function readOptions(orgId: string, column: "id" | "parent_option_id" | "c
 async function describeOptions(orgId: string, requestedIds: string[], scope: CatalogScope) {
   const requested = [...new Set(requestedIds)]
   if (!requested.length) return new Map<string, OptionFact>()
-  const pricing = await resolveOptionPricing({ orgId, items: requested.map((optionId) => ({ optionId })), ...scope, requirePlanVersion: Boolean(scope.communityId) })
+  const pricing = await resolveOptionPricing({ orgId, items: requested.map((optionId) => ({ optionId })), ...scope })
   const rows = new Map((await readOptions(orgId, "id", requested.map((id, index) => pricing[index]?.optionId ?? id))).map((row) => [row.id, row]))
   return new Map(requested.map((id, index): [string, OptionFact] => {
     const price = pricing[index]
@@ -299,19 +296,17 @@ export async function getHomeConfigurationFixes(orgId: string, projectId: string
   const changes = homeChangesSchema.parse(options.changes ?? [])
   if (!await enabled(orgId)) return NO_ISSUES
   const supabase = createServiceSupabaseClient()
-  const [rows, lot, groups, agreements, project, org] = await Promise.all([
+  const [rows, home, groups, agreements] = await Promise.all([
     readAllRowsById<{ id: string; category_id: string | null; selected_option_id: string | null; status: string | null; group_id: string | null; locked_at: string | null }>((cursor, take) => {
       let query = supabase.from("project_selections").select("id,category_id,selected_option_id,status,group_id,locked_at").eq("org_id", orgId).eq("project_id", projectId).order("id").limit(take)
       if (cursor) query = query.gt("id", cursor)
       return query
     }, { cap: 10000, pageSize: 500, label: "Unable to load home configuration" }),
-    supabase.from("lots").select("community_id,house_plan_version_id").eq("org_id", orgId).eq("project_id", projectId).maybeSingle(),
+    readHomePricingScope(supabase, orgId, projectId),
     supabase.from("project_selection_groups").select("group_id,status,cutoff_date").eq("org_id", orgId).eq("project_id", projectId).limit(500),
     supabase.from("contracts").select("id,status,signed_at").eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").limit(20),
-    supabase.from("projects").select("property_type").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
-    supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
   ])
-  for (const failure of [lot.error, groups.error, agreements.error, project.error, org.error]) {
+  for (const failure of [groups.error, agreements.error]) {
     if (failure) throw new Error(`Unable to load home configuration: ${failure.message}`)
   }
   const choices = new Map(rows.map((row) => [row.id, row.selected_option_id]))
@@ -319,7 +314,7 @@ export async function getHomeConfigurationFixes(orgId: string, projectId: string
     if (!choices.has(change.selectionId)) throw new Error("Configuration change does not belong to this home")
     choices.set(change.selectionId, change.optionId)
   }
-  const scope = { communityId: lot.data?.community_id ?? undefined, housePlanVersionId: lot.data?.house_plan_version_id ?? undefined }
+  const scope = home.pricing
   const described = await describeOptions(orgId, [...choices.values()].filter((id): id is string => Boolean(id)), scope)
   const slots = rows.map((row) => {
     const chosen = choices.get(row.id)
@@ -341,8 +336,7 @@ export async function getHomeConfigurationFixes(orgId: string, projectId: string
       : null
     if (lock) bySelectionId[row.id] = lock
   }
-  const production = isProductionProjectPosture(getProjectPosture(project.data?.property_type, normalizeProductTier(org.data?.product_tier)))
-  const agreementBinding = production && (agreements.data ?? []).some((agreement) => agreementLocksStructuralOptions(agreement))
+  const agreementBinding = home.production && (agreements.data ?? []).some((agreement) => agreementLocksStructuralOptions(agreement))
   const facts = await fixFacts(orgId, scope, current, violations, false)
   return {
     violations,
@@ -400,7 +394,7 @@ export async function getSalesConfigurationFixes(raw: unknown): Promise<Configur
   await assertCommunityAccess(context, lot.community_id, "Lot not found")
   const housePlanVersionId = input.housePlanVersionId ?? lot.house_plan_version_id
   if (!housePlanVersionId || !await enabled(context.orgId)) return NO_ISSUES
-  const scope = { communityId: lot.community_id, housePlanVersionId }
+  const scope = { communityId: lot.community_id, housePlanVersionId, requirePlanVersion: true }
   const supabase = createServiceSupabaseClient()
   const packageIds = [...new Set(input.optionItems.flatMap((item) => (item.packageId ? [item.packageId] : [])))]
   const [members, packages, packagePrices] = packageIds.length

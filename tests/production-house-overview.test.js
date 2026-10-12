@@ -40,3 +40,37 @@ test("a home's margin reads the approved budget and every posted cost", async ()
   assert.equal(overview.money.budgetCents, 400_000_00)
   assert.equal(overview.money.actualCostCents, 30_000_00)
 })
+
+test("a released home reads the revisions it was built against and what has changed since", async () => {
+  const VERSION = id(30)
+  const ELEVATION = id(31)
+  const PATIO = id(32)
+  const recorded = {
+    planVersion: { id: VERSION, number: 3 },
+    elevation: { id: ELEVATION, code: "B", revision: 2 },
+    options: [{ id: PATIO, revision: 1 }],
+    packages: [],
+  }
+  const service = createServiceHarness({
+    tables: {
+      projects: [{ id: HOME, org_id: ORG, name: "Maple Lot 4", location: {}, start_date: null, end_date: null, superintendent: null, client: null }],
+      lots: [{ id: id(33), org_id: ORG, project_id: HOME, house_plan_version_id: VERSION, house_plan_elevation_id: ELEVATION, version: { version_number: 3 } }],
+      house_plan_elevations: [{ id: ELEVATION, org_id: ORG, code: "B", revision: 3 }],
+      selection_options: [{ id: PATIO, org_id: ORG, revision: 1 }],
+      selection_packages: [],
+      home_product_revisions: [{
+        id: id(34), org_id: ORG, project_id: HOME, contract_id: null, stage: "release", revisions: recorded,
+        as_of: "2026-09-01T00:00:00Z", captured_at: "2026-09-01T00:00:00Z",
+      }],
+    },
+    permissions: ["project.read"],
+  })
+
+  const overview = await service.run(() => getProductionHouseOverview(HOME))
+
+  assert.deepEqual(overview.productRevisions, {
+    stage: "release",
+    summary: "plan v3 · elevation B r2 · 1 option",
+    changes: ["Elevation r2 → r3"],
+  })
+})

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { cache } from "react"
 
+import { readSetbacks, type Setbacks } from "@/lib/land/lot-dimensions"
 import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { assertLotStatusTransition, LOT_STATUSES } from "@/lib/land/lot-lifecycle"
 import { readAllRows } from "@/lib/land/paging"
@@ -67,6 +68,8 @@ export interface CommunityDetailDTO extends CommunityListItemDTO {
   address: string | null
   postalCode: string | null
   description: string | null
+  /** Default setbacks; a lot's own value wins over each one. */
+  setbacks: Setbacks
   phases: CommunityPhaseDTO[]
   takedowns: LotTakedownDTO[]
 }
@@ -84,6 +87,7 @@ type CommunityRow = {
   description: string | null
   planned_lot_count: number | null
   target_absorption_per_month: number | string | null
+  setbacks?: Record<string, unknown> | null
   division?: { name?: string | null } | Array<{ name?: string | null }> | null
 }
 
@@ -113,7 +117,7 @@ type TakedownRow = {
 }
 
 const COMMUNITY_SELECT =
-  "id, name, code, status, division_id, address, city, state, postal_code, description, planned_lot_count, target_absorption_per_month, division:divisions(name)"
+  "id, name, code, status, division_id, address, city, state, postal_code, description, planned_lot_count, target_absorption_per_month, setbacks, division:divisions(name)"
 /**
  * A ceiling on the community list, not a page size — `listCommunities` reads to
  * exhaustion. Even a large production builder runs tens of communities, so this
@@ -456,6 +460,7 @@ export const getCommunity = cache(async function getCommunity(
     address: row.address,
     postalCode: row.postal_code,
     description: row.description,
+    setbacks: readSetbacks(row.setbacks),
     phases: (phasesResult.data ?? []).map((phase) => mapPhase(phase as PhaseRow)),
     takedowns: takedownRows.map((takedown) => mapTakedown(takedown, linkedCounts.get(takedown.id) ?? 0)),
   }

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
 import { toast } from "sonner"
 
-import { archiveCommunityAction, updateCommunityAction } from "@/app/(app)/communities/actions"
+import { archiveCommunityAction, setCommunitySetbacksAction, updateCommunityAction } from "@/app/(app)/communities/actions"
 import { RowControl, SettingsGroup, SettingsField } from "@/components/settings/settings-section"
 import {
   AlertDialog,
@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
+import type { Setbacks } from "@/lib/land/lot-dimensions"
 import type { CommunityDetailDTO } from "@/lib/services/communities"
 import type { DivisionDTO } from "@/lib/services/divisions"
 
@@ -33,7 +34,25 @@ const STATUS_LABEL: Record<CommunityDetailDTO["status"], string> = {
   closed: "Closed",
 }
 
-type EditKey = "identity" | "targets" | "location"
+type EditKey = "identity" | "targets" | "location" | "setbacks"
+
+const SETBACK_FIELDS: Array<{ key: keyof Setbacks; label: string }> = [
+  { key: "frontSetbackFt", label: "Front" },
+  { key: "rearSetbackFt", label: "Rear" },
+  { key: "sideSetbackFt", label: "Side" },
+  { key: "cornerSideSetbackFt", label: "Corner side" },
+]
+
+function feetText(value: number | undefined) {
+  return value != null ? String(value) : ""
+}
+
+function setbackSummary(setbacks: Setbacks) {
+  const parts = SETBACK_FIELDS.flatMap((field) =>
+    setbacks[field.key] != null ? [`${field.label} ${setbacks[field.key]} ft`] : [],
+  )
+  return parts.length > 0 ? parts.join(" · ") : "Not set"
+}
 
 /**
  * Community settings in the same language as `/settings`: microlabel groups,
@@ -69,6 +88,16 @@ export function CommunitySettingsForm({
   const [state, setState] = useState(community.state ?? "")
   const [postalCode, setPostalCode] = useState(community.postalCode ?? "")
   const [description, setDescription] = useState(community.description ?? "")
+  const [setbacks, setSetbacks] = useState<Record<keyof Setbacks, string>>(() => ({
+    frontSetbackFt: feetText(community.setbacks.frontSetbackFt),
+    rearSetbackFt: feetText(community.setbacks.rearSetbackFt),
+    sideSetbackFt: feetText(community.setbacks.sideSetbackFt),
+    cornerSideSetbackFt: feetText(community.setbacks.cornerSideSetbackFt),
+  }))
+  const setbacksValid = SETBACK_FIELDS.every((field) => {
+    const raw = setbacks[field.key].trim()
+    return raw === "" || (Number.isFinite(Number(raw)) && Number(raw) >= 0)
+  })
 
   const activeDivisions = divisions.filter((division) => !division.archived)
   const divisionName =
@@ -100,6 +129,31 @@ export function CommunitySettingsForm({
         router.refresh()
       } catch (error) {
         toast.error("Unable to save community", { description: (error as Error).message })
+      }
+    })
+  }
+
+  function saveSetbacks() {
+    startTransition(async () => {
+      try {
+        const next = Object.fromEntries(
+          SETBACK_FIELDS.flatMap((field) => {
+            const raw = setbacks[field.key].trim()
+            return raw === "" ? [] : [[field.key, Number(raw)]]
+          }),
+        )
+        const result = unwrapAction(await setCommunitySetbacksAction(community.id, next))
+        if (result.homesNoLongerFitting > 0) {
+          toast.warning("Setbacks saved", {
+            description: `${result.homesNoLongerFitting} pinned ${result.homesNoLongerFitting === 1 ? "home no longer fits its lot" : "homes no longer fit their lots"}. Each is flagged on its lot; nothing was unpinned.`,
+          })
+        } else {
+          toast.success("Setbacks saved")
+        }
+        setEditing(null)
+        router.refresh()
+      } catch (error) {
+        toast.error("Unable to save the setbacks", { description: (error as Error).message })
       }
     })
   }
@@ -167,6 +221,17 @@ export function CommunitySettingsForm({
             {community.description ? (
               <p className="mt-1 max-w-xl text-xs text-muted-foreground">{community.description}</p>
             ) : null}
+          </RowControl>
+        </SettingsField>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Lot fit"
+        description="Default setbacks every lot is measured against when a plan is pinned, sold or started. A lot can set its own."
+      >
+        <SettingsField label="Setbacks" hint="Feet from each property line. A corner lot takes the corner-side setback on its street side.">
+          <RowControl canManage={canWrite} onEdit={() => setEditing("setbacks")}>
+            <p className="text-sm tabular-nums">{setbackSummary(community.setbacks)}</p>
           </RowControl>
         </SettingsField>
       </SettingsGroup>
@@ -295,6 +360,39 @@ export function CommunitySettingsForm({
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
             <Button disabled={isPending} onClick={() => save(() => setEditing(null))}>
+              {isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editing === "setbacks"} onOpenChange={(open) => { if (!open) setEditing(null) }}>
+        <DialogContent className="rounded-none sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Default setbacks</DialogTitle>
+            <DialogDescription>
+              Homes already pinned in this community are re-checked when you save. One that no longer fits is flagged on
+              its lot, not unpinned.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            {SETBACK_FIELDS.map((field) => (
+              <div key={field.key} className="grid gap-1.5">
+                <label htmlFor={`settings-setback-${field.key}`} className="text-sm font-medium">{field.label} (ft)</label>
+                <Input
+                  id={`settings-setback-${field.key}`}
+                  inputMode="decimal"
+                  className="tabular-nums"
+                  value={setbacks[field.key]}
+                  onChange={(event) => setSetbacks((current) => ({ ...current, [field.key]: event.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+          {setbacksValid ? null : <p role="alert" className="text-xs text-destructive">Setbacks are feet, zero or more.</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button disabled={!setbacksValid || isPending} onClick={saveSetbacks}>
               {isPending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>

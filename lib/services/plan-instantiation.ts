@@ -21,6 +21,7 @@ import { createBudget } from "@/lib/services/budgets";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { createInspectionFromSnapshot } from "@/lib/services/inspections";
+import { checkLotFits } from "@/lib/services/lot-fit";
 import { requirePermission } from "@/lib/services/permissions";
 import { isPlanOffered, offeringOverrideFor, MIN_OFFERING_OVERRIDE_REASON_LENGTH, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering";
 import { applyScheduleTemplateSnapshot } from "@/lib/services/schedule";
@@ -436,7 +437,7 @@ async function loadInstantiationContext(
         .maybeSingle(),
       context.supabase
         .from("lots")
-        .select("id, community_id, project_id, house_plan_version_id, swing, metadata")
+        .select("id, community_id, project_id, house_plan_version_id, swing, dimensions, metadata")
         .eq("org_id", context.orgId)
         .eq("id", input.lotId)
         .maybeSingle(),
@@ -579,6 +580,26 @@ async function loadInstantiationContext(
         PLAN_OFFERING_REFUSAL,
       );
   }
+  const fit = (
+    await checkLotFits(context, [
+      {
+        key: lotResult.data.id,
+        lotId: lotResult.data.id,
+        communityId,
+        dimensions: lotResult.data.dimensions,
+        lotSwing: lotResult.data.swing ?? "either",
+        planId: versionResult.data.house_plan_id,
+        elevationId: input.elevationId ?? null,
+        swing: input.swing ?? null,
+      },
+    ])
+  ).get(lotResult.data.id);
+  if (fit?.override)
+    warnings.push(
+      `The home does not fit the lot; building under a recorded fit override (${fit.override.reason}).`,
+    );
+  else if (fit?.refusal && input.dryRun) warnings.push(fit.refusal);
+  else if (fit?.refusal) throw new Error(fit.refusal);
   const orgCostCodesDefault = await getOrgCostCodesEnabled(context.supabase, context.orgId);
   return {
     ...context,

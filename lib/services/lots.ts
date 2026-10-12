@@ -16,6 +16,7 @@ import { readAllRows } from "@/lib/land/paging"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { isPlanOffered, offeringOverrideFor, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering"
 import { resolveDivisionScope } from "@/lib/land/scope"
+import { checkLotFits, reevaluatePinnedLotFits, type LotFitVerdict } from "@/lib/services/lot-fit"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { requireCommunityScope } from "@/lib/services/communities"
@@ -393,7 +394,13 @@ export async function createLots(
   return { created: ids.length }
 }
 
-export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgId?: string): Promise<LotDTO> {
+/**
+ * Edit a lot's land facts. A change to what the house is judged against — its
+ * dimensions, setbacks or the handing it takes — re-judges a home pinned to it;
+ * one that no longer fits is recorded and returned as `fitRefusal`, never
+ * silently unpinned.
+ */
+export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgId?: string): Promise<LotDTO & { fitRefusal: string | null }> {
   const parsed = lotUpdateSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
@@ -404,7 +411,9 @@ export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgI
   const { data, error } = await context.supabase.from("lots").update(lotPayload(parsed, before.dimensions)).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to update lot: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.updated", entityId: id, action: "update", before, after: data, payload: { community_id: before.community_id, lot_number: data.lot_number } })
-  return mapLot(data as LotRow)
+  const fitInputsChanged = parsed.dimensions !== undefined || parsed.swing !== undefined
+  const refused = fitInputsChanged ? await reevaluatePinnedLotFits(context, [id]) : new Map<string, string>()
+  return { ...mapLot(data as LotRow), fitRefusal: refused.get(id) ?? null }
 }
 
 export async function bulkUpdateLots(
@@ -462,7 +471,7 @@ export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInp
   const context = await requireOrgContext(orgId)
   await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
   const { data: lot, error: lotError } = await context.supabase.from("lots")
-    .select("id, community_id, status, project_id, metadata, house_plan_version_id, house_plan_elevation_id, updated_at")
+    .select("id, community_id, status, project_id, metadata, dimensions, swing, house_plan_version_id, house_plan_elevation_id, updated_at")
     .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
   if (lotError || !lot) throw new Error("Lot not found")
   await requireCommunityScope(lot.community_id, context)
@@ -492,6 +501,11 @@ export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInp
   if (!offered && !offeringOverrideFor(lot.metadata, version.data.house_plan_id)) {
     throw new Error(PLAN_OFFERING_REFUSAL)
   }
+  const fit = (await checkLotFits(context, [{
+    key: lot.id, lotId: lot.id, communityId: lot.community_id, dimensions: lot.dimensions, lotSwing: lot.swing ?? "either",
+    planId: version.data.house_plan_id, elevationId: elevation.data.id, swing: parsed.swing ?? null,
+  }])).get(lot.id)
+  if (fit?.refusal) throw new Error(fit.refusal)
 
   const { data, error } = await context.supabase.from("lots")
     .update({
@@ -519,7 +533,15 @@ export interface PlanAssignmentOption {
   name: string
   /** Released versions, newest first. */
   versions: Array<{ id: string; versionNumber: number }>
-  elevations: Array<{ id: string; code: string; name: string | null; swingApplicable: boolean; offered: boolean }>
+  elevations: Array<{
+    id: string
+    code: string
+    name: string | null
+    swingApplicable: boolean
+    offered: boolean
+    /** How this elevation fits the lot in its current handing, when a lot was named. */
+    fit: LotFitVerdict | null
+  }>
 }
 
 /** More plans than this and the picker would be a search problem, not a select. */
@@ -529,16 +551,19 @@ export const PLAN_ASSIGNMENT_OPTION_CAP = 200
  * Every plan a lot could be pinned to, offered in its community or not. The
  * unoffered ones are listed on purpose: the refusal and its override path are
  * the point of showing them, so the answer per elevation is computed with the
- * same `isPlanOffered` the assignment itself uses.
+ * same `isPlanOffered` the assignment itself uses. Named a lot, each elevation
+ * also carries the lot fit verdict the assignment will apply.
  */
 export async function listPlanAssignmentOptions(
   communityId: string,
-  input: { search?: string } = {},
+  input: { search?: string; lotId?: string } = {},
   orgId?: string,
 ): Promise<{ plans: PlanAssignmentOption[]; truncated: boolean }> {
   const context = await requireOrgContext(orgId)
   await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
   await requireCommunityScope(communityId, context)
+  const lot = input.lotId ? await getLotById(context.supabase, context.orgId, input.lotId) : null
+  if (lot && lot.community_id !== communityId) throw new Error("Lot not found")
   let planQuery = context.supabase.from("house_plans")
     .select("id, code, name")
     .eq("org_id", context.orgId).neq("status", "retired")
@@ -561,6 +586,12 @@ export async function listPlanAssignmentOptions(
     if (result.error) throw new Error(`Failed to load plan options: ${result.error.message}`)
   }
   const today = new Date().toISOString().slice(0, 10)
+  const fits = lot
+    ? await checkLotFits(context, (elevations.data ?? []).map((elevation) => ({
+      key: elevation.id, lotId: lot.id, communityId, dimensions: lot.dimensions, lotSwing: lot.swing,
+      planId: elevation.house_plan_id, elevationId: elevation.id, swing: null,
+    })))
+    : null
   const options = shown.flatMap((plan): PlanAssignmentOption[] => {
     const planVersions = (versions.data ?? []).filter((version) => version.house_plan_id === plan.id)
     const planElevations = (elevations.data ?? []).filter((elevation) => elevation.house_plan_id === plan.id)
@@ -577,6 +608,7 @@ export async function listPlanAssignmentOptions(
         name: elevation.name,
         swingApplicable: Boolean(elevation.swing_applicable),
         offered: isPlanOffered(rows, { elevationId: elevation.id, onDate: today }),
+        fit: fits?.get(elevation.id) ?? null,
       })),
     }]
   })

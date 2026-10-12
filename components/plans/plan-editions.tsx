@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { unwrapAction } from "@/lib/action-result"
+import { describeReleasedElevations } from "@/lib/plans/product-revisions"
 import type { HousePlanDto, HousePlanVersionDto, PlanVersionDriftDto } from "@/lib/services/house-plans"
 import { cn } from "@/lib/utils"
 
@@ -74,6 +75,7 @@ export function PlanEditions({
         {ordered.map((version, index) => {
           const isSelected = version.id === selectedId
           const versionDrift = drift.find((entry) => entry.version_id === version.id) ?? null
+          const releasedElevations = describeReleasedElevations(version.bundle_snapshot)
           return (
             <div key={version.id} className="flex items-center">
               {index > 0 ? <span aria-hidden className="h-px w-6 shrink-0 bg-border" /> : null}
@@ -81,6 +83,7 @@ export function PlanEditions({
                 type="button"
                 onClick={() => onSelect(version.id)}
                 aria-current={isSelected ? "true" : undefined}
+                title={releasedElevations ? `Released with elevations ${releasedElevations}` : undefined}
                 className={cn(
                   "relative shrink-0 border-b-2 px-3 py-1.5 text-left transition-colors",
                   isSelected ? "border-primary" : "border-transparent hover:bg-muted/50",

@@ -4,6 +4,7 @@ import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { confirmSelectionGroup, listProjectSelections, listSelectionCategories, listSelectionOptions, selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { getHomeConfigurationFixes, resolveHomeConfigurationFix } from "@/lib/services/configuration-rules"
+import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
 import { resolveOptionPricing } from "@/lib/services/option-catalog"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -38,23 +39,16 @@ export async function loadSelectionsAction(token: string) {
   )
 
   const supabase = createServiceSupabaseClient()
-  const { data: lot } = await supabase
-    .from("lots")
-    .select("community_id, house_plan_version_id")
-    .eq("org_id", access.org_id)
-    .eq("project_id", access.project_id)
-    .maybeSingle()
+  const { pricing: scope } = await readHomePricingScope(supabase, access.org_id, access.project_id)
   const effectiveOptionsByCategory = Object.fromEntries(
     await Promise.all(Object.entries(optionsByCategory).map(async ([categoryId, options]) => {
-      const visible = options.filter((option) => option.community_id == null || option.community_id === lot?.community_id)
-      const overridden = new Set(visible.filter((option) => option.community_id === lot?.community_id && option.parent_option_id).map((option) => option.parent_option_id))
-      const effective = visible.filter((option) => option.community_id === lot?.community_id || !overridden.has(option.id))
+      const visible = options.filter((option) => option.community_id == null || option.community_id === scope.communityId)
+      const overridden = new Set(visible.filter((option) => option.community_id === scope.communityId && option.parent_option_id).map((option) => option.parent_option_id))
+      const effective = visible.filter((option) => option.community_id === scope.communityId || !overridden.has(option.id))
       const pricing = effective.length ? await resolveOptionPricing({
         orgId: access.org_id,
         items: effective.map((option) => ({ optionId: option.parent_option_id ?? option.id })),
-        housePlanVersionId: lot?.house_plan_version_id ?? undefined,
-        communityId: lot?.community_id ?? undefined,
-        requirePlanVersion: Boolean(lot?.community_id),
+        ...scope,
       }) : []
       return [categoryId, effective.map((option, index) => ({
         ...option,
@@ -72,8 +66,8 @@ export async function loadSelectionsAction(token: string) {
     .eq("is_available", true)
     .order("sort_order")
     .limit(100)
-  packageQuery = lot?.community_id
-    ? packageQuery.or(`community_id.is.null,community_id.eq.${lot.community_id}`)
+  packageQuery = scope.communityId
+    ? packageQuery.or(`community_id.is.null,community_id.eq.${scope.communityId}`)
     : packageQuery.is("community_id", null)
   const { data: packageRows, error: packageError } = await packageQuery
   if (packageError) throw new Error(`Failed to load selection packages: ${packageError.message}`)
@@ -81,9 +75,7 @@ export async function loadSelectionsAction(token: string) {
     ? await resolveOptionPricing({
         orgId: access.org_id,
         items: packageRows.map((item) => ({ packageId: item.id })),
-        housePlanVersionId: lot?.house_plan_version_id ?? undefined,
-        communityId: lot?.community_id ?? undefined,
-        requirePlanVersion: Boolean(lot?.community_id),
+        ...scope,
       })
     : []
 

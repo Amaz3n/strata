@@ -98,16 +98,18 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
     ["report.read", "org.admin", "*"].includes(permission),
   )
 
-  const [canPinPlan, canInstantiatePlan, canReleasePlan, canWriteCommunity] = await Promise.all([
+  const [canPinPlan, canInstantiatePlan, canReleasePlan, canWriteCommunity, canOverrideFit] = await Promise.all([
     hasPermission("lot.write"),
     hasPermission("plan.instantiate"),
     hasPermission("plan.release"),
     hasPermission("community.write"),
+    hasPermission("lot.fit_override"),
   ])
   const lotCapabilities: LotCapabilities = {
     canAssignPlan: canPinPlan && canInstantiatePlan,
     canOverrideOffering: canReleasePlan,
     canRecordDeliveryException: canPinPlan && canWriteCommunity,
+    canOverrideFit,
   }
 
   const byMargin = query.sort === "margin" && canReadMoney

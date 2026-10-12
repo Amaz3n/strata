@@ -97,8 +97,17 @@ test("a dimensions edit replaces the measured fields and clears the ones left ou
   assert.deepEqual(storeLotDimensions({ width_ft: 52, depth_ft: 115 }, { widthFt: 55 }, "replace"), { width_ft: 55 })
 })
 
+test("a lot's corner flag and own setbacks ride in the same stored shape", () => {
+  const stored = storeLotDimensions({ city: "Austin" }, { widthFt: 60, corner: true, sideSetbackFt: 5, cornerSideSetbackFt: 10 }, "replace")
+  assert.deepEqual(stored, { city: "Austin", width_ft: 60, corner_lot: true, side_setback_ft: 5, corner_side_setback_ft: 10 })
+  assert.equal(readLotDimensions(stored).cornerSideSetbackFt, 10)
+})
+
 test("legacy camelCase dimensions are still read, and are removed on the next save", () => {
-  assert.deepEqual(readLotDimensions({ widthFt: 52, depthFt: 115 }), { widthFt: 52, depthFt: 115, acreage: undefined, irregular: undefined })
+  assert.deepEqual(readLotDimensions({ widthFt: 52, depthFt: 115 }), {
+    widthFt: 52, depthFt: 115, acreage: undefined, irregular: undefined, corner: undefined,
+    frontSetbackFt: undefined, rearSetbackFt: undefined, sideSetbackFt: undefined, cornerSideSetbackFt: undefined,
+  })
   assert.deepEqual(storeLotDimensions({ widthFt: 52, depthFt: 115 }, {}, "fill"), { width_ft: 52, depth_ft: 115 })
 })
 

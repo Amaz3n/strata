@@ -31,6 +31,7 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "community.read", label: "View communities and lots", category: "Land & Communities" },
   { key: "community.write", label: "Manage communities and takedowns", category: "Land & Communities" },
   { key: "lot.write", label: "Manage lots and lot status", category: "Land & Communities" },
+  { key: "lot.fit_override", label: "Override lot fit with evidence", category: "Land & Communities" },
   { key: "division.manage", label: "Manage divisions and scope", category: "Land & Communities" },
   { key: "project.create", label: "Create projects", category: "Project Access" },
   { key: "project.archive", label: "Archive projects", category: "Project Access" },

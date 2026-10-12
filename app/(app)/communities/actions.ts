@@ -23,6 +23,14 @@ import {
 import { listCommunityInventoryLotIds } from "@/lib/services/community-inventory"
 import { logCommunityTraffic } from "@/lib/services/community-traffic"
 import {
+  getLotFit,
+  listLotElevationRules,
+  recordLotFitOverride,
+  revokeLotFitOverride,
+  setCommunitySetbacks,
+  setLotAllowedElevations,
+} from "@/lib/services/lot-fit"
+import {
   assignPlanToLot,
   attachProjectToLot,
   bulkUpdateLots,
@@ -50,10 +58,13 @@ import {
   createLotsInputSchema,
   lotPlanAssignmentSchema,
   lotRangeSchema,
+  lotAllowedElevationsSchema,
   lotDeliveryExceptionSchema,
+  lotFitOverrideSchema,
   lotStatusSchema,
   lotStatusValueSchema,
   lotUpdateSchema,
+  setbacksSchema,
 } from "@/lib/validation/lots"
 
 async function run<T>(operation: () => Promise<T>, paths: string[] = []): Promise<ActionResult<T>> {
@@ -165,8 +176,37 @@ export async function recordLotDeliveryExceptionAction(id: string, communityId: 
   return run(() => recordLotDeliveryException(z.string().uuid().parse(id), lotDeliveryExceptionSchema.parse(input)), [`/communities/${communityId}`])
 }
 
-export async function listPlanAssignmentOptionsAction(communityId: string, search?: string) {
-  return run(() => listPlanAssignmentOptions(z.string().uuid().parse(communityId), { search: z.string().trim().max(60).optional().parse(search) }))
+export async function listPlanAssignmentOptionsAction(communityId: string, lotId: string, search?: string) {
+  return run(() =>
+    listPlanAssignmentOptions(z.string().uuid().parse(communityId), {
+      lotId: z.string().uuid().parse(lotId),
+      search: z.string().trim().max(60).optional().parse(search),
+    }),
+  )
+}
+
+export async function getLotFitAction(lotId: string) {
+  return run(() => getLotFit(z.string().uuid().parse(lotId)))
+}
+
+export async function recordLotFitOverrideAction(communityId: string, input: unknown) {
+  return run(() => recordLotFitOverride(lotFitOverrideSchema.parse(input)), [`/communities/${communityId}`])
+}
+
+export async function revokeLotFitOverrideAction(communityId: string, overrideId: string) {
+  return run(() => revokeLotFitOverride(z.string().uuid().parse(overrideId)), [`/communities/${communityId}`])
+}
+
+export async function listLotElevationRulesAction(lotId: string) {
+  return run(() => listLotElevationRules(z.string().uuid().parse(lotId)))
+}
+
+export async function setLotAllowedElevationsAction(lotId: string, communityId: string, input: unknown) {
+  return run(() => setLotAllowedElevations(z.string().uuid().parse(lotId), lotAllowedElevationsSchema.parse(input)), [`/communities/${communityId}`])
+}
+
+export async function setCommunitySetbacksAction(communityId: string, input: unknown) {
+  return run(() => setCommunitySetbacks(z.string().uuid().parse(communityId), setbacksSchema.parse(input)), [`/communities/${communityId}`])
 }
 
 export async function assignPlanToLotAction(lotId: string, communityId: string, input: unknown) {

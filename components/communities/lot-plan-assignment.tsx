@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { assignPlanToLotAction, listPlanAssignmentOptionsAction } from "@/app/(app)/communities/actions"
 import { recordPlanOfferingOverrideAction } from "@/app/(app)/projects/[id]/plan-instantiation-actions"
+import { LotFitBadge, LotFitDetails, LotFitOverrideDialog } from "@/components/communities/lot-fit"
 import { LotReasonDialog } from "@/components/communities/lot-reason-dialog"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -29,7 +30,9 @@ type Load =
  * Pin a released plan version and elevation to a lot that has no home and no
  * buyer. Plans the community does not offer are listed on purpose: picking one
  * shows the real refusal, and a person with plan-release authority can record
- * the override right there rather than being sent off to find where.
+ * the override right there rather than being sent off to find where. Each
+ * elevation also says whether it fits the lot, and why not; a holder of
+ * lot.fit_override records the evidenced exception from the same place.
  */
 export function LotPlanAssignmentDialog({
   lot,
@@ -37,12 +40,14 @@ export function LotPlanAssignmentDialog({
   open,
   onOpenChange,
   canOverrideOffering,
+  canOverrideFit,
 }: {
   lot: InventoryLotDTO
   communityId: string
   open: boolean
   onOpenChange: (open: boolean) => void
   canOverrideOffering: boolean
+  canOverrideFit: boolean
 }) {
   const router = useRouter()
   const [load, setLoad] = useState<Load>({ state: "loading" })
@@ -53,6 +58,8 @@ export function LotPlanAssignmentDialog({
   const [elevationId, setElevationId] = useState("")
   const [swing, setSwing] = useState(KEEP_SWING)
   const [overrideOpen, setOverrideOpen] = useState(false)
+  const [fitOverrideOpen, setFitOverrideOpen] = useState(false)
+  const [reload, setReload] = useState(0)
   const [overriddenPlanId, setOverriddenPlanId] = useState<string | null>(lot.offeringOverridePlanId)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -66,6 +73,7 @@ export function LotPlanAssignmentDialog({
     if (!open) {
       setPlanSearch("")
       setQuery("")
+      setReload(0)
       return
     }
     let active = true
@@ -76,7 +84,7 @@ export function LotPlanAssignmentDialog({
     setSwing(KEEP_SWING)
     setError(null)
     setOverriddenPlanId(lot.offeringOverridePlanId)
-    listPlanAssignmentOptionsAction(communityId, query || undefined).then((response) => {
+    listPlanAssignmentOptionsAction(communityId, lot.id, query || undefined).then((response) => {
       if (!active) return
       try {
         const { plans, truncated } = unwrapAction(response)
@@ -88,14 +96,36 @@ export function LotPlanAssignmentDialog({
     return () => {
       active = false
     }
-  }, [open, communityId, lot.offeringOverridePlanId, query])
+  }, [open, communityId, lot.id, lot.offeringOverridePlanId, query])
+
+  // A recorded fit override changes only the verdicts: re-read them in place
+  // and keep what the person had picked.
+  useEffect(() => {
+    if (!open || reload === 0) return
+    let active = true
+    listPlanAssignmentOptionsAction(communityId, lot.id, query || undefined).then((response) => {
+      if (!active) return
+      try {
+        const { plans, truncated } = unwrapAction(response)
+        setLoad({ state: "ready", plans, truncated })
+      } catch (failure) {
+        setLoad({ state: "error", message: failure instanceof Error ? failure.message : "Unable to load plans" })
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [reload, open, communityId, lot.id, query])
 
   const plans = load.state === "ready" ? load.plans : []
   const plan = plans.find((entry) => entry.planId === planId) ?? null
   const elevation = plan?.elevations.find((entry) => entry.id === elevationId) ?? null
   const offered = elevation != null && (elevation.offered || overriddenPlanId === planId)
   const refused = elevation != null && !offered
-  const canSubmit = plan != null && versionId !== "" && elevation != null && offered
+  // The verdict is judged in the lot's own handing; a different garage choice is
+  // re-judged by the assignment itself.
+  const fit = swing === KEEP_SWING ? (elevation?.fit ?? null) : null
+  const canSubmit = plan != null && versionId !== "" && elevation != null && offered && !fit?.refusal
 
   function choosePlan(next: string) {
     const entry = plans.find((item) => item.planId === next)
@@ -224,6 +254,7 @@ export function LotPlanAssignmentDialog({
                             {entry.code}
                             {entry.name ? ` · ${entry.name}` : ""}
                             {entry.offered || overriddenPlanId === planId ? "" : " (not offered)"}
+                            {entry.fit?.refusal ? " (does not fit)" : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -243,9 +274,39 @@ export function LotPlanAssignmentDialog({
                       <SelectItem value={KEEP_SWING}>Keep the lot&apos;s swing</SelectItem>
                       <SelectItem value="left">Left</SelectItem>
                       <SelectItem value="right">Right</SelectItem>
-                      <SelectItem value="either">Either</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+              ) : null}
+
+              {elevation ? (
+                <div className="space-y-1.5 border px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">Lot fit</span>
+                    {fit ? (
+                      <LotFitBadge verdict={fit} />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Checked when you assign</span>
+                    )}
+                  </div>
+                  {fit ? <LotFitDetails verdict={fit} /> : null}
+                  {fit?.refusal ? (
+                    canOverrideFit ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 rounded-none text-xs"
+                        disabled={isPending}
+                        onClick={() => setFitOverrideOpen(true)}
+                      >
+                        Record fit override
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Recording a fit override needs the lot.fit_override permission.
+                      </p>
+                    )
+                  ) : null}
                 </div>
               ) : null}
 
@@ -288,6 +349,19 @@ export function LotPlanAssignmentDialog({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {plan && elevation && fit ? (
+        <LotFitOverrideDialog
+          open={fitOverrideOpen}
+          onOpenChange={setFitOverrideOpen}
+          communityId={communityId}
+          lotId={lot.id}
+          projectId={lot.projectId}
+          title={`Fit override · Lot ${lot.lotNumber}`}
+          configuration={{ planId: plan.planId, elevationId: elevation.id, swing: fit.evaluation.swing }}
+          onRecorded={() => setReload((value) => value + 1)}
+        />
+      ) : null}
 
       <LotReasonDialog
         open={overrideOpen}

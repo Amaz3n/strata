@@ -4,11 +4,11 @@ import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
-import { allocatePackageTotal, homePricingScope, resolveOptionPricing } from "@/lib/services/option-catalog"
+import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
+import { allocatePackageTotal, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { requirePermission } from "@/lib/services/permissions"
 import { createVarianceOrdersForSelectionChange } from "@/lib/services/selection-change-orders"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
 import {
   agreementLocksStructuralOptions,
   planPackageSelection,
@@ -121,22 +121,6 @@ export async function listProjectSelections(orgId?: string, projectId?: string, 
   })
 }
 
-type SelectionClient = ReturnType<typeof createServiceSupabaseClient>
-
-/** The home's posture and the price sheet its options sell from. */
-async function loadHome(supabase: SelectionClient, orgId: string, projectId: string) {
-  const [{ data: lot, error: lotError }, { data: project, error: projectError }, { data: org, error: orgError }] = await Promise.all([
-    supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", orgId).eq("project_id", projectId).maybeSingle(),
-    supabase.from("projects").select("property_type").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
-    supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
-  ])
-  for (const failure of [lotError, projectError, orgError]) {
-    if (failure) throw new Error(`Failed to load the home: ${failure.message}`)
-  }
-  const production = isProductionProjectPosture(getProjectPosture(project?.property_type, normalizeProductTier(org?.product_tier)))
-  return { production, pricing: homePricingScope({ lot: lot ?? null, production }) }
-}
-
 async function loadSelectionMutationContext(input: {
   orgId: string
   projectId: string
@@ -157,7 +141,7 @@ async function loadSelectionMutationContext(input: {
     optionIds.length
       ? supabase.from("selection_options").select("id, option_scope").eq("org_id", input.orgId).in("id", optionIds)
       : Promise.resolve({ data: [], error: null }),
-    loadHome(supabase, input.orgId, input.projectId),
+    readHomePricingScope(supabase, input.orgId, input.projectId),
     selection.group_id
       ? supabase
           .from("project_selection_groups")
@@ -386,7 +370,7 @@ export async function selectProjectPackage(input: {
       group_id: (selection.group_id as string | null) ?? null,
     })),
   })
-  const home = await loadHome(supabase, input.orgId, input.projectId)
+  const home = await readHomePricingScope(supabase, input.orgId, input.projectId)
   const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], ...home.pricing })
   if (!pricing.available) throw new Error("This package is not available for the lot's plan")
 

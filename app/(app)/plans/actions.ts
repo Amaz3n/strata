@@ -13,6 +13,7 @@ import {
   updatePlanVersion,
   upsertElevation,
 } from "@/lib/services/house-plans"
+import { listProductDefinitionHistory } from "@/lib/services/home-product-revisions"
 import {
   elevationInputSchema,
   housePlanInputSchema,
@@ -41,6 +42,10 @@ export async function updateHousePlanAction(planId: string, input: unknown) {
 
 export async function upsertElevationAction(planId: string, input: unknown) {
   return run(() => upsertElevation(z.string().uuid().parse(planId), elevationInputSchema.parse(input)), [`/plans/${planId}`])
+}
+
+export async function listElevationRevisionsAction(elevationId: string) {
+  return run(() => listProductDefinitionHistory({ entityType: "house_plan_elevation", entityId: z.string().uuid().parse(elevationId) }), [])
 }
 
 export async function createPlanVersionAction(planId: string, input: unknown) {

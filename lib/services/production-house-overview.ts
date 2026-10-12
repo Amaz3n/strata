@@ -2,8 +2,10 @@ import "server-only"
 
 import { originalMargin, type HomeMarginBaselineStage } from "@/lib/financials/home-margin-baseline"
 import { projectedMargin } from "@/lib/financials/production-margin"
+import { describeRevisionChange } from "@/lib/plans/product-revisions"
 import { readAllRowsById, type RangeResult } from "@/lib/land/paging"
 import { requireOrgContext } from "@/lib/services/context"
+import { readHomeProductRevisionStatus, type HomeProductRevisionStage } from "@/lib/services/home-product-revisions"
 import { requireProjectPermission } from "@/lib/services/permissions"
 
 function one<T>(value: T | T[] | null | undefined): T | null {
@@ -56,6 +58,12 @@ export type ProductionHouseOverviewData = {
     originalMarginPercent: number | null
     originalMarginStage: HomeMarginBaselineStage | null
   }
+  /** What the home was released (else sold) against, and how much of it has been revised since. */
+  productRevisions: {
+    stage: HomeProductRevisionStage
+    summary: string
+    changes: string[]
+  } | null
   gates: {
     startStatus: string
     startPassed: number
@@ -100,7 +108,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   if (error || !project) throw new Error("Home not found")
 
   const { supabase, orgId: resolvedOrgId } = context
-  const [{ data: lot }, { data: schedule }, { data: startPackage }, { data: contracts }, { data: budgetRows }, costs, vpos, { data: selectionGroups }, selections, { data: closing }, { count: punchCount }, { data: photos }, { data: logs }, { count: warrantyCount }, approvedCos, { data: baselines, error: baselineError }] = await Promise.all([
+  const [{ data: lot }, { data: schedule }, { data: startPackage }, { data: contracts }, { data: budgetRows }, costs, vpos, { data: selectionGroups }, selections, { data: closing }, { count: punchCount }, { data: photos }, { data: logs }, { count: warrantyCount }, approvedCos, { data: baselines, error: baselineError }, revisionStatus] = await Promise.all([
     context.supabase.from("lots").select("id,lot_number,address,dimensions,swing,premium_cents,community_id,community:communities(name,settings),phase:community_phases(name),house_plan_id,plan:house_plans(name,code),elevation:house_plan_elevations(name,code),version:house_plan_versions(version_number)").eq("org_id", context.orgId).eq("project_id", projectId).maybeSingle(),
     context.supabase.from("schedule_items").select("id,name,status,start_date,end_date,progress,item_type,sort_order").eq("org_id", context.orgId).eq("project_id", projectId).order("sort_order").limit(500),
     context.supabase.from("start_packages").select("id,status,actual_start_date,released_at,gates:start_package_gates(status)").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
@@ -136,6 +144,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
     }),
     // One release baseline and one per sale; a home is sold a handful of times at most.
     context.supabase.from("home_margin_baselines").select("stage,captured_at,sale_price_cents,cost_cents,margin_cents,margin_bps").eq("org_id", context.orgId).eq("project_id", projectId).order("captured_at", { ascending: false }).limit(20),
+    readHomeProductRevisionStatus(context.supabase, context.orgId, projectId),
   ])
   if (baselineError) throw new Error(`Unable to read this home's margin baseline: ${baselineError.message}`)
 
@@ -243,6 +252,11 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       originalMarginPercent: original?.marginBps == null ? null : original.marginBps / 100,
       originalMarginStage: original?.stage ?? null,
     },
+    productRevisions: revisionStatus ? {
+      stage: revisionStatus.stage,
+      summary: revisionStatus.summary,
+      changes: revisionStatus.changes.map(describeRevisionChange),
+    } : null,
     gates: {
       startStatus: startPackage?.status ?? "No start package",
       startPassed: gates.filter((row: any) => ["passed", "waived", "not_applicable"].includes(row.status)).length,

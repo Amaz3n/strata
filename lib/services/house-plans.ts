@@ -42,6 +42,8 @@ export type HousePlanElevationDto = {
   is_active: boolean
   cover_file_id: string | null
   sort_order: number
+  /** Moves when the elevation's definition changes (code, name, swing, sqft delta, active); see product_definition_revisions. */
+  revision: number
 }
 
 export type TakeoffLineDto = PlanTakeoffPricingLine & {
@@ -90,6 +92,9 @@ export type HousePlanDto = {
   baths: number | null
   stories: number | null
   garage_bays: number | null
+  footprint_width_ft: number | null
+  footprint_depth_ft: number | null
+  drawn_swing: "left" | "right" | null
   description: string | null
   cover_file_id: string | null
   elevation_count: number
@@ -137,6 +142,9 @@ type PlanRow = {
   baths: number | null
   stories: number | null
   garage_bays: number | null
+  footprint_width_ft: number | string | null
+  footprint_depth_ft: number | string | null
+  drawn_swing: "left" | "right" | null
   description: string | null
   cover_file_id: string | null
   created_at: string | null
@@ -175,7 +183,7 @@ type TakeoffRow = {
   cost_code?: { code: string; name: string } | Array<{ code: string; name: string }> | null
 }
 
-const planSelect = "id, code, name, series, status, division_id, heated_sqft, total_sqft, beds, baths, stories, garage_bays, description, cover_file_id, created_at, updated_at"
+const planSelect = "id, code, name, series, status, division_id, heated_sqft, total_sqft, beds, baths, stories, garage_bays, footprint_width_ft, footprint_depth_ft, drawn_swing, description, cover_file_id, created_at, updated_at"
 const versionSelect = "id, house_plan_id, version_number, status, label, notes, budget_template_id, schedule_template_id, drawing_source_file_id, bundle_snapshot, released_at, released_by"
 
 /**
@@ -244,7 +252,7 @@ function mapTakeoff(row: TakeoffRow): TakeoffLineDto {
 async function loadPlanAggregates(context: Awaited<ReturnType<typeof requireOrgContext>>, planIds: string[]) {
   if (planIds.length === 0) return { elevations: [], versions: [], lots: [], availability: [] }
   const [elevations, versions, lots, availability] = await Promise.all([
-    readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order").eq("org_id", context.orgId).in("house_plan_id", chunk).order("sort_order").order("id").range(from, to), "Failed to load plan elevations"),
+    readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order, revision").eq("org_id", context.orgId).in("house_plan_id", chunk).order("sort_order").order("id").range(from, to), "Failed to load plan elevations"),
     readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("house_plan_versions").select(versionSelect).eq("org_id", context.orgId).in("house_plan_id", chunk).order("version_number", { ascending: false }).order("id").range(from, to), "Failed to load plan versions"),
     readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("lots").select("id, house_plan_id, house_plan_version_id, status").eq("org_id", context.orgId).in("house_plan_id", chunk).order("id").range(from, to), "Failed to load plan lots"),
     readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("community_plan_availability").select("id, house_plan_id, community_id, base_price_cents").eq("org_id", context.orgId).in("house_plan_id", chunk).eq("is_available", true).order("id").range(from, to), "Failed to load plan availability"),
@@ -267,6 +275,8 @@ function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAgg
     baths: row.baths == null ? null : Number(row.baths),
     stories: row.stories == null ? null : Number(row.stories),
     garage_bays: row.garage_bays == null ? null : Number(row.garage_bays),
+    footprint_width_ft: row.footprint_width_ft == null ? null : Number(row.footprint_width_ft),
+    footprint_depth_ft: row.footprint_depth_ft == null ? null : Number(row.footprint_depth_ft),
     elevation_count: elevations.length,
     current_released_version: versions.find((version) => version.status === "released")?.version_number ?? null,
     active_lot_count: activeLots.length,
@@ -396,6 +406,7 @@ export async function getHousePlan(id: string, orgId?: string): Promise<HousePla
       is_active: item.is_active,
       cover_file_id: item.cover_file_id,
       sort_order: Number(item.sort_order),
+      revision: Number(item.revision),
     })),
     versions,
   }
@@ -414,6 +425,9 @@ function planPayload(input: Partial<HousePlanInput>) {
   if (input.baths !== undefined) patch.baths = input.baths ?? null
   if (input.stories !== undefined) patch.stories = input.stories ?? null
   if (input.garageBays !== undefined) patch.garage_bays = input.garageBays ?? null
+  if (input.footprintWidthFt !== undefined) patch.footprint_width_ft = input.footprintWidthFt ?? null
+  if (input.footprintDepthFt !== undefined) patch.footprint_depth_ft = input.footprintDepthFt ?? null
+  if (input.drawnSwing !== undefined) patch.drawn_swing = input.drawnSwing ?? null
   if (input.description !== undefined) patch.description = input.description ?? null
   if (input.coverFileId !== undefined) patch.cover_file_id = input.coverFileId ?? null
   if (input.metadata !== undefined) patch.metadata = input.metadata
@@ -474,10 +488,10 @@ export async function upsertElevation(planId: string, input: ElevationInput, org
   const query = parsed.id
     ? context.supabase.from("house_plan_elevations").update(payload).eq("org_id", context.orgId).eq("house_plan_id", planId).eq("id", parsed.id)
     : context.supabase.from("house_plan_elevations").insert(payload)
-  const { data, error } = await query.select("id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order").single()
+  const { data, error } = await query.select("id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order, revision").single()
   if (error || !data) throw new Error(`Failed to save elevation: ${error?.message ?? "unknown error"}`)
-  await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: planId, action: "update", after: { elevation_id: data.id, code: data.code } })
-  return { ...data, heated_sqft_delta: Number(data.heated_sqft_delta), sort_order: Number(data.sort_order) }
+  await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: planId, action: "update", after: { elevation_id: data.id, code: data.code, revision: data.revision } })
+  return { ...data, heated_sqft_delta: Number(data.heated_sqft_delta), sort_order: Number(data.sort_order), revision: Number(data.revision) }
 }
 
 export async function listPlanVersions(planId: string, orgId?: string): Promise<HousePlanVersionDto[]> {

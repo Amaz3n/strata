@@ -16,6 +16,11 @@ export const housePlanInputSchema = z.object({
   baths: nullableMetric,
   stories: z.number().positive().optional().nullable(),
   garageBays: nullableMetric,
+  /** Outside building dimensions in feet, read by the lot fit rule. */
+  footprintWidthFt: z.number().positive().max(1000).optional().nullable(),
+  footprintDepthFt: z.number().positive().max(1000).optional().nullable(),
+  /** The garage handing the plan is drawn in. */
+  drawnSwing: z.enum(["left", "right"]).optional().nullable(),
   description: z.string().trim().max(5000).optional().nullable(),
   coverFileId: z.string().uuid().optional().nullable(),
   metadata: z.record(z.unknown()).optional(),

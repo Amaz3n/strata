@@ -17,6 +17,7 @@ import { createInvoice } from "@/lib/services/invoices"
 import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs"
 import { captureHomeMarginBaseline } from "@/lib/services/home-margin-baselines"
+import { captureHomeProductRevisions } from "@/lib/services/home-product-revisions"
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
 import { projectJournal } from "@/lib/services/books/projector"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
@@ -42,6 +43,7 @@ const withdrawPlanSchema = z.object({
 import { recordPaymentReversal } from "@/lib/services/payments"
 import { revokePortalToken } from "@/lib/services/portal-access"
 import { getPlanLadder } from "@/lib/services/house-plans"
+import { assertLotFit } from "@/lib/services/lot-fit"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { createProject } from "@/lib/services/projects"
 import { findContactIdByEmail } from "@/lib/services/party-promotion"
@@ -1212,7 +1214,6 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   const versionId = parsed.housePlanVersionId ?? lot.house_plan_version_id
   if (!versionId) throw new Error("Choose a released plan version")
   if (lot.project_id && lot.house_plan_version_id && parsed.housePlanVersionId && parsed.housePlanVersionId !== lot.house_plan_version_id) throw new Error("A spec home's pinned plan version cannot be changed")
-  if (parsed.swing && lot.swing !== "either" && parsed.swing !== lot.swing) throw new Error(`This lot only supports a ${lot.swing}-swing plan`)
   const { data: version, error: versionError } = await context.supabase.from("house_plan_versions").select("id, house_plan_id, status, label, plan:house_plans!inner(name,org_id)").eq("org_id", context.orgId).eq("id", versionId).eq("plan.org_id", context.orgId).maybeSingle()
   if (versionError || !version || version.status !== "released") throw new Error("The selected plan version is not released or could not be verified")
   if (lot.project_id && lot.house_plan_id && version.house_plan_id !== lot.house_plan_id) throw new Error("A pinned home's plan ancestry is inconsistent; reconcile it before writing an agreement")
@@ -1227,6 +1228,7 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   }
   const swing = parsed.swing ?? (lot.swing === "left" || lot.swing === "right" ? lot.swing : null)
   if (!swing) throw new Error("Choose a left or right swing before pricing the agreement")
+  await assertLotFit(context, { lotId: lot.id, planId: version.house_plan_id, elevationId, swing })
   const offerDate = new Date().toISOString().slice(0, 10)
   let availabilityQuery = context.supabase.from("community_plan_availability").select("base_price_cents").eq("org_id", context.orgId).eq("community_id", lot.community_id).eq("house_plan_id", version.house_plan_id).eq("is_available", true)
   availabilityQuery = elevationId ? availabilityQuery.eq("elevation_id", elevationId) : availabilityQuery.is("elevation_id", null)
@@ -1756,9 +1758,13 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
     const { data: existingClosing } = checked(await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle())
     if (!existingClosing) checked(await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null }))
   }
-  // What the home was sold at, from the selections just costed and locked. A
-  // recovered execution finds it already captured.
-  await captureHomeMarginBaseline({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" })
+  // What the home was sold at, from the selections just costed and locked, and
+  // the plan, elevation and option revisions it was priced against. A
+  // recovered execution finds both already captured.
+  await Promise.all([
+    captureHomeMarginBaseline({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" }),
+    captureHomeProductRevisions({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" }),
+  ])
   await Promise.all([
     recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId } }),
     recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now } }),

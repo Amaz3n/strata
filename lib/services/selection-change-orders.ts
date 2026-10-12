@@ -2,6 +2,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { createChangeOrder } from "@/lib/services/change-orders"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
 import { NotificationService } from "@/lib/services/notifications"
 import { resolveOptionPricing } from "@/lib/services/option-catalog"
 import { requirePermission } from "@/lib/services/permissions"
@@ -24,7 +25,7 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
   const context = await requireOrgContext()
   if (input.waiveFee) await requirePermission("selections.cutoff.override", context)
 
-  const [{ data: selections, error: selectionsError }, { data: lot, error: lotError }] = await Promise.all([
+  const [{ data: selections, error: selectionsError }, { data: lot, error: lotError }, home] = await Promise.all([
     context.supabase
       .from("project_selections")
       .select("id, category_id, selected_option_id, price_cents_snapshot, cost_cents_snapshot, group_id, locked_at, category:selection_categories(name)")
@@ -33,10 +34,11 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
       .limit(1000),
     context.supabase
       .from("lots")
-      .select("community_id, house_plan_version_id, community:communities(name, selection_change_fee_cents)")
+      .select("id, community:communities(name, selection_change_fee_cents)")
       .eq("org_id", context.orgId)
       .eq("project_id", input.projectId)
       .maybeSingle(),
+    readHomePricingScope(context.supabase, context.orgId, input.projectId),
   ])
   if (selectionsError) throw new Error(`Failed to load project selections: ${selectionsError.message}`)
   if (lotError || !lot) throw new Error("This project is not linked to a production lot")
@@ -73,9 +75,7 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
     const [packagePrice] = await resolveOptionPricing({
       orgId: context.orgId,
       items: [{ packageId: selectionPackage.id }],
-      housePlanVersionId: lot.house_plan_version_id ?? undefined,
-      communityId: lot.community_id,
-      requirePlanVersion: Boolean(lot.community_id),
+      ...home.pricing,
     })
     if (!packagePrice.available) throw new Error(`${selectionPackage.name} is not available for this lot's plan`)
     const priceAllocations = allocatePackageTotal(packagePrice.priceCents, packageItems.length)
@@ -118,9 +118,7 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
   const directPricing = direct.length ? await resolveOptionPricing({
     orgId: context.orgId,
     items: direct.map((change) => ({ optionId: change.optionId })),
-    housePlanVersionId: lot.house_plan_version_id ?? undefined,
-    communityId: lot.community_id,
-    requirePlanVersion: Boolean(lot.community_id),
+    ...home.pricing,
   }) : []
   if (directPricing.some((price) => !price.available)) throw new Error("One or more options are not available for this lot's plan")
   const directPriceBySelection = new Map(direct.map((change, index) => [change.selectionId, directPricing[index]]))

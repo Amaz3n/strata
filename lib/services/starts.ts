@@ -23,6 +23,7 @@ import { readAllRows } from "@/lib/land/paging"
 import { verticalStartRefusal } from "@/lib/land/lot-lifecycle"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { isPlanOffered, offeringOverrideFor } from "@/lib/sales/plan-offering"
+import { checkLotFits } from "@/lib/services/lot-fit"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
   gateAttestSchema,
@@ -452,7 +453,7 @@ async function deriveAutoGate(
 ) {
   const projectId = text(pkg.project_id)
   if (source === "plan_pinned") {
-    const { data, error } = await supabase.from("lots").select("community_id,metadata,house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status,house_plan_id),elevation:house_plan_elevations(is_active)")
+    const { data, error } = await supabase.from("lots").select("id,community_id,metadata,dimensions,swing,house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status,house_plan_id),elevation:house_plan_elevations(is_active)")
       .eq("org_id", orgId).eq("id", String(pkg.lot_id)).maybeSingle()
     if (error) throw new Error(`Failed to check pinned plan: ${error.message}`)
     const version = relation(data?.version)
@@ -465,8 +466,16 @@ async function deriveAutoGate(
       .select("is_available,elevation_id,effective_start,effective_end")
       .eq("org_id", orgId).eq("community_id", data.community_id).eq("house_plan_id", housePlanId)
     if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
-    return isPlanOffered(offering ?? [], { elevationId: data.house_plan_elevation_id, onDate: new Date().toISOString().slice(0, 10) })
+    const offered = isPlanOffered(offering ?? [], { elevationId: data.house_plan_elevation_id, onDate: new Date().toISOString().slice(0, 10) })
       || Boolean(offeringOverrideFor(data.metadata, housePlanId))
+    if (!offered) return false
+    // And the house must still fit the lot, or stand under a fit override that
+    // covers it: a setback or dimension edit since the pin can take it away.
+    const fit = (await checkLotFits({ supabase, orgId }, [{
+      key: data.id, lotId: data.id, communityId: data.community_id, dimensions: data.dimensions, lotSwing: data.swing ?? "either",
+      planId: housePlanId, elevationId: data.house_plan_elevation_id, swing: null,
+    }])).get(data.id)
+    return !fit?.refusal
   }
   if (!projectId) return false
   if (source === "plot_plan_file") {

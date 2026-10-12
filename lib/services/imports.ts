@@ -8,7 +8,9 @@ import { importRowStatusSchema } from "@/lib/validation/import-navigation"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
+import type { LotSwing } from "@/lib/land/lot-fit"
 import { isPlanOffered, offeringOverrideFor, PLAN_OFFERING_REFUSAL, type PlanOfferingRow } from "@/lib/sales/plan-offering"
+import { checkLotFits, type LotFitPin } from "@/lib/services/lot-fit"
 import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
@@ -406,7 +408,7 @@ async function loadOpenWipCompanionRows(context: ResolvedImportContext, batches:
 }
 
 type CommunityPlanOffering = PlanOfferingRow & { id: string; community_id: string; house_plan_id: string }
-type OfferingLot = { id: string; community_id: string; lot_number: string; block: string | null; metadata: unknown }
+type OfferingLot = { id: string; community_id: string; lot_number: string; block: string | null; metadata: unknown; dimensions: Record<string, unknown> | null; swing: LotSwing | null }
 
 function readCommunityPlanOfferings(context: ResolvedImportContext, communityIds: string[], planIds: string[]) {
   return readAllRowsById<CommunityPlanOffering>((afterId, limit) => {
@@ -424,7 +426,35 @@ function planOfferingRefusal(offerings: readonly CommunityPlanOffering[], lotMet
   return offered || offeringOverrideFor(lotMetadata, pin.planId) ? null : PLAN_OFFERING_REFUSAL
 }
 
-async function validateOpenWipPlanOfferings(rows: ImportRowRecord[], context: ResolvedImportContext) {
+function lotSwingOf(value: unknown): LotSwing | null {
+  return value === "left" || value === "right" || value === "either" ? value : null
+}
+
+/**
+ * The pin a row is about to write, judged on the lot as it will stand: a lots
+ * row fills the lot's measurements and sets its swing; a house row builds on
+ * the lot as it is.
+ */
+function importFitPin(row: ImportRowRecord, communityId: string, lot: Pick<OfferingLot, "id" | "dimensions" | "swing"> | null, kind: "lots" | "houses"): LotFitPin {
+  return {
+    key: row.id,
+    lotId: lot?.id ?? null,
+    communityId,
+    dimensions: kind === "lots" ? importedLotDimensions(lot?.dimensions ?? null, row.parsed) : lot?.dimensions ?? null,
+    lotSwing: kind === "lots" ? lotSwingOf(row.parsed.swing) ?? "either" : lot?.swing ?? "either",
+    planId: String(row.parsed.house_plan_id),
+    elevationId: typeof row.parsed.elevation_id === "string" ? row.parsed.elevation_id : null,
+    swing: null,
+  }
+}
+
+/** The fit refusal for one row at commit, re-read: a lot or its rules may have changed since staging. */
+async function importFitRefusal(context: ResolvedImportContext, row: ImportRowRecord, communityId: string, lot: Pick<OfferingLot, "id" | "dimensions" | "swing"> | null, kind: "lots" | "houses") {
+  const verdict = (await checkLotFits(context, [importFitPin(row, communityId, lot, kind)])).get(row.id)
+  return verdict?.refusal ?? null
+}
+
+async function validateOpenWipPlanOfferings(rows: ImportRowRecord[], context: ResolvedImportContext, kind: "lots" | "houses") {
   const pinned = rows.filter((row) => row.status !== "skipped" && typeof row.parsed.house_plan_id === "string" && typeof row.parsed.community_id === "string")
   if (!pinned.length) return
   const communityIds = [...new Set(pinned.map((row) => String(row.parsed.community_id)))]
@@ -432,17 +462,21 @@ async function validateOpenWipPlanOfferings(rows: ImportRowRecord[], context: Re
   const [offerings, lots] = await Promise.all([
     readCommunityPlanOfferings(context, communityIds, planIds),
     readAllRowsById<OfferingLot>((afterId, limit) => {
-      let query = context.supabase.from("lots").select("id,community_id,lot_number,block,metadata").eq("org_id", context.orgId).in("community_id", communityIds)
+      let query = context.supabase.from("lots").select("id,community_id,lot_number,block,metadata,dimensions,swing").eq("org_id", context.orgId).in("community_id", communityIds)
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<OfferingLot[]>()
     }, { cap: 100_000, label: "Failed to read lots for plan offering check", pageSize: 1000 }),
   ])
   const lotByKey = new Map(lots.map((lot) => [`${lot.community_id}|${lot.lot_number}|${lot.block ?? ""}`, lot]))
+  const lotOf = (row: ImportRowRecord) => lotByKey.get(`${row.parsed.community_id}|${row.parsed.lot_number}|${row.parsed.block ?? ""}`) ?? null
+  const fits = await checkLotFits(context, pinned.map((row) => importFitPin(row, String(row.parsed.community_id), lotOf(row), kind)))
   for (const row of pinned) {
     const communityId = String(row.parsed.community_id)
-    const lot = lotByKey.get(`${communityId}|${row.parsed.lot_number}|${row.parsed.block ?? ""}`)
+    const lot = lotOf(row)
     const refusal = planOfferingRefusal(offerings, lot?.metadata ?? null, { communityId, planId: String(row.parsed.house_plan_id), elevationId: typeof row.parsed.elevation_id === "string" ? row.parsed.elevation_id : null })
     if (refusal) withIssue(row, { level: "error", code: "plan_not_offered", message: `Plan ${row.parsed.plan_code}: ${refusal}`, column: "plan_code" })
+    const fitRefusal = fits.get(row.id)?.refusal
+    if (fitRefusal) withIssue(row, { level: "error", code: "plan_does_not_fit", message: `Plan ${row.parsed.plan_code}: ${fitRefusal}`, column: "plan_code" })
   }
 }
 
@@ -467,7 +501,7 @@ async function validateLotPlanPins(rows: ImportRowRecord[], context: ResolvedImp
       withIssue(row, { level: "error", code: "plan_not_offered", message: `Plan ${row.parsed.plan_code}: ${PLAN_OFFERING_REFUSAL} Set up the community's plan offering, then import the plan pins.`, column: "plan_code" })
     }
   }
-  await validateOpenWipPlanOfferings(rows, context)
+  await validateOpenWipPlanOfferings(rows, context, "lots")
   rows.forEach(settleRowStatus)
   return rows
 }
@@ -485,7 +519,7 @@ async function validateOpenWipCompanions(rows: ImportRowRecord[], context: Resol
       withIssue(row, { level: "error", code: "missing_buyer", message: "A sold home needs a buyer email so the buyer is kept on the home", column: "buyer_email" })
     }
   }
-  await validateOpenWipPlanOfferings(rows, context)
+  await validateOpenWipPlanOfferings(rows, context, "houses")
   const asOfDate = typeof batchContext.as_of_date === "string" ? batchContext.as_of_date : null
   if (!asOfDate) {
     rows.forEach((row) => { withIssue(row, { level: "error", code: "missing_as_of_date", message: "Open-WIP houses require an as-of date" }); settleRowStatus(row) })
@@ -792,7 +826,7 @@ async function commitCommunitiesLots(rows: ImportRowRecord[], context: ResolvedI
       }
       takedownId = takedown.id
     }
-    let lotQuery = context.supabase.from("lots").select("id, dimensions, metadata").eq("org_id", context.orgId).eq("community_id", community.id).eq("lot_number", row.parsed.lot_number)
+    let lotQuery = context.supabase.from("lots").select("id, dimensions, metadata, swing").eq("org_id", context.orgId).eq("community_id", community.id).eq("lot_number", row.parsed.lot_number)
     lotQuery = row.parsed.block ? lotQuery.eq("block", row.parsed.block) : lotQuery.is("block", null)
     const { data: existingLot } = await lotQuery.maybeSingle()
     if (existingLot && !updateExisting) { results.set(row.id, { id: existingLot.id, action: "skipped_existing" }); continue }
@@ -805,6 +839,8 @@ async function commitCommunitiesLots(rows: ImportRowRecord[], context: ResolvedI
       if (version.data?.status !== "released") throw new Error(`Lot ${row.parsed.lot_number}: plan ${row.parsed.plan_code} is no longer released`)
       const refusal = planOfferingRefusal(offerings, existingLot?.metadata ?? null, { communityId: community.id, planId: String(row.parsed.house_plan_id), elevationId: typeof row.parsed.elevation_id === "string" ? row.parsed.elevation_id : null })
       if (refusal) throw new Error(`Lot ${row.parsed.lot_number}: ${refusal}`)
+      const fitRefusal = await importFitRefusal(context, row, community.id, existingLot ?? null, "lots")
+      if (fitRefusal) throw new Error(`Lot ${row.parsed.lot_number}: ${fitRefusal}`)
     }
     const payload = { org_id: context.orgId, community_id: community.id, community_phase_id: phaseId, division_id: community.division_id, lot_number: row.parsed.lot_number, block: row.parsed.block, status: row.parsed.status, address: row.parsed.address, dimensions: importedLotDimensions(existingLot?.dimensions ?? null, row.parsed), swing: row.parsed.swing ?? "either", premium_cents: row.parsed.premium_cents ?? 0, cost_basis_cents: row.parsed.cost_basis_cents, takedown_id: takedownId, house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id, metadata: { ...lotMetadata(existingLot?.metadata), imported: true } }
     const query = existingLot ? context.supabase.from("lots").update(payload).eq("org_id", context.orgId).eq("id", existingLot.id) : context.supabase.from("lots").insert(payload)
@@ -917,7 +953,7 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
     const budgetSum = budgetRows.reduce((sum, item) => sum + Number(item.parsed?.budget_cents ?? 0), 0)
     if (budgetSum !== Number(row.parsed.budget_total_cents)) throw new Error(`Lot ${row.parsed.lot_number}: budget lines total does not match the house total`)
     const { data: community, error: communityError } = await context.supabase.from("communities").select("id,name,division_id").eq("org_id", context.orgId).eq("id", row.parsed.community_id).single()
-    let lotQuery = context.supabase.from("lots").select("id,project_id,status,metadata,house_plan_id,house_plan_version_id,house_plan_elevation_id").eq("org_id", context.orgId).eq("community_id", row.parsed.community_id).eq("lot_number", row.parsed.lot_number)
+    let lotQuery = context.supabase.from("lots").select("id,project_id,status,metadata,dimensions,swing,house_plan_id,house_plan_version_id,house_plan_elevation_id").eq("org_id", context.orgId).eq("community_id", row.parsed.community_id).eq("lot_number", row.parsed.lot_number)
     lotQuery = row.parsed.block ? lotQuery.eq("block", row.parsed.block) : lotQuery.is("block", null)
     const { data: lot, error: lotError } = await lotQuery.single()
     if (communityError || !community) throw new Error(`Unable to resolve the Open-WIP community: ${communityError?.message}`)
@@ -938,6 +974,8 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
     if (version.error || version.data?.status !== "released") throw new Error(`Lot ${row.parsed.lot_number}: plan ${row.parsed.plan_code} no longer has that released version`)
     const offeringRefusal = planOfferingRefusal(offerings, lot.metadata, { communityId: community.id, planId: String(row.parsed.house_plan_id), elevationId: typeof row.parsed.elevation_id === "string" ? row.parsed.elevation_id : null })
     if (offeringRefusal) throw new Error(`Lot ${row.parsed.lot_number}: ${offeringRefusal}`)
+    const fitRefusal = await importFitRefusal(context, row, community.id, lot, "houses")
+    if (fitRefusal) throw new Error(`Lot ${row.parsed.lot_number}: ${fitRefusal}`)
     let projectId: string | null = null
     try {
       const { data: project, error: projectError } = await context.supabase.from("projects").insert({ org_id: context.orgId, name: `${community.name} — Lot ${row.parsed.lot_number}`, status: "active", property_type: "production", division_id: community.division_id, created_by: context.userId, metadata: { wip_cutover: { as_of_date: asOfDate, batch_id: batchId, row_id: row.id }, imported_open_wip: true } }).select("id").single()

@@ -83,6 +83,7 @@ function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedO
         publishOwnedAgreementDocument: async () => ({ documentId: id(22), envelopeId: id(24), reason: "Buyer invitations are queued for delivery" }),
       }
       if (name === "@/lib/land/paging") return require("../lib/land/paging")
+      if (name === "@/lib/services/lot-fit") return require("../lib/services/lot-fit")
       if (name === "@/lib/sales/agreement-quote") return require("../lib/sales/agreement-quote")
       if (name === "@/lib/sales/agreement-selections") return require("../lib/sales/agreement-selections")
       if (name === "zod") return require("zod")
@@ -123,7 +124,7 @@ test("division and home denials stop before catalog pricing", async () => {
 
 test("pinned version, elevation, ancestry and fixed swing cannot be changed", async () => {
   for (const patch of [{ housePlanVersionId: id(10) }, { elevationId: id(10) }, { elevationId: null }, { swing: "right" }]) {
-    await assert.rejects(harness().price({ ...input, ...patch }), /pinned|only supports/)
+    await assert.rejects(harness().price({ ...input, ...patch }), /pinned|takes only a left garage/)
   }
   await assert.rejects(harness({ version: { house_plan_id: id(10) } }).price(input), /ancestry/)
 })

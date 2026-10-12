@@ -31,7 +31,10 @@ const CATEGORY_OF = { [GRANITE]: COUNTERS, [LAMINATE]: COUNTERS, [STANDARD_BASE]
 const PRICE_OF = { [GRANITE]: 450000, [LAMINATE]: 0, [STANDARD_BASE]: 0, [UPGRADED_BASE]: 120000, [TILE_BACKSPLASH]: 80000 }
 
 // Catalog pricing has its own suite; here every option is available at a fixed price in its category.
+// How a home prices is decided by the real catalog module.
+const { homePricingScope } = freshRequire("lib/services/option-catalog.ts")
 stubModule("@/lib/services/option-catalog", {
+  homePricingScope,
   resolveOptionPricing: async ({ items }) => items.map((item) => item.optionId
     ? { optionId: item.optionId, available: true, priceCents: PRICE_OF[item.optionId] ?? 0, categoryIds: [CATEGORY_OF[item.optionId]] }
     : { packageId: item.packageId, available: true, priceCents: 0, categoryIds: [] }),
