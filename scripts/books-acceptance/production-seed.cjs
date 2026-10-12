@@ -406,9 +406,18 @@ function pinSpecPlan(kit, { lot, plan }) {
   kit.sql(`update public.lots set house_plan_id=${kit.q(plan.id)}, house_plan_version_id=${kit.q(plan.versionId)}, house_plan_elevation_id=${kit.q(plan.elevationIds[1])}, swing='right' where id=${kit.q(lot.id)}`)
 }
 
+/** A land deal under diligence beside the community: the land desk and deal workbench have a record to open. */
+async function seedLandDeal(kit, org) {
+  const deals = require("../../lib/services/land-opportunities")
+  const deal = await kit.as(org.team.land, () => deals.createLandOpportunity({ name: "Cypress Landing North parcel", code: "CLN", divisionId: org.divisionId, city: "Naples", state: "FL", county: "Collier",
+    acreage: 12.5, plannedLotCount: 40, purchasePriceCents: 280000000, depositCents: 5000000, diligenceEndsOn: isoDay(30), leadUserId: org.team.land.userId }))
+  await kit.as(org.team.land, () => deals.seedDiligenceChecklist(deal.id))
+  return deal
+}
+
 module.exports = {
   EVIDENCE, COST_CODES, TRADES, PLANS, OPTIONS, DESIGN_PICKS,
   defaultPeriods, isoDay, glId, csv, planTradeCostCents,
   productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveHold, reserveLot, configuration, signAgreement,
-  chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, closeHome, presoldThroughClosing, pinSpecPlan,
+  chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
 }

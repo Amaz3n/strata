@@ -26,6 +26,7 @@ const PRODUCTION_ROUTES = [
   "/", "/my-houses", "/my-work",
   "/sales", "/sales/[dealId]",
   "/communities", "/communities/[id]", "/communities/[id]/land", "/communities/[id]/offering", "/communities/[id]/settings",
+  "/communities/land-deals", "/communities/land-deals/[dealId]",
   "/plans", "/plans/[id]",
   "/starts", "/starts/[id]", "/settings/starts",
   "/purchasing",
@@ -64,6 +65,7 @@ for (const role of ROLES) {
     const resolve = (route: string): string[] => {
       if (/^\/starts\/\[id\]$/.test(route)) return [`/starts/${id.startPackage}`, `/starts/${id.releasedPackage}`]
       if (/^\/sales\/\[dealId\]$/.test(route)) return [`/sales/${id.deal}`, `/sales/${id.closedDeal}`]
+      if (/^\/communities\/land-deals\/\[dealId\]$/.test(route)) return [`/communities/land-deals/${id.landDeal}`]
       if (/^\/communities\/\[id\]/.test(route)) return [route.replace("[id]", id.community)]
       if (/^\/plans\/\[id\]$/.test(route)) return [`/plans/${id.plan}`]
       if (/^\/design-studio\/sheet\/\[projectId\]$/.test(route)) return [`/design-studio/sheet/${id.closedHome}`]

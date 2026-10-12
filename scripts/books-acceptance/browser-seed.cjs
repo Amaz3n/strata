@@ -313,6 +313,7 @@ commit;`)
     org.periods.deal = { periodId: dealOf(readySale.projectId) }
     org.periods.closedDeal = { periodId: dealOf(closed.projectId) }
     org.periods.warrantyRequest = { periodId: request.id }
+    org.periods.landDeal = { periodId: (await seed.seedLandDeal(kit, org)).id }
     const bank = await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name: "Operating checking", accountType: "depository", glAccountId: seed.glId(kit, org, "1000") }))
     org.periods.bank = { periodId: bank.bankAccountId }
     org.periods.vendor = { periodId: org.vendorIds["Gulf Concrete"] }
