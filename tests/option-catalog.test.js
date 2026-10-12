@@ -135,7 +135,7 @@ describe("resolveOptionPricing context and money", () => {
     assert.equal(row.baseReason, null)
   })
 
-  test("a production home is priced from its plan version, never silently at the base price", async () => {
+  test("a production home must have its plan version; a plan row outranks the option's own price", async () => {
     const noLot = homePricingScope({ lot: null, production: true })
     await assert.rejects(
       pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...noLot })),
@@ -143,10 +143,9 @@ describe("resolveOptionPricing context and money", () => {
     )
 
     const pinned = homePricingScope({ lot: { community_id: null, house_plan_version_id: VERSION }, production: true })
-    await assert.rejects(
-      pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned })),
-      /This option has no price for this plan version/,
-    )
+    // An option priced once for every plan prices at that price, and says so.
+    const [own] = await pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned }))
+    assert.deepEqual([own.priceCents, own.source], [5000, "option_base"])
 
     const planPrice = { id: id(34), org_id: ORG, option_id: OPTION, package_id: null, house_plan_version_id: VERSION, community_id: null, price_cents: 7200, cost_cents: 4000, is_available: true }
     const [row] = await pricing([option()], [planPrice]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned }))

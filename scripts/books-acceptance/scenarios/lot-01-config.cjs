@@ -459,7 +459,7 @@ async function priceResolutionIsDeterministicAndFailsExplicitly(kit, expected, c
     bothOptionAndPackage: /Choose exactly one option or package/.test(await refusal(() => resolveRaw([{ optionId: px, packageId: randomUUID() }]))) ? "refused: choose one" : "resolved",
     quoteWithoutAPlanVersion: await text(() => kit.as(org.team.sales, () => app("community-sales").priceAgreementDraft({ lotId: lotRow.id, elevationId: org.plans[0].elevationIds[0], swing, optionItems: [{ optionId: px }], incentiveIds: [] }))),
     quoteOnAnUnknownVersion: await text(() => kit.as(org.team.sales, () => app("community-sales").priceAgreementDraft({ ...seed.configuration(org, { lotId: lotRow.id, plan: org.plans[0], swing, skus: [] }), housePlanVersionId: randomUUID(), optionItems: [{ optionId: px }] }))),
-    priceForAnUnknownPlanVersion: /Failed to save catalog entity|foreign key/.test(await refusal(() => setPrice(px, randomUUID(), 1000))) ? "refused" : "saved",
+    priceForAnUnknownPlanVersion: /released plan version/.test(await refusal(() => setPrice(px, randomUUID(), 1000))) ? "refused" : "saved",
   }
 
   // Invalid money fails explicitly and changes nothing.

@@ -135,6 +135,8 @@ async function seedProduct(kit, org) {
     }))))
     await kit.as(org.owner, () => plansService.updatePlanVersion(version.id, { label: "Launch release", scheduleTemplateId: org.scheduleTemplateId, checklistTemplateIds: [], selectionCategoryIds: [] }))
     await kit.as(org.owner, () => plansService.releasePlanVersion(version.id))
+    // A plan is offered for sale once it is active; only an active plan can be priced.
+    await kit.as(org.owner, () => plansService.updateHousePlan(created.id, { status: "active" }))
     org.plans.push({ ...plan, id: created.id, versionId: version.id, elevationIds: elevations.map((e) => e.id), tradeCostCents: planTradeCostCents(plan) })
   }
   // Price book: one agreement per trade, effective before any start.

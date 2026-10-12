@@ -601,21 +601,20 @@ export type HomePricingScope = {
   housePlanVersionId?: string
   communityId?: string
   requirePlanVersion: boolean
-  requirePlanPrice: boolean
 }
 
 /**
  * How a home prices its options — the one place that decides it. A production
- * home sells from its plan version's price sheet whether or not it sits in a
- * community, so it needs a pinned version and a price row for every item; a
- * community home needs its plan version. Anything else may price at the base.
+ * home, and any home in a community, prices against its pinned plan version, so
+ * it must have one; a plan row then outranks the option's own price, which
+ * stands for every plan the option has no row for. Anything else prices at the
+ * option's own price.
  */
 export function homePricingScope(home: { lot: { community_id: string | null; house_plan_version_id: string | null } | null; production: boolean }): HomePricingScope {
   return {
     housePlanVersionId: home.lot?.house_plan_version_id ?? undefined,
     communityId: home.lot?.community_id ?? undefined,
     requirePlanVersion: home.production || Boolean(home.lot?.community_id),
-    requirePlanPrice: home.production,
   }
 }
 
@@ -627,11 +626,10 @@ export async function resolveOptionPricing(opts: {
   /** Set for a home that sells from a plan price sheet: pricing without its plan version would silently quote base prices. */
   requirePlanVersion?: boolean
   /** Set for a production home: an item with no price for the plan version is refused, never priced at its base. */
-  requirePlanPrice?: boolean
 }): Promise<ResolvedOptionPricing[]> {
   const supabase = createServiceSupabaseClient()
   if (opts.items.some((item) => Boolean(item.optionId) === Boolean(item.packageId))) throw new Error("Choose exactly one option or package for each pricing item")
-  if ((opts.requirePlanVersion || opts.requirePlanPrice) && !opts.housePlanVersionId) throw new Error("This home has no pinned plan version; pin the plan version before pricing its options")
+  if (opts.requirePlanVersion && !opts.housePlanVersionId) throw new Error("This home has no pinned plan version; pin the plan version before pricing its options")
   const optionIds = [...new Set(opts.items.map((item) => item.optionId).filter((value): value is string => Boolean(value)))]
   const packageIds = [...new Set(opts.items.map((item) => item.packageId).filter((value): value is string => Boolean(value)))]
   type CatalogRow = { id: string; category_id?: string; parent_option_id?: string | null; community_id: string | null; price_cents: number; cost_cents: number | null; cost_code_id?: string | null; vendor?: string | null; sku?: string | null; lead_time_days?: number | null; is_available: boolean; is_archived: boolean }
@@ -738,9 +736,6 @@ export async function resolveOptionPricing(opts: {
       planPrice: pickPrice(null) ?? null,
       isCommunityOption: Boolean(option?.community_id ?? selectionPackage?.community_id),
     })
-    if (opts.requirePlanPrice && chosen.source !== "plan" && chosen.source !== "plan_community") {
-      throw new Error(item.optionId ? "This option has no price for this plan version" : "This package has no price for this plan version")
-    }
     const priceCents = Number(chosen.price_cents)
     const costCents = chosen.cost_cents == null ? null : Number(chosen.cost_cents)
     if (!Number.isInteger(priceCents) || priceCents < 0) throw new Error("A resolved option price is not a non-negative whole number of cents; reconcile the catalog before proceeding")

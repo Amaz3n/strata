@@ -237,12 +237,15 @@ async function closingRefusesAnInvoiceThatDiffersFromTheAuthorizedPrice(kit, exp
   const sale = await fx.agreementFor(kit, org, buyer)
   const closingId = fx.closingOf(kit, sale.projectId)
   await fx.clearToClose(kit, org, closingId, seed.isoDay(0))
-  // The agreement total drifts from the priced snapshot its invoice lines are built from.
-  kit.sql(`update public.contracts set total_cents = total_cents + ${input.driftCents} where id=${q(sale.contractId)}`, "supabase_admin")
+  // The agreement total drifts from the priced snapshot its invoice lines are built from. A signed
+  // agreement's price is bound by a trigger, so the corruption is simulated with triggers off.
+  const drift = (sign) => kit.sql(`begin; set local session_replication_role = replica;
+update public.contracts set total_cents = total_cents ${sign} ${input.driftCents} where id=${q(sale.contractId)}; commit;`, "supabase_admin")
+  drift("+")
   const refused = await refusal(() => fx.settleCall(kit, org.owner, closingId, seed.isoDay(0), "WIRE-DRIFT"))
   const afterRefusal = fx.closingEvidence(kit, org, closingId)
   const applicationsAfterRefusal = Number(kit.rows(`select count(*) n from public.payments where org_id=${q(org.orgId)} and metadata->>'customer_deposit_application'='true' and metadata->>'deposit_invoice_id'=${q(buyer.reservation.depositInvoiceId)}`)[0].n)
-  kit.sql(`update public.contracts set total_cents = total_cents - ${input.driftCents} where id=${q(sale.contractId)}`, "supabase_admin")
+  drift("-")
   await fx.settleCall(kit, org.owner, closingId, seed.isoDay(0), "WIRE-DRIFT").catch((error) => { if (!/^Closing is recorded; retry completion after resolving the statement: Missing R2/.test(error.message)) throw error })
   const settled = fx.closingEvidence(kit, org, closingId)
   equal(check, "settlement refuses while the invoice would not equal the authorized final price, creates nothing, and settles exactly the agreed price once the agreement is true again", expected.expected, {

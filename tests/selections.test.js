@@ -358,7 +358,7 @@ describe("how a home's selections are priced", () => {
     for (const lots of [[], [{ org_id: ORG, project_id: HOME, community_id: null, house_plan_version_id: id(30) }]]) {
       const { service } = harness({ lots })
       await service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE }))
-      assert.deepEqual(pricingScopes.map((scope) => [scope.requirePlanVersion, scope.requirePlanPrice]), [[true, true]])
+      assert.deepEqual(pricingScopes.map((scope) => scope.requirePlanVersion), [true])
     }
   })
 })

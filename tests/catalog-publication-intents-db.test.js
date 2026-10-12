@@ -208,3 +208,23 @@ test('server discovery applies community option/category override precedence wit
  await f.db.query('update selection_options set is_archived=true where id=$1',[id(71)]);const hidden=(await list()).rows[0].result;assert.ok(!hidden.items.some(row=>row.id===id(50)||row.id===id(71)))
  await f.db.query("insert into membership_permission_overrides(membership_id,permission_key,effect) select id,'selections.catalog.manage','deny' from memberships where user_id=$1",[f.actor]);await assert.rejects(list(),/lacks organization/)
 })
+test('a request the publisher would refuse is refused at registration, and a published request leaves the next save free',async t=>{
+ const f=await database(t)
+ // The migration also repairs the warranty courtesy reservation, whose row types must exist to load it.
+ await f.db.exec("create type audit_action as enum('insert','update','delete');create table project_warranty_coverage(id uuid);create table warranty_courtesy_reservations(id uuid);create table warranty_requests(id uuid);create table warranty_sla_targets(id uuid)")
+ await f.db.exec(migrationSql('20261012015000_catalog_publication_audit_action'))
+ const cell=patch=>({...f.prices,items:[{...f.prices.items[0],...patch}]})
+ await assert.rejects(f.register('prices',cell({housePlanVersionId:id(39)})),/released plan version/)
+ await f.db.query("update house_plans set status='archived' where id=$1",[id(30)])
+ await assert.rejects(f.register(),/not active/)
+ await f.db.query("update house_plans set status='active' where id=$1",[id(30)])
+ await f.db.query('update selection_options set is_archived=true where id=$1',[id(52)])
+ await assert.rejects(f.register('package',{...f.request,optionIds:[id(50),id(52)]},id(90)),/available options/)
+ assert.equal(await f.count('catalog_publication_claims'),0);assert.equal(await f.count('catalog_publication_intents'),0)
+ await f.register();assert.ok((await f.publishPrice()).rows[0].result.receiptId)
+ const published=(await f.db.query('select id,price_cents,is_available from selection_catalog_prices')).rows[0]
+ const next=cell({priceCents:456,expectedPrice:published})
+ assert.equal((await f.register('prices',next,id(81))).rows[0].result.status,'prepared')
+ assert.equal((await f.publishPrice(id(81),next)).rows[0].result.prices[0].price_cents,456)
+ assert.equal(await f.count('catalog_publication_claims'),0)
+})
