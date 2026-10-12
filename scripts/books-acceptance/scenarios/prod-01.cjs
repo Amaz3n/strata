@@ -11,11 +11,12 @@
 //   lot-fit-refuses-and-overrides-with-evidence   EP03-06  a home that does not fit stands only under an evidenced override
 //   production-pricing-never-guesses              EP03-07  no pinned version, no price; a plan row outranks the option's own
 //   sold-price-and-margin-are-locked              EP03-08  a signed price and its margin baselines never move
+//   plan-change-reaches-sold-homes                EP03-09  a new edition reaches each home only by an authorized decision
 //   invalid-configuration-explains-and-fixes      EP03-10  violations come back structured, fixes apply, locks hold
-//   plan-change-reaches-sold-homes                EP03-09  open: built by EP03-09
 //
-// The configuration-rules flag is switched on only by the last subcase, since an org
-// that has rules cannot switch it off again; the earlier subcases run without it.
+// The configuration-rules flag (and an org-wide second selection group) is switched on only
+// by the last subcase, since an org that has rules cannot switch it off again and every home
+// sold afterwards would carry the new group; the earlier subcases run without them.
 //
 // SQL is used only for what a subcase is not about and says so where it happens: the
 // flag row, an evidence file's record (the stack has no file storage), the session that
@@ -45,6 +46,11 @@ async function build(kit) {
   await seed.seedCommunity(kit, org)
   await seed.seedProduct(kit, org)
   await seed.takeDownTranche(kit, org)
+  // Several subcases release a home this week; the starts desk raises the week's even-flow
+  // target so none of them waits on the release-slot confirmation (not under test).
+  const monday = new Date(`${seed.isoDay(0)}T00:00:00Z`)
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7))
+  await kit.as(org.team.starts, () => app("even-flow").setReleaseSlot(org.communityId, monday.toISOString().slice(0, 10), { targetStarts: 10 }))
   org.uses = { next: 0 }
   return { org }
 }
@@ -63,19 +69,18 @@ function nextLot(org) {
 const one = (kit, sql) => kit.rows(sql)[0]
 const count = (kit, sql) => Number(kit.rows(`select count(*)::int n from (${sql}) t`)[0].n)
 
-/** A buyer reserves the next lot, pays the deposit and signs for `skus` on The Mangrove. */
-async function sell(kit, org, name, skus) {
-  const lot = nextLot(org)
+/** A buyer reserves the next lot (or `lot`), pays the deposit and signs for `skus` on The Mangrove (or `plan`, elevation A). */
+async function sell(kit, org, name, skus, { plan = org.plans[0], lot = nextLot(org) } = {}) {
   const swing = one(kit, `select swing from public.lots where id=${kit.q(lot.id)}`).swing
   const prospect = await seed.registerBuyer(kit, org, { name, email: `${name.toLowerCase().replace(/\W+/g, ".")}@acceptance.example.test` })
   const { reservation } = await seed.reserveLot(kit, org, { prospect, lotId: lot.id, depositCents: 2000000, receivedOn: "2026-06-06" })
-  const sale = await seed.signAgreement(kit, org, { reservationId: reservation.id, config: seed.configuration(org, { lotId: lot.id, plan: org.plans[0], swing, skus }) })
+  const sale = await seed.signAgreement(kit, org, { reservationId: reservation.id, config: seed.configuration(org, { lotId: lot.id, plan, swing, skus }) })
   return { lot, reservation, ...sale }
 }
 
 /** Sell, choose and confirm the design, clear the gates and release: a started home. */
-async function startedHome(kit, org, name, skus) {
-  const home = await sell(kit, org, name, skus)
+async function startedHome(kit, org, name, skus, options = {}) {
+  const home = await sell(kit, org, name, skus, options)
   await seed.chooseDesign(kit, org, { projectId: home.projectId })
   const gates = await seed.clearStartGates(kit, org, { lotId: home.lot.id, projectId: home.projectId })
   const release = await seed.releaseHome(kit, org, { packageId: gates.packageId, projectId: home.projectId })
@@ -96,7 +101,13 @@ async function dedicatedOption(kit, org, { sku, name, category, categoryId = nul
 }
 
 /** A plan with one takeoff, a released version, elevations A and B, made active; offered nowhere. */
-async function releasedPlan(kit, org, { code, name, heatedSqft, footprint = null }) {
+/** The plan's takeoff: one line per trade; `unitCosts` also records each line's manual unit cost (cents). */
+function takeoffLines(org, heatedSqft, { unitCosts = false } = {}) {
+  return seed.TRADES.map((trade) => ({ costCodeId: org.costCodeIds[trade.costCode], description: `${trade.vendor} scope`, quantity: trade.uom === "sf" ? heatedSqft : 1, uom: trade.uom,
+    ...(unitCosts ? { unitCostCents: trade.unitPriceDollars * 100 } : {}) }))
+}
+
+async function releasedPlan(kit, org, { code, name, heatedSqft, footprint = null, unitCosts = false }) {
   const plans = app("house-plans")
   const created = await kit.as(org.owner, () => plans.createHousePlan({ code, name, series: "Cypress Landing", heatedSqft, totalSqft: heatedSqft + 320, beds: 4, baths: 3, stories: 1, garageBays: 2,
     ...(footprint ? { footprintWidthFt: footprint.widthFt, footprintDepthFt: footprint.depthFt } : {}) }))
@@ -104,7 +115,7 @@ async function releasedPlan(kit, org, { code, name, heatedSqft, footprint = null
   for (const [index, [elevationCode, label]] of [["A", "Coastal"], ["B", "Craftsman"]].entries())
     elevationIds.push((await kit.as(org.owner, () => plans.upsertElevation(created.id, { code: elevationCode, name: label, sortOrder: index }))).id)
   const version = created.versions?.[0] ?? (await kit.as(org.owner, () => plans.listPlanVersions(created.id)))[0]
-  await kit.as(org.owner, () => plans.replaceTakeoffLines(version.id, seed.TRADES.map((trade) => ({ costCodeId: org.costCodeIds[trade.costCode], description: `${trade.vendor} scope`, quantity: trade.uom === "sf" ? heatedSqft : 1, uom: trade.uom }))))
+  await kit.as(org.owner, () => plans.replaceTakeoffLines(version.id, takeoffLines(org, heatedSqft, { unitCosts })))
   await kit.as(org.owner, () => plans.updatePlanVersion(version.id, { label: "Launch release", scheduleTemplateId: org.scheduleTemplateId, checklistTemplateIds: [], selectionCategoryIds: [] }))
   await kit.as(org.owner, () => plans.releasePlanVersion(version.id))
   await kit.as(org.owner, () => plans.updateHousePlan(created.id, { status: "active" }))
@@ -346,10 +357,8 @@ async function productionPricingNeverGuesses(kit, expected, check) {
   const home = async (name, lotId) => {
     const created = await kit.as(org.owner, () => projects.createProject({ input: { name, property_type: "production", status: "active", phase: "delivery", division_id: org.divisionId } }))
     await kit.as(org.owner, () => lots.attachProjectToLot(lotId, created.id))
-    // The owner opens the kitchen selection. (Not under test: the design coordinator holds
-    // selections.write but is refused this insert by project_selections RLS, which asks for
-    // project membership or org admin — lib/services/selections.ts createProjectSelection.)
-    const selection = await kit.as(org.owner, () => selections.createProjectSelection({ input: { project_id: created.id, category_id: org.categoryIds.Kitchen } }))
+    // The design coordinator opens the kitchen selection on a home in their division without being on its team.
+    const selection = await kit.as(org.team.design, () =>selections.createProjectSelection({ input: { project_id: created.id, category_id: org.categoryIds.Kitchen } }))
     return { projectId: created.id, selectionId: selection.id }
   }
   const unpinned = await home("Cypress Landing lot 61", ids["61"])
@@ -532,6 +541,118 @@ async function invalidConfigurationExplainsAndFixes(kit, expected, check) {
   return { orgId: org.orgId, projectId: home.projectId, lockedProjectId: locked.projectId }
 }
 
+// ---------------------------------------------------------------------------
+// 9. EP03-09: a new plan edition reaches the homes on the old one only by a plan.adopt
+//    holder's decision, home by home, by the path each home's state allows.
+
+/** Lots 12-20 bought in Books and developed, as the first tranche was (lot 11 is subcase 4's). */
+async function takeDownLaterLots(kit, org) {
+  const communities = app("communities"), lotsService = app("lots"), inventory = app("books/inventory")
+  const tranche = org.lots.slice(11, 20)
+  const takedown = await kit.as(org.team.land, () => communities.createLotTakedown(org.communityId, { name: "Tranche 2", communityPhaseId: org.phaseIds[1], scheduledDate: "2026-06-03", lotCount: tranche.length, pricePerLotCents: 7200000, depositCents: 0 }))
+  await kit.as(org.team.land, () => lotsService.bulkUpdateLots(org.communityId, { lotIds: tranche.map((row) => row.id), patch: { takedownId: takedown.id } }))
+  await kit.as(org.owner, () => inventory.acquireLandInventory({ date: "2026-06-03", allocations: tranche.map((row) => ({ lotId: row.id, amountCents: 7200000 })), cashAccountId: seed.glId(kit, org, "1000"), cashCents: 7200000 * tranche.length, debtInstrumentId: null, debtCents: 0, reference: "Cypress Landing tranche 2", evidenceUrl: `${seed.EVIDENCE}/tranche-2` }))
+  await kit.as(org.team.land, () => communities.closeLotTakedown(takedown.id, { actualDate: "2026-06-03" }))
+  await kit.as(org.team.land, () => lotsService.bulkUpdateLots(org.communityId, { lotIds: tranche.map((row) => row.id), patch: { status: "developed" } }))
+  return Object.fromEntries(tranche.map((row) => [row.lot_number, row]))
+}
+
+async function planChangeReachesSoldHomes(kit, expected, check) {
+  const { org } = await world(kit)
+  const plans = app("house-plans"), lots = app("lots"), sales = app("community-sales"), proposals = app("plan-change-proposals"), changeOrders = app("change-orders"), starts = app("starts")
+  // The Heron: its own plan, so its new edition moves no home another subcase sold. Its takeoff
+  // carries manual unit costs, the basis a review values the change on.
+  const heron = await releasedPlan(kit, org, { code: "HR1900", name: "The Heron", heatedSqft: 1900, unitCosts: true })
+  await kit.as(org.owner, () => sales.offerPlanInCommunity({ communityId: org.communityId, housePlanId: heron.id, basePriceCents: 41000000 }))
+  const later = await takeDownLaterLots(kit, org)
+  const narrow = await newLots(kit, org, [{ lotNumber: "71", dimensions: { widthFt: 40, depthFt: 120, frontSetbackFt: 20, rearSetbackFt: 15, sideSetbackFt: 5 } }, { lotNumber: "72" }])
+  const pin = (lotId) => kit.as(org.team.starts, () => lots.assignPlanToLot(lotId, { versionId: heron.versionId, elevationId: heron.elevationIds[0] }))
+
+  // Homes on v1 in every state: two unsold lots, a spec home, two contracted homes, a released home.
+  await pin(later["15"].id)
+  await pin(narrow["71"])
+  await pin(narrow["72"])
+  // A spec home: the starts desk opens the pinned lot's start package with no buyer, which creates its home.
+  const specPackage = await kit.as(org.team.starts, () => starts.openStartPackage(narrow["72"], { isFinanced: false }))
+  const adopted = await sell(kit, org, "Adopting Buyer", ["ST-GAR"], { plan: heron, lot: later["12"] })
+  const keeping = await sell(kit, org, "Keeping Buyer", ["ST-GAR"], { plan: heron, lot: later["13"] })
+  const released = await startedHome(kit, org, "Released Buyer", ["ST-GAR"], { plan: heron, lot: later["14"] })
+  const homes = { [later["15"].id]: "unsold lot 15", [narrow["71"]]: "unsold lot 71", [narrow["72"]]: "spec lot 72", [later["12"].id]: "contracted lot 12 (adopts)", [later["13"].id]: "contracted lot 13 (keeps)", [later["14"].id]: "released lot 14" }
+  const pinOf = (lotId) => { const row = one(kit, `select house_plan_version_id v from public.lots where id=${kit.q(lotId)}`); return row.v === heron.versionId ? "v1" : row.v === v2 ? "v2" : row.v }
+  // After the lots were pinned the plan's drawn footprint is recorded: lot 71 no longer fits it.
+  await kit.as(org.owner, () => plans.updateHousePlan(heron.id, { footprintWidthFt: 50, footprintDepthFt: 70 }))
+
+  // v2: framing grows by 50 sf (50 x $44 = $2,200 of manual takeoff cost).
+  const draft = await kit.as(org.owner, () => plans.createPlanVersion(heron.id, { copyFromVersionId: heron.versionId, label: "Larger lanai framing" }))
+  const v2 = draft.id
+  await kit.as(org.owner, () => plans.replaceTakeoffLines(v2, takeoffLines(org, 1950, { unitCosts: true })))
+  await kit.as(org.owner, () => plans.updatePlanVersion(v2, { label: "Larger lanai framing", scheduleTemplateId: org.scheduleTemplateId, checklistTemplateIds: [], selectionCategoryIds: [] }))
+  const release = await kit.as(org.owner, () => plans.releasePlanVersion(v2))
+  const observed = {
+    release: { version: release.version.version_number, status: release.version.status, homesOnEarlierVersions: release.homes_on_earlier_versions },
+    pinsAfterRelease: Object.fromEntries(Object.entries(homes).map(([lotId, label]) => [label, pinOf(lotId)])),
+  }
+
+  // The review: every home on v1, its state and what moving it costs.
+  const review = await kit.as(org.owner, () => proposals.createPlanChangeProposal({ planId: heron.id, toVersionId: v2, summary: "Larger lanai framing" }))
+  const homeOf = (dto, lotId) => dto.homes.find((home) => home.lotId === lotId)
+  const describeReview = (dto) => Object.fromEntries(dto.homes.map((home) => [homes[home.lotId] ?? home.lotLabel, { state: home.state, fromVersion: home.fromVersionNumber, costDeltaCents: home.costDeltaCents, priceDeltaCents: home.priceDeltaCents, decision: home.decision, allowed: home.allowedDecisions, path: home.path.kind }]))
+  observed.review = { toVersion: review.toVersionNumber, status: review.status, homes: describeReview(review) }
+  const decide = (actor, lotId, decision, extra = {}) => attempt(() => kit.as(actor, () => proposals.decidePlanChangeHome({ proposalHomeId: homeOf(review, lotId).id, decision, ...extra })))
+  observed.decideBeforeSubmission = await decide(org.team.purchasing, later["15"].id, "adopt")
+  await kit.as(org.owner, () => proposals.submitPlanChangeProposal(review.id))
+  observed.decideWithoutPlanAdopt = await decide(org.team.starts, later["15"].id, "adopt")
+
+  // Unsold: adoption re-pins at once; an adoption the lot no longer fits is refused.
+  observed.adoptUnsold = await decide(org.team.purchasing, later["15"].id, "adopt")
+  observed.adoptUnsoldThatNoLongerFits = await decide(org.team.purchasing, narrow["71"], "adopt")
+  observed.declineUnsold = await decide(org.team.purchasing, narrow["71"], "decline", { reason: "Keep the original edition on this lot" })
+
+  // Contracted: adoption drafts a change order to the buyer and leaves the agreement and the pin alone.
+  const agreement = () => one(kit, `select total_cents, snapshot from public.contracts where id=${kit.q(adopted.contractId)}`)
+  const signed = agreement()
+  observed.adoptContracted = await decide(org.owner, later["12"].id, "adopt", { priceDeltaCents: 300000 })
+  const current = await kit.as(org.owner, () => proposals.getPlanChangeReview(heron.id))
+  const changeOrderId = homeOf(current, later["12"].id).changeOrderId
+  const changeOrder = () => one(kit, `select status, requires_signature, client_visible, title, total_cents, metadata->'plan_adoption'->>'to_version_id' to_version from public.change_orders where id=${kit.q(changeOrderId)}`)
+  const drafted = changeOrder()
+  observed.changeOrder = { status: drafted.status, requiresBuyerSignature: drafted.requires_signature, title: drafted.title, totalCents: Number(drafted.total_cents), adoptsV2: drafted.to_version === v2 }
+  observed.beforeExecution = { pin: pinOf(later["12"].id), adoptedAt: Boolean(homeOf(current, later["12"].id).adoptedAt),
+    agreementUntouched: JSON.stringify(agreement()) === JSON.stringify(signed) }
+  // The buyer signs the amendment on paper; the owner records the executed change order.
+  await kit.as(org.owner, () => changeOrders.approveChangeOrder({ changeOrderId, approval: { signerName: "Adopting Buyer", signerEmail: "adopting.buyer@acceptance.example.test", note: "Signed at the design center" } }))
+  const executed = await kit.as(org.owner, () => proposals.getPlanChangeReview(heron.id))
+  observed.afterExecution = { changeOrder: changeOrder().status, pin: pinOf(later["12"].id), adoptedAt: Boolean(homeOf(executed, later["12"].id).adoptedAt),
+    agreementUntouched: JSON.stringify(agreement()) === JSON.stringify(signed) }
+
+  // Released: declining needs a reason, and keeps the home on the version it was released on.
+  observed.declineReleasedWithoutReason = (await decide(org.owner, later["14"].id, "decline", { reason: "no" })) === "allowed" ? "allowed" : "refused"
+  observed.declineReleased = await decide(org.owner, later["14"].id, "decline", { reason: "Framing is already underway on the original edition" })
+  observed.releasedHome = { pin: pinOf(later["14"].id), package: one(kit, `select status from public.start_packages where id=${kit.q(released.packageId)}`).status,
+    planGate: one(kit, `select g.status from public.start_package_gates g join public.start_gate_definitions d on d.id=g.gate_definition_id where g.start_package_id=${kit.q(released.packageId)} and d.key='plan_pinned'`).status }
+
+  // A contracted home whose move is declined still starts on its superseded version: the plan gate passes and the release completes.
+  observed.declineContracted = await decide(org.owner, later["13"].id, "decline", { reason: "Buyer keeps the edition they signed for" })
+  await seed.chooseDesign(kit, org, { projectId: keeping.projectId })
+  const keptGates = await seed.clearStartGates(kit, org, { lotId: later["13"].id, projectId: keeping.projectId })
+  const planGate = (gates) => gates.find((gate) => gate.key === "plan_pinned")?.status
+  observed.declinedContractedPlanGate = planGate(await kit.as(org.team.starts, () => starts.refreshAutoGates(keptGates.packageId)))
+  const keptRelease = await seed.releaseHome(kit, org, { packageId: keptGates.packageId, projectId: keeping.projectId })
+  observed.declinedContractedRelease = { package: keptRelease.released.status, pin: pinOf(later["13"].id) }
+
+  // Spec: deferred, it stays on v1 — and, undecided, its start package does not pass the plan gate.
+  observed.deferSpec = await decide(org.owner, narrow["72"], "defer", { reason: "Revisit at the next spec release" })
+  // The lot v2 no longer fits waits too; with no home pending, the review is decided.
+  observed.deferUnfitUnsold = await decide(org.team.purchasing, narrow["71"], "defer", { reason: "Needs a fit override before it can move" })
+  observed.deferredSpec = { pin: pinOf(narrow["72"]), planGate: planGate(await kit.as(org.team.starts, () => starts.refreshAutoGates(specPackage.id))) }
+
+  const final = await kit.as(org.owner, () => proposals.getPlanChangeReview(heron.id))
+  observed.final = { status: final.status, homes: Object.fromEntries(final.homes.map((home) => [homes[home.lotId] ?? home.lotLabel, { decision: home.decision, adopted: Boolean(home.adoptedAt), changeOrder: Boolean(home.changeOrderId), pin: pinOf(home.lotId) }])) }
+  observed.decisionsAudited = count(kit, `select 1 from public.audit_log where org_id=${kit.q(org.orgId)} and entity_type='plan_change_proposal_home' and action='update'`)
+  check.equal("releasing a new edition reports the homes on the old one and moves none; a review lists each with its state and cost delta; only a plan.adopt holder decides; unsold homes re-pin under the lot's rules, a contracted home moves only when its buyer's change order executes, a declined home keeps — and starts on — its version, a deferred one waits", expected.expected, observed)
+  return { orgId: org.orgId, proposalId: review.id, changeOrderId }
+}
+
 module.exports = {
   id: "PROD-01",
   subcases: {
@@ -542,6 +663,7 @@ module.exports = {
     "lot-fit-refuses-and-overrides-with-evidence": lotFitRefusesAndOverridesWithEvidence,
     "production-pricing-never-guesses": productionPricingNeverGuesses,
     "sold-price-and-margin-are-locked": soldPriceAndMarginAreLocked,
+    "plan-change-reaches-sold-homes": planChangeReachesSoldHomes,
     "invalid-configuration-explains-and-fixes": invalidConfigurationExplainsAndFixes,
   },
 }

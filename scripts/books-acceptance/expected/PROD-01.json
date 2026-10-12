@@ -1,6 +1,6 @@
 {
   "scenario": "PROD-01",
-  "reviewedFrom": "EP03-01, EP03-04, EP03-05, EP03-06, EP03-07, EP03-08 and EP03-10 (docs/enterprise-production/completion-checklist.json); EP03-09 is open (owner EP03-09). Code read: commits 7bb31046 (agreement price guard, home_margin_baselines), faa8a0b1 (imports offering), bd0a5ffa (configuration fixes), 9feb1fa8 (selection fence, group confirm in one write, atomic catalog publication only), 71a03ba0 (an option's own price stands for plans without a row), 57957f32 (product revisions, lot fit), 58f30173 (member edits move revisions). Migrations 20261012010000_selection_writes_revision_fence (read_project_selection_fence, apply_project_selection_writes under the home advisory lock), 20261012020000_home_margin_baselines (guard_binding_purchase_agreement_pricing, write-once baselines), 20261012030000_product_definition_revisions (revision bump/record triggers, append-only history), 20261012040000_lot_fit; lib/services/{home-product-revisions,selections,option-catalog,lots,plan-instantiation,imports,lot-fit,home-margin-baselines,production-reporting,configuration-rules}.ts; lib/selections/configuration-fixes.ts; lib/land/lot-fit.ts; lib/sales/plan-offering.ts; lib/financials/home-margin-baseline.ts. Fixture: one production builder from production-seed (productionBuilder, seedCommunity, seedProduct, takeDownTranche): Cypress Landing, lots 1-10 owned and developed (lots 1 and 6 carry a $15,000 premium and are not sold here), lots 11-20 controlled; The Mangrove (MG1650, version 1, elevations A Coastal / B Craftsman, base $385,000, trade cost $251,600) and The Palmetto offered; options ST-GAR $18,500 (cost $11,000), KT-QTZ $4,800 ($2,900), FL-LVP $7,200 ($4,300), EL-LGT $2,600 ($1,500), each priced per plan at its own price; group 'Interior selections' (Kitchen, Flooring, Electrical). Every sale here is The Mangrove elevation A, $20,000 deposit received.",
+  "reviewedFrom": "EP03-01, EP03-04, EP03-05, EP03-06, EP03-07, EP03-08, EP03-09 and EP03-10 (docs/enterprise-production/completion-checklist.json). Code read: commits 7bb31046 (agreement price guard, home_margin_baselines), faa8a0b1 (imports offering), bd0a5ffa (configuration fixes), 9feb1fa8 (selection fence, group confirm in one write, atomic catalog publication only), 71a03ba0 (an option's own price stands for plans without a row), 57957f32 (product revisions, lot fit), 58f30173 (member edits move revisions), 75560910 (plan change proposals: lib/services/plan-change-proposals.ts, lib/plans/plan-change-impact.ts, lib/services/plan-pin-review.ts, migration 20261012050000_plan_change_proposals), 74ec2fe7 (design studio opens selections in its divisions). Migrations 20261012010000_selection_writes_revision_fence (read_project_selection_fence, apply_project_selection_writes under the home advisory lock), 20261012020000_home_margin_baselines (guard_binding_purchase_agreement_pricing, write-once baselines), 20261012030000_product_definition_revisions (revision bump/record triggers, append-only history), 20261012040000_lot_fit; lib/services/{home-product-revisions,selections,option-catalog,lots,plan-instantiation,imports,lot-fit,home-margin-baselines,production-reporting,configuration-rules}.ts; lib/selections/configuration-fixes.ts; lib/land/lot-fit.ts; lib/sales/plan-offering.ts; lib/financials/home-margin-baseline.ts. Fixture: one production builder from production-seed (productionBuilder, seedCommunity, seedProduct, takeDownTranche): Cypress Landing, lots 1-10 owned and developed (lots 1 and 6 carry a $15,000 premium and are not sold here), lots 11-20 controlled; The Mangrove (MG1650, version 1, elevations A Coastal / B Craftsman, base $385,000, trade cost $251,600) and The Palmetto offered; options ST-GAR $18,500 (cost $11,000), KT-QTZ $4,800 ($2,900), FL-LVP $7,200 ($4,300), EL-LGT $2,600 ($1,500), each priced per plan at its own price; group 'Interior selections' (Kitchen, Flooring, Electrical). Every sale here is The Mangrove elevation A, $20,000 deposit received.",
   "subcases": {
     "version-history-pins-the-sold-home": {
       "derivation": "A buyer signs for ST-GAR and a dedicated structural option ST-LAN (Screened lanai, $12,000, its own category so editing it moves nothing another home sold). Execution captures the 'agreement' home_product_revisions row from the agreement's own configuration at the revisions current when it was created: plan version 1, elevation A r1, ST-GAR r1, ST-LAN r1 (each definition's INSERT is revision 1; setCatalogPrice writes selection_catalog_prices, not the option, so ST-GAR is still r1). The owner renames elevation A (name is a definition column of house_plan_elevations) -> r2; the design coordinator reprices ST-LAN to $12,500 (price_cents is a definition column) -> r2; a second save that changes only sort_order (not a definition column) leaves it at r2. listProductDefinitionHistory returns newest first: elevation r2 'Coastal (revised roofline)', r1 'Coastal'; option r2 1250000, r1 1200000. product_definition_revisions is append-only: an UPDATE even as postgres is refused by its guard trigger. The agreement record is written once and never rewritten, so it still reads r1/r1. readHomeProductRevisionStatus (no release record yet) compares the agreement record with today: summary 'plan v1 · elevation A r1 · 2 options'; changes elevation 1->2 and ST-LAN 1->2 (elevation first, then options by id). The design picks are chosen and confirmed (chooseDesign), gates cleared and the start released; the release capture reads the lot's pinned version and elevation and the live (confirmed/ordered/received) selections at today's revisions: elevation r2, ST-GAR r1, ST-LAN r2, KT-QTZ/FL-LVP/EL-LGT r1 — five options. The agreement record is unchanged by release. Status now reads the release record: 'plan v1 · elevation A r2 · 5 options', no changes. A later reprice of ST-LAN ($13,000) moves it to r3, and status reports exactly that: option ST-LAN 2->3. One record per stage.",
@@ -319,7 +319,7 @@
       }
     },
     "production-pricing-never-guesses": {
-      "derivation": "Two production homes made by the owner and attached to new developed lots: lot 61 with no plan pinned, lot 62 pinned to The Mangrove v1 beforehand (assignPlanToLot). Each gets a Kitchen selection. KT-PLN has its own price $1,000 and a Mangrove v1 plan row $900; KT-OWN has only its own price $550. readHomePricingScope makes a production home requirePlanVersion; on lot 61 there is no version, so resolveOptionPricing refuses 'This home has no pinned plan version; pin the plan version before pricing its options' and the selection stays unchosen and 'pending'; the resolver itself refuses the same way with a production scope and no version. On lot 62, chooseResolvedPrice ranks community row > plan row > the option's own price: KT-PLN snapshots 90000 (source 'plan'), KT-OWN 55000 (source 'option_base', the own price standing for a plan with no row).",
+      "derivation": "Two production homes made by the owner and attached to new developed lots: lot 61 with no plan pinned, lot 62 pinned to The Mangrove v1 beforehand (assignPlanToLot). Each gets a Kitchen selection, opened by the design coordinator (no team membership needed in their division, 74ec2fe7). KT-PLN has its own price $1,000 and a Mangrove v1 plan row $900; KT-OWN has only its own price $550. readHomePricingScope makes a production home requirePlanVersion; on lot 61 there is no version, so resolveOptionPricing refuses 'This home has no pinned plan version; pin the plan version before pricing its options' and the selection stays unchosen and 'pending'; the resolver itself refuses the same way with a production scope and no version. On lot 62, chooseResolvedPrice ranks community row > plan row > the option's own price: KT-PLN snapshots 90000 (source 'plan'), KT-OWN 55000 (source 'option_base', the own price standing for a plan with no row).",
       "inputs": {
         "KT-PLN": {
           "ownCents": 100000,
@@ -426,6 +426,201 @@
           "originalMarginPercent": 33.02,
           "revenueCents": 41250000
         }
+      }
+    },
+    "plan-change-reaches-sold-homes": {
+      "derivation": "A dedicated plan, The Heron (HR1900, 1,900 sf, offered in Cypress Landing at $410,000), released as v1 with a takeoff that carries manual unit costs (the trade prices: framing $44/sf, the rest lump sums). Lots 12-20 are taken down and developed. On v1: unsold lot 15 and unsold lot 71 (40 x 120, setbacks 20/15/5) pinned by the starts coordinator; spec lot 72 pinned, then its start package opened with no buyer (which creates the home); contracted lots 12 and 13 (signed agreements, ST-GAR); lot 14 sold and released. The plan's footprint is then recorded as 50 x 70: lot 71 builds only 30 ft wide, the others are unmeasured or 52-55 x 115 with no setbacks. v2 copies v1 with framing at 1,950 sf; releasePlanVersion supersedes v1 and reports 6 homes on earlier editions without moving any (all six still on v1). createPlanChangeProposal lists the six with their state by classifyAffectedHome (released > binding agreement > has a home > none): 15 and 71 unsold, 72 spec, 12 and 13 contracted, 14 released; each from v1 with cost delta = (1,950 - 1,900) x 4,400 = 220,000 and price delta 0; unsold/spec may adopt or defer (path repin), contracted/released may adopt, decline or defer (path change_order). A plan.adopt holder deciding before submission is told 'Submit the review before deciding homes.'; after the owner submits, the starts coordinator (no plan.adopt) is refused 'Missing permission: plan.adopt'. The purchasing manager (plan.adopt) adopts lot 15: it re-pins to v2 at once. Adopting lot 71 is refused by the lot-fit rule every pin follows, and an unsold lot cannot be declined (only adopt/defer). The owner adopts contracted lot 12 with a $3,000 amendment: a draft change order 'Plan revision: Plan HR1900 v1 → v2', requiring the buyer's signature, total 300000, carrying plan_adoption to v2; the lot is still on v1, not adopted, and the agreement's total and snapshot are byte-identical. The owner records the executed change order (approveChangeOrder, buyer's offline signature): applyPlanAdoptionFromChangeOrder moves lot 12 to v2 and marks it adopted; the agreement is still untouched. Declining released lot 14 needs a reason of 10+ characters (a two-character one is refused); with one it stays on v1, its package stays released and its plan gate passed. Contracted lot 13 is declined; its design is chosen and its gates cleared on superseded v1: the plan gate passes (a superseded pin kept by a review decline, starts.ts) and the release completes on v1. Spec lot 72 is deferred and stays on v1; undecided, its open package's plan gate is not passed ('pending'). Lot 71 is deferred, so no home is pending and the review is 'decided'. Seven decision audits: five decisions recorded, the executed adoption, and lot 71's deferral.",
+      "inputs": {
+        "plan": "HR1900 v1 -> v2 (framing 1,900 -> 1,950 sf at $44)",
+        "homes": {
+          "15": "unsold",
+          "71": "unsold, no longer fits",
+          "72": "spec",
+          "12": "contracted, adopts (+$3,000 amendment)",
+          "13": "contracted, declines then releases",
+          "14": "released, declines"
+        }
+      },
+      "expected": {
+        "release": {
+          "version": 2,
+          "status": "released",
+          "homesOnEarlierVersions": 6
+        },
+        "pinsAfterRelease": {
+          "unsold lot 15": "v1",
+          "unsold lot 71": "v1",
+          "spec lot 72": "v1",
+          "contracted lot 12 (adopts)": "v1",
+          "contracted lot 13 (keeps)": "v1",
+          "released lot 14": "v1"
+        },
+        "review": {
+          "toVersion": 2,
+          "status": "draft",
+          "homes": {
+            "contracted lot 12 (adopts)": {
+              "state": "contracted",
+              "fromVersion": 1,
+              "costDeltaCents": 220000,
+              "priceDeltaCents": 0,
+              "decision": "pending",
+              "allowed": [
+                "adopt",
+                "decline",
+                "defer"
+              ],
+              "path": "change_order"
+            },
+            "contracted lot 13 (keeps)": {
+              "state": "contracted",
+              "fromVersion": 1,
+              "costDeltaCents": 220000,
+              "priceDeltaCents": 0,
+              "decision": "pending",
+              "allowed": [
+                "adopt",
+                "decline",
+                "defer"
+              ],
+              "path": "change_order"
+            },
+            "released lot 14": {
+              "state": "released",
+              "fromVersion": 1,
+              "costDeltaCents": 220000,
+              "priceDeltaCents": 0,
+              "decision": "pending",
+              "allowed": [
+                "adopt",
+                "decline",
+                "defer"
+              ],
+              "path": "change_order"
+            },
+            "unsold lot 15": {
+              "state": "unsold",
+              "fromVersion": 1,
+              "costDeltaCents": 220000,
+              "priceDeltaCents": 0,
+              "decision": "pending",
+              "allowed": [
+                "adopt",
+                "defer"
+              ],
+              "path": "repin"
+            },
+            "unsold lot 71": {
+              "state": "unsold",
+              "fromVersion": 1,
+              "costDeltaCents": 220000,
+              "priceDeltaCents": 0,
+              "decision": "pending",
+              "allowed": [
+                "adopt",
+                "defer"
+              ],
+              "path": "repin"
+            },
+            "spec lot 72": {
+              "state": "spec",
+              "fromVersion": 1,
+              "costDeltaCents": 220000,
+              "priceDeltaCents": 0,
+              "decision": "pending",
+              "allowed": [
+                "adopt",
+                "defer"
+              ],
+              "path": "repin"
+            }
+          }
+        },
+        "decideBeforeSubmission": "Submit the review before deciding homes.",
+        "decideWithoutPlanAdopt": "Missing permission: plan.adopt",
+        "adoptUnsold": "allowed",
+        "adoptUnsoldThatNoLongerFits": "This home does not fit the lot: The plan is 50 ft wide; the lot builds 30 ft between its side setbacks. Change the configuration, or record a fit override with evidence.",
+        "declineUnsold": "A home that is not sold yet is sold on the current edition. Adopt it or defer it.",
+        "adoptContracted": "allowed",
+        "changeOrder": {
+          "status": "draft",
+          "requiresBuyerSignature": true,
+          "title": "Plan revision: Plan HR1900 v1 → v2",
+          "totalCents": 300000,
+          "adoptsV2": true
+        },
+        "beforeExecution": {
+          "pin": "v1",
+          "adoptedAt": false,
+          "agreementUntouched": true
+        },
+        "afterExecution": {
+          "changeOrder": "approved",
+          "pin": "v2",
+          "adoptedAt": true,
+          "agreementUntouched": true
+        },
+        "declineReleasedWithoutReason": "refused",
+        "declineReleased": "allowed",
+        "releasedHome": {
+          "pin": "v1",
+          "package": "released",
+          "planGate": "passed"
+        },
+        "declineContracted": "allowed",
+        "declinedContractedPlanGate": "passed",
+        "declinedContractedRelease": {
+          "package": "released",
+          "pin": "v1"
+        },
+        "deferSpec": "allowed",
+        "deferUnfitUnsold": "allowed",
+        "deferredSpec": {
+          "pin": "v1",
+          "planGate": "pending"
+        },
+        "final": {
+          "status": "decided",
+          "homes": {
+            "contracted lot 12 (adopts)": {
+              "decision": "adopt",
+              "adopted": true,
+              "changeOrder": true,
+              "pin": "v2"
+            },
+            "contracted lot 13 (keeps)": {
+              "decision": "decline",
+              "adopted": false,
+              "changeOrder": false,
+              "pin": "v1"
+            },
+            "released lot 14": {
+              "decision": "decline",
+              "adopted": false,
+              "changeOrder": false,
+              "pin": "v1"
+            },
+            "unsold lot 15": {
+              "decision": "adopt",
+              "adopted": true,
+              "changeOrder": false,
+              "pin": "v2"
+            },
+            "unsold lot 71": {
+              "decision": "defer",
+              "adopted": false,
+              "changeOrder": false,
+              "pin": "v1"
+            },
+            "spec lot 72": {
+              "decision": "defer",
+              "adopted": false,
+              "changeOrder": false,
+              "pin": "v1"
+            }
+          }
+        },
+        "decisionsAudited": 7
       }
     },
     "invalid-configuration-explains-and-fixes": {
@@ -577,11 +772,6 @@
           "Kitchen": "KT-LAM"
         }
       }
-    },
-    "plan-change-reaches-sold-homes": {
-      "status": "NOT_IMPLEMENTED",
-      "owner": "EP03-09",
-      "reason": "EP03-09 (plan change proposals reaching sold homes) is being built in product code by another workstream; this subcase is written against it once it lands."
     }
   }
 }

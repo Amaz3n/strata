@@ -97,6 +97,17 @@ function ledger(supabase) {
   return supabase.store.projects[0].metadata.plan_instantiation ?? {}
 }
 
+test("a superseded version is built only where a plan change review kept the home on it", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.house_plan_versions[0].status = "superseded"
+  harness.supabase.store.plan_change_proposal_homes = []
+  await assert.rejects(harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"])), /Only released plan versions/)
+
+  harness.supabase.store.plan_change_proposal_homes.push({ id: "review-home-1", org_id: ORG, lot_id: LOT, from_version_id: VERSION_ONE, decision: "decline" })
+  await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))
+  assert.equal(harness.calls.budgets.length, 1)
+})
+
 test("instantiation records what it produced, and a repeat is refused by default", async () => {
   const harness = buildInstantiationHarness()
   const first = await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))

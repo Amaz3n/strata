@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { planDrawingCopyTransactionsEnabled, publishPlanDrawingCopy } from "@/lib/services/plan-drawing-copy";
 import { z } from "zod";
@@ -463,8 +464,14 @@ async function loadInstantiationContext(
     throw new Error("Plan version not found");
   if (lotResult.data.project_id !== input.projectId)
     throw new Error("Lot is not linked to this project");
+  // A superseded version is built only where a plan change review decided to
+  // keep this home on it (the same rule the plan gate and the release apply).
+  const keptByReview =
+    versionResult.data.status === "superseded" &&
+    (await isPlanPinKeptByReview(context.supabase, context.orgId, lotResult.data.id, versionResult.data.id));
   if (
     versionResult.data.status !== "released" &&
+    !keptByReview &&
     !(input.dryRun && versionResult.data.status === "draft")
   ) {
     throw new Error("Only released plan versions can be instantiated");

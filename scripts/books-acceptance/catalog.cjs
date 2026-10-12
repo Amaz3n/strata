@@ -70,9 +70,6 @@ const OPEN_SUBCASES = {
     "division-scoped-variance-report-matches-the-organisation-report": "EP08-12",
     "variance-report-labels-the-superintendent": "EP08-12",
   },
-  "PROD-01": {
-    "plan-change-reaches-sold-homes": "EP03-09",
-  },
 }
 
 module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, OPEN_SUBCASES, PRODUCTION }
