@@ -462,8 +462,9 @@ Organization → Security). Arc signs everyone in itself; there is no SSO.
   read the factor or the policy, the request is refused with a retry message;
   it never passes unchallenged.
 - **Recovery.** A member who loses their phone asks an admin to reset their
-  two-factor from the team list. The reset signs them out everywhere and they
-  set it up again at their next sign-in. Only someone holding at least the
+  two-factor from the team list. The reset ends all of their sessions (none
+  can be refreshed, so an open tab ends when its sign-in token does, within the
+  hour) and they set it up again at their next sign-in. Only someone holding at least the
   member's authority can reset it, and every reset is recorded. A sole admin
   who loses their phone is reset by Arc support, which first opens the
   organization through a stated, time-limited grant the owner can see.

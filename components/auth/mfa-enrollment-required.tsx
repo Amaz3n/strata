@@ -34,7 +34,7 @@ export function MfaEnrollmentRequired() {
         </p>
       </div>
 
-      <TwoFactorField />
+      <TwoFactorField layout="stacked" />
 
       <div className="grid grid-cols-[1fr_auto] gap-2">
         <Button type="button" onClick={() => window.location.assign("/")}>

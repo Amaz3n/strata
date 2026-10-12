@@ -91,7 +91,8 @@ function Stepper({ step }: { step: SetupStep }) {
   )
 }
 
-export function TwoFactorField() {
+/** `stacked` for narrow surfaces (the required-setup page); settings use the split row. */
+export function TwoFactorField({ layout = "split" }: { layout?: "split" | "stacked" }) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [factor, setFactor] = useState<EnrolledFactor | null>(null)
@@ -247,6 +248,7 @@ export function TwoFactorField() {
     <SettingsField
       label="Two-factor authentication"
       hint="Add a one-time code from your phone on top of your password."
+      layout={layout}
     >
       {loading ? (
         <Skeleton className="h-8 w-40 rounded-none" />

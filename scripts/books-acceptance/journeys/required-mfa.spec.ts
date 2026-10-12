@@ -58,8 +58,8 @@ function wrongCode(secret: string) {
   return String(candidate).padStart(6, "0")
 }
 
-/** Signs in through the two-step form and returns where the app sent the person. */
-async function signInTo(page: Page, email: string, password: string) {
+/** Fills the two-step sign-in form and submits the password. */
+async function submitPassword(page: Page, email: string, password: string) {
   await page.goto("/auth/signin")
   const emailField = page.getByRole("textbox", { name: "Work email" })
   await emailField.fill(email)
@@ -71,6 +71,11 @@ async function signInTo(page: Page, email: string, password: string) {
     await expect(passwordField).toHaveValue(password, { timeout: 1_000 })
   }).toPass()
   await page.getByRole("button", { name: "Sign in" }).click()
+}
+
+/** Signs in a person who owes no code and returns where the app sent them. */
+async function signInTo(page: Page, email: string, password: string) {
+  await submitPassword(page, email, password)
   await page.waitForURL((url) => !url.pathname.startsWith("/auth/signin"))
   await page.waitForLoadState("networkidle")
   return new URL(page.url()).pathname
@@ -94,7 +99,8 @@ async function enrollAuthenticator(page: Page) {
   // A complete code verifies on its own; the button is the fallback if it did not.
   const verify = dialog.getByRole("button", { name: "Verify and enable" })
   await expect(async () => {
-    if (await verify.isEnabled().catch(() => false)) await verify.click()
+    // The button is gone once the code verified; never wait on it.
+    if ((await verify.count()) > 0 && (await verify.isEnabled())) await verify.click()
     await expect(dialog).toBeHidden({ timeout: 3_000 })
   }).toPass({ timeout: 30_000 })
   await expect(page.getByText("Enabled", { exact: true })).toBeVisible()
@@ -198,35 +204,45 @@ commit;`)
     await memberPage.getByRole("button", { name: new RegExp(member.name) }).first().click()
     await memberPage.getByRole("menuitem", { name: "Log out" }).click()
     await memberPage.waitForURL(/\/auth\/signin/)
-    expect(await signInTo(memberPage, member.email, password), "a member with a factor is challenged at sign-in").toBe("/auth/mfa")
-    await expect(memberPage.getByRole("heading", { name: "Two-factor verification" })).toBeVisible()
+    // The code is asked for on the sign-in page itself, before any session reaches the app.
+    await submitPassword(memberPage, member.email, password)
+    await expect(memberPage.getByRole("heading", { name: "Verify it's you" }), "a member with a factor is challenged at sign-in").toBeVisible()
     await memberPage.locator("[data-input-otp]").fill(wrongCode(memberSecret))
-    await expect(memberPage.getByText(/invalid/i)).toBeVisible()
-    await expect(memberPage).toHaveURL(/\/auth\/mfa$/)
+    await expect(memberPage.getByText(/invalid/i).first()).toBeVisible()
+    await expect(memberPage).toHaveURL(/\/auth\/signin/)
+    // The password alone is not enough: the app sends the half-signed-in session to the code page.
     await memberPage.goto("/projects")
     await expect(memberPage, "a refused code does not open the app").toHaveURL(/\/auth\/mfa$/)
+    await expect(memberPage.getByRole("heading", { name: "Two-factor verification" })).toBeVisible()
     await memberPage.locator("[data-input-otp]").fill(await freshCode(memberSecret))
     await memberPage.waitForURL((url) => !url.pathname.startsWith("/auth/"))
     await expectInApp(memberPage, "/projects")
 
     // 5. Recovery: the owner resets the member's two-factor from the team list.
     await page.goto("/settings?tab=team")
-    await page.getByRole("button", { name: `Actions for ${member.name}` }).click()
-    await page.getByRole("menuitem", { name: "Reset two-factor" }).click()
+    // The row menu can be clicked before it hydrates; open it until the item shows.
+    const resetItem = page.getByRole("menuitem", { name: "Reset two-factor" })
+    await expect(async () => {
+      if (!(await resetItem.isVisible())) await page.getByRole("button", { name: `Actions for ${member.name}` }).click({ timeout: 5_000 })
+      await expect(resetItem).toBeVisible({ timeout: 2_000 })
+    }).toPass({ timeout: 30_000 })
+    await resetItem.click()
     const confirm = page.getByRole("alertdialog", { name: `Reset two-factor for ${member.name}?` })
     await confirm.getByRole("button", { name: "Reset", exact: true }).click()
     await expect(page.getByText("Two-factor reset — they re-enroll at next sign-in")).toBeVisible()
     const membershipId = rows<{ id: string }>(`select id from public.memberships where org_id='${org.id}' and user_id='${member.id}'`)[0].id
     expect(rows<{ factors: number }>(`select count(*)::int factors from auth.mfa_factors where user_id='${member.id}'`)).toEqual([{ factors: 0 }])
-    expect(rows<{ after: unknown }>(`select after_data->'mfa_factor_count' after from public.audit_log where org_id='${org.id}' and entity_type='membership' and entity_id='${membershipId}' and after_data ? 'mfa_factor_count'`))
-      .toEqual([{ after: 0 }])
-    expect(rows<{ actor: string }>(`select actor_user_id actor from public.events where org_id='${org.id}' and event_type='member_mfa_reset' and entity_id='${membershipId}'`))
-      .toEqual([{ actor: owner.id }])
+    // The audit row names who reset it; the event (which carries no actor) marks that it happened.
+    expect(rows<{ after: unknown; actor: string }>(`select after_data->'mfa_factor_count' after, actor_user_id actor from public.audit_log where org_id='${org.id}' and entity_type='membership' and entity_id='${membershipId}' and after_data ? 'mfa_factor_count'`))
+      .toEqual([{ after: 0, actor: owner.id }])
+    expect(rows<{ n: number }>(`select count(*)::int n from public.events where org_id='${org.id}' and event_type='member_mfa_reset' and entity_id='${membershipId}'`))
+      .toEqual([{ n: 1 }])
     ownerErrors()
 
-    // The reset revoked the member's sessions: their next navigation is signed out.
-    await memberPage.goto("/projects")
-    await expect(memberPage, "the member's session ends with the reset").toHaveURL(/\/auth\/signin/)
+    // The reset revoked the member's sessions: none can be refreshed, so the open tab
+    // ends when its current token does (within the hour). They sign in again now.
+    expect(rows<{ n: number }>(`select count(*)::int n from auth.sessions where user_id='${member.id}'`), "the reset revokes every session").toEqual([{ n: 0 }])
+    await memberPage.context().clearCookies()
     expect(await signInTo(memberPage, member.email, password), "with no factor left, the member enrolls again").toBe("/auth/mfa/enroll")
     memberSecret = await enrollFromRequiredPage(memberPage)
     await expectInApp(memberPage, "/projects")
