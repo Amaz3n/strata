@@ -142,3 +142,44 @@ test("a division-limited member reads and writes fit records only on their divis
   const { rowCount } = await as(northLead, (tx) => tx.query("delete from lot_allowed_elevations where lot_id = $1", [org.pineLot.id]))
   assert.equal(rowCount, 0)
 })
+
+const REPLACE_OVERRIDE = `
+  select public.replace_lot_fit_override(
+    p_org_id => $1, p_lot_id => $2, p_house_plan_id => $3, p_house_plan_elevation_id => $4, p_swing => $5,
+    p_violations => $6::jsonb, p_reason => $7, p_evidence_file_id => $8) as value`
+
+function replaceOverride(tx, row) {
+  return tx.query(REPLACE_OVERRIDE, [
+    row.org_id, row.lot_id, row.house_plan_id, row.house_plan_elevation_id, row.swing, row.violations, row.reason, row.evidence_file_id,
+  ])
+}
+
+test("replacing an override revokes the old one and records the new one together, or does neither", async (t) => {
+  const org = await fitOrg(t)
+  const as = (userId, fn) => asRole(org.db, { role: "authenticated", userId }, fn)
+  const live = async () => (await org.db.query(
+    "select id, reason from lot_fit_overrides where lot_id = $1 and revoked_at is null", [org.oakLot.id],
+  )).rows
+  const { rows: [{ value: first }] } = await as(org.ownerId, (tx) => replaceOverride(tx, overrideRow(org, org.oakLot, org.ownerId)))
+  assert.deepEqual(first.replaced, [])
+  assert.equal(first.override.approved_by, org.ownerId)
+
+  // The new override is refused (no reason given): the old one stays live.
+  await assert.rejects(
+    as(org.ownerId, (tx) => replaceOverride(tx, overrideRow(org, org.oakLot, org.ownerId, { reason: "short" }))),
+    /lot_fit_overrides_reason_check/,
+  )
+  assert.deepEqual(await live(), [{ id: first.override.id, reason: "Variance granted by the county" }])
+
+  const { rows: [{ value: second }] } = await as(org.ownerId, (tx) =>
+    replaceOverride(tx, overrideRow(org, org.oakLot, org.ownerId, { reason: "Survey shows the corner pin moved" })))
+  assert.deepEqual(second.replaced, [first.override.id])
+  assert.deepEqual(await live(), [{ id: second.override.id, reason: "Survey shows the corner pin moved" }])
+
+  const seller = await member(org.db, org.orgId, { role: "org_sales_agent" })
+  await assert.rejects(as(seller, (tx) => replaceOverride(tx, overrideRow(org, org.oakLot, seller))), /Missing permission: lot.fit_override/)
+  // It runs as the caller, so the division wall still stands.
+  const northBuyer = await member(org.db, org.orgId, { role: "org_purchasing_manager", divisions: [org.north.id] })
+  await assert.rejects(as(northBuyer, (tx) => replaceOverride(tx, overrideRow(org, org.pineLot, northBuyer))), /row-level security/)
+  assert.deepEqual(await live(), [{ id: second.override.id, reason: "Survey shows the corner pin moved" }])
+})

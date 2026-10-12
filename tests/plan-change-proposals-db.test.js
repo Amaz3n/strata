@@ -142,3 +142,35 @@ test("a division-limited member reads and decides only the homes on their divisi
   ))
   assert.equal(rowCount, 0)
 })
+
+test("an adoption and its change order are recorded by the server, never written by a member", async (t) => {
+  const org = await reviewOrg(t)
+  const project = await insert(org.db, "projects", { org_id: org.orgId, name: "Oak 2" })
+  const lot = await insert(org.db, "lots", {
+    org_id: org.orgId, community_id: org.oakLot.community_id, lot_number: "Oak 2", project_id: project.id,
+    house_plan_id: org.plan.id, house_plan_version_id: org.v1.id,
+  })
+  const sold = await insert(org.db, "plan_change_proposal_homes", {
+    org_id: org.orgId, proposal_id: org.review.id, lot_id: lot.id, project_id: project.id, from_version_id: org.v1.id, home_state: "contracted",
+  })
+  const changeOrder = await insert(org.db, "change_orders", { org_id: org.orgId, project_id: project.id, title: "Plan revision" })
+  const as = (fn) => asRole(org.db, { role: "authenticated", userId: org.ownerId }, fn)
+  await as((tx) => tx.query(
+    "update plan_change_proposal_homes set decision = 'adopt', decided_by = $2, decided_at = now() where id = $1",
+    [sold.id, org.ownerId],
+  ))
+
+  for (const forge of [
+    "update plan_change_proposal_homes set adopted_at = now() where id = $1",
+    `update plan_change_proposal_homes set change_order_id = '${changeOrder.id}' where id = $1`,
+  ]) {
+    await assert.rejects(as((tx) => tx.query(forge, [sold.id])), /recorded by the server/)
+  }
+
+  await asRole(org.db, { role: "service_role" }, (tx) => tx.query(
+    "update plan_change_proposal_homes set change_order_id = $2, adopted_at = now() where id = $1",
+    [sold.id, changeOrder.id],
+  ))
+  const { rows } = await org.db.query("select change_order_id, adopted_at is not null as adopted from plan_change_proposal_homes where id = $1", [sold.id])
+  assert.deepEqual(rows, [{ change_order_id: changeOrder.id, adopted: true }])
+})

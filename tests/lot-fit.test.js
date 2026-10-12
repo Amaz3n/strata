@@ -130,7 +130,25 @@ describe("lot fit service", () => {
         lot_fit_overrides: overrides,
         files,
       },
+      rpc: { replace_lot_fit_override: replaceOverride },
     })
+  }
+
+  /** `replace_lot_fit_override`: revoke the live override for the configuration and record the new one, together. */
+  function replaceOverride(args, store) {
+    const now = new Date().toISOString()
+    const live = store.lot_fit_overrides.filter((row) =>
+      row.lot_id === args.p_lot_id && row.house_plan_id === args.p_house_plan_id && row.house_plan_elevation_id === args.p_house_plan_elevation_id
+      && row.swing === args.p_swing && !row.revoked_at)
+    for (const row of live) Object.assign(row, { revoked_at: now, revoked_by: ACTOR })
+    const recorded = {
+      id: id(90 + store.lot_fit_overrides.length), org_id: args.p_org_id, lot_id: args.p_lot_id, house_plan_id: args.p_house_plan_id,
+      house_plan_elevation_id: args.p_house_plan_elevation_id, swing: args.p_swing, violations: args.p_violations, reason: args.p_reason,
+      evidence_file_id: args.p_evidence_file_id, approved_by: ACTOR, approved_at: now, revoked_at: null,
+    }
+    store.lot_fit_overrides.push(recorded)
+    const { org_id: _org, revoked_at: _revoked, ...override } = recorded
+    return { data: { override, replaced: live.map((row) => row.id) }, error: null }
   }
 
   const override = (extra = {}) => ({

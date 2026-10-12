@@ -112,6 +112,24 @@ test("a selection records the revision of the option it chose, and keeps it when
   assert.equal(await revision(), null)
 })
 
+test("a selection records the revision of the package it chose, and keeps it when the package is revised", async (t) => {
+  const { db, orgId, project, kitchen } = await home(t)
+  const pkg = await insert(db, "selection_packages", { org_id: orgId, name: "Chef's kitchen", price_cents: 12_000_00 })
+  await db.query("update selection_packages set price_cents = 1300000 where id = $1", [pkg.id])
+
+  await apply(db, orgId, project, [write(kitchen, { package_id: pkg.id })])
+  await db.query("update selection_packages set price_cents = 1400000 where id = $1", [pkg.id])
+  assert.equal((await db.query("select revision from selection_packages where id = $1", [pkg.id])).rows[0].revision, 3)
+  await apply(db, orgId, project, [{ id: kitchen.id, status: "confirmed", confirmed_at: "2026-10-11T09:00:00Z" }])
+
+  const revision = async () => (await db.query("select selected_package_revision from project_selections where id = $1", [kitchen.id])).rows[0].selected_package_revision
+  assert.equal(await revision(), 2)
+  await db.query("update project_selections set selected_package_revision = 7 where id = $1", [kitchen.id])
+  assert.equal(await revision(), 2)
+  await apply(db, orgId, project, [{ id: kitchen.id, package_id: null }])
+  assert.equal(await revision(), null)
+})
+
 test("a write without the fence it was validated on is refused", async (t) => {
   const { db, orgId, project, kitchen } = await home(t)
   const { catalogRevision } = await fence(db, orgId, project)

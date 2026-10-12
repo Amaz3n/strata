@@ -7,11 +7,21 @@
  * against these numbers, so they are computed once, here, from what was true
  * at capture, in integer cents.
  *
- * A cost that is not known is recorded as unknown, never guessed: a home sold
- * before its budget exists has no base cost at agreement, and an option the
+ * A home is usually sold before its budget exists, so its agreement baseline
+ * is costed from an estimate: the takeoff of the plan version it was sold on
+ * (immutable once released), priced the way that takeoff becomes a budget at
+ * release — vendor price agreement, else the line's own unit cost, else the
+ * cost code's default — as of the sale date. The baseline records which basis
+ * it used, so an estimate is never mistaken for a committed budget.
+ *
+ * A cost that is not known is recorded as unknown, never guessed: a takeoff
+ * line no price source covers leaves the estimate unknown, and an option the
  * buyer was priced for whose cost was never resolved leaves the options cost
  * unknown. Either makes the margin unknown.
  */
+
+import { choosePlanPrice, resolveTakeoffLineAmount, selectTakeoffLinesForElevation, type PlanTakeoffPricingLine } from "@/lib/financials/plan-pricing"
+import { resolvePriceForLinePure, type PriceAgreementCandidate } from "@/lib/financials/price-resolution"
 
 export const HOME_MARGIN_BASELINE_STAGES = ["agreement", "release"] as const
 export type HomeMarginBaselineStage = (typeof HOME_MARGIN_BASELINE_STAGES)[number]
@@ -37,7 +47,10 @@ export function baselineOptionsCostCents(options: BaselineOption[]): number | nu
 }
 
 export type BaselineCostInputs = {
-  /** The home's budget total at capture; null when it has no budget yet. */
+  /**
+   * The home's base cost at capture: its budget total, or at agreement the
+   * takeoff estimate; null when neither is known.
+   */
   budgetCents: number | null
   /**
    * True when the budget already prices the options (a budget generated with
@@ -68,6 +81,67 @@ export function baselineCosts(input: BaselineCostInputs): BaselineCosts {
     baseCostCents: budgetCents,
     optionsCostCents,
     costCents: optionsCostCents === null ? null : budgetCents + optionsCostCents,
+  }
+}
+
+export type TakeoffEstimateInput = {
+  /** Every takeoff line of the plan version; the elevation's are picked here. */
+  lines: PlanTakeoffPricingLine[]
+  elevationId: string | null
+  agreements: PriceAgreementCandidate[]
+  costCodeDefaults: Map<string, number | null>
+  scope: { housePlanId: string; housePlanVersionId: string; communityId: string | null; divisionId: string | null }
+  /** The day the price is read on, `YYYY-MM-DD`. */
+  asOfDate: string
+}
+
+export type TakeoffEstimate = {
+  /** Null when the version has no takeoff or any line has no price source. */
+  costCents: number | null
+  lineCount: number
+  unpricedLineCount: number
+  agreementLineCount: number
+}
+
+/**
+ * What a home's takeoff costs on a day: each line priced by the vendor price
+ * agreement that resolves for it (a lump sum is the line's amount), else by
+ * the takeoff's own unit cost, else by its cost code's default.
+ */
+export function estimateTakeoffCost(input: TakeoffEstimateInput): TakeoffEstimate {
+  const lines = selectTakeoffLinesForElevation(input.lines, input.elevationId)
+  let costCents = 0
+  let unpricedLineCount = 0
+  let agreementLineCount = 0
+  for (const line of lines) {
+    const result = resolvePriceForLinePure({
+      costCodeId: line.cost_code_id,
+      costType: line.cost_type,
+      uom: line.uom,
+      quantity: line.quantity,
+      ...input.scope,
+      asOfDate: input.asOfDate,
+    }, input.agreements)
+    const resolved = result.resolved ?? null
+    if (resolved?.pricingKind === "lump_sum") {
+      costCents += resolved.lumpSumCents ?? 0
+      agreementLineCount += 1
+      continue
+    }
+    const price = choosePlanPrice({
+      agreement: resolved ? { unitPriceCents: resolved.unitCostCents ?? 0, vendorId: resolved.companyId } : null,
+      manualUnitCostCents: line.unit_cost_cents,
+      costCodeDefaultCents: input.costCodeDefaults.get(line.cost_code_id) ?? null,
+    })
+    if (price.source === "unpriced") unpricedLineCount += 1
+    if (price.source === "price_agreement") agreementLineCount += 1
+    costCents += resolveTakeoffLineAmount(line.quantity, price.unitCostCents)
+  }
+  return {
+    costCents: lines.length === 0 || unpricedLineCount > 0 ? null : costCents,
+    lineCount: lines.length,
+    unpricedLineCount,
+    agreementLineCount,
   }
 }
 

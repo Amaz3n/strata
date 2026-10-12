@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
 import { readLotDimensions, readSetbacks, storeSetbacks, type Setbacks } from "@/lib/land/lot-dimensions"
 import {
@@ -82,6 +83,23 @@ type OverrideRow = {
 
 const OVERRIDE_SELECT = "id, lot_id, house_plan_id, house_plan_elevation_id, swing, violations, reason, evidence_file_id, approved_by, approved_at"
 const IN_CHUNK = 200
+
+/** What `replace_lot_fit_override` returns: the recorded override and the ids it revoked. */
+const replacedOverrideSchema = z.object({
+  override: z.object({
+    id: z.string(),
+    lot_id: z.string(),
+    house_plan_id: z.string(),
+    house_plan_elevation_id: z.string().nullable(),
+    swing: z.enum(["left", "right"]).nullable(),
+    violations: z.array(z.unknown()),
+    reason: z.string(),
+    evidence_file_id: z.string(),
+    approved_by: z.string(),
+    approved_at: z.string(),
+  }),
+  replaced: z.array(z.string()),
+})
 
 function isViolationCode(value: unknown): value is LotFitViolationCode {
   return LOT_FIT_VIOLATION_CODES.some((code) => code === value)
@@ -349,31 +367,24 @@ export async function recordLotFitOverride(input: LotFitOverrideInput, orgId?: s
   const swing = verdict.evaluation.swing
   const violations: LotFitViolation[] = verdict.evaluation.violations
 
-  let replaced = context.supabase.from("lot_fit_overrides")
-    .update({ revoked_at: new Date().toISOString(), revoked_by: context.userId })
-    .eq("org_id", context.orgId).eq("lot_id", lot.id).eq("house_plan_id", parsed.housePlanId).is("revoked_at", null)
-  replaced = parsed.elevationId ? replaced.eq("house_plan_elevation_id", parsed.elevationId) : replaced.is("house_plan_elevation_id", null)
-  replaced = swing ? replaced.eq("swing", swing) : replaced.is("swing", null)
-  const { data: revoked, error: revokeError } = await replaced.select("id")
-  if (revokeError) throw new Error(`Failed to replace the earlier override: ${revokeError.message}`)
-
-  const { data, error } = await context.supabase.from("lot_fit_overrides").insert({
-    org_id: context.orgId,
-    lot_id: lot.id,
-    house_plan_id: parsed.housePlanId,
-    house_plan_elevation_id: parsed.elevationId,
-    swing,
-    violations,
-    reason: parsed.reason,
-    evidence_file_id: parsed.evidenceFileId,
-    approved_by: context.userId,
-  }).select(OVERRIDE_SELECT).single()
-  if (error || !data) throw new Error(`Failed to record the fit override: ${error?.message ?? "no row returned"}`)
+  // Revoking the live override and recording its replacement is one transaction.
+  const { data: result, error } = await context.supabase.rpc("replace_lot_fit_override", {
+    p_org_id: context.orgId,
+    p_lot_id: lot.id,
+    p_house_plan_id: parsed.housePlanId,
+    p_house_plan_elevation_id: parsed.elevationId,
+    p_swing: swing,
+    p_violations: violations,
+    p_reason: parsed.reason,
+    p_evidence_file_id: parsed.evidenceFileId,
+  })
+  if (error) throw new Error(`Failed to record the fit override: ${error.message}`)
+  const { override: data, replaced } = replacedOverrideSchema.parse(result)
   const override = mapOverride(data)
   await Promise.all([
     recordEvent({
       orgId: context.orgId, actorId: context.userId, eventType: "lot.fit_overridden", entityType: "lot", entityId: lot.id,
-      payload: { override_id: override.id, house_plan_id: override.housePlanId, house_plan_elevation_id: override.elevationId, swing, violations: override.violationCodes, evidence_file_id: override.evidenceFileId, replaced: (revoked ?? []).map((row) => row.id) },
+      payload: { override_id: override.id, house_plan_id: override.housePlanId, house_plan_elevation_id: override.elevationId, swing, violations: override.violationCodes, evidence_file_id: override.evidenceFileId, replaced },
     }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "lot_fit_override", entityId: override.id, after: data }),
   ])

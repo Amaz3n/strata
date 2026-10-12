@@ -561,7 +561,11 @@ export async function decidePlanChangeHome(input: DecidePlanChangeHomeInput, org
     }
   }
 
-  const { data: updated, error: updateError } = await context.supabase.from("plan_change_proposal_homes").update(patch)
+  // adopted_at and change_order_id are the record that an adoption happened;
+  // only the server writes them, so a decision carrying them is written with
+  // the service role once this member's authority over the home is proved.
+  const writer = "adopted_at" in patch || "change_order_id" in patch ? createServiceSupabaseClient() : context.supabase
+  const { data: updated, error: updateError } = await writer.from("plan_change_proposal_homes").update(patch)
     .eq("org_id", context.orgId).eq("id", home.id).eq("decision", home.decision).select(HOME_COLUMNS).maybeSingle()
   if (updateError || !updated) {
     if (typeof patch.change_order_id === "string") await deleteChangeOrder({ changeOrderId: patch.change_order_id, orgId: context.orgId })

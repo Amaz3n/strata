@@ -5,9 +5,12 @@ import { z } from "zod"
 import {
   homeMarginBaseline,
   baselineOptionsCostCents,
+  estimateTakeoffCost,
   type BaselineOption,
   type HomeMarginBaselineStage,
 } from "@/lib/financials/home-margin-baseline"
+import type { PlanTakeoffPricingLine } from "@/lib/financials/plan-pricing"
+import type { PriceAgreementCandidate } from "@/lib/financials/price-resolution"
 import { readAllRowsById } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -15,6 +18,9 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** One home's selections. Past this the capture fails rather than understating cost. */
 const SELECTION_ROW_CAP = 5_000
+/** One plan version's takeoff, and the price agreements its cost codes carry. Past these the estimate fails rather than understating cost. */
+const TAKEOFF_LINE_CAP = 5_000
+const PRICE_AGREEMENT_CAP = 10_000
 const LIVE_SELECTION_STATUSES = ["confirmed", "ordered", "received"]
 
 const pricedItemSchema = z.object({
@@ -40,6 +46,32 @@ const agreementSnapshotSchema = z.object({ purchase_agreement: z.object({ pricin
 
 /** A budget generated with the home's purchase orders already prices its options. */
 const budgetSourceSchema = z.object({ source: z.string() })
+
+type ServiceClient = ReturnType<typeof createServiceSupabaseClient>
+
+type TakeoffRow = {
+  id: string
+  elevation_id: string | null
+  cost_code_id: string
+  cost_type: PlanTakeoffPricingLine["cost_type"]
+  description: string
+  quantity: number | string
+  uom: string
+  unit_cost_cents: number | string | null
+  sort_order: number | string
+}
+
+/** How an agreement baseline's base cost was arrived at, recorded in its basis. */
+type TakeoffEstimateBasis = {
+  house_plan_version_id: string | null
+  house_plan_elevation_id: string | null
+  as_of: string
+  /** Why there is no estimate, when there is none. */
+  unavailable: "no_plan" | "plan_not_released" | "no_takeoff" | "unpriced_lines" | null
+  line_count: number
+  unpriced_line_count: number
+  agreement_line_count: number
+}
 
 type SelectionRow = {
   id: string
@@ -108,6 +140,101 @@ function mapBaseline(row: unknown): HomeMarginBaselineDto {
 
 const BASELINE_COLUMNS = "id,project_id,contract_id,stage,sale_price_cents,incentives_cents,lot_premium_cents,options_price_cents,base_cost_cents,options_cost_cents,cost_cents,margin_cents,margin_bps,catalog_revision,captured_at"
 
+const AGREEMENT_COLUMNS = "id,company_id,cost_code_id,cost_type,division_id,community_id,house_plan_id,house_plan_version_id,pricing_kind,uom,unit_cost_cents,lump_sum_cents,effective_from,effective_to,status"
+
+/**
+ * What the home's plan version was estimated to cost on the sale date: its
+ * takeoff (fixed once the version is released) priced by `estimateTakeoffCost`
+ * against the org's price book and cost code defaults.
+ */
+async function estimateHomeTakeoffCost(
+  supabase: ServiceClient,
+  orgId: string,
+  projectId: string,
+  asOfDate: string,
+  fail: (message: string) => Error,
+): Promise<{ costCents: number | null; basis: TakeoffEstimateBasis }> {
+  const empty = (unavailable: NonNullable<TakeoffEstimateBasis["unavailable"]>, versionId: string | null = null, elevationId: string | null = null) => ({
+    costCents: null,
+    basis: { house_plan_version_id: versionId, house_plan_elevation_id: elevationId, as_of: asOfDate, unavailable, line_count: 0, unpriced_line_count: 0, agreement_line_count: 0 },
+  })
+  const { data: lot, error: lotError } = await supabase.from("lots").select("id,community_id,house_plan_version_id,house_plan_elevation_id")
+    .eq("org_id", orgId).eq("project_id", projectId).maybeSingle()
+  if (lotError) throw fail(lotError.message)
+  const versionId: string | null = lot?.house_plan_version_id ?? null
+  if (!lot || !versionId) return empty("no_plan")
+  const elevationId: string | null = lot.house_plan_elevation_id ?? null
+
+  const [versionResult, communityResult, takeoffRows] = await Promise.all([
+    supabase.from("house_plan_versions").select("id,house_plan_id,status").eq("org_id", orgId).eq("id", versionId).maybeSingle(),
+    lot.community_id
+      ? supabase.from("communities").select("id,division_id").eq("org_id", orgId).eq("id", lot.community_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    readAllRowsById<TakeoffRow>((afterId, limit) => {
+      let query = supabase.from("house_plan_takeoff_lines").select("id,elevation_id,cost_code_id,cost_type,description,quantity,uom,unit_cost_cents,sort_order")
+        .eq("org_id", orgId).eq("house_plan_version_id", versionId)
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<TakeoffRow[]>()
+    }, { cap: TAKEOFF_LINE_CAP, label: "Failed to read the home's plan takeoff", pageSize: 1000 }),
+  ])
+  if (versionResult.error) throw fail(versionResult.error.message)
+  if (communityResult.error) throw fail(communityResult.error.message)
+  const version = versionResult.data
+  // A draft's takeoff can still change; only a released (or since superseded) version is a fixed basis.
+  if (!version || (version.status !== "released" && version.status !== "superseded")) return empty("plan_not_released", versionId, elevationId)
+  if (takeoffRows.length === 0) return empty("no_takeoff", versionId, elevationId)
+
+  const lines: PlanTakeoffPricingLine[] = takeoffRows.map((row) => ({
+    id: row.id,
+    elevation_id: row.elevation_id,
+    cost_code_id: row.cost_code_id,
+    cost_type: row.cost_type,
+    description: row.description,
+    quantity: Number(row.quantity),
+    uom: row.uom,
+    unit_cost_cents: row.unit_cost_cents === null ? null : Number(row.unit_cost_cents),
+    sort_order: Number(row.sort_order),
+  }))
+  const costCodeIds = Array.from(new Set(lines.map((line) => line.cost_code_id)))
+  const [defaultsResult, agreements] = await Promise.all([
+    supabase.from("cost_codes").select("id,default_unit_cost_cents").eq("org_id", orgId).in("id", costCodeIds),
+    readAllRowsById<PriceAgreementCandidate>((afterId, limit) => {
+      let query = supabase.from("vendor_price_agreements").select(AGREEMENT_COLUMNS)
+        .eq("org_id", orgId).eq("status", "active").in("cost_code_id", costCodeIds)
+      if (afterId) query = query.gt("id", afterId)
+      return query.order("id").limit(limit).returns<PriceAgreementCandidate[]>()
+    }, { cap: PRICE_AGREEMENT_CAP, label: "Failed to read the price book", pageSize: 1000 }),
+  ])
+  if (defaultsResult.error) throw fail(defaultsResult.error.message)
+  const costCodeDefaults = new Map<string, number | null>((defaultsResult.data ?? []).map((row) => [
+    String(row.id), row.default_unit_cost_cents == null ? null : Number(row.default_unit_cost_cents),
+  ]))
+  const estimate = estimateTakeoffCost({
+    lines,
+    elevationId,
+    agreements: agreements.map((row) => ({
+      ...row,
+      unit_cost_cents: row.unit_cost_cents == null ? null : Number(row.unit_cost_cents),
+      lump_sum_cents: row.lump_sum_cents == null ? null : Number(row.lump_sum_cents),
+    })),
+    costCodeDefaults,
+    scope: { housePlanId: version.house_plan_id, housePlanVersionId: versionId, communityId: lot.community_id ?? null, divisionId: communityResult.data?.division_id ?? null },
+    asOfDate,
+  })
+  return {
+    costCents: estimate.costCents,
+    basis: {
+      house_plan_version_id: versionId,
+      house_plan_elevation_id: elevationId,
+      as_of: asOfDate,
+      unavailable: estimate.costCents !== null ? null : estimate.lineCount === 0 ? "no_takeoff" : "unpriced_lines",
+      line_count: estimate.lineCount,
+      unpriced_line_count: estimate.unpricedLineCount,
+      agreement_line_count: estimate.agreementLineCount,
+    },
+  }
+}
+
 /**
  * The options a signed agreement priced, each costed by the confirmed selection
  * that buys it. An item no selection costs (a design choice not yet written to
@@ -133,9 +260,11 @@ function agreementOptions(pricing: AgreementPricing, selections: SelectionRow[])
  *
  * Sale price is the binding agreement's total; a spec home released without one
  * is priced at its asking price (`sellable_lot_inventory`). Cost is the home's
- * newest budget plus the selections' cost snapshots; a home with no budget yet
- * (most homes at agreement) has no known base cost, so its margin is recorded
- * as unknown rather than estimated.
+ * newest budget plus the selections' cost snapshots. A home sold before its
+ * budget exists (most homes at agreement) is costed from its plan version's
+ * takeoff priced as of the sale date (`estimateTakeoffCost`), and the basis
+ * says so (`cost_source: "takeoff_estimate"`); when no estimate can be made
+ * its margin is recorded as unknown.
  */
 export async function captureHomeMarginBaseline(input: {
   orgId: string
@@ -148,7 +277,7 @@ export async function captureHomeMarginBaseline(input: {
   const fail = (message: string) => new Error(`Failed to capture the home's ${stage} margin baseline: ${message}`)
 
   const [contractResult, budgetResult, selections] = await Promise.all([
-    supabase.from("contracts").select("id,total_cents,snapshot")
+    supabase.from("contracts").select("id,total_cents,snapshot,signed_at")
       .eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active")
       .order("signed_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
     supabase.from("budgets").select("id,version,total_cents,metadata")
@@ -192,10 +321,13 @@ export async function captureHomeMarginBaseline(input: {
     ? agreementOptions(pricing, selections)
     : selections.map((row) => ({ priceCents: Number(row.price_cents_snapshot ?? 0), costCents: row.cost_cents_snapshot === null ? null : Number(row.cost_cents_snapshot) }))
   const budgetCoversOptions = budgetSourceSchema.safeParse(budget?.metadata).data?.source === "po_generation"
+  // Sold before a budget exists: the base cost is the takeoff estimate, which never includes the options.
+  const asOfDate = (contract?.signed_at ? new Date(contract.signed_at) : new Date()).toISOString().slice(0, 10)
+  const estimate = stage === "agreement" && !budget ? await estimateHomeTakeoffCost(supabase, orgId, projectId, asOfDate, fail) : null
   const figures = homeMarginBaseline({
     salePriceCents,
-    budgetCents: budget ? Number(budget.total_cents ?? 0) : null,
-    budgetCoversOptions,
+    budgetCents: budget ? Number(budget.total_cents ?? 0) : estimate?.costCents ?? null,
+    budgetCoversOptions: budget ? budgetCoversOptions : false,
     optionsCostCents: baselineOptionsCostCents(options),
   })
 
@@ -216,6 +348,8 @@ export async function captureHomeMarginBaseline(input: {
     catalog_revision: pricing?.catalogRevision ?? null,
     basis: {
       sale_price_source: contract ? "purchase_agreement" : "asking_price",
+      cost_source: budget ? "budget" : estimate?.costCents != null ? "takeoff_estimate" : null,
+      takeoff_estimate: estimate?.basis ?? null,
       budget_id: budget?.id ?? null,
       budget_version: budget?.version ?? null,
       budget_covers_options: budgetCoversOptions,

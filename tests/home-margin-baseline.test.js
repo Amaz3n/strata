@@ -5,6 +5,7 @@ const test = require("node:test")
 
 const {
   baselineOptionsCostCents,
+  estimateTakeoffCost,
   homeMarginBaseline,
   marginBasisPoints,
   originalMargin,
@@ -77,4 +78,18 @@ test("a community's original margin is over the homes that have one", () => {
     homes: 2, salePriceCents: 1_000_000_00, marginCents: 200_000_00, marginPercent: 20,
   })
   assert.deepEqual(rollUpOriginalMargin([null]), { homes: 0, salePriceCents: 0, marginCents: null, marginPercent: null })
+})
+
+test("a takeoff estimate takes a lump-sum agreement as the line's amount and an empty takeoff as no estimate", () => {
+  const scope = { housePlanId: "plan", housePlanVersionId: "v1", communityId: "oak", divisionId: null }
+  const line = { id: "l1", elevation_id: null, cost_code_id: "site", cost_type: null, description: "Site work", quantity: 3, uom: "ea", unit_cost_cents: 1_000_00, sort_order: 1 }
+  const lumpSum = {
+    id: "a1", company_id: "c1", cost_code_id: "site", house_plan_id: "plan", community_id: "oak", pricing_kind: "lump_sum",
+    lump_sum_cents: 25_000_00, effective_from: "2026-01-01", status: "active",
+  }
+  const input = { lines: [line], elevationId: null, agreements: [lumpSum], costCodeDefaults: new Map(), scope, asOfDate: "2026-09-01" }
+
+  assert.deepEqual(estimateTakeoffCost(input), { costCents: 25_000_00, lineCount: 1, unpricedLineCount: 0, agreementLineCount: 1 })
+  assert.equal(estimateTakeoffCost({ ...input, agreements: [] }).costCents, 3_000_00)
+  assert.equal(estimateTakeoffCost({ ...input, lines: [] }).costCents, null)
 })

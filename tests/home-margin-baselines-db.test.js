@@ -152,3 +152,20 @@ test("members read only their division's baselines and cannot write them", async
     /permission denied/,
   )
 })
+
+test("a baseline is cost and margin: a member without financials.margin.read reads none", async (t) => {
+  const fixture = await soldHome(t)
+  const { db, orgId } = fixture
+  await sign(db, fixture.agreement.id)
+  await captured(db, fixture)
+  const { userId } = await seedMember(db, { orgId, role: "org_project_lead" })
+  const visible = async () => asRole(db, { role: "authenticated", userId }, async (tx) =>
+    (await tx.query("select count(*)::int as n from home_margin_baselines")).rows[0].n)
+
+  assert.equal(await visible(), 1)
+  await db.query(
+    "insert into membership_permission_overrides (membership_id, permission_key, effect) select id, 'financials.margin.read', 'deny' from memberships where org_id = $1 and user_id = $2",
+    [orgId, userId],
+  )
+  assert.equal(await visible(), 0)
+})
