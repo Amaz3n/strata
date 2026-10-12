@@ -210,6 +210,7 @@ export function SettingsWindow({
             initialDocumentNumbering={data.numbering}
             initialContractTemplates={data.contractTemplates}
             teamMembers={data.signers}
+            canExportAuditTrail={permissions.includes("*") || permissions.includes("audit.read")}
           />
         )
       case "invoicing":

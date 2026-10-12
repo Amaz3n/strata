@@ -418,32 +418,11 @@ export async function deleteOrganizationAction(orgId: string) {
       const supabase = createServiceSupabaseClient()
 
       try {
-        // 1. Clean up references in non-cascading tables
-        const tablesToClean = [
-          "impersonation_sessions",
-          "authorization_audit_log",
-          "closeout_items",
-          "closeout_packages",
-          "decisions",
-        ]
-
-        for (const table of tablesToClean) {
-          const { error: cleanError } = await supabase
-            .from(table)
-            .delete()
-            .eq("org_id", orgId)
-
-          if (cleanError) {
-            console.warn(`Note: safe cleanup warning for table "${table}":`, cleanError.message)
-          }
-        }
-
-        // 2. Perform the deletion on the orgs table (which cascades cleanly to all other core tables)
-        const { error: deleteError } = await supabase
-          .from("orgs")
-          .delete()
-          .eq("id", orgId)
-
+        // One transaction: the append-only access-decision records (this is the
+        // one path allowed to remove them), the rows that do not cascade, and the
+        // organization, whose cascade removes everything else. Nothing is left
+        // half-deleted if a step fails.
+        const { error: deleteError } = await supabase.rpc("delete_organization", { p_org: orgId })
         if (deleteError) throw deleteError
 
         revalidatePath("/admin/customers")

@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { AuditExportGroup } from "@/components/settings/audit-export-group"
 import { ContractTemplateSettings } from "@/components/settings/contract-template-settings"
 import { DocumentNumberingForm } from "@/components/settings/document-numbering-form"
 import { OrgSecurityGroup } from "@/components/settings/org-security-group"
@@ -100,6 +101,7 @@ export function OrganizationPanel({
   teamMembers,
   teamLoading = false,
   initialContractTemplates,
+  canExportAuditTrail,
 }: {
   initialSettings: OrgSettings
   onSettingsSaved: (settings: OrgSettings) => void
@@ -107,6 +109,7 @@ export function OrganizationPanel({
   teamMembers: Pick<TeamMember, "user" | "status">[]
   teamLoading?: boolean
   initialContractTemplates: ComponentProps<typeof ContractTemplateSettings>["initialTemplates"]
+  canExportAuditTrail: boolean
 }) {
   const [settings, setSettings] = useState<OrgSettings>(initialSettings)
   const [numberingState, setNumberingState] = useState({
@@ -441,6 +444,8 @@ export function OrganizationPanel({
       ) : null}
 
       {canManage ? <OrgSecurityGroup /> : null}
+
+      {canExportAuditTrail ? <AuditExportGroup /> : null}
 
       <SettingsGroup title="Workspace">
         <InfoRow label="Workspace ID">

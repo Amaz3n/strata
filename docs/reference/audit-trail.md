@@ -27,6 +27,71 @@ read-only RPC sent as `GET`, leaves the column null; nothing is inferred.
 Idempotent event receipts also take the database default, because a replay
 must compare equal to the original.
 
+## Retention
+
+`audit_log` and `authorization_audit_log` are **append-only** and kept for the
+life of the organization's account. Nothing purges them. Triggers
+(`guard_audit_append_only`, `20261011230000_audit_append_only.sql`) refuse every
+`UPDATE`, `DELETE` and `TRUNCATE` from every role — browser roles,
+`service_role` and `postgres` alike — with SQLSTATE `42501`. The only
+exceptions are mechanical:
+
+- **Deleting an organization** — an Arc-staff action
+  (`deleteOrganizationAction`), taken on the customer's request — removes its
+  evidence with everything else. `audit_log` goes through the `orgs` cascade (a
+  row may be deleted once its organization no longer exists);
+  `authorization_audit_log` does not cascade, so the action deletes through
+  `delete_organization(org)` (service role only), which marks the transaction
+  with `arc.purge_org`, deletes only that org's access rows, the other
+  non-cascading rows and the organization, all in one transaction. The owner
+  should export first (below); nothing is kept after the deletion.
+- **Deleting a project** nulls `authorization_audit_log.project_id` (its FK is
+  `on delete set null`). That one column, to null, for a project that no
+  longer exists, is the only update allowed.
+
+The warranty completion guard still refuses deleting a sealed audit row even
+where the append-only rule would let it go. A superuser can disable a
+trigger; doing so is a deliberate act, not something an application path can
+reach. `events` is a feed, not evidence: the nightly `prune-events` job deletes
+events older than 365 days, and that is unchanged.
+
+## Export
+
+Settings → Organization → **Audit trail** exports one source — **Changes**
+(`audit_log`) or **Access decisions** (`authorization_audit_log`) — for a date
+range, through `GET /api/audit/export?source=&from=&to=` (session-authenticated;
+`exportOrgAuditEvidence()` in `lib/services/audit-export.ts`).
+
+- **Who.** Holders of `audit.read` (org owner, admin, office admin by catalog).
+  The check is logged. A member limited to some divisions or to assigned
+  projects is refused (403): the export is org-wide evidence, with before/after
+  snapshots from every division, so it is never filtered down for them.
+- **What.** Every row of the organization in `[from, to)` — read with the
+  service role, filtered to the org on every page, keyset-paged on
+  `(time, id)`. More than 200,000 rows is refused with "narrow the range"; the
+  file is never truncated. Every column is included: before/after and context
+  JSON (canonical, keys sorted), actor, IP, and the correlation id
+  (`correlation_id` / `request_id`).
+- **The file** (`lib/audit/export-format.ts`). Three comment lines, then the
+  CSV: `# Arc audit export`, `# manifest {…}` (format, source, org id, range,
+  generated time, exporter id and email, row count, columns, digest algorithm),
+  `# digest sha256:<hex>`, the header, the rows. Each row ends with
+  `row_sha256`, the SHA-256 of the canonical JSON of its cells. The digest is
+  SHA-256 of the canonical manifest, a newline, and the row hashes in file
+  order joined by newlines, so it fixes the org, the range, the count, the
+  order and every cell. A null and an empty string are both an empty cell; a
+  cell a spreadsheet would run as a formula is written with a leading `'`, and
+  the hash covers the value without it. The response also carries the digest
+  in `X-Arc-Export-Digest`, and the settings group shows it, so it can be
+  handed to the auditor separately from the file.
+- **Verify.** `verifyAuditExport(csvText)` recomputes every row hash and the
+  digest from the file alone and names each problem; any edited cell, added,
+  removed or reordered row, or edited manifest fails. Compare its digest with
+  the one handed over out of band.
+- **The export is evidence too.** Each one writes an `audit_log` row
+  (`entity_type = 'audit_export'`, `after` = the manifest and digest) and an
+  `audit_exported` event.
+
 ## Critical audit rows
 
 `recordAudit()` never throws for an ordinary row: it runs after the mutation
