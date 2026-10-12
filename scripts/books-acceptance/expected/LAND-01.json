@@ -1,0 +1,552 @@
+{
+  "scenario": "LAND-01",
+  "reviewedFrom": "EP04-01 through EP04-08 (docs/enterprise-production/completion-checklist.json) and the EP04 decisions of 2026-10-12. Code read at e1872a80: lib/services/{land-opportunities,land-entitlements,land-contracts,land-development,communities,lots,community-sales,spec-dispositions,starts,reports/cash-flow-forecast,books/inventory}.ts; lib/land/{diligence,entitlement-readiness,takedown-cash,development-reconciliation,lot-lifecycle}.ts; lib/sales/{spec-inventory,spec-price-approval-thresholds}.ts; lib/validation/{land-opportunities,land-entitlements,land-contracts,lots,spec-inventory}.ts; migrations 20261012070000_land_acquisition_diligence (submit/decide RPCs, supersede triggers, files_land_scope), 20261012080000_land_entitlements, 20261012090000_land_contracts (term, deposit, amendment and takedown-date guards; record_land_contract_extension), 20261012100000_phase_development_projects (books_development_allocation_refusal), 20261012110000_lot_delivery_exceptions (tg_lots_land_delivery, tg_start_packages_lot_delivered), 20261012120000_lot_allocation_guards (status/home guard, hold/attach guard, release_lot_reservation), 20261012130000_spec_price_approvals_and_dispositions (sellable_lot_inventory, record_spec_price_move, disposition guard), 20261012150000_ep04_integration. Fixture: one production builder from production-seed (productionBuilder, seedCommunity, seedProduct, takeDownTranche): Cypress Landing in Gulf Coast, Phase 1 lots 1-10 bought in Books at $72,000 under the seed's executed purchase contract and developed, Phase 2 lots 11-20 controlled; The Mangrove offered at $385,000 with no lot premium on lots 2-5, 7, 9, 10. Added here: an org_admin (the second approver), an org_office_admin (enters payables and directory records), and the Treasure Coast division with Seagrape Hammock and a land manager limited to it.",
+  "subcases": {
+    "land-deal-diligence-and-reviewed-versions": {
+      "derivation": "The land manager (land.read, land.write, community.write; no land.approve) creates the Gulf Coast deal 'Cypress Landing North parcel' at $2,800,000 and links it to Cypress Landing (linkLandOpportunityCommunity; getCommunityLandOrigin names it). Two diligence items: the title commitment owned by the land manager, due three days ago, still open (overdue); the survey owned by Cypress Sitework, due in 14 days, with the surveyor's PDF filed on the deal (files.land_opportunity_id) and linked as evidence, then marked satisfied on that evidence alone (resolveDiligenceItem accepts evidence or a finding). diligenceSummary: 2 items, 1 satisfied, 1 open, 1 overdue. Submitting with the submitter among the approvers is refused by the service ('You cannot approve a review you submit'). r1 is submitted to the owner ('Owner') and the admin ('Land committee'); the deal is in_review. Changing the price to $2,720,000 fires land_opportunities_supersede_review: r1 becomes superseded and the stage falls back to screening (no contract executed). Deciding r1 now is refused by decide_land_acquisition_approval ('This acquisition review is no longer open'). A takedown linked to the deal (lot count 0, so it carries no cash) is created, then r2 is submitted: r1 kept its $2,800,000 snapshot with no takedown, r2 holds $2,720,000 with the takedown, both with 2 items and 1 evidence file, and the hashes differ. The owner deciding r2 with r1's hash is refused (40001 'The version you reviewed has changed...'). Closing the linked takedown before approval is refused by assertTakedownAcquisitionApproved. The owner approves r2 (still in_review), the admin approves (approved, unanimous); both approvals carry r2's hash. The takedown then closes (no lots, no contract, so no Books evidence is needed) and the deal is acquired. Audit: two review submissions, two approval decisions; one review.decided event. The Treasure Coast land manager is told 'Land deal not found' for the deal and for its file (assertLandFileReadable, the wall in front of file bytes), the desk does not list it, and their own session reads none of the deal, its items, the file or its link; the Gulf Coast land manager reads the file.",
+      "inputs": {
+        "deal": "40 lots, 12.5 acres, $2,800,000 then $2,720,000, $50,000 deposit",
+        "approvers": [
+          "owner (Owner)",
+          "admin (Land committee)"
+        ],
+        "otherDivisionMember": "org_land_manager limited to Treasure Coast"
+      },
+      "expected": {
+        "checklist": [
+          {
+            "title": "Title commitment and exceptions",
+            "owner": "land manager",
+            "status": "open",
+            "evidence": []
+          },
+          {
+            "title": "Boundary and topographic survey",
+            "owner": "Cypress Sitework",
+            "status": "satisfied",
+            "evidence": [
+              "north-parcel-boundary-survey.pdf"
+            ]
+          }
+        ],
+        "summary": {
+          "total": 2,
+          "satisfied": 1,
+          "waived": 0,
+          "issues": 0,
+          "open": 1,
+          "overdue": 1
+        },
+        "linkedCommunity": "Cypress Landing",
+        "communityLandOrigin": [
+          "Cypress Landing North parcel"
+        ],
+        "submitterNamesThemself": "You cannot approve a review you submit",
+        "stageInReview": "in_review",
+        "afterPriceChange": {
+          "r1": "superseded",
+          "stage": "screening"
+        },
+        "decideSupersededVersion": "This acquisition review is no longer open",
+        "versions": [
+          {
+            "revision": 1,
+            "status": "superseded",
+            "purchasePriceCents": 280000000,
+            "items": 2,
+            "evidence": 1,
+            "takedowns": 0
+          },
+          {
+            "revision": 2,
+            "status": "in_review",
+            "purchasePriceCents": 272000000,
+            "items": 2,
+            "evidence": 1,
+            "takedowns": 1
+          }
+        ],
+        "versionsHashDiffer": true,
+        "approveWithStaleHash": "The version you reviewed has changed. Reopen the review and decide the current version.",
+        "closeBeforeApproval": "This takedown's land deal has no approved acquisition review. Approve the acquisition before closing it.",
+        "ownerApproves": "allowed",
+        "afterOneApproval": {
+          "r2": "in_review",
+          "stage": "in_review"
+        },
+        "adminApproves": "allowed",
+        "afterBothApprovals": {
+          "r2": "approved",
+          "stage": "approved"
+        },
+        "approvalsBoundToTheVersion": [
+          {
+            "step": 1,
+            "label": "Owner",
+            "decision": "approved",
+            "bound": true
+          },
+          {
+            "step": 2,
+            "label": "Land committee",
+            "decision": "approved",
+            "bound": true
+          }
+        ],
+        "closeAfterApproval": "allowed",
+        "afterClose": {
+          "takedown": "closed",
+          "stage": "acquired"
+        },
+        "audited": {
+          "reviewsSubmitted": 2,
+          "approvalsDecided": 2,
+          "reviewDecidedEvents": 1
+        },
+        "otherDivision": {
+          "deal": "Land deal not found",
+          "file": "Land deal not found",
+          "listed": false,
+          "rows": {
+            "land_opportunities": 0,
+            "land_diligence_items": 0,
+            "files": 0,
+            "file_links": 0
+          }
+        },
+        "ownDivisionReadsTheFile": 1
+      }
+    },
+    "entitlements-hold-starts": {
+      "derivation": "The land manager adds Phase 3 with developed lot 31, and developed lot 32 in Phase 1. The community's final plat is recorded approved (required before vertical start, so not a blocker). Its condition 'Phase 3 turn lane accepted by the county' narrows to Phase 3, is required before vertical start, and was due ten days ago. listCommunityEntitlements readiness: Phase 3's start blockers are that condition (unmet, 10 days overdue); Phase 1 has none. countEntitlementBlockersByCommunity (the portfolio lane): 1 open, 1 overdue. The starts coordinator opens start packages on lots 31 and 32; the 'entitlements' auto gate (entitlements_clear -> loadEntitlementBlockersForLot for the lot's phase) is pending on lot 31 and passed on lot 32. The land manager meets the condition today: lot 31's gate passes on refresh, no phase has blockers and the community has no pressure.",
+      "inputs": {
+        "conditionDue": "10 days ago",
+        "lots": [
+          "31 (Phase 3)",
+          "32 (Phase 1)"
+        ]
+      },
+      "expected": {
+        "communityBlockers": {
+          "phase3": [
+            {
+              "kind": "condition",
+              "title": "Phase 3 turn lane accepted by the county",
+              "reason": "unmet",
+              "requiredBefore": "vertical_start",
+              "overdueDays": 10
+            }
+          ],
+          "phase1": []
+        },
+        "communityPressure": {
+          "open": 1,
+          "overdue": 1
+        },
+        "entitlementsGate": {
+          "phase3Lot": "pending",
+          "phase1Lot": "passed"
+        },
+        "meetCondition": "allowed",
+        "afterMet": {
+          "phase3LotGate": "passed",
+          "communityBlockers": {
+            "phase3": [],
+            "phase1": []
+          },
+          "communityPressure": null
+        }
+      }
+    },
+    "land-contract-deposits-extensions-and-cash": {
+      "derivation": "The land manager (land_contract.write, granted with community.write) drafts an option contract for Phase 2 (10 lots at $75,000), a takedown under it scheduled 2027-04-15, and two deposits credited against that takedown: $5,000 due 2026-10-01 (refundable) and $2,500 due 2027-02-10 (non-refundable); then executes it with the signed PDF. After execution the terms are refused by the service and by guard_land_contract_terms with the same words, and a new deposit is refused. Paying the first deposit without a receipt is refused by the input (evidenceFileId Required) and, written directly, by the land_contract_deposits_evidence_check constraint; with the wire receipt it is paid. The extension (record_land_contract_extension, one transaction) moves the takedown to 2027-06-15 with a $15,000 fee due 2027-03-01 and leaves one extension amendment, which guard_land_contract_amendment refuses to rewrite or delete. Moving the date without an extension is refused by updateLotTakedown and by guard_lot_takedown_contract_terms; the date stays 2027-06-15. Cash plan (getCashFlowForecast, owner): landObligationsByMonth puts the scheduled $2,500 deposit in 2027-02, the $15,000 fee in 2027-03, nothing in 2027-04 (the old date), and the takedown in 2027-06 at 10 x $75,000 less both credited deposits (paid and scheduled) = $742,500. The Cypress Landing lens shows the same; the Seagrape Hammock lens carries none of it. (The seed's tranche 1 takedown is closed and the deal takedown in subcase 1 has no lots, so neither adds cash.)",
+      "inputs": {
+        "contract": "option, 10 lots x $75,000",
+        "deposits": [
+          "$5,000 due 2026-10-01",
+          "$2,500 due 2027-02-10"
+        ],
+        "extension": "2027-04-15 -> 2027-06-15, fee $15,000 due 2027-03-01"
+      },
+      "expected": {
+        "execute": "allowed",
+        "termsAfterExecution": {
+          "service": "An executed land contract's terms cannot change. Record an amendment.",
+          "database": "An executed land contract's terms cannot change. Record an amendment."
+        },
+        "scheduleAfterExecution": "The deposit schedule of an executed land contract cannot change.",
+        "paymentWithoutReceipt": {
+          "service": "invalid: Required",
+          "database": "new row for relation \"land_contract_deposits\" violates check constraint \"land_contract_deposits_evidence_check\""
+        },
+        "paymentWithReceipt": "allowed",
+        "extension": "allowed",
+        "takedownAfterExtension": "2027-06-15",
+        "amendmentIsAppendOnly": {
+          "rewrite": "Land contract amendments are kept as recorded; record another amendment instead",
+          "delete": "Land contract amendments are kept as recorded; record another amendment instead"
+        },
+        "dateEditWithoutExtension": {
+          "service": "This takedown is under an executed land contract. Record an extension with the signed evidence to move its close date.",
+          "database": "Moving the close date of a takedown under an executed contract is an extension. Record the extension with its signed evidence."
+        },
+        "takedownAfterRefusals": "2027-06-15",
+        "contract": {
+          "status": "executed",
+          "totalLots": 10,
+          "deposits": [
+            {
+              "label": "Option deposit",
+              "amountCents": 500000,
+              "status": "paid",
+              "receipt": true
+            },
+            {
+              "label": "Second deposit",
+              "amountCents": 250000,
+              "status": "scheduled",
+              "receipt": false
+            }
+          ],
+          "amendments": [
+            {
+              "kind": "extension",
+              "fromDate": "2027-04-15",
+              "toDate": "2027-06-15",
+              "feeCents": 1500000,
+              "dueOn": "2027-03-01",
+              "evidence": true
+            }
+          ]
+        },
+        "cashPlan": {
+          "organization": {
+            "2027-02": 250000,
+            "2027-03": 1500000,
+            "2027-04": 0,
+            "2027-06": 74250000
+          },
+          "cypressLanding": {
+            "2027-02": 250000,
+            "2027-03": 1500000,
+            "2027-04": 0,
+            "2027-06": 74250000
+          },
+          "seagrapeHammock": {
+            "2027-02": 0,
+            "2027-03": 0,
+            "2027-04": 0,
+            "2027-06": 0
+          }
+        }
+      }
+    },
+    "development-reconciles-to-phases-and-lots": {
+      "derivation": "The owner opens 'Cypress Landing phase 1 site development' (an ordinary project in Gulf Coast, on no lot) and adopts it as owned inventory, budgets it at $300,000 (approved), and approves the $250,000 site subcontract the office entered; the office enters the first $120,000 draw against it and the owner approves it (separation of entry and approval); the outbox and projector post it. Before the phase link, the accountant's allocation proposal is refused by books_development_allocation_refusal ('Link this development job...'). linkPhaseDevelopmentProject needs community.write and project.manage: the land manager lacks project.manage; the owner links Phase 1. Ledger before any allocation (getCommunityDevelopmentLedger, land manager): the job develops Phase 1 with budget $300,000, committed $250,000, actual $120,000, nothing allocated; Phase 1 has delivered lots and cost but no allocation (delivered_without_allocation). A proposal reaching lot 11 (Phase 2) is refused; one of $60,000 split equally over lots 9 and 10 (Phase 1, bought in Books, unstarted) is proposed; the proposer approving it is refused; the owner approves and it posts. After: actual stays the gross $120,000 (the allocation's inventory_event job cost row is excluded), allocated $60,000, unallocated $60,000, no flags; Phase 1 carries the $60,000, Phase 2 has no job. The job's posted job cost including the allocation row nets to $60,000, which is what the reconciliation must not report as actual.",
+      "inputs": {
+        "budgetCents": 30000000,
+        "commitmentCents": 25000000,
+        "billCents": 12000000,
+        "allocation": "$60,000 equal over lots 9 and 10"
+      },
+      "expected": {
+        "proposeBeforeLink": "Link this development job to the phases it develops before allocating its cost",
+        "linkByLandManager": "Missing permission: project.manage",
+        "linkByOwner": "allowed",
+        "ledgerBeforeAllocation": {
+          "job": {
+            "phases": [
+              "Phase 1"
+            ],
+            "budgetCents": 30000000,
+            "committedCents": 25000000,
+            "actualCents": 12000000,
+            "allocatedCents": 0,
+            "unallocatedCents": 12000000,
+            "flags": []
+          },
+          "phase1": {
+            "developedBy": "the job",
+            "allocatedCents": 0,
+            "flags": [
+              "delivered_without_allocation"
+            ]
+          },
+          "phase2": {
+            "developedBy": null,
+            "allocatedCents": 0
+          }
+        },
+        "proposeOutsideThePhase": "Development cost reaches only lots in the phases this job develops",
+        "proposeInsideThePhase": "allowed",
+        "proposerApproves": "A development allocation is approved by someone other than the person who proposed it",
+        "ownerApproves": "allowed",
+        "shares": [
+          {
+            "lot": "10",
+            "amountCents": 3000000
+          },
+          {
+            "lot": "9",
+            "amountCents": 3000000
+          }
+        ],
+        "ledger": {
+          "job": {
+            "phases": [
+              "Phase 1"
+            ],
+            "budgetCents": 30000000,
+            "committedCents": 25000000,
+            "actualCents": 12000000,
+            "allocatedCents": 6000000,
+            "unallocatedCents": 6000000,
+            "flags": []
+          },
+          "phase1": {
+            "developedBy": "the job",
+            "allocatedCents": 6000000,
+            "flags": []
+          },
+          "phase2": {
+            "developedBy": null,
+            "allocatedCents": 0
+          }
+        },
+        "postedJobCostNetOfAllocation": 6000000
+      }
+    },
+    "undelivered-lot-needs-authorized-exception": {
+      "derivation": "The land manager adds lots 41-43 in Phase 2 as owned (bought, not developed: delivered_at stays null). Without an exception: the start pipeline refuses lot 41 (normalised: either verticalStartRefusal message counts as 'land not delivered'), attaching a home is refused by lotDeliveryRefusal, and setting the lot started with a home directly is refused by tg_lots_land_delivery. The starts coordinator (no community.write, so no lot.delivery_override) cannot record an exception; the land manager cannot without a reason of 10+ characters, and can with one (a live row approved by them). With the exception the start package opens (EP04-04 criterion). Lot 42: an exception recorded and revoked leaves the lot refused by the start pipeline and for a home. Lot 43: under a live exception a home attaches and the database lets the lot be started while still undelivered. Events: three exceptions recorded, one revoked.",
+      "inputs": {
+        "lots": [
+          "41",
+          "42",
+          "43"
+        ],
+        "reason": "Pad is graded and the sewer stub is in; the plat records next week."
+      },
+      "expected": {
+        "withoutException": {
+          "openPackage": "refused: land not delivered",
+          "attachHome": "This lot has not been delivered by land development. Record a delivery exception with a reason to build on it.",
+          "startedByDatabase": "This lot has not been delivered by land development. Record a delivery exception with a reason to start on it."
+        },
+        "recordWithoutAuthority": "Missing permission: lot.delivery_override",
+        "recordWithoutReason": "invalid: Say why a house may start on an undelivered lot.",
+        "record": "allowed",
+        "exception": [
+          {
+            "by_land_manager": true,
+            "live": true
+          }
+        ],
+        "withException": {
+          "openPackage": "allowed"
+        },
+        "recordThenRevoke": {
+          "record": "allowed",
+          "revoke": "allowed"
+        },
+        "afterRevoke": {
+          "openPackage": "refused: land not delivered",
+          "attachHome": "This lot has not been delivered by land development. Record a delivery exception with a reason to build on it."
+        },
+        "underException": {
+          "attachHome": "allowed",
+          "lot": {
+            "status": "started",
+            "undelivered": true
+          }
+        },
+        "lots": {
+          "42": {
+            "status": "owned",
+            "hasHome": false
+          },
+          "43": {
+            "status": "started",
+            "hasHome": true
+          }
+        },
+        "events": {
+          "lot.delivery_exception_recorded": 3,
+          "lot.delivery_exception_revoked": 1
+        }
+      }
+    },
+    "lot-state-requires-home": {
+      "derivation": "Lots 51 and 52 are added developed in Phase 1. Lot 51 cannot be set started or closed without a home, by setLotStatus (assertLotStatusTransition) or directly (lots_status_home_guard), in the same words. A home is attached to lot 52 (started); setting it developed is refused both ways. Leaving started needs force: refused without it, refused to the starts coordinator who has lot.write but not community.write, allowed to the land manager (lot 52 assigned, home kept). Lot 51 jumping developed -> controlled is refused without force and allowed with it. Lot 53 is a legacy row, started with no home, written with triggers off as production's five were (the guard checks only when status or project_id changes): an unrelated edit is allowed, leaving started without force is refused, with force it becomes developed. Three status_changed events (the three forced moves).",
+      "inputs": {
+        "lots": [
+          "51",
+          "52",
+          "53 (legacy)"
+        ]
+      },
+      "expected": {
+        "startedWithoutHome": {
+          "service": "A project must be attached before a lot can be marked started.",
+          "database": "A project must be attached before a lot can be marked started."
+        },
+        "closedWithoutHome": {
+          "service": "A lot cannot be closed without a home; attach the home that settled first.",
+          "database": "A lot cannot be closed without a home; attach the home that settled first."
+        },
+        "homeAttached": "started",
+        "developedWithHome": {
+          "service": "A lot with a home attached cannot be set to developed; detach the home first.",
+          "database": "A lot with a home attached cannot be set to developed; detach the home first."
+        },
+        "leaveStarted": {
+          "withoutForce": "Moving a lot out of started requires an explicit force confirmation.",
+          "forceWithoutCommunityWrite": "Missing permission: community.write",
+          "forceByLandManager": "allowed",
+          "status": "assigned"
+        },
+        "backTwoSteps": {
+          "withoutForce": "Backward lot status corrections may move only one step unless force is confirmed.",
+          "withForce": "allowed",
+          "status": "controlled"
+        },
+        "legacyStartedWithoutHome": {
+          "editUnrelated": "allowed",
+          "leaveWithoutForce": "Moving a lot out of started requires an explicit force confirmation.",
+          "leaveWithForce": "allowed",
+          "status": "developed"
+        },
+        "statusEvents": 3
+      }
+    },
+    "no-double-selling-sequential": {
+      "derivation": "Lot 2: Lapsed Buyer's hold has its expiry moved into the past (fixture: the stack cannot wait two weeks); Next Buyer's hold is allowed because tg_lot_reservations_allocate expires the lapsed hold inside the insert (one lot_hold_expired event); one live hold remains, Next Buyer's. Lot 3: Refund Buyer reserves with a $15,000 deposit received; the owner (payment.release) releases with a refund: one release, then 'Live reservation not found'; one $15,000 refund; the reservation is released and its home stays on the lot with no buyer (release_lot_reservation clears client_id). Lot 4: Holding Buyer's live hold; a home with no buyer cannot be attached by attachProjectToLot or directly (lots_home_reservation_guard), the lot keeps no home and one live hold. The concurrent versions are RACE-02's.",
+      "inputs": {
+        "lots": [
+          "2",
+          "3",
+          "4"
+        ],
+        "depositCents": 1500000
+      },
+      "expected": {
+        "lapsedHold": {
+          "nextBuyerHolds": "allowed",
+          "lapsed": "expired",
+          "next": "hold",
+          "liveOnLot": 1,
+          "expiryEvents": 1
+        },
+        "release": {
+          "first": "allowed",
+          "second": "Live reservation not found",
+          "reservation": "released",
+          "refundsCents": [
+            1500000
+          ],
+          "homeBackInInventory": true,
+          "liveOnLot": 0
+        },
+        "attachPastAHold": {
+          "service": "This lot has a live hold or reservation for another buyer. Release it before attaching a different home.",
+          "database": "This lot has a live hold or reservation for another buyer. Release it before attaching a different home.",
+          "lotHasHome": false,
+          "liveOnLot": 1
+        }
+      }
+    },
+    "spec-aging-from-recorded-completion": {
+      "derivation": "The starts coordinator opens lot 5 with no buyer, which creates a spec home Books does not carry. listSpecInventoryPage (sales agent): while it is building it has no completion and no age (underConstruction). The owner marks it completed; nobody records the day: completedAt null, not under construction, no age (the 'Completion not recorded' state). Recording a date five days ahead is refused and changes nothing. Recording a date 30 days ago is allowed and the home ages 30 days from it (specCompletionDate falls back to projects.completed_on). Changing a recorded date without a reason is refused. One audit row records the completion date.",
+      "inputs": {
+        "lot": "5",
+        "completedOn": "30 days ago"
+      },
+      "expected": {
+        "building": {
+          "completedAt": null,
+          "underConstruction": true,
+          "agingDays": 0,
+          "completionFromBooks": false
+        },
+        "finishedNotRecorded": {
+          "completedAt": null,
+          "underConstruction": false,
+          "agingDays": 0,
+          "completionFromBooks": false
+        },
+        "futureDate": "A completion date cannot be in the future.",
+        "afterFutureRefusal": {
+          "completedAt": null,
+          "underConstruction": false,
+          "agingDays": 0,
+          "completionFromBooks": false
+        },
+        "record": "allowed",
+        "recorded": {
+          "completedAt": "<30 days ago>",
+          "underConstruction": false,
+          "agingDays": 30,
+          "completionFromBooks": false
+        },
+        "changeWithoutReason": "Say why the recorded completion date is changing (at least 10 characters).",
+        "audited": 1
+      }
+    },
+    "spec-price-approval-and-disposition": {
+      "derivation": "A spec Mangrove on lot 7 (elevation A pinned, gates cleared with the selections gate waived, released: Books carries the $72,000 land from the start). Asking price (sellable_lot_inventory): $385,000. The sales agent cuts $9,500 (2.5%: inside both the 5% and the $10,000 default band) and it applies at once ($375,500). The owner proposes an 8% cut ($30,040) to $345,460: it needs sales.price_approve and waits (asking unchanged); the owner, as proposer, is refused; the sales agent lacks sales.price_approve; the admin approves and the price moves. A retail buyer holds the home and is released (an earlier sale record). The office enters Gulf Coast Rental Partners in the directory; the sales agent proposes a bulk sale to them at $65,000, below the $72,000 Books carries (captured as carrying_cents). The sales agent lacks sales.disposition_approve; the admin approves. Carrying it out is refused until a write-down is proposed (by the owner: books.adjust) and refused again until the accountant approves it (books.close), then refused until the bulk buyer's agreement exists. Meanwhile a hold for another buyer is refused by assertDispositionBuyer. The bulk buyer is registered from their directory record, holds, reserves ($5,000 deposit) and signs: priceAgreementDraft prices the agreement through the approved disposition at exactly $65,000 to that buyer. Carrying it out is allowed: executed, linked to that agreement and the approved write-down. home_margin_baselines rows and the earlier released hold are byte-identical before and after.",
+      "inputs": {
+        "lot": "7",
+        "smallCutCents": 950000,
+        "largeCutPercent": 8,
+        "dispositionPriceCents": 6500000
+      },
+      "expected": {
+        "released": "released",
+        "askingBefore": 38500000,
+        "smallMove": {
+          "status": "applied",
+          "requiredPermission": "sales.manage",
+          "askingAfter": 37550000
+        },
+        "largeMove": {
+          "status": "proposed",
+          "requiredPermission": "sales.price_approve",
+          "moveCents": 3004000,
+          "askingWhileProposed": 37550000,
+          "proposerApproves": "A price change must be approved by someone other than the person who proposed it.",
+          "salesAgentApproves": "Missing permission: sales.price_approve",
+          "adminApproves": "allowed",
+          "askingAfter": 34546000
+        },
+        "disposition": {
+          "status": "proposed",
+          "carryingIsBooks": true,
+          "priceBelowCarrying": true,
+          "proposerApproves": "Missing permission: sales.disposition_approve",
+          "adminApproves": "allowed",
+          "executeBeforeWriteDown": "The price is below the home's cost in Books. Propose a write-down before selling.",
+          "writeDownProposed": "allowed",
+          "executeWhileWriteDownPending": "The price is below the home's cost in Books. The write-down must be approved before selling.",
+          "writeDownApproved": "allowed",
+          "executeWithoutAgreement": "Write the purchase agreement to the disposition's buyer first; the agreement carries the sale."
+        },
+        "otherBuyerHolds": "This home is being sold through an approved bulk sale to another buyer. Cancel the disposition before selling it to someone else.",
+        "bulkAgreement": {
+          "buyerIsTheDispositionBuyer": true,
+          "totalIsTheDispositionPrice": true,
+          "pricedThroughTheDisposition": true
+        },
+        "execute": "allowed",
+        "after": {
+          "disposition": {
+            "status": "executed",
+            "carried_by_the_agreement": true,
+            "write_down_linked": true
+          },
+          "writeDown": "approved",
+          "marginBaselinesUnchanged": true,
+          "earlierSaleRecordsUnchanged": true
+        }
+      }
+    }
+  }
+}
