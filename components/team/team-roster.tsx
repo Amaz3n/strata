@@ -425,7 +425,13 @@ export function TeamRoster({
       try {
         const result = unwrapAction(await resetMemberMfaAction(member.id))
         patchMembers(member.id, { mfa_enabled: false })
-        toast.success(result?.reset ? "Two-factor reset — they re-enroll at next sign-in" : "No two-factor to reset")
+        if (result?.reset && !result.sessionsEnded) {
+          toast.warning("Two-factor reset, but their open sessions could not be ended", {
+            description: "They re-enroll at next sign-in. To sign them out now, suspend and reactivate them.",
+          })
+        } else {
+          toast.success(result?.reset ? "Two-factor reset — they re-enroll at next sign-in" : "No two-factor to reset")
+        }
       } catch (err) {
         toast.error("Couldn't reset two-factor", { description: (err as Error).message })
       }

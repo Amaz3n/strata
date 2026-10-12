@@ -343,6 +343,17 @@ test("the audit export is itself audited with its manifest and digest", async ()
   )
 })
 
+test("an audit export whose range runs past now covers only up to the export", async () => {
+  const service = exportHarness({ rows: changeRows(ORG, 2) })
+  const before = Date.now()
+
+  const file = await service.run(() => exportOrgAuditEvidence({ source: "changes", from: RANGE.from, to: "2999-01-01T00:00:00.000Z" }))
+
+  const to = Date.parse(file.manifest.to)
+  assert.ok(to >= before && to <= Date.now(), "the manifest ends at the moment of export, not in the future")
+  assert.equal(verifyAuditExport(file.csv).valid, true)
+})
+
 test("an audit export too large for one file is refused, not truncated", async () => {
   const service = exportHarness({ rows: changeRows(ORG, 2) })
   service.tamper("audit_log", (result) => ({ ...result, count: 200_001 }), { on: "select", times: 1 })

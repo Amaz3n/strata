@@ -70,7 +70,11 @@ function cursorValue(row: StoredRow, column: string): string {
 export async function exportOrgAuditEvidence(input: { source: string; from: string; to: string }): Promise<AuditExportFile> {
   const parsed = auditExportInputSchema.safeParse(input)
   if (!parsed.success) throw new AuditExportRefusal(parsed.error.issues[0]?.message ?? "Invalid export range.", "invalid")
-  const { source, from, to } = parsed.data
+  const { source, from } = parsed.data
+  // A range that runs past now ends now: rows not written yet cannot be in the
+  // file, and the manifest must not claim a period it could not cover.
+  const now = new Date().toISOString()
+  const to = Date.parse(parsed.data.to) > Date.parse(now) ? now : parsed.data.to
 
   const context = await requireOrgContext()
   await requireAuthorization({
@@ -136,6 +140,12 @@ export async function exportOrgAuditEvidence(input: { source: string; from: stri
     cursor = { time: cursorValue(last, time), id: cursorValue(last, "id") }
   }
 
+  // Evidence is append-only, so the rows read can only meet or exceed the count
+  // taken first; fewer means a page was lost, and the file would be incomplete.
+  if (rows.length < (countResult.count ?? 0)) {
+    throw new Error(`Audit export read ${rows.length} of ${countResult.count} records in the range; nothing was exported. Try again.`)
+  }
+
   const manifest: AuditExportManifest = {
     format: AUDIT_EXPORT_FORMAT,
     source,
@@ -157,6 +167,8 @@ export async function exportOrgAuditEvidence(input: { source: string; from: stri
       entityType: "audit_export",
       after: { ...manifest, digest },
       source: "audit_export",
+      // A file of evidence is never handed out without its own record.
+      critical: true,
     }),
     recordEvent({
       orgId: context.orgId,

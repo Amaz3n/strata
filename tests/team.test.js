@@ -429,7 +429,7 @@ test("an MFA reset removes the factor, ends every session of the member and is a
 
   const result = await service.run(() => resetMemberMfa(TARGET_MEMBERSHIP))
 
-  assert.deepEqual(result, { reset: true, deletedFactors: 1 })
+  assert.deepEqual(result, { reset: true, deletedFactors: 1, sessionsEnded: true })
   assert.deepEqual(deleted, ["f1"])
   assert.deepEqual(revocations, [TARGET_USER])
   const event = service.events.find((entry) => entry.eventType === "member_mfa_reset")

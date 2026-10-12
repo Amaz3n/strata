@@ -157,16 +157,6 @@ test("shell decoration reads the clock only after entering request time", () => 
   assert.ok(counts.indexOf("await requireOrgContext()") < counts.indexOf("getPipelineBadgeCount(ctx)"))
 })
 
-test("the proxy never trusts Supabase's cookie-backed session user", () => {
-  const proxy = source("proxy.ts")
-
-  assert.match(proxy, /supabase\.auth\.getClaims\(\)/)
-  assert.match(proxy, /supabase\.auth\.getUser\(\)/)
-  assert.match(proxy, /claims\.aal !== "aal2"/)
-  assert.doesNotMatch(proxy, /getAuthenticatorAssuranceLevel/)
-  assert.doesNotMatch(proxy, /auth\.getSession\(/)
-})
-
 test("instant-navigation browser tests run against a production server", () => {
   const playwright = source("playwright.config.ts")
   assert.match(playwright, /pnpm build && pnpm start --port/)

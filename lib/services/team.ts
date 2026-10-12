@@ -1802,7 +1802,9 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
     payload: { user_id: membership.user_id, deleted_factors: factors.length, sessions },
   })
 
-  return { reset: true, deletedFactors: factors.length }
+  // A reset whose sessions could not be ended is not finished: an open session
+  // keeps working until its token expires. Say so, so the admin can retry.
+  return { reset: true, deletedFactors: factors.length, sessionsEnded: sessions.revoked || sessions.reason === "own_account" }
 }
 
 export async function getInviteDetailsByToken(token: string): Promise<{

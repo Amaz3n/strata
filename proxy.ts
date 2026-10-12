@@ -119,6 +119,24 @@ function isBlockedHiddenPath(pathname: string) {
     .some((segment, index) => segment.startsWith(".") && !(index === 1 && segment === ".well-known"))
 }
 
+/**
+ * A file served from `public/`: read with GET or HEAD, outside `/api/`, at the
+ * root or under `/models/` (the only folder `public/` has). An extension alone
+ * is not enough: `/projects/x.js` matches a page route and a server action can
+ * be POSTed to it, and an API route can answer with an image.
+ */
+function isPublicFileRequest(method: string, pathname: string) {
+  if (method !== "GET" && method !== "HEAD") return false
+  if (pathname.startsWith("/api/")) return false
+  if (!PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension))) return false
+  return pathname.lastIndexOf("/") === 0 || pathname.startsWith("/models/")
+}
+
+/** A route prefix ending in "/" covers what is under it; otherwise the route itself and its sub-paths. */
+function matchesRoute(pathname: string, route: string) {
+  return route.endsWith("/") ? pathname.startsWith(route) : pathname === route || pathname.startsWith(`${route}/`)
+}
+
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
 
@@ -136,10 +154,7 @@ export async function proxy(request: NextRequest) {
   // webhook signatures, portal path tokens, mobile bearer tokens) never read the
   // session cookie. Leaving before the client is built stops them paying for a
   // Supabase construction and a claims verification they then ignore.
-  if (
-    PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension)) ||
-    PUBLIC_API_ROUTES.some((route) => pathname.startsWith(route))
-  ) {
+  if (isPublicFileRequest(request.method, pathname) || PUBLIC_API_ROUTES.some((route) => pathname.startsWith(route))) {
     return NextResponse.next()
   }
 
@@ -198,7 +213,7 @@ export async function proxy(request: NextRequest) {
   const claims = claimsData?.claims ?? null
 
   const isAuthRoute = pathname.startsWith("/auth")
-  const isPublicRoute = PUBLIC_ROUTES.some(route => pathname.startsWith(route))
+  const isPublicRoute = PUBLIC_ROUTES.some((route) => matchesRoute(pathname, route))
 
   // Basic authentication checks only - keep proxy lightweight
   if (!claims && !isAuthRoute && !isPublicRoute) {
