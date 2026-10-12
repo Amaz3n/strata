@@ -6,6 +6,8 @@ const sql = 'supabase/migrations/20261005105415_trade_lookahead_database_workspa
 async function fixture(t) {
   const db = new PGlite(); t.after(()=>db.close())
   // Explicit partial-schema fixture, not full-chain/JWT/RLS or multi-session acceptance.
+  // The workspace counts days in UTC; the fixture's current_date must agree at any hour.
+  await db.exec("set timezone = 'UTC'")
   await db.exec(`create role anon;create role authenticated;create role service_role;
     create schema auth;create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
     create table app_users(id uuid primary key);create table permissions(key text primary key);create table roles(id uuid primary key);
