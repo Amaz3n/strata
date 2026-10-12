@@ -1,10 +1,11 @@
 "use client"
 
 import { useRouter } from "next/navigation"
-import { useState, useTransition, type ReactNode } from "react"
+import { useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { createLandOpportunityAction, updateLandOpportunityAction } from "@/app/(app)/communities/land-deals/actions"
+import { Plus } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -67,14 +68,12 @@ export function LandDealFormDialog({
   people,
   companies,
   defaultDivisionId,
-  trigger,
 }: {
   deal: LandDealDetail | null
   divisions: Array<{ id: string; name: string }>
   people: LandPersonOption[]
   companies: LandCompanyOption[]
   defaultDivisionId: string | null
-  trigger: ReactNode
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -129,7 +128,14 @@ export function LandDealFormDialog({
         setOpen(next)
       }}
     >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      {/* The trigger is built here, not passed in: a server-rendered element cannot be cloned through asChild. */}
+      <DialogTrigger asChild>
+        {deal ? (
+          <Button size="sm" variant="outline">Edit terms</Button>
+        ) : (
+          <Button size="sm" className="h-8"><Plus className="mr-1.5 h-4 w-4" />New land deal</Button>
+        )}
+      </DialogTrigger>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{deal ? "Edit deal terms" : "New land deal"}</DialogTitle>

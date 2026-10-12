@@ -1,6 +1,6 @@
 import Link from "next/link"
 
-import { Plus, Search } from "@/components/icons"
+import { Search } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -90,7 +90,6 @@ export function LandDealsDesk({
             people={people}
             companies={companies}
             defaultDivisionId={defaultDivisionId}
-            trigger={<Button size="sm" className="h-8"><Plus className="mr-1.5 h-4 w-4" />New land deal</Button>}
           />
         ) : null}
       </div>

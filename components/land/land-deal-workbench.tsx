@@ -132,7 +132,6 @@ export function LandDealWorkbench({
                 people={people}
                 companies={companies}
                 defaultDivisionId={deal.divisionId}
-                trigger={<Button size="sm" variant="outline">Edit terms</Button>}
               />
             ) : null}
             {writable && !openReview ? (
