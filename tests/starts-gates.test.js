@@ -269,10 +269,43 @@ test("the yard does not offer a lot that land development has not delivered", as
   tables.lots = [
     row("delivered", { delivered_at: "2026-01-01T00:00:00.000Z", metadata: {} }),
     row("reserved-but-undeveloped", { delivered_at: null, metadata: {} }),
-    row("excepted", { delivered_at: null, metadata: { delivery_exception: { reason: "Lot finishes with the house pad", by: "00000000-0000-4000-8000-0000000000aa", at: "2026-09-01T00:00:00.000Z" } } }),
+    row("excepted", { delivered_at: null, metadata: {}, delivery_exceptions: [{ id: "exception-1", reason: "Lot finishes with the house pad", approved_by: "00000000-0000-4000-8000-0000000000aa", approved_at: "2026-09-01T00:00:00.000Z", revoked_at: null }] }),
   ]
   buildHarness({ tables })
 
   const candidates = await loadStarts().listStartPackageCandidates()
   assert.deepEqual(candidates.map((candidate) => candidate.lotLabel).sort(), ["delivered", "excepted"])
+})
+
+test("an open condition required before vertical start holds the lot's phase, and clears once it is met", async () => {
+  const tables = gateFixture({
+    selectionGroups: [{ id: "psg-1", org_id: ORG, project_id: PROJECT, status: "locked" }],
+    poRuns: [{ id: "run-1", org_id: ORG, project_id: PROJECT, mode: "dry_run", status: "succeeded" }],
+  })
+  const definition = {
+    id: "def-entitlements", org_id: ORG, key: "entitlements", label: "Entitlements & conditions met", check_kind: "auto",
+    auto_source: "entitlements_clear", applies_when: "always", sort_order: 5, is_active: true, requires_attestation_permission: null, description: null,
+  }
+  tables.start_gate_definitions.push(definition)
+  tables.start_package_gates.push({
+    id: "gate-entitlements", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: definition.id, status: "pending",
+    passed_via: null, attested_by: null, attested_at: null, waived_reason: null, evidence_file_id: null,
+    created_at: "2026-09-01T00:09:00.000Z", definition, attested_user: null,
+  })
+  const community = tables.lots[0].community_id
+  tables.lots[0].community_phase_id = "phase-2"
+  tables.land_entitlements = [{
+    id: "plat", org_id: ORG, community_id: community, community_phase_id: null, name: "Final plat", status: "approved",
+    required_before: "lot_delivery", approved_on: "2026-06-01", expires_on: null, target_on: null,
+  }]
+  tables.land_entitlement_conditions = [
+    { id: "signal", org_id: ORG, community_id: community, entitlement_id: "plat", community_phase_id: "phase-2", title: "Signal at FM 1431", status: "open", required_before: "vertical_start", due_on: "2026-01-01" },
+    { id: "elsewhere", org_id: ORG, community_id: community, entitlement_id: "plat", community_phase_id: "phase-1", title: "Phase 1 trail", status: "open", required_before: "vertical_start", due_on: null },
+  ]
+  const harness = buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+
+  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "entitlements"), "pending")
+
+  harness.store.land_entitlement_conditions.find((condition) => condition.id === "signal").status = "met"
+  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "entitlements"), "passed", "phase 1's open condition does not hold phase 2")
 })

@@ -22,13 +22,23 @@ import {
   searchOfferablePlans,
   withdrawPlanFromCommunity,
   setCommunityPlanPrice,
-  setSpecAskingPrice,
+  proposeSpecPriceChange,
+  decideSpecPriceChange,
+  withdrawSpecPriceChange,
   upsertIncentive,
   voidPurchaseAgreement,
   type AgreementDraftContext,
   type AgreementDraftPricing,
 } from "@/lib/services/community-sales"
 import { getSalesConfigurationFixes } from "@/lib/services/configuration-rules"
+import {
+  cancelSpecDisposition,
+  decideSpecDisposition,
+  executeSpecDisposition,
+  proposeSpecDisposition,
+  proposeSpecDispositionWriteDown,
+  recordSpecCompletion,
+} from "@/lib/services/spec-dispositions"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import {
   completeProspectFollowUp,
@@ -168,8 +178,40 @@ export async function setCommunityPlanPriceAction(communityId: string, input: un
   return run(() => setCommunityPlanPrice(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }
 
-export async function setSpecAskingPriceAction(communityId: string, input: unknown) {
-  return run(() => setSpecAskingPrice(input), ["/sales", `/communities/${communityId}/offering`])
+export async function proposeSpecPriceChangeAction(communityId: string, input: unknown) {
+  return run(() => proposeSpecPriceChange(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function decideSpecPriceChangeAction(communityId: string, input: unknown) {
+  return run(() => decideSpecPriceChange(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function withdrawSpecPriceChangeAction(communityId: string, input: unknown) {
+  return run(() => withdrawSpecPriceChange(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function recordSpecCompletionAction(communityId: string, input: unknown) {
+  return run(() => recordSpecCompletion(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function proposeSpecDispositionAction(communityId: string, input: unknown) {
+  return run(() => proposeSpecDisposition(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function decideSpecDispositionAction(communityId: string, input: unknown) {
+  return run(() => decideSpecDisposition(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function proposeSpecDispositionWriteDownAction(communityId: string, input: unknown) {
+  return run(() => proposeSpecDispositionWriteDown(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function executeSpecDispositionAction(communityId: string, input: unknown) {
+  return run(() => executeSpecDisposition(input), ["/sales", `/communities/${communityId}/offering`])
+}
+
+export async function cancelSpecDispositionAction(communityId: string, input: unknown) {
+  return run(() => cancelSpecDisposition(input), ["/sales", `/communities/${communityId}/offering`])
 }
 
 export async function bulkRepriceCommunityPlansAction(communityId: string, input: unknown) {

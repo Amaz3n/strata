@@ -20,12 +20,13 @@ import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { prepareProjectAccountingDimensions, prepareProjectOpeningContract, prepareProjectCreation } from "@/lib/services/projects"
 import { prepareProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { readAllRows } from "@/lib/land/paging"
-import { verticalStartRefusal } from "@/lib/land/lot-lifecycle"
+import { LOT_DELIVERY_EXCEPTIONS_EMBED, verticalStartRefusal } from "@/lib/land/lot-lifecycle"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
 import { isPlanOffered, offeringOverrideFor } from "@/lib/sales/plan-offering"
 import { checkLotFits } from "@/lib/services/lot-fit"
 import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review"
 import { isElevationKeptBySale } from "@/lib/services/product-change-impact"
+import { loadEntitlementBlockersForLot } from "@/lib/services/land-entitlements"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
   gateAttestSchema,
@@ -193,6 +194,7 @@ function prepareStartHome(context: OrgServiceContext, lot: { lot_number: unknown
 }
 
 const DEFAULT_GATE_DEFINITIONS = [
+  { key: "entitlements", label: "Entitlements & conditions met", check_kind: "auto", auto_source: "entitlements_clear", applies_when: "always", sort_order: 5 },
   { key: "permit", label: "Permit approved", check_kind: "manual", auto_source: null, applies_when: "always", sort_order: 10 },
   { key: "plot_plan", label: "Plot/site plan on file", check_kind: "auto", auto_source: "plot_plan_file", applies_when: "always", sort_order: 20 },
   { key: "selections_locked", label: "Structural selections locked", check_kind: "auto", auto_source: "selections_locked", applies_when: "always", sort_order: 30 },
@@ -454,6 +456,18 @@ async function deriveAutoGate(
   source: string,
 ) {
   const projectId = text(pkg.project_id)
+  if (source === "entitlements_clear") {
+    // Nothing recorded is nothing blocking: an org that tracks no entitlements
+    // sees this gate clear. A recorded, unmet one for the lot's phase holds it.
+    const { data, error } = await supabase.from("lots").select("community_id,community_phase_id")
+      .eq("org_id", orgId).eq("id", String(pkg.lot_id)).maybeSingle()
+    if (error) throw new Error(`Failed to check entitlements: ${error.message}`)
+    if (!data) return false
+    const blockers = await loadEntitlementBlockersForLot(supabase, orgId, {
+      communityId: String(data.community_id), phaseId: text(data.community_phase_id),
+    })
+    return blockers.length === 0
+  }
   if (source === "plan_pinned") {
     const { data, error } = await supabase.from("lots").select("id,community_id,metadata,dimensions,swing,house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status,house_plan_id),elevation:house_plan_elevations(is_active)")
       .eq("org_id", orgId).eq("id", String(pkg.lot_id)).maybeSingle()
@@ -616,13 +630,13 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   const parsed = startPackageInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  const { data: lot, error } = await context.supabase.from("lots").select("id,community_id,division_id,project_id,status,delivered_at,metadata,lot_number,address,community:communities(name,code)")
+  const { data: lot, error } = await context.supabase.from("lots").select(`id,community_id,division_id,project_id,status,delivered_at,metadata,lot_number,address,community:communities(name,code),${LOT_DELIVERY_EXCEPTIONS_EMBED}`)
     .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
   const access = await assertStartCommunityAccess(context.supabase, context.orgId, lot.community_id)
   if (access.assignedOnly && (!lot.division_id || !access.divisionIds.includes(lot.division_id))) throw new Error("Lot is outside your division access")
   await seedDefaultGateDefinitions(context.orgId)
-  const refusal = verticalStartRefusal({ status: lot.status, deliveredAt: lot.delivered_at, metadata: lot.metadata })
+  const refusal = verticalStartRefusal({ status: lot.status, deliveredAt: lot.delivered_at, deliveryExceptions: lot.delivery_exceptions })
   if (refusal) throw new Error(refusal)
   if (!lot.project_id) {
     // A hold or reservation with no home yet is a buyer waiting on this lot;
@@ -1142,7 +1156,8 @@ export async function listStartPackageCandidates(
       id,lot_number,block,status,delivered_at,metadata,community_id,project_id,community:communities!inner(name,settings),
       plan:house_plans(code,name),elevation:house_plan_elevations(code),
       project:projects(client:contacts(full_name)),
-      packages:start_packages!start_packages_lot_id_fkey(id,status)
+      packages:start_packages!start_packages_lot_id_fkey(id,status),
+      ${LOT_DELIVERY_EXCEPTIONS_EMBED}
     `).eq("org_id", context.orgId).in("status", ["developed", "assigned"])
     if (filters.communityId) query = query.eq("community_id", filters.communityId)
     if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
@@ -1150,7 +1165,7 @@ export async function listStartPackageCandidates(
     return query.order("lot_number").order("id").range(from, to)
   }, { cap: CANDIDATE_LOT_CAP + 1, label: "Failed to load start-package lots" })
   if (lots.truncated) throw new Error(`More than ${CANDIDATE_LOT_CAP} lots are waiting in scope; narrow the desk by community.`)
-  const available = lots.rows.filter((lot) => !verticalStartRefusal({ status: lot.status, deliveredAt: lot.delivered_at, metadata: lot.metadata })
+  const available = lots.rows.filter((lot) => !verticalStartRefusal({ status: lot.status, deliveredAt: lot.delivered_at, deliveryExceptions: lot.delivery_exceptions })
     && !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled"))
   const salesByProject = await loadSalesByProject(context.supabase, context.orgId, available.map((lot) => lot.project_id))
   return available.map((lot) => {

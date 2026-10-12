@@ -8,10 +8,6 @@ import { prepareInvoiceAmounts, prepareInvoiceCreation } from "@/lib/services/in
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import { reservationConversionExpectedSchema, reservationConversionStateSchema, reservationConversionScopeSchema, savedReservationConversionInputSchema, type ReservationConversionExpected, type ReservationConversionScope, type ReservationConversionState } from "@/lib/validation/reservation-conversion"
 
-export function reservationConversionEnabled() {
-  return process.env.ARC_RESERVATION_CONVERSION_ENABLED === "true"
-}
-
 /** Reuses the original financial owners; no writes or provider calls occur here. */
 export function prepareReservationConversionBundle({ context, requestKey, input, expected: source, now = new Date().toISOString() }: {
   context: Pick<OrgServiceContext, "orgId" | "userId" | "productTier">
@@ -60,7 +56,6 @@ export async function callReservationConversion({ context, scope, action, reques
   input?: z.infer<typeof savedReservationConversionInputSchema> | null
   bundle?: ReturnType<typeof prepareReservationConversionBundle> | null
 }): Promise<ReservationConversionState | null> {
-  if (!reservationConversionEnabled()) throw new Error("Reservation review is not enabled")
   assertReservationConversionScope(scope, context)
   const { data, error } = await createServiceSupabaseClient().rpc("reservation_conversion", {
     p_org_id: context.orgId, p_actor_id: context.userId, p_reservation_id: scope.reservationId,

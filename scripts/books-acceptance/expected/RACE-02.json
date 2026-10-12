@@ -1,6 +1,6 @@
 {
   "scenario": "RACE-02",
-  "reviewedFrom": "EP03-02, EP05-09, EP07-10, EP07-11, EP07-12, EP07-15, EP07-16, EP07-17 and EP10-01 (docs/enterprise-production/completion-checklist.json, verificationRequired multi_session); the RACE-01 pattern: independent database sessions released together, every outcome serial-equivalent or a clean refusal.",
+  "reviewedFrom": "EP03-02, EP04-06, EP05-09, EP07-10, EP07-11, EP07-12, EP07-15, EP07-16, EP07-17 and EP10-01 (docs/enterprise-production/completion-checklist.json, verificationRequired multi_session); the RACE-01 pattern: independent database sessions released together, every outcome serial-equivalent or a clean refusal.",
   "subcases": {
     "race-option-rule-authoring": {
       "derivation": "EP03-02 multi_session (serializes the authoring of #0 and the rejection of contradictions in #1): rules are serialized per organisation by the writer lock row. Two concurrent saves X requires Y / Y excludes X are each valid and together impossible, so exactly one saves and one is refused (one rule stored). The same rule twice: one saved, one duplicate refusal, one row. The same pair as requires and excludes: one saved, the other refused, one row. Three authors closing the triangle X>Y requires, Y>Z requires, Z excludes X: serial-equivalent outcome is two saved and one refused, two rows stored. The database-level race (two independent backends as service_role) must give the same winner/refusal for the contradictory pair. Three rounds each, with fresh options per round.",
@@ -683,6 +683,314 @@
             "rowsThatLanded": [
               "round 3 live"
             ]
+          }
+        ]
+      }
+    },
+    "race-two-holds-on-one-lot": {
+      "derivation": "EP04-06 #0 (multi_session): two holds for two buyers on one developed lot, three rounds, each raced twice on a fresh lot: as two createLotHold requests (two PostgREST sessions) and as two psql backends inserting the hold together, each keeping its locks for a moment before committing. A hold insert locks its lot first (lot_reservations_allocate, 20261012120000) and the live-lot unique index admits one live reservation, so exactly one hold stands, the other is refused as already held, and the lot has one live reservation, one owner and no home.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "viaService": {
+              "held": 1,
+              "refused": [
+                "refused: lot already held"
+              ],
+              "owners": 1,
+              "liveReservations": 1,
+              "hasHome": false
+            },
+            "atDatabase": {
+              "held": 1,
+              "refused": [
+                "refused: lot already held"
+              ],
+              "owners": 1,
+              "liveReservations": 1,
+              "hasHome": false
+            }
+          },
+          {
+            "viaService": {
+              "held": 1,
+              "refused": [
+                "refused: lot already held"
+              ],
+              "owners": 1,
+              "liveReservations": 1,
+              "hasHome": false
+            },
+            "atDatabase": {
+              "held": 1,
+              "refused": [
+                "refused: lot already held"
+              ],
+              "owners": 1,
+              "liveReservations": 1,
+              "hasHome": false
+            }
+          },
+          {
+            "viaService": {
+              "held": 1,
+              "refused": [
+                "refused: lot already held"
+              ],
+              "owners": 1,
+              "liveReservations": 1,
+              "hasHome": false
+            },
+            "atDatabase": {
+              "held": 1,
+              "refused": [
+                "refused: lot already held"
+              ],
+              "owners": 1,
+              "liveReservations": 1,
+              "hasHome": false
+            }
+          }
+        ]
+      }
+    },
+    "race-two-conversions-of-one-hold": {
+      "derivation": "EP04-06 #0 (multi_session): the sales consultant and the owner each save a review of the same hold (500,000 deposit), then commit them from two psql backends together through reservation_conversion, the only conversion path. The commit is serialized per reservation and requires a live hold whose source still matches the review, so exactly one commits and the other is refused (the hold is no longer live, its source changed, or the home it now has is outside the loser's signing access). Three rounds on fresh lots: the reservation is reserved, the home belongs to the holding buyer, and there is one owner, one home built and one deposit invoice.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "committed": 1,
+            "refused": [
+              "refused: hold no longer live"
+            ],
+            "reservation": "reserved",
+            "homeIsTheBuyers": true,
+            "owners": 1,
+            "homesBuilt": 1,
+            "depositInvoices": 1
+          },
+          {
+            "committed": 1,
+            "refused": [
+              "refused: hold no longer live"
+            ],
+            "reservation": "reserved",
+            "homeIsTheBuyers": true,
+            "owners": 1,
+            "homesBuilt": 1,
+            "depositInvoices": 1
+          },
+          {
+            "committed": 1,
+            "refused": [
+              "refused: hold no longer live"
+            ],
+            "reservation": "reserved",
+            "homeIsTheBuyers": true,
+            "owners": 1,
+            "homesBuilt": 1,
+            "depositInvoices": 1
+          }
+        ]
+      }
+    },
+    "race-conversion-against-another-buyers-home": {
+      "derivation": "EP04-06 #0 (multi_session): a held lot with a saved review; one psql backend commits the conversion while another attaches a different buyer's home to the same lot. Attaching is an update of the lot row, which lots_home_reservation_guard refuses while a live hold or reservation belongs to another buyer, whichever commits first. Three rounds: the conversion commits, the attach is refused, the lot's home is the holding buyer's, the other home sits on no lot, one owner, one home built, one deposit invoice.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "conversion": "committed",
+            "attach": "refused: held for another buyer",
+            "homeIsTheHoldingBuyers": true,
+            "otherHomeOnNoLot": true,
+            "owners": 1,
+            "homesBuilt": 1,
+            "depositInvoices": 1
+          },
+          {
+            "conversion": "committed",
+            "attach": "refused: held for another buyer",
+            "homeIsTheHoldingBuyers": true,
+            "otherHomeOnNoLot": true,
+            "owners": 1,
+            "homesBuilt": 1,
+            "depositInvoices": 1
+          },
+          {
+            "conversion": "committed",
+            "attach": "refused: held for another buyer",
+            "homeIsTheHoldingBuyers": true,
+            "otherHomeOnNoLot": true,
+            "owners": 1,
+            "homesBuilt": 1,
+            "depositInvoices": 1
+          }
+        ]
+      }
+    },
+    "race-hold-against-home-attach": {
+      "derivation": "EP04-06 #0 (multi_session): on a developed lot, one psql backend holds it for a walk-in buyer while another attaches a contracted buyer's home. Both serialize on the lot row: a hold refuses a lot whose home belongs to another buyer, an attach refuses a lot held for another buyer. Either may win; exactly one stands, the loser is one of those two clean refusals, the final lot is the winner's (one live hold and no home, or that home and no live hold) and has one owner. Three rounds.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "winners": 1,
+            "loserRefusedCleanly": true,
+            "finalStateIsTheWinners": true,
+            "owners": 1
+          },
+          {
+            "winners": 1,
+            "loserRefusedCleanly": true,
+            "finalStateIsTheWinners": true,
+            "owners": 1
+          },
+          {
+            "winners": 1,
+            "loserRefusedCleanly": true,
+            "finalStateIsTheWinners": true,
+            "owners": 1
+          }
+        ]
+      }
+    },
+    "race-expiry-conversion-and-release": {
+      "derivation": "EP04-06 #1 (multi_session): a hold with a saved review lapses (expires_at a minute ago, not yet swept). Four psql backends race: the hourly sweep's guarded expiry write, the review's commit, a release, and another buyer's hold on the same lot. A lapsed hold is never converted; the next hold expires it inside its own insert (lot locked first) so it is never blocked by it; the lapsed hold ends exactly once, released only if the release reached it first and expired otherwise, and a release that came second finds nothing live. Three rounds: the next buyer holds the lot alone, with no home and no deposit invoice.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "sweep": "ran",
+            "conversion": "refused: hold no longer live",
+            "releaseEndedItOrFoundNothing": true,
+            "nextHold": "held",
+            "lapsedHoldEndedOnce": true,
+            "liveReservations": 1,
+            "owners": 1,
+            "hasHome": false,
+            "homesBuilt": 0,
+            "depositInvoices": 0
+          },
+          {
+            "sweep": "ran",
+            "conversion": "refused: hold no longer live",
+            "releaseEndedItOrFoundNothing": true,
+            "nextHold": "held",
+            "lapsedHoldEndedOnce": true,
+            "liveReservations": 1,
+            "owners": 1,
+            "hasHome": false,
+            "homesBuilt": 0,
+            "depositInvoices": 0
+          },
+          {
+            "sweep": "ran",
+            "conversion": "refused: hold no longer live",
+            "releaseEndedItOrFoundNothing": true,
+            "nextHold": "held",
+            "lapsedHoldEndedOnce": true,
+            "liveReservations": 1,
+            "owners": 1,
+            "hasHome": false,
+            "homesBuilt": 0,
+            "depositInvoices": 0
+          }
+        ]
+      }
+    },
+    "race-two-releases-refund-once": {
+      "derivation": "EP04-06 #1 (multi_session): a reserved buyer whose earnest deposit was received (1,001,000 / 1,002,000 / 1,003,000) is released with a refund by two owners in the same instant (two requests, two sessions). The release is claimed in one locked step (release_lot_reservation) before any money moves, so exactly one release succeeds and the other finds nothing live; there is one refund of exactly that buyer's deposit, one released event, the reservation is released, the home stays on the lot but returns to inventory with no buyer (no owner), and there is one deposit invoice.",
+      "inputs": {
+        "rounds": 3,
+        "depositCents": 1000000
+      },
+      "expected": {
+        "rounds": [
+          {
+            "released": 1,
+            "refused": [
+              "refused: nothing live to release"
+            ],
+            "refundsCents": [
+              1001000
+            ],
+            "reservation": "released",
+            "releasedEvents": 1,
+            "homeBackInInventory": true,
+            "owners": 0,
+            "depositInvoices": 1
+          },
+          {
+            "released": 1,
+            "refused": [
+              "refused: nothing live to release"
+            ],
+            "refundsCents": [
+              1002000
+            ],
+            "reservation": "released",
+            "releasedEvents": 1,
+            "homeBackInInventory": true,
+            "owners": 0,
+            "depositInvoices": 1
+          },
+          {
+            "released": 1,
+            "refused": [
+              "refused: nothing live to release"
+            ],
+            "refundsCents": [
+              1003000
+            ],
+            "reservation": "released",
+            "releasedEvents": 1,
+            "homeBackInInventory": true,
+            "owners": 0,
+            "depositInvoices": 1
+          }
+        ]
+      }
+    },
+    "race-conversion-cancel-against-commit": {
+      "derivation": "EP04-06 #1 (multi_session): the consultant's saved review is committed and cancelled by the same consultant from two psql backends together. Both actions take the reservation's conversion lock: either the commit wins (the cancel then returns the committed receipt) with the reservation reserved, one home and one deposit invoice, or the cancel wins (the commit is refused as cancelled) with the hold untouched, no home and no deposit invoice. Never both, never half. The lot has one owner either way. Three rounds.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "oneOutcome": true,
+            "reservationMatches": true,
+            "homesMatch": true,
+            "depositInvoicesMatch": true,
+            "owners": 1
+          },
+          {
+            "oneOutcome": true,
+            "reservationMatches": true,
+            "homesMatch": true,
+            "depositInvoicesMatch": true,
+            "owners": 1
+          },
+          {
+            "oneOutcome": true,
+            "reservationMatches": true,
+            "homesMatch": true,
+            "depositInvoicesMatch": true,
+            "owners": 1
           }
         ]
       }

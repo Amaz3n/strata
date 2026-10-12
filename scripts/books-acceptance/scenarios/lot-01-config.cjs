@@ -48,7 +48,7 @@ const quoteLot = (org) => (org.quoteLot ??= nextLot(org))
 async function takeDownSecondTranche(kit, org, date = "2026-06-03") {
   const communities = app("communities"), lotsService = app("lots"), inventory = app("books/inventory")
   const tranche = org.lots.slice(10, 20)
-  const takedown = await kit.as(org.team.land, () => communities.createLotTakedown(org.communityId, { name: "Tranche 2", communityPhaseId: org.phaseIds[1], scheduledDate: date, lotCount: 10, pricePerLotCents: 7200000, depositCents: 0 }))
+  const takedown = await kit.as(org.team.land, () => communities.createLotTakedown(org.communityId, { name: "Tranche 2", communityPhaseId: org.phaseIds[1], scheduledDate: date, lotCount: 10, pricePerLotCents: 7200000 }))
   await kit.as(org.team.land, () => lotsService.bulkUpdateLots(org.communityId, { lotIds: tranche.map((row) => row.id), patch: { takedownId: takedown.id } }))
   await kit.as(org.owner, () => inventory.acquireLandInventory({ date, allocations: tranche.map((row) => ({ lotId: row.id, amountCents: 7200000 })), cashAccountId: seed.glId(kit, org, "1000"), cashCents: 7200000 * tranche.length, debtInstrumentId: null, debtCents: 0, reference: "Cypress Landing tranche 2", evidenceUrl: `${seed.EVIDENCE}/tranche-2` }))
   await kit.as(org.team.land, () => communities.closeLotTakedown(takedown.id, { actualDate: date }))

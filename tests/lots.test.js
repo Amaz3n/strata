@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, listPlanAssignmentOptions, recordLotDeliveryException, setLotStatus, updateLot, bulkUpdateLots } = freshRequire("lib/services/lots.ts")
+const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, listPlanAssignmentOptions, recordLotDeliveryException, revokeLotDeliveryException, setLotStatus, updateLot, bulkUpdateLots } = freshRequire("lib/services/lots.ts")
 
 const COMMUNITY = id(1)
 const LOT = id(2)
@@ -57,20 +57,37 @@ describe("attachProjectToLot", () => {
     assert.deepEqual(service.writes(), [])
   })
 
-  test("a recorded delivery exception lets the home attach, and is audited with its reason", async () => {
-    const service = harness({ delivered: false, status: "owned" })
-    await service.run(() => recordLotDeliveryException(LOT, { reason: "Lot finishes with the house pad" }))
-    assert.equal(service.db.lots[0].metadata.delivery_exception.reason, "Lot finishes with the house pad")
-    assert.deepEqual(service.events.map((event) => event.eventType), ["lot.delivery_exception_recorded"])
-    assert.equal((await attach(service)).projectId, HOME)
+  test("a live delivery exception lets the home attach; a revoked one does not", async () => {
+    const exception = { id: id(60), reason: "Lot finishes with the house pad", approved_by: id(61), approved_at: "2026-09-01T00:00:00+00:00", revoked_at: null }
+    const excepted = harness({ delivered: false, status: "owned" })
+    excepted.db.lots[0].delivery_exceptions = [exception]
+    assert.equal((await attach(excepted)).projectId, HOME)
+
+    const revoked = harness({ delivered: false, status: "owned" })
+    revoked.db.lots[0].delivery_exceptions = [{ ...exception, revoked_at: "2026-09-02T00:00:00+00:00" }]
+    await assert.rejects(attach(revoked), /not been delivered/)
   })
 
-  test("a delivery exception needs a reason and community authority", async () => {
-    const service = harness({ delivered: false, status: "owned" })
+  test("a delivery exception is recorded in the approver's name with its reason, and revoked the same way", async () => {
+    const service = harness({ delivered: false, status: "owned", permissions: ["lot.delivery_override", "community.read"] })
+    service.db.lot_delivery_exceptions = []
+    await service.run(() => recordLotDeliveryException(LOT, { reason: "Lot finishes with the house pad" }))
+    assert.deepEqual(
+      service.db.lot_delivery_exceptions.map((row) => [row.lot_id, row.reason, row.approved_by]),
+      [[LOT, "Lot finishes with the house pad", service.userId]],
+    )
+    await service.run(() => revokeLotDeliveryException(LOT))
+    assert.equal(service.db.lot_delivery_exceptions[0].revoked_by, service.userId)
+    assert.deepEqual(service.events.map((event) => event.eventType), ["lot.delivery_exception_recorded", "lot.delivery_exception_revoked"])
+    await assert.rejects(service.run(() => revokeLotDeliveryException(LOT)), /no live delivery exception/)
+  })
+
+  test("a delivery exception needs a reason and the delivery override authority", async () => {
+    const service = harness({ delivered: false, status: "owned", permissions: ["lot.delivery_override", "community.read"] })
     await assert.rejects(service.run(() => recordLotDeliveryException(LOT, { reason: "later" })), /Say why/)
-    const clerk = harness({ delivered: false, status: "owned", permissions: ["lot.write", "community.read"] })
-    await assert.rejects(clerk.run(() => recordLotDeliveryException(LOT, { reason: "Lot finishes with the house pad" })), /Missing permission/)
-    assert.deepEqual(service.writes().concat(clerk.writes()), [])
+    const landManager = harness({ delivered: false, status: "owned" })
+    await assert.rejects(landManager.run(() => recordLotDeliveryException(LOT, { reason: "Lot finishes with the house pad" })), /Missing permission/)
+    assert.deepEqual(service.writes().concat(landManager.writes()), [])
   })
 
   test("a home cannot be attached to a lot another buyer is holding", async () => {
@@ -92,6 +109,14 @@ describe("attachProjectToLot", () => {
   test("an expired hold no longer blocks the lot", async () => {
     const service = harness({ client: OTHER_BUYER, reservations: [hold(BUYER, { expires_at: "2020-01-01T00:00:00+00:00" })] })
     assert.equal((await attach(service)).projectId, HOME)
+  })
+
+  test("a hold that lands between the check and the attach is refused by the lot fence, and the home is put back", async () => {
+    const service = harness({ homeDivision: id(9) })
+    const fence = "This lot has a live hold or reservation for another buyer. Release it before attaching a different home."
+    service.tamper("lots", (result) => ({ ...result, data: null, error: { code: "23514", message: fence } }), { on: "update" })
+    await assert.rejects(attach(service), (error) => error.message === fence)
+    assert.deepEqual(service.db.projects[0], { id: HOME, org_id: ORG, name: "Lot 12", property_type: "production", division_id: id(9), client_id: null })
   })
 })
 
@@ -328,7 +353,7 @@ describe("lot status and home association", () => {
     const service = harness({ status: "assigned" })
     service.db.lots[0].project_id = HOME
     await assert.rejects(service.run(() => updateLot(LOT, { status: "developed" })), /detach the home first/i)
-    await assert.rejects(service.run(() => bulkUpdateLots(COMMUNITY, { lotIds: [LOT], patch: { status: "owned" } })), /detach the home first/i)
+    await assert.rejects(service.run(() => bulkUpdateLots(COMMUNITY, { lotIds: [LOT], patch: { status: "controlled" } })), /detach the home first/i)
     assert.deepEqual(service.writes("lots"), [])
   })
 })

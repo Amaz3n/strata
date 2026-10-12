@@ -50,6 +50,9 @@ export type SearchEntityType =
   | 'project_location'
   | 'community'
   | 'lot'
+  | 'land_opportunity'
+  | 'land_entitlement'
+  | 'land_contract'
   | 'house_plan'
   | 'budget_template'
   | 'selection_option'
@@ -58,6 +61,8 @@ export type SearchEntityType =
   | 'commitment_change_order'
   | 'start_package'
   | 'closing'
+  | 'spec_price_proposal'
+  | 'spec_disposition'
   | 'warranty_request'
   | 'warranty_backcharge'
   | 'takeoff_condition'
@@ -126,6 +131,22 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     hrefTemplate: '/projects/{project_id}/closing',
     joins: ['LEFT JOIN projects p ON closings.project_id = p.id'],
   },
+  spec_price_proposal: {
+    table: 'spec_price_proposals',
+    titleField: 'reason',
+    subtitleFields: ['kind', 'status', 'community_id'],
+    descriptionFields: ['reason', 'decision_note'],
+    searchableFields: ['reason', 'decision_note', 'kind', 'status'],
+    hrefTemplate: '/communities/{community_id}/offering',
+  },
+  spec_disposition: {
+    table: 'spec_dispositions',
+    titleField: 'reason',
+    subtitleFields: ['kind', 'status', 'community_id'],
+    descriptionFields: ['reason', 'decision_note'],
+    searchableFields: ['reason', 'decision_note', 'kind', 'status'],
+    hrefTemplate: '/communities/{community_id}/offering',
+  },
   start_package: {
     table: 'start_packages',
     titleField: 'status',
@@ -189,6 +210,29 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     descriptionFields: ['description'],
     searchableFields: ['name', 'code', 'city', 'state', 'description'],
     hrefTemplate: '/communities/{id}',
+  },
+  land_opportunity: {
+    table: 'land_opportunities',
+    titleField: 'name',
+    subtitleFields: ['city', 'state', 'planned_lot_count'],
+    descriptionFields: ['notes'],
+    searchableFields: ['name', 'code', 'address', 'city', 'county', 'notes'],
+    hrefTemplate: '/communities/land-deals/{id}',
+  },
+  land_entitlement: {
+    table: 'land_entitlements',
+    titleField: 'name',
+    subtitleFields: ['kind', 'status', 'jurisdiction', 'community_id'],
+    descriptionFields: ['notes'],
+    searchableFields: ['name', 'reference_number', 'jurisdiction', 'notes'],
+    hrefTemplate: '/communities/{community_id}/land?entitlement={id}#entitlements',
+  },
+  land_contract: {
+    table: 'land_contracts',
+    titleField: 'title',
+    subtitleFields: ['contract_number', 'kind', 'status', 'community_id'],
+    searchableFields: ['title', 'contract_number', 'kind', 'status'],
+    hrefTemplate: '/communities/{community_id}/land#land-contracts',
   },
   lot: {
     table: 'lots',
@@ -528,6 +572,8 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "warranty_request",
   "warranty_backcharge",
   "closing",
+  "spec_price_proposal",
+  "spec_disposition",
   "start_package",
   "commitment_change_order",
   "design_studio_appointment",

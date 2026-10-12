@@ -441,7 +441,7 @@ test("a home's reach follows its community when the community changes division",
 test("a division-restricted member cannot pull another division's home onto their lot, or a community out of their division", async (t) => {
   const { db, orgId, north, south, oak, pine, northLead } = await landedOrg(t)
   const as = (fn) => asRole(db, { role: "authenticated", userId: northLead.userId }, fn)
-  const emptyLot = await insert(db, "lots", { org_id: orgId, community_id: oak.id, lot_number: "Oak 3" })
+  const emptyLot = await insert(db, "lots", { org_id: orgId, community_id: oak.id, lot_number: "Oak 3", status: "assigned" })
   const southSpec = await insert(db, "projects", { org_id: orgId, name: "South spec", division_id: south.id })
 
   await assert.rejects(

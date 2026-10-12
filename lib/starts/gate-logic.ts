@@ -13,9 +13,14 @@ export const RELEASE_PRODUCED_GATE_KEYS = new Set(["budget", "po_set"])
  * is the long pole in most jurisdictions, which is why it outranks everything
  * else when we name the one thing holding a house back.
  *
+ * Entitlements outrank it: a permit cannot be pulled before the plat records or
+ * a condition of approval is met, so an unmet entitlement is the real blocker
+ * whenever both are open.
+ *
  * Gate definitions are org-configurable, so an unknown key falls back to a week.
  */
 export const GATE_LEAD_DAYS: Record<string, number> = {
+  entitlements: 45,
   permit: 35,
   financing: 21,
   selections_locked: 21,

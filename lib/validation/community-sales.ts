@@ -105,19 +105,6 @@ export const communityPlanPriceSchema = z.object({
   basePriceCents: z.number().int().min(0).max(100_000_000_00),
 })
 
-/**
- * One spec home's asking price. `askingPriceCents: null` removes the override so
- * the home prices from its plan sheet again. `expectedAskingPriceCents` is the
- * price the caller saw, so a stale screen cannot overwrite a newer move.
- */
-export const specAskingPriceSchema = z.object({
-  lotId: z.string().uuid(),
-  askingPriceCents: z.number().int().min(1).max(100_000_000_00).nullable(),
-  expectedAskingPriceCents: z.number().int().min(0).max(100_000_000_00).nullable(),
-  reason: z.string().trim().min(10, "Say why the price is moving (at least 10 characters).").max(1000),
-})
-export type SpecAskingPriceInput = z.infer<typeof specAskingPriceSchema>
-
 /** A percentage move or a flat move, in cents, applied across a price sheet. */
 export const communityBulkRepriceSchema = z
   .object({

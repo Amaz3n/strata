@@ -14,6 +14,7 @@ import {
   updateCommunityPhaseAction,
   updateLotTakedownAction,
 } from "@/app/(app)/communities/actions"
+import { linkPhaseDevelopmentProjectAction } from "@/app/(app)/communities/[id]/land/actions"
 import { CommunityStatusBadge } from "@/components/communities/community-status-badge"
 import { LotMixBar } from "@/components/communities/lot-mix-bar"
 import {
@@ -42,7 +43,11 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
 import { LOT_STATUSES, UNPHASED_KEY, type LotStatus } from "@/lib/land/lot-lifecycle"
+import { takedownCash } from "@/lib/land/takedown-cash"
 import type { CommunityDetailDTO, CommunityPhaseDTO, LotTakedownDTO } from "@/lib/services/communities"
+import type { LandContractDTO } from "@/lib/services/land-contracts"
+import type { CommunityDevelopmentLedger } from "@/lib/services/land-development"
+import { cn } from "@/lib/utils"
 
 /** Lots a buyer could still be sold — the number a phase is judged on. */
 const SELLABLE_STATUSES: LotStatus[] = ["owned", "developed", "assigned"]
@@ -52,7 +57,9 @@ function money(cents: number | null) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100)
 }
 
-const EMPTY_PHASE = { id: null as string | null, name: "", phaseNumber: "1", status: "planned" as CommunityPhaseDTO["status"], targetOpenDate: "", notes: "" }
+const NO_JOB = "none"
+const NO_DEAL = "none"
+const EMPTY_PHASE = { id: null as string | null, name: "", phaseNumber: "1", status: "planned" as CommunityPhaseDTO["status"], targetOpenDate: "", notes: "", developmentProjectId: NO_JOB }
 const EMPTY_TAKEDOWN = {
   id: null as string | null,
   name: "",
@@ -60,7 +67,10 @@ const EMPTY_TAKEDOWN = {
   scheduledDate: "",
   lotCount: "0",
   pricePerLot: "",
-  deposit: "",
+  contractId: "none",
+  landDealId: NO_DEAL,
+  /** The deal the takedown was saved with: only a change is sent, so a reader who cannot see the deal never unlinks it. */
+  savedLandDealId: NO_DEAL,
   status: "scheduled" as LotTakedownDTO["status"],
   notes: "",
 }
@@ -70,6 +80,10 @@ export function CommunityStructure({
   lotsByPhase,
   lotsByPhaseTruncated,
   canWrite,
+  contracts,
+  development,
+  canLinkDevelopment,
+  landDeals,
 }: {
   community: CommunityDetailDTO
   /** Status mix per phase id, plus `unphased`. Empty when the count failed. */
@@ -77,6 +91,14 @@ export function CommunityStructure({
   /** True when the count stopped short of the community. Said out loud below. */
   lotsByPhaseTruncated: boolean
   canWrite: boolean
+  /** The community's land contracts: deposits credited against each takedown, and the contract a takedown sits under. */
+  contracts: LandContractDTO[]
+  /** Development reconciliation per phase; null when the reader has no financial access or it failed to load. */
+  development: CommunityDevelopmentLedger | null
+  /** Holds community.write and project.manage: may link a phase to its development job. */
+  canLinkDevelopment: boolean
+  /** The land deals this community was acquired through, for readers of land deals; empty otherwise. */
+  landDeals: Array<{ id: string; name: string }>
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -89,6 +111,18 @@ export function CommunityStructure({
   const [closeDate, setCloseDate] = useState("")
 
   const phaseNames = useMemo(() => new Map(community.phases.map((phase) => [phase.id, phase.name])), [community.phases])
+  const contractById = useMemo(() => new Map(contracts.map((contract) => [contract.id, contract])), [contracts])
+  const deposits = useMemo(() => contracts.flatMap((contract) => contract.deposits), [contracts])
+  const jobById = useMemo(() => new Map((development?.jobs ?? []).map((job) => [job.projectId, job])), [development])
+  const phaseLedger = useMemo(() => new Map((development?.phases ?? []).map((phase) => [phase.phaseId, phase])), [development])
+  /** Jobs a phase may be linked to, plus any already linked so the picker can show them. */
+  const jobOptions = useMemo(() => {
+    const options = new Map((development?.linkableProjects ?? []).map((project) => [project.id, project.name]))
+    for (const job of development?.jobs ?? []) options.set(job.projectId, job.projectName)
+    return Array.from(options, ([id, name]) => ({ id, name }))
+  }, [development])
+  const editingContract = takedownDraft.contractId !== "none" ? contractById.get(takedownDraft.contractId) : undefined
+  const signedTerms = Boolean(takedownDraft.id && editingContract && editingContract.status !== "draft")
 
   const unphasedTotal = useMemo(() => {
     const counts = lotsByPhase[UNPHASED_KEY]
@@ -99,16 +133,17 @@ export function CommunityStructure({
     let contracted = 0
     let linked = 0
     let value = 0
-    let deposits = 0
+    let credited = 0
     for (const takedown of community.takedowns) {
       if (takedown.status === "cancelled") continue
       contracted += takedown.lotCount
       linked += takedown.linkedLotCount
-      if (takedown.pricePerLotCents != null) value += takedown.pricePerLotCents * takedown.lotCount
-      deposits += takedown.depositCents
+      const cash = takedownCash(takedown, deposits)
+      value += cash.grossCents
+      credited += cash.creditedDepositCents
     }
-    return { contracted, linked, value, deposits }
-  }, [community.takedowns])
+    return { contracted, linked, value, credited }
+  }, [community.takedowns, deposits])
 
   function openPhaseCreate() {
     setPhaseDraft({ ...EMPTY_PHASE, phaseNumber: String((community.phases.at(-1)?.phaseNumber ?? 0) + 1) })
@@ -116,7 +151,7 @@ export function CommunityStructure({
   }
 
   function openPhaseEdit(phase: CommunityPhaseDTO) {
-    setPhaseDraft({ id: phase.id, name: phase.name, phaseNumber: String(phase.phaseNumber), status: phase.status, targetOpenDate: phase.targetOpenDate ?? "", notes: phase.notes ?? "" })
+    setPhaseDraft({ id: phase.id, name: phase.name, phaseNumber: String(phase.phaseNumber), status: phase.status, targetOpenDate: phase.targetOpenDate ?? "", notes: phase.notes ?? "", developmentProjectId: phase.developmentProjectId ?? NO_JOB })
     setPhaseOpen(true)
   }
 
@@ -130,9 +165,13 @@ export function CommunityStructure({
         notes: phaseDraft.notes || null,
       }
       try {
-        unwrapAction(phaseDraft.id
+        const saved = unwrapAction(phaseDraft.id
           ? await updateCommunityPhaseAction(phaseDraft.id, community.id, payload)
           : await createCommunityPhaseAction(community.id, payload))
+        const job = phaseDraft.developmentProjectId === NO_JOB ? null : phaseDraft.developmentProjectId
+        if (canLinkDevelopment && job !== saved.developmentProjectId) {
+          unwrapAction(await linkPhaseDevelopmentProjectAction(community.id, saved.id, { developmentProjectId: job }))
+        }
         toast.success(phaseDraft.id ? "Phase saved" : "Phase created")
         setPhaseOpen(false)
         router.refresh()
@@ -169,7 +208,9 @@ export function CommunityStructure({
       scheduledDate: takedown.scheduledDate ?? "",
       lotCount: String(takedown.lotCount),
       pricePerLot: takedown.pricePerLotCents != null ? String(takedown.pricePerLotCents / 100) : "",
-      deposit: takedown.depositCents ? String(takedown.depositCents / 100) : "",
+      contractId: takedown.landContractId ?? "none",
+      landDealId: takedown.landOpportunityId ?? NO_DEAL,
+      savedLandDealId: takedown.landOpportunityId ?? NO_DEAL,
       status: takedown.status,
       notes: takedown.notes ?? "",
     })
@@ -178,13 +219,22 @@ export function CommunityStructure({
 
   function saveTakedown() {
     startTransition(async () => {
+      // Signed terms are not resent: the contract fixes them, and an extension moves the date.
+      const terms = signedTerms
+        ? {}
+        : {
+          scheduledDate: takedownDraft.scheduledDate || null,
+          lotCount: Number(takedownDraft.lotCount),
+          pricePerLotCents: takedownDraft.pricePerLot ? Math.round(Number(takedownDraft.pricePerLot) * 100) : null,
+          landContractId: takedownDraft.contractId === "none" ? null : takedownDraft.contractId,
+        }
       const payload = {
         name: takedownDraft.name,
         communityPhaseId: takedownDraft.phaseId === "none" ? null : takedownDraft.phaseId,
-        scheduledDate: takedownDraft.scheduledDate || null,
-        lotCount: Number(takedownDraft.lotCount),
-        pricePerLotCents: takedownDraft.pricePerLot ? Math.round(Number(takedownDraft.pricePerLot) * 100) : null,
-        depositCents: takedownDraft.deposit ? Math.round(Number(takedownDraft.deposit) * 100) : 0,
+        ...terms,
+        ...(takedownDraft.landDealId !== takedownDraft.savedLandDealId
+          ? { landOpportunityId: takedownDraft.landDealId === NO_DEAL ? null : takedownDraft.landDealId }
+          : {}),
         status: takedownDraft.status,
         notes: takedownDraft.notes || null,
       }
@@ -221,7 +271,9 @@ export function CommunityStructure({
         <div className="mb-3 flex items-center justify-between">
           <div>
             <h2 className="microlabel">Phases</h2>
-            <p className="text-xs text-muted-foreground">Lot releases and buildout tranches.</p>
+            <p className="text-xs text-muted-foreground">
+              Lot releases and buildout tranches{development ? ", reconciled to the job that develops each one" : ""}.
+            </p>
             {lotsByPhaseTruncated ? (
               <p className="mt-1 text-xs text-warning">
                 This community has more lots than the phase count reads at once, so the mix below is a floor, not a
@@ -242,12 +294,23 @@ export function CommunityStructure({
                 <TableHead className="text-right">Lots</TableHead>
                 <TableHead className="w-40">Mix</TableHead>
                 <TableHead className="text-right">Sellable</TableHead>
+                {development ? (
+                  <>
+                    <TableHead>Development job</TableHead>
+                    <TableHead className="text-right">Budget</TableHead>
+                    <TableHead className="text-right">Committed</TableHead>
+                    <TableHead className="text-right">Actual</TableHead>
+                    <TableHead className="text-right">Allocated</TableHead>
+                    <TableHead className="text-right">Unallocated</TableHead>
+                    <TableHead className="text-right">Delivered</TableHead>
+                  </>
+                ) : null}
                 {canWrite ? <TableHead className="w-10" /> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
               {community.phases.length === 0 ? (
-                <TableRow><TableCell colSpan={canWrite ? 8 : 7} className="py-8 text-center text-xs text-muted-foreground">No phases yet. Phases group lots into release tranches.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={(canWrite ? 8 : 7) + (development ? 7 : 0)} className="py-8 text-center text-xs text-muted-foreground">No phases yet. Phases group lots into release tranches.</TableCell></TableRow>
               ) : community.phases.map((phase) => {
                 const counts = lotsByPhase[phase.id]
                 const total = counts ? LOT_STATUSES.reduce((sum, status) => sum + counts[status], 0) : 0
@@ -276,6 +339,7 @@ export function CommunityStructure({
                     </TableCell>
                     <TableCell>{counts && total > 0 ? <LotMixBar counts={counts} /> : null}</TableCell>
                     <TableCell className="text-right tabular-nums">{counts ? sellable : "—"}</TableCell>
+                    {development ? <DevelopmentCells job={phase.developmentProjectId ? jobById.get(phase.developmentProjectId) : undefined} ledger={phaseLedger.get(phase.id)} /> : null}
                     {canWrite ? (
                       <TableCell className="text-right">
                         <DropdownMenu>
@@ -314,7 +378,7 @@ export function CommunityStructure({
                   <TableCell>
                     <LotMixBar counts={lotsByPhase[UNPHASED_KEY]} />
                   </TableCell>
-                  <TableCell colSpan={canWrite ? 2 : 1} />
+                  <TableCell colSpan={(canWrite ? 2 : 1) + (development ? 7 : 0)} />
                 </TableRow>
               ) : null}
             </TableBody>
@@ -326,7 +390,7 @@ export function CommunityStructure({
         <div className="mb-3 flex items-center justify-between">
           <div>
             <h2 className="microlabel">Lot takedowns</h2>
-            <p className="text-xs text-muted-foreground">Contracted land tranches, deposits, and actual acquisition dates.</p>
+            <p className="text-xs text-muted-foreground">Contracted land tranches, the cash each closes for after its deposits, and actual acquisition dates.</p>
           </div>
           {canWrite ? <Button variant="outline" size="sm" className="rounded-none" onClick={openTakedownCreate}><Plus className="mr-1.5 h-4 w-4" />Takedown</Button> : null}
         </div>
@@ -339,19 +403,27 @@ export function CommunityStructure({
                 <TableHead>Scheduled → actual</TableHead>
                 <TableHead className="text-right">Lots linked</TableHead>
                 <TableHead className="text-right">Contract value</TableHead>
-                <TableHead className="text-right">Deposit</TableHead>
+                <TableHead className="text-right">Deposits credited</TableHead>
+                <TableHead className="text-right">Cash at close</TableHead>
                 <TableHead>Status</TableHead>
                 {canWrite ? <TableHead className="w-10" /> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
               {community.takedowns.length === 0 ? (
-                <TableRow><TableCell colSpan={canWrite ? 8 : 7} className="py-8 text-center text-xs text-muted-foreground">No takedowns yet. Record contracted tranches to track land economics.</TableCell></TableRow>
-              ) : community.takedowns.map((takedown) => (
+                <TableRow><TableCell colSpan={canWrite ? 9 : 8} className="py-8 text-center text-xs text-muted-foreground">No takedowns yet. Record contracted tranches to track land economics.</TableCell></TableRow>
+              ) : community.takedowns.map((takedown) => {
+                const cash = takedownCash(takedown, deposits)
+                const contract = takedown.landContractId ? contractById.get(takedown.landContractId) : undefined
+                const late = takedown.status === "scheduled" && takedown.scheduledDate != null && takedown.scheduledDate < new Date().toISOString().slice(0, 10)
+                return (
                 <TableRow key={takedown.id} className="text-xs">
-                  <TableCell className="font-medium">{takedown.name}</TableCell>
+                  <TableCell className="font-medium">
+                    {takedown.name}
+                    {contract ? <span className="block font-normal text-muted-foreground">{contract.title}</span> : null}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{takedown.communityPhaseId ? phaseNames.get(takedown.communityPhaseId) ?? "—" : "—"}</TableCell>
-                  <TableCell className="tabular-nums text-muted-foreground">
+                  <TableCell className={cn("tabular-nums", late ? "text-destructive" : "text-muted-foreground")}>
                     {takedown.scheduledDate ?? "—"}
                     {takedown.actualDate ? <span className="text-foreground"> → {takedown.actualDate}</span> : null}
                   </TableCell>
@@ -367,7 +439,8 @@ export function CommunityStructure({
                       </span>
                     ) : null}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{money(takedown.depositCents)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{cash.creditedDepositCents ? money(cash.creditedDepositCents) : "—"}</TableCell>
+                  <TableCell className="text-right font-medium tabular-nums">{takedown.status === "scheduled" && takedown.pricePerLotCents != null ? money(cash.netCents) : "—"}</TableCell>
                   <TableCell><CommunityStatusBadge status={takedown.status} /></TableCell>
                   {canWrite ? (
                     <TableCell className="text-right">
@@ -408,7 +481,8 @@ export function CommunityStructure({
                     </TableCell>
                   ) : null}
                 </TableRow>
-              ))}
+                )
+              })}
             </TableBody>
             {community.takedowns.length > 1 ? (
               <TableFooter>
@@ -416,7 +490,8 @@ export function CommunityStructure({
                   <TableCell colSpan={3} className="font-medium">All active takedowns</TableCell>
                   <TableCell className="text-right tabular-nums">{takedownTotals.linked} / {takedownTotals.contracted}</TableCell>
                   <TableCell className="text-right font-medium tabular-nums">{takedownTotals.value ? money(takedownTotals.value) : "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(takedownTotals.deposits)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(takedownTotals.credited)}</TableCell>
+                  <TableCell className="text-right font-medium tabular-nums">{money(Math.max(0, takedownTotals.value - takedownTotals.credited))}</TableCell>
                   <TableCell colSpan={canWrite ? 2 : 1} />
                 </TableRow>
               </TableFooter>
@@ -453,6 +528,19 @@ export function CommunityStructure({
               </Select>
             </div>
             <div className="col-span-2 grid gap-1.5"><Label htmlFor="phase-open">Target open date</Label><Input id="phase-open" type="date" value={phaseDraft.targetOpenDate} onChange={(event) => setPhaseDraft({ ...phaseDraft, targetOpenDate: event.target.value })} /></div>
+            {canLinkDevelopment && development ? (
+              <div className="col-span-2 grid gap-1.5">
+                <Label>Development job</Label>
+                <Select value={phaseDraft.developmentProjectId} onValueChange={(value) => setPhaseDraft({ ...phaseDraft, developmentProjectId: value })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_JOB}>No development job</SelectItem>
+                    {jobOptions.map((job) => <SelectItem key={job.id} value={job.id}>{job.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">The project whose budget, contracts and cost develop this phase. Its cost reaches only this phase&apos;s lots.</p>
+              </div>
+            ) : null}
             <div className="col-span-2 grid gap-1.5"><Label htmlFor="phase-notes">Notes</Label><Textarea id="phase-notes" rows={2} value={phaseDraft.notes} onChange={(event) => setPhaseDraft({ ...phaseDraft, notes: event.target.value })} /></div>
           </form>
           <DialogFooter>
@@ -477,10 +565,40 @@ export function CommunityStructure({
             }}
           >
             <div className="col-span-2 grid gap-1.5"><Label htmlFor="takedown-name">Name</Label><Input id="takedown-name" autoFocus value={takedownDraft.name} onChange={(event) => setTakedownDraft({ ...takedownDraft, name: event.target.value })} placeholder="Q3 2026 takedown" /></div>
-            <div className="grid gap-1.5"><Label htmlFor="takedown-date">Scheduled date</Label><Input id="takedown-date" type="date" value={takedownDraft.scheduledDate} onChange={(event) => setTakedownDraft({ ...takedownDraft, scheduledDate: event.target.value })} /></div>
-            <div className="grid gap-1.5"><Label htmlFor="takedown-lots">Contracted lots</Label><Input id="takedown-lots" type="number" min={0} value={takedownDraft.lotCount} onChange={(event) => setTakedownDraft({ ...takedownDraft, lotCount: event.target.value })} /></div>
-            <div className="grid gap-1.5"><Label htmlFor="takedown-price">Price per lot</Label><Input id="takedown-price" inputMode="decimal" value={takedownDraft.pricePerLot} onChange={(event) => setTakedownDraft({ ...takedownDraft, pricePerLot: event.target.value })} placeholder="85000" /></div>
-            <div className="grid gap-1.5"><Label htmlFor="takedown-deposit">Deposit</Label><Input id="takedown-deposit" inputMode="decimal" value={takedownDraft.deposit} onChange={(event) => setTakedownDraft({ ...takedownDraft, deposit: event.target.value })} placeholder="150000" /></div>
+            {signedTerms ? (
+              <p className="col-span-2 text-xs text-muted-foreground">
+                Date, lots and price are signed terms of {editingContract?.title}. Record an extension or amendment on the contract to change them.
+              </p>
+            ) : null}
+            <div className="grid gap-1.5"><Label htmlFor="takedown-date">Scheduled date</Label><Input id="takedown-date" type="date" disabled={signedTerms} value={takedownDraft.scheduledDate} onChange={(event) => setTakedownDraft({ ...takedownDraft, scheduledDate: event.target.value })} /></div>
+            <div className="grid gap-1.5"><Label htmlFor="takedown-lots">Contracted lots</Label><Input id="takedown-lots" type="number" min={0} disabled={signedTerms} value={takedownDraft.lotCount} onChange={(event) => setTakedownDraft({ ...takedownDraft, lotCount: event.target.value })} /></div>
+            <div className="grid gap-1.5"><Label htmlFor="takedown-price">Price per lot</Label><Input id="takedown-price" inputMode="decimal" disabled={signedTerms} value={takedownDraft.pricePerLot} onChange={(event) => setTakedownDraft({ ...takedownDraft, pricePerLot: event.target.value })} placeholder="85000" /></div>
+            <div className="grid gap-1.5">
+              <Label>Land contract</Label>
+              <Select value={takedownDraft.contractId} disabled={signedTerms} onValueChange={(value) => setTakedownDraft({ ...takedownDraft, contractId: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No contract</SelectItem>
+                  {/* Takedowns join a contract while it is a draft; a signed one keeps the ones it was signed with. */}
+                  {contracts.filter((contract) => contract.status === "draft" || contract.id === takedownDraft.contractId).map((contract) => (
+                    <SelectItem key={contract.id} value={contract.id}>{contract.title}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {landDeals.length > 0 ? (
+              <div className="grid gap-1.5">
+                <Label>Land deal</Label>
+                <Select value={takedownDraft.landDealId} onValueChange={(value) => setTakedownDraft({ ...takedownDraft, landDealId: value })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_DEAL}>No land deal</SelectItem>
+                    {landDeals.map((deal) => <SelectItem key={deal.id} value={deal.id}>{deal.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Closing it then needs the deal&apos;s acquisition approved.</p>
+              </div>
+            ) : null}
             {community.phases.length > 0 ? (
               <div className="grid gap-1.5">
                 <Label>Phase</Label>
@@ -532,7 +650,7 @@ export function CommunityStructure({
         <DialogContent className="rounded-none sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Close {closingTakedown?.name}</DialogTitle>
-            <DialogDescription>Closing records the acquisition date and advances linked controlled lots to owned.</DialogDescription>
+            <DialogDescription>Closing records the acquisition date, applies the paid deposits credited against it, and advances linked controlled lots to owned.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-1.5">
             <Label htmlFor="close-date">Actual acquisition date</Label>
@@ -545,5 +663,42 @@ export function CommunityStructure({
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/** Budget, contracts and cost of the job that develops a phase, reconciled to the phase's lots. */
+function DevelopmentCells({
+  job,
+  ledger,
+}: {
+  job: CommunityDevelopmentLedger["jobs"][number] | undefined
+  ledger: CommunityDevelopmentLedger["phases"][number] | undefined
+}) {
+  const delivered = ledger ? `${ledger.deliveredLots} / ${ledger.lots}` : "—"
+  if (!job) {
+    return (
+      <>
+        <TableCell className="text-muted-foreground">No job linked</TableCell>
+        <TableCell colSpan={5} />
+        <TableCell className="text-right tabular-nums">{delivered}</TableCell>
+      </>
+    )
+  }
+  const shared = (ledger?.sharedWithPhaseIds.length ?? 0) > 0
+  return (
+    <>
+      <TableCell>
+        <Link href={`/projects/${job.projectId}/financials`} className="hover:underline">{job.projectName}</Link>
+        {shared ? <span className="block text-muted-foreground">Shared with {ledger?.sharedWithPhaseIds.length} other phase{ledger?.sharedWithPhaseIds.length === 1 ? "" : "s"}</span> : null}
+      </TableCell>
+      <TableCell className="text-right tabular-nums">{money(job.budgetCents)}</TableCell>
+      <TableCell className="text-right tabular-nums">{money(job.committedCents)}</TableCell>
+      <TableCell className={cn("text-right tabular-nums", job.flags.includes("over_budget") && "text-destructive")}>{money(job.actualCents)}</TableCell>
+      <TableCell className="text-right tabular-nums" title={shared ? "Allocated to this phase's lots" : undefined}>{money(ledger?.allocatedCents ?? 0)}</TableCell>
+      <TableCell className={cn("text-right tabular-nums", job.unallocatedCents < 0 ? "text-destructive" : job.unallocatedCents > 0 && ledger?.flags.includes("delivered_without_allocation") ? "text-warning" : undefined)}>
+        {money(job.unallocatedCents)}
+      </TableCell>
+      <TableCell className={cn("text-right tabular-nums", ledger?.flags.includes("delivered_without_allocation") && "text-warning")}>{delivered}</TableCell>
+    </>
   )
 }

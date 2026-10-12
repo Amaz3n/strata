@@ -106,8 +106,20 @@ async function seedCommunity(kit, org) {
   const phase1 = await kit.as(org.team.land, () => communities.createCommunityPhase(community.id, { name: "Phase 1", phaseNumber: 1, status: "open" }))
   const phase2 = await kit.as(org.team.land, () => communities.createCommunityPhase(community.id, { name: "Phase 2", phaseNumber: 2, status: "planned" }))
   org.phaseIds = [phase1.id, phase2.id]
-  const takedown = await kit.as(org.team.land, () => communities.createLotTakedown(community.id, { name: "Tranche 1", communityPhaseId: phase1.id, scheduledDate: "2026-06-01", lotCount: 10, pricePerLotCents: 7200000, depositCents: 1000000 }))
+  // The first tranche is bought under a signed purchase contract whose $10,000
+  // earnest money is credited against it at close: the takedown joins the
+  // contract while it is a draft, the deposit is scheduled against the takedown,
+  // then the contract is executed and the deposit paid, each with its document.
+  const landContracts = app("land-contracts")
+  const contract = await kit.as(org.team.land, () => landContracts.createLandContract(community.id, { title: "Cypress Landing phase 1 purchase", kind: "purchase", totalLots: 10, basePricePerLotCents: 7200000 }))
+  const takedown = await kit.as(org.team.land, () => communities.createLotTakedown(community.id, { name: "Tranche 1", communityPhaseId: phase1.id, scheduledDate: "2026-06-01", lotCount: 10, pricePerLotCents: 7200000, landContractId: contract.id }))
   org.takedownId = takedown.id
+  const deposit = await kit.as(org.team.land, () => landContracts.scheduleLandContractDeposit(contract.id, { label: "Earnest money", takedownId: takedown.id, dueOn: "2026-05-15", amountCents: 1000000, refundability: "refundable" }))
+  // The stack has no file storage: the signed contract and the wire receipt are file rows.
+  const [signedFileId, receiptFileId] = [randomUUID(), randomUUID()]
+  kit.sql(`insert into public.files(id,org_id,file_name,storage_path,mime_type) values(${kit.q(signedFileId)},${kit.q(org.orgId)},'cypress-landing-purchase-agreement.pdf','acceptance/cypress-landing-purchase-agreement.pdf','application/pdf'),(${kit.q(receiptFileId)},${kit.q(org.orgId)},'cypress-landing-earnest-wire.pdf','acceptance/cypress-landing-earnest-wire.pdf','application/pdf')`)
+  await kit.as(org.team.land, () => landContracts.executeLandContract(contract.id, { executedOn: "2026-05-01", executedFileId: signedFileId }))
+  await kit.as(org.team.land, () => landContracts.recordLandContractDepositPayment(deposit.id, { paidOn: "2026-05-15", paymentReference: "Wire 0515", evidenceFileId: receiptFileId }))
   // Ten lots in the first tranche, ten later; premiums on every fifth lot.
   const lotRows = Array.from({ length: org.lotCount }, (_, index) => ({
     lotNumber: String(index + 1), phaseId: index < 10 ? phase1.id : phase2.id, takedownId: index < 10 ? takedown.id : null,
@@ -182,11 +194,24 @@ function registerBuyer(kit, org, { name, email, date = "2026-06-04" }) {
   return kit.as(org.team.sales, () => app("sales-inquiries").registerProductionInquiry({ buyerName: name, email, phone: "239-555-0142", communityId: org.communityId, ownerUserId: org.team.sales.userId, channel: "walk_in", planInterest: "Mangrove", loggedDate: date }))
 }
 
+/**
+ * The consultant's two steps on the reservation dialog: save a review of the hold, then
+ * reserve, which commits the home, the earnest invoice and the lot in one database step.
+ * Returns the reservation with the home and deposit invoice the commit receipted.
+ */
+async function reserveHold(kit, actor, { reservationId, depositCents }) {
+  const sales = app("community-sales")
+  const identity = { scope: { orgId: actor.orgId, actorId: actor.userId, reservationId }, requestKey: randomUUID() }
+  const review = await kit.as(actor, () => sales.registerReservationConversion({ ...identity, input: { reservationId, depositCents } }))
+  const state = await kit.as(actor, () => sales.convertHoldToReservation({ ...identity, input: review.input }))
+  return { id: reservationId, projectId: state.receipt.projectId, depositInvoiceId: state.receipt.invoiceId }
+}
+
 /** Hold, then reservation with the earnest deposit invoiced; the deposit received when `receivedOn` is given. */
 async function reserveLot(kit, org, { prospect, lotId, depositCents, receivedOn = null }) {
   const sales = app("community-sales")
   const hold = await kit.as(org.team.sales, () => sales.createLotHoldFromProspect({ prospectId: prospect.id, lotId, expiresAt: new Date(Date.now() + 14 * 86400000).toISOString() }))
-  const reservation = await kit.as(org.team.sales, () => sales.convertHoldToReservation({ reservationId: hold.id, depositCents }))
+  const reservation = await reserveHold(kit, org.team.sales, { reservationId: hold.id, depositCents })
   if (receivedOn) await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: `${receivedOn}T12:00:00Z`, method: "check", idempotency_key: randomUUID(), allocations: [{ invoice_id: reservation.depositInvoiceId, amount_cents: depositCents }] }))
   return { hold, reservation }
 }
@@ -384,6 +409,6 @@ function pinSpecPlan(kit, { lot, plan }) {
 module.exports = {
   EVIDENCE, COST_CODES, TRADES, PLANS, OPTIONS, DESIGN_PICKS,
   defaultPeriods, isoDay, glId, csv, planTradeCostCents,
-  productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveLot, configuration, signAgreement,
+  productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveHold, reserveLot, configuration, signAgreement,
   chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, closeHome, presoldThroughClosing, pinSpecPlan,
 }

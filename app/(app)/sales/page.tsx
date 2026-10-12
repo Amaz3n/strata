@@ -5,10 +5,12 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { DealBoard } from "@/components/sales/deal-board"
 import { NewInquirySheet } from "@/components/sales/new-inquiry-sheet"
 import { SalesBoardSkeleton } from "@/components/sales/deal-board-skeleton"
+import { SpecApprovalsStrip, SpecApprovalsStripError, SpecApprovalsStripSkeleton } from "@/components/sales/spec-approvals-strip"
 import { isDealView, type DealView } from "@/lib/sales/board"
 import { isDealFilter, type DealFilter } from "@/lib/sales/next-action"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { listLostReasons, listSalesBoard } from "@/lib/services/sales-deals"
+import { listSpecApprovals } from "@/lib/services/spec-dispositions"
 import { listTeamMembers } from "@/lib/services/team"
 
 
@@ -31,11 +33,29 @@ async function SalesPageContent({ searchParams }: SalesPageProps) {
 
   return (
     <PageLayout title="Sales">
-      <Suspense fallback={<SalesBoardSkeleton />}>
-        <SalesBoardBand view={view} filter={filter} />
-      </Suspense>
+      <div className="space-y-3">
+        <Suspense fallback={<SpecApprovalsStripSkeleton />}>
+          <SpecApprovalsBand />
+        </Suspense>
+        <Suspense fallback={<SalesBoardSkeleton />}>
+          <SalesBoardBand view={view} filter={filter} />
+        </Suspense>
+      </div>
     </PageLayout>
   )
+}
+
+/**
+ * Spec price changes and sell-offs waiting on someone, in the desk's ambient
+ * scope. Decisions are made with the community workbench's actions.
+ */
+async function SpecApprovalsBand() {
+  await connection()
+  const approvals = await getAmbientDeskContext()
+    .then((ambient) => listSpecApprovals({ divisionId: ambient.divisionId, communityId: ambient.communityId }))
+    .catch(() => null)
+  if (!approvals) return <SpecApprovalsStripError />
+  return <SpecApprovalsStrip items={approvals.items} truncated={approvals.truncated} />
 }
 
 async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFilter }) {

@@ -88,6 +88,16 @@ test("the blocker is the longest-lead outstanding gate, not the first one", () =
   assert.equal(blocker.leadDays, gateLeadDays("permit"))
 })
 
+test("an unmet entitlement outranks the permit, which cannot be pulled before the plat records", () => {
+  const withEntitlements = [
+    ...blockerGates,
+    { key: "entitlements", label: "Entitlements & conditions met", checkKind: "auto", appliesWhen: "always", status: "pending" },
+  ]
+  assert.equal(pickBlocker(withEntitlements, bothOn).key, "entitlements")
+  const cleared = withEntitlements.map((gate) => (gate.key === "entitlements" ? { ...gate, status: "passed" } : gate))
+  assert.equal(pickBlocker(cleared, bothOn).key, "permit")
+})
+
 test("the blocker skips gates that do not apply to this house", () => {
   const withoutPermit = blockerGates.map((gate) => (gate.key === "permit" ? { ...gate, status: "passed" } : gate))
   // Financing outranks the plot plan, but only for a financed buyer.

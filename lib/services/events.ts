@@ -67,6 +67,25 @@ const BID_NOTIFICATION_EVENTS = new Set<string>([
 ])
 const RESTRICTED_PROJECT_ROLE_KEYS = new Set(["client", "project_client", "portal_client", "sub", "portal_sub"])
 
+// Land deal reviews, diligence and entitlement deadlines, and takedowns coming
+// due. Each event names the people it is for -- the approvers, the submitter,
+// an item's owner, the deal lead, a community's assigned team -- and every one of
+// them must still read the record in its division. `takedown_due` was on the
+// email allowlist for months with no recipient set and no case here, so the
+// sweep recorded `lot_takedown.due` and nobody ever heard about it.
+const LAND_NOTIFICATION_TYPES: Record<string, NotificationType> = {
+  "land_acquisition_review.submitted": "land_review_requested",
+  "land_acquisition_review.decided": "land_review_decided",
+  "land_diligence_item.due": "land_diligence_due",
+  "land_opportunity.diligence_deadline": "land_diligence_due",
+  "land_entitlement_condition.due": "entitlement_condition_due",
+  "land_entitlement.due": "entitlement_condition_due",
+  "land_entitlement.expiring": "entitlement_condition_due",
+  "lot_takedown.due": "takedown_due",
+}
+/** A fan-out checks each candidate's access; this bounds how many. */
+const LAND_NOTIFICATION_CANDIDATE_CAP = 100
+
 // A provider account is not a vendor a builder recognises. These events name one,
 // so the builder-facing facts — which of their companies it is, and who on their
 // team invited it — are hydrated onto the payload before anything reads it.
@@ -361,6 +380,10 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
 
   const actorId = typeof (event.payload as any)?.actor_id === "string" ? ((event.payload as any).actor_id as string) : null
   const projectId = extractProjectIdFromEvent(event)
+
+  if (LAND_NOTIFICATION_TYPES[event.event_type]) {
+    return landNotificationRecipients(supabase, orgId, event, actorId)
+  }
 
   // Requests route to whoever decides them; decisions route back to whoever
   // raises them. The decision half was declared as a notification type, given a
@@ -1802,6 +1825,28 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    case "land_acquisition_review.submitted":
+    case "land_acquisition_review.decided":
+    case "land_diligence_item.due":
+    case "land_opportunity.diligence_deadline":
+    case "land_entitlement_condition.due":
+    case "land_entitlement.due":
+    case "land_entitlement.expiring":
+    case "lot_takedown.due": {
+      const copy = landNotificationCopy(event)
+      return {
+        orgId: event.org_id,
+        userId,
+        type: LAND_NOTIFICATION_TYPES[event_type],
+        title: copy.title,
+        message: copy.message,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: copy.href },
+      }
+    }
+
     case "compliance_document_submitted":
     case "compliance_document_expiring": {
       const companyName = typeof safePayload.company_name === "string" && safePayload.company_name
@@ -1845,6 +1890,196 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         eventId: event.id,
       }
   }
+}
+
+function payloadText(payload: Record<string, unknown>, key: string): string | null {
+  const value = payload[key]
+  return typeof value === "string" && value ? value : null
+}
+
+/** "today", "in 3 days", "2 days ago". */
+function relativeDay(daysOut: unknown): string {
+  const days = typeof daysOut === "number" && Number.isFinite(daysOut) ? daysOut : 0
+  if (days === 0) return "today"
+  const count = Math.abs(days)
+  const unit = count === 1 ? "day" : "days"
+  return days > 0 ? `in ${count} ${unit}` : `${count} ${unit} ago`
+}
+
+function isPast(daysOut: unknown) {
+  return typeof daysOut === "number" && daysOut < 0
+}
+
+/** What a land notification says, and where it opens. */
+function landNotificationCopy(event: EventRecord): { title: string; message: string; href: string } {
+  const payload: Record<string, unknown> = event.payload ?? {}
+  const dealId = payloadText(payload, "land_opportunity_id")
+  const dealName = payloadText(payload, "deal_name") ?? "A land deal"
+  const communityId = payloadText(payload, "community_id")
+  const subject = payloadText(payload, "title") ?? payloadText(payload, "name") ?? "An item"
+  const when = relativeDay(payload.days_out)
+  const past = isPast(payload.days_out)
+  const decisionNoun = payload.decision === "terminate" ? "termination" : "acquisition"
+  const dealHref = dealId ? `/communities/land-deals/${dealId}` : "/communities/land-deals"
+  const landHref = communityId ? `/communities/${communityId}/land` : "/communities"
+  switch (event.event_type) {
+    case "land_acquisition_review.submitted":
+      return {
+        title: `${dealName}: ${decisionNoun} awaiting your approval`,
+        message: `You are named an approver on the ${decisionNoun} review for ${dealName}.`,
+        href: `${dealHref}?review=${event.entity_id ?? ""}`,
+      }
+    case "land_acquisition_review.decided": {
+      const approved = payload.status === "approved"
+      const revision = typeof payload.revision === "number" ? ` r${payload.revision}` : ""
+      return {
+        title: `${dealName}: review${revision} ${approved ? "approved" : "returned"}`,
+        message: approved
+          ? `Every approver approved the ${decisionNoun} of ${dealName}.`
+          : `An approver returned the review of ${dealName}. Revise the deal and submit a new version.`,
+        href: `${dealHref}?review=${event.entity_id ?? ""}`,
+      }
+    }
+    case "land_diligence_item.due":
+      return {
+        title: `${dealName}: diligence item ${past ? "overdue" : `due ${when}`}`,
+        message: past ? `"${subject}" was due ${when}.` : `"${subject}" is due ${when}.`,
+        href: `${dealHref}?item=${event.entity_id ?? ""}`,
+      }
+    case "land_opportunity.diligence_deadline": {
+      const deposit = typeof payload.deposit_cents === "number" && payload.deposit_cents > 0
+        ? ` ${formatCentsForNotification(payload.deposit_cents)} in deposits is at risk after it.`
+        : ""
+      return {
+        title: `${dealName}: feasibility period ${past ? "ended" : "ends"} ${when}`,
+        message: `The diligence period on ${dealName} ${past ? "ended" : "ends"} ${when}.${deposit}`,
+        href: dealHref,
+      }
+    }
+    case "land_entitlement_condition.due":
+      return {
+        title: `Entitlement condition ${past ? "overdue" : `due ${when}`}`,
+        message: `"${subject}" ${past ? "was" : "is"} due ${when}. Unmet conditions hold lot delivery and starts.`,
+        href: `${landHref}#entitlements`,
+      }
+    case "land_entitlement.due":
+      return {
+        title: `${subject} ${past ? "is late" : `expected ${when}`}`,
+        message: `${subject} ${past ? "was" : "is"} expected ${when} and is not approved yet.`,
+        href: `${landHref}#entitlements`,
+      }
+    case "land_entitlement.expiring":
+      return {
+        title: `${subject} ${past ? "has expired" : `expires ${when}`}`,
+        message: past ? `${subject} expired ${when}.` : `${subject} expires ${when}.`,
+        href: `${landHref}#entitlements`,
+      }
+    default: {
+      // lot_takedown.due: a takedown closing, or a deposit or fee on its land contract.
+      if (payload.kind === "deposit" || payload.kind === "fee") {
+        const amount = typeof payload.amount_cents === "number" ? formatCentsForNotification(payload.amount_cents) : "A payment"
+        return {
+          title: `${subject} ${past ? "overdue" : `due ${when}`}`,
+          message: `${amount} ${past ? "was" : "is"} due ${when}.`,
+          href: landHref,
+        }
+      }
+      const lots = typeof payload.lot_count === "number" ? `${payload.lot_count} lots, ` : ""
+      const cash = typeof payload.cash_cents === "number" ? formatCentsForNotification(payload.cash_cents) : "the contract price"
+      return {
+        title: `Takedown ${subject} ${past ? "is past its close date" : `closes ${when}`}`,
+        message: `${lots}${cash} at close.`,
+        href: landHref,
+      }
+    }
+  }
+}
+
+/**
+ * Who hears about a land event: the people it names, or -- when it names
+ * nobody who can still act -- the members who can, in the record's division.
+ * Every candidate is checked against the permission and the division wall the
+ * database applies (land_member_may), so a reminder never reaches someone who
+ * could not open what it links to.
+ */
+async function landNotificationRecipients(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  event: EventRecord,
+  actorId: string | null,
+): Promise<string[]> {
+  const payload: Record<string, unknown> = event.payload ?? {}
+  const named = (...keys: string[]) =>
+    keys.flatMap((key) => {
+      const value = payload[key]
+      if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string")
+      return typeof value === "string" && value ? [value] : []
+    })
+
+  const dealId = payloadText(payload, "land_opportunity_id")
+  const communityId = payloadText(payload, "community_id")
+  const onDeal = event.event_type.startsWith("land_acquisition") || event.event_type.startsWith("land_diligence") || event.event_type.startsWith("land_opportunity")
+  let divisionId: string | null = null
+  if (onDeal) {
+    if (!dealId) return []
+    const { data } = await supabase.from("land_opportunities").select("division_id").eq("org_id", orgId).eq("id", dealId).maybeSingle()
+    if (!data) return []
+    divisionId = data.division_id ?? null
+  } else {
+    if (!communityId) return []
+    const { data } = await supabase.from("communities").select("division_id").eq("org_id", orgId).eq("id", communityId).maybeSingle()
+    if (!data) return []
+    divisionId = data.division_id ?? null
+  }
+
+  let candidates: string[]
+  let permission = onDeal ? "land.read" : "community.read"
+  let fallback: string | null = null
+  switch (event.event_type) {
+    case "land_acquisition_review.submitted":
+      // Only the named approvers decide; nobody else is asked.
+      candidates = named("approver_ids")
+      permission = "land.approve"
+      break
+    case "land_acquisition_review.decided":
+      candidates = named("submitted_by", "lead_user_id")
+      break
+    case "land_diligence_item.due":
+      candidates = named("owner_user_id", "lead_user_id")
+      fallback = "land.write"
+      break
+    case "land_opportunity.diligence_deadline":
+      candidates = named("lead_user_id")
+      fallback = "land.write"
+      break
+    default: {
+      const { data } = await supabase
+        .from("community_assignments")
+        .select("user_id")
+        .eq("org_id", orgId)
+        .eq("community_id", communityId ?? "")
+        .limit(LAND_NOTIFICATION_CANDIDATE_CAP)
+      candidates = [...named("owner_user_id"), ...(data ?? []).map((row: { user_id: string }) => row.user_id)]
+      fallback = "community.write"
+    }
+  }
+
+  const admitted = async (userIds: string[], key: string) => {
+    const unique = uniqUserIds(userIds).slice(0, LAND_NOTIFICATION_CANDIDATE_CAP)
+    const checks = await Promise.all(unique.map(async (userId) => {
+      const { data } = await supabase.rpc("land_member_may", {
+        p_org_id: orgId, p_user_id: userId, p_permission: key, p_division_id: divisionId,
+      })
+      return data === true ? userId : null
+    }))
+    return uniqUserIds(checks)
+  }
+
+  let recipients = await admitted(candidates, permission)
+  if (recipients.length === 0 && fallback) {
+    recipients = await admitted(await usersWithAnyPermission(supabase, orgId, [fallback]), fallback)
+  }
+  return recipients.filter((id) => id !== actorId)
 }
 
 /** Merge the bid package's title, project_id and creator onto a bid event's

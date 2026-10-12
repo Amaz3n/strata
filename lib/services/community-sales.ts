@@ -1,6 +1,6 @@
 import { readPageOrEmpty } from "@/lib/land/paging"
 import { orFilterTerm } from "@/lib/search-picker"
-import { reservationConversionEnabled, assertReservationConversionScope, callReservationConversion, prepareReservationConversionBundle } from "@/lib/services/reservation-conversion"
+import { assertReservationConversionScope, callReservationConversion, prepareReservationConversionBundle } from "@/lib/services/reservation-conversion"
 import { reservationConversionRegistrationSchema, reservationConversionIdentitySchema, reservationConversionScopeSchema, savedReservationConversionInputSchema, type ReservationConversionExpected } from "@/lib/validation/reservation-conversion"
 import { readAgreementCatalogRevision } from "@/lib/services/agreement-catalog-revision"
 import { logger } from "@/lib/logging/logger"
@@ -9,7 +9,7 @@ import { agreementQuoteFingerprint, AgreementQuoteChangedError } from "@/lib/sal
 import { agreementStructuralSelections, assertOneStructuralOptionPerCategory } from "@/lib/sales/agreement-selections"
 import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
-import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
+import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementIncentive, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
 import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -21,7 +21,9 @@ import { captureHomeProductRevisions } from "@/lib/services/home-product-revisio
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
 import { projectJournal } from "@/lib/services/books/projector"
 import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
-import { specInventoryAge } from "@/lib/sales/spec-inventory"
+import { specCompletionDate, specDispositionExecutionBlock, specHomeIncentiveInForce, specInventoryAge } from "@/lib/sales/spec-inventory"
+import { SPEC_PRICE_SELF_SERVE_PERMISSION, parseSpecPriceApprovalBands, requiredSpecPricePermission, specPriceDecisionBlockReason } from "@/lib/sales/spec-price-approval-thresholds"
+import { specPriceChangeSchema, specPriceDecisionSchema, specPriceWithdrawalSchema } from "@/lib/validation/spec-inventory"
 import { z } from "zod"
 import type { CommunityPlanAvailabilityDto } from "@/lib/services/house-plans"
 
@@ -45,7 +47,6 @@ import { revokePortalToken } from "@/lib/services/portal-access"
 import { getPlanLadder } from "@/lib/services/house-plans"
 import { assertLotFit } from "@/lib/services/lot-fit"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
-import { createProject } from "@/lib/services/projects"
 import { findContactIdByEmail } from "@/lib/services/party-promotion"
 import { chunk } from "@/lib/utils"
 import { recordEvent } from "@/lib/services/events"
@@ -68,7 +69,6 @@ import {
   createLotHoldSchema,
   createPurchaseAgreementSchema,
   convertReservationSchema,
-  specAskingPriceSchema,
   reservationConversionSourceSchema,
   incentiveSchema,
   releaseReservationSchema,
@@ -89,7 +89,7 @@ async function getSalesDivisionAccess(context: OrgContext) {
   })
 }
 
-async function assertCommunityInSalesScope(context: OrgContext, communityId: string) {
+export async function assertCommunityInSalesScope(context: OrgContext, communityId: string) {
   const access = await getSalesDivisionAccess(context)
   if (!access.assignedOnly) return
   const { data } = await context.supabase
@@ -103,7 +103,7 @@ async function assertCommunityInSalesScope(context: OrgContext, communityId: str
   }
 }
 
-async function getSalesCommunityIds(context: OrgContext) {
+export async function getSalesCommunityIds(context: OrgContext) {
   const access = await getSalesDivisionAccess(context)
   if (!access.assignedOnly) return null
   if (access.divisionIds.length === 0) return []
@@ -127,7 +127,7 @@ function invoiceUnitCostFromCents(amountCents: number) {
  * price band, a price sort and the figure on screen agree and nobody's price depends on which
  * selections they may read. Null when the lot has no plan or the sheet does not price it.
  */
-async function deriveLotAskingPrice(supabase: any, orgId: string, lotId: string): Promise<number | null> {
+export async function deriveLotAskingPrice(supabase: any, orgId: string, lotId: string): Promise<number | null> {
   const { data, error } = await supabase.from("sellable_lot_inventory").select("asking_price_cents").eq("org_id", orgId).eq("lot_id", lotId).maybeSingle()
   if (error) throw new Error(`Failed to price the lot: ${error.message}`)
   return data?.asking_price_cents == null ? null : Number(data.asking_price_cents)
@@ -241,7 +241,7 @@ const INVENTORY_FILL_BATCHES = 5
 
 const NO_INVENTORY = { lots: [], truncated: false, total: 0, nextOffset: null as number | null }
 
-const LOT_INVENTORY_SELECT = "id, community_id, division_id, lot_number, block, status, premium_cents, project_id, project:projects(id, name, start_date, status), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)"
+const LOT_INVENTORY_SELECT = "id, community_id, division_id, lot_number, block, status, premium_cents, project_id, project:projects(id, name, start_date, status, completed_on), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)"
 
 /**
  * Same read, plus how much it left out: `truncated` says more lots matched than
@@ -349,73 +349,337 @@ async function availableInventory(context: OrgContext, lots: any[], askingPrices
 
 async function mapInventoryRows(context: OrgContext, availableLots: any[], askingPrices: Map<string, number | null>) {
   const availableProjectIds = availableLots.map((lot: any) => lot.project_id).filter(Boolean) as string[]
-  const { data: completions } = await readByIds(availableProjectIds, (slice) =>
-    context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", slice).not("books_inventory_completed_on", "is", null))
+  const [{ data: completions }, terms] = await Promise.all([
+    readByIds(availableProjectIds, (slice) =>
+      context.supabase.from("project_financial_settings").select("project_id, books_inventory_completed_on").eq("org_id", context.orgId).in("project_id", slice).not("books_inventory_completed_on", "is", null)),
+    readSpecHomeTerms(context, availableLots.flatMap((lot: any) => (lot.project_id ? [{ lotId: lot.id as string, projectId: lot.project_id as string }] : []))),
+  ])
   const completedOnByProject = new Map((completions ?? []).map((row: any) => [row.project_id as string, row.books_inventory_completed_on as string]))
-  return availableLots.map((lot: any) => ({
-    lotId: lot.id,
-    lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number,
-    communityId: lot.community_id,
-    communityName: lot.community?.name ?? null,
-    projectId: lot.project_id,
-    projectName: lot.project?.name ?? null,
-    planLabel: lot.plan?.name ?? "Unassigned plan",
-    beds: lot.plan?.beds != null ? Number(lot.plan.beds) : null,
-    baths: lot.plan?.baths != null ? Number(lot.plan.baths) : null,
-    sqft: lot.plan?.heated_sqft ?? lot.plan?.total_sqft ?? null,
-    isSpec: Boolean(lot.project_id),
-    status: lot.status,
-    startedAt: lot.project?.start_date ?? null,
-    ...specInventoryAge(lot.project, completedOnByProject.get(lot.project_id)),
-    askingPriceCents: askingPrices.get(lot.id) ?? null,
-    premiumCents: Number(lot.premium_cents ?? 0),
-  }))
+  return availableLots.map((lot: any) => {
+    const home = terms.get(lot.id)
+    return {
+      lotId: lot.id,
+      lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number,
+      communityId: lot.community_id,
+      communityName: lot.community?.name ?? null,
+      projectId: lot.project_id,
+      projectName: lot.project?.name ?? null,
+      planLabel: lot.plan?.name ?? "Unassigned plan",
+      beds: lot.plan?.beds != null ? Number(lot.plan.beds) : null,
+      baths: lot.plan?.baths != null ? Number(lot.plan.baths) : null,
+      sqft: lot.plan?.heated_sqft ?? lot.plan?.total_sqft ?? null,
+      isSpec: Boolean(lot.project_id),
+      status: lot.status,
+      startedAt: lot.project?.start_date ?? null,
+      ...specInventoryAge(lot.project, specCompletionDate(completedOnByProject.get(lot.project_id), lot.project?.completed_on)),
+      /** Whether Books owns the completion date (then sales cannot record one). */
+      completionFromBooks: completedOnByProject.has(lot.project_id),
+      askingPriceCents: askingPrices.get(lot.id) ?? null,
+      premiumCents: Number(lot.premium_cents ?? 0),
+      incentiveCents: home?.incentiveCents ?? 0,
+      incentiveExpiresOn: home?.incentiveExpiresOn ?? null,
+      pendingChange: home?.pendingChange ?? null,
+      disposition: home?.disposition ?? null,
+    }
+  })
+}
+
+export type SpecPendingChange = {
+  id: string
+  kind: "price" | "incentive"
+  fromCents: number
+  toCents: number
+  askingPriceCents: number
+  requiredPermission: string
+  proposedBy: string
+}
+
+export type SpecDispositionState = {
+  id: string
+  kind: "bulk_sale" | "investor_sale"
+  status: "proposed" | "approved"
+  /** The buyer the disposition names: the only buyer the home may be held for or written to while it is approved. */
+  counterpartyContactId: string
+  priceCents: number
+  carryingCents: number
+  impairmentId: string | null
+  /** Why an approved disposition cannot be carried out yet; null when it can. */
+  blockedReason: string | null
+}
+
+type SpecHomeTerms = {
+  incentiveCents: number
+  incentiveExpiresOn: string | null
+  incentiveId: string | null
+  pendingChange: SpecPendingChange | null
+  disposition: SpecDispositionState | null
+}
+
+const SPEC_MOVE_SELECT = "id, lot_id, project_id, community_id, kind, status, asking_price_cents, from_cents, to_cents, incentive_expires_on, required_permission, proposed_by, proposed_at, decided_at"
+
+type SpecMoveRow = {
+  id: string
+  lot_id: string
+  project_id: string
+  community_id: string
+  kind: "price" | "incentive"
+  status: string
+  asking_price_cents: number
+  from_cents: number
+  to_cents: number
+  incentive_expires_on: string | null
+  required_permission: string
+  proposed_by: string
+  proposed_at: string
+  decided_at: string | null
 }
 
 /**
- * Reprice one standing spec. A sales manager moves a stale house's price against
- * what it last asked, with a reason, and the move is the evidence: the audit
- * row carries the old and new price, and the home's own metadata keeps the last
- * move so the next one is made against it. Nothing here touches the agreement,
- * budget or Books baselines — margin history is read from those, never from the
- * asking price. A home with a live reservation or an active agreement is sold
- * stock; its price is the agreement's.
+ * Each spec home's own pricing terms: the incentive in force (the last applied or
+ * approved incentive move, until it expires or a sale is written after it), a
+ * move waiting for approval, and a disposition in flight with what still blocks
+ * it. Moves are serialized per home (nothing new while one waits), so the newest
+ * incentive row is the one in force.
  */
-export async function setSpecAskingPrice(input: unknown, orgId?: string) {
-  const parsed = specAskingPriceSchema.parse(input)
+async function readSpecHomeTerms(context: OrgContext, homes: Array<{ lotId: string; projectId: string }>): Promise<Map<string, SpecHomeTerms>> {
+  const terms = new Map<string, SpecHomeTerms>()
+  if (homes.length === 0) return terms
+  const lotIds = homes.map((home) => home.lotId)
+  const projectIds = homes.map((home) => home.projectId)
+  const [open, incentives, agreements, dispositions] = await Promise.all([
+    readByIds(lotIds, (slice) => context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).in("lot_id", slice).eq("status", "proposed")),
+    readByIds(lotIds, (slice) => context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).in("lot_id", slice)
+      .eq("kind", "incentive").in("status", ["applied", "approved"]).order("proposed_at", { ascending: false }).limit(slice.length * 10)),
+    readByIds(projectIds, (slice) => context.supabase.from("contracts").select("project_id, created_at").eq("org_id", context.orgId).in("project_id", slice).eq("contract_type", "purchase_agreement")),
+    readByIds(projectIds, (slice) => context.supabase.from("spec_dispositions").select("id, project_id, kind, status, counterparty_contact_id, price_cents, carrying_cents, impairment_id").eq("org_id", context.orgId).in("project_id", slice).in("status", ["proposed", "approved"])),
+  ])
+  for (const result of [open, incentives, agreements, dispositions]) {
+    if (result.error) throw new Error(`Failed to read spec pricing terms: ${result.error.message}`)
+  }
+  const impairmentIds = dispositions.data.flatMap((row) => (row.status === "approved" && row.impairment_id ? [String(row.impairment_id)] : []))
+  const impairmentStatus = await readImpairmentStatuses(context.orgId, impairmentIds)
+  const latestAgreementAt = new Map<string, string>()
+  for (const row of agreements.data) {
+    const previous = latestAgreementAt.get(row.project_id)
+    if (!previous || Date.parse(row.created_at) > Date.parse(previous)) latestAgreementAt.set(row.project_id, row.created_at)
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  for (const home of homes) {
+    const waiting = (open.data as SpecMoveRow[]).find((row) => row.lot_id === home.lotId)
+    const incentive = (incentives.data as SpecMoveRow[]).find((row) => row.lot_id === home.lotId)
+    const incentiveCents = specHomeIncentiveInForce(
+      incentive ? { cents: Number(incentive.to_cents), expiresOn: incentive.incentive_expires_on, decidedAt: incentive.decided_at ?? incentive.proposed_at } : null,
+      { latestAgreementAt: latestAgreementAt.get(home.projectId) ?? null, today },
+    )
+    const disposition = dispositions.data.find((row) => row.project_id === home.projectId)
+    terms.set(home.lotId, {
+      incentiveCents,
+      incentiveExpiresOn: incentiveCents > 0 ? incentive?.incentive_expires_on ?? null : null,
+      incentiveId: incentiveCents > 0 ? incentive?.id ?? null : null,
+      pendingChange: waiting
+        ? { id: waiting.id, kind: waiting.kind, fromCents: Number(waiting.from_cents), toCents: Number(waiting.to_cents), askingPriceCents: Number(waiting.asking_price_cents), requiredPermission: waiting.required_permission, proposedBy: waiting.proposed_by }
+        : null,
+      disposition: disposition
+        ? {
+            id: disposition.id,
+            kind: disposition.kind,
+            status: disposition.status,
+            counterpartyContactId: disposition.counterparty_contact_id,
+            priceCents: Number(disposition.price_cents),
+            carryingCents: Number(disposition.carrying_cents),
+            impairmentId: disposition.impairment_id ?? null,
+            blockedReason: disposition.status === "approved"
+              ? specDispositionExecutionBlock({
+                  status: disposition.status,
+                  priceCents: Number(disposition.price_cents),
+                  carryingCents: Number(disposition.carrying_cents),
+                  impairmentStatus: disposition.impairment_id ? impairmentStatus.get(String(disposition.impairment_id)) ?? null : null,
+                })
+              : null,
+          }
+        : null,
+    })
+  }
+  return terms
+}
+
+/**
+ * Write-down review statuses, read with the service client: whether a sale may
+ * proceed depends on the Books review itself, which sales staff cannot read, so
+ * only the status of reviews this org's own dispositions name is returned.
+ */
+export async function readImpairmentStatuses(orgId: string, impairmentIds: string[]) {
+  const statuses = new Map<string, "proposed" | "approved" | "rejected">()
+  if (impairmentIds.length === 0) return statuses
+  const { data, error } = await createServiceSupabaseClient().from("books_inventory_impairments").select("id, status").eq("org_id", orgId).in("id", impairmentIds)
+  if (error) throw new Error(`Failed to read the write-down reviews: ${error.message}`)
+  for (const row of data ?? []) {
+    if (row.status === "proposed" || row.status === "approved" || row.status === "rejected") statuses.set(String(row.id), row.status)
+  }
+  return statuses
+}
+
+/** The organization's spec price bands (`org_settings.settings.spec_price_approval_bands`). */
+async function readSpecPriceApprovalBands(context: OrgContext) {
+  const { data, error } = await context.supabase.from("org_settings").select("settings").eq("org_id", context.orgId).maybeSingle()
+  if (error) throw new Error(`Failed to read the price approval policy: ${error.message}`)
+  const settings: unknown = data?.settings
+  return parseSpecPriceApprovalBands(settings && typeof settings === "object" ? Reflect.get(settings, "spec_price_approval_bands") : undefined)
+}
+
+/** The organization's spec price bands, so a screen can say before saving whether a move needs approval. */
+export async function getSpecPriceApprovalBands(orgId?: string) {
   const context = await requireOrgContext(orgId)
-  await requirePermission("sales.manage", context)
-  const { data: lot, error } = await context.supabase.from("lots")
-    .select("id, community_id, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, metadata, updated_at")
-    .eq("org_id", context.orgId).eq("id", parsed.lotId).maybeSingle()
+  await requirePermission("sales.read", context)
+  return readSpecPriceApprovalBands(context)
+}
+
+/** A started home with no live reservation and no open agreement, read for a price move. */
+export async function readStandingSpec(context: OrgContext, lotId: string) {
+  const { data: lot, error } = await context.supabase.from("lots").select("id, community_id, project_id, updated_at").eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
   await assertCommunityInSalesScope(context, lot.community_id)
-  if (!lot.project_id) throw new Error("Only a home that has been started can carry its own asking price.")
-  const [reservations, agreements, current] = await Promise.all([
+  if (!lot.project_id) throw new Error("Only a home that has been started can carry its own price or incentive.")
+  const [reservations, agreements, askingPriceCents, terms] = await Promise.all([
     context.supabase.from("lot_reservations").select("id").eq("org_id", context.orgId).eq("lot_id", lot.id).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(1),
     context.supabase.from("contracts").select("id").eq("org_id", context.orgId).eq("project_id", lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"]).limit(1),
     deriveLotAskingPrice(context.supabase, context.orgId, lot.id),
+    readSpecHomeTerms(context, [{ lotId: lot.id, projectId: lot.project_id }]),
   ])
   if (reservations.error || agreements.error) throw new Error("The home's sale status could not be verified. No price was changed.")
   if ((reservations.data ?? []).length || (agreements.data ?? []).length) throw new Error("This home is reserved or under agreement; its price is set by the agreement.")
-  if (current !== parsed.expectedAskingPriceCents) throw new Error("The asking price changed since you opened it. Review the current price and try again.")
-  const previousOverride = lot.asking_price_override_cents == null ? null : Number(lot.asking_price_override_cents)
-  const metadata = {
-    ...(lot.metadata ?? {}),
-    last_price_change: { at: new Date().toISOString(), by: context.userId, previous_asking_price_cents: current, reason: parsed.reason },
+  const home = terms.get(lot.id)
+  return {
+    lot: { id: String(lot.id), communityId: String(lot.community_id), projectId: String(lot.project_id), updatedAt: String(lot.updated_at) },
+    askingPriceCents,
+    incentiveCents: home?.incentiveCents ?? 0,
+    pendingChange: home?.pendingChange ?? null,
+    disposition: home?.disposition ?? null,
   }
-  const { data: updated, error: updateError } = await context.supabase.from("lots")
-    .update({ asking_price_override_cents: parsed.askingPriceCents, metadata })
-    .eq("org_id", context.orgId).eq("id", lot.id).eq("updated_at", lot.updated_at)
-    .select("id, asking_price_override_cents").maybeSingle()
-  if (updateError) throw new Error(`Failed to change the asking price: ${updateError.message}`)
-  if (!updated) throw new Error("The home changed while you were repricing it. Review it and try again.")
-  const nextAskingPriceCents = parsed.askingPriceCents ?? await deriveLotAskingPrice(context.supabase, context.orgId, lot.id)
+}
+
+const STALE_PRICE = "The asking price changed since you opened it. Review the current price and try again."
+const STALE_INCENTIVE = "The home's incentive changed since you opened it. Review it and try again."
+
+/**
+ * Move one standing spec's asking price or its own incentive. A move inside the
+ * organization's band applies at once, as it always has; a larger one is
+ * recorded as a proposal and waits for a second person holding the band's
+ * permission (`decideSpecPriceChange`). Either way the move is a row in
+ * `spec_price_proposals`, so the home's price history is queryable, not only
+ * in the audit log.
+ *
+ * Nothing here touches an agreement, a budget or a margin baseline — margin
+ * history is read from those, never from the asking price. A home with a live
+ * reservation or an open agreement is sold stock; its price is the agreement's.
+ * One move at a time: while a move waits, the home takes no other.
+ */
+export async function proposeSpecPriceChange(input: unknown, orgId?: string) {
+  const parsed = specPriceChangeSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const [home, bands] = await Promise.all([readStandingSpec(context, parsed.lotId), readSpecPriceApprovalBands(context)])
+  if (home.pendingChange) throw new Error("A price change is waiting for approval on this home. Decide or withdraw it first.")
+  if (home.disposition) throw new Error("This home is being sold off; its price is the disposition's.")
+  if (home.askingPriceCents !== parsed.expectedAskingPriceCents) throw new Error(STALE_PRICE)
+  if (parsed.kind === "incentive" && home.incentiveCents !== parsed.expectedIncentiveCents) throw new Error(STALE_INCENTIVE)
+  const fromCents = parsed.kind === "price" ? parsed.expectedAskingPriceCents : home.incentiveCents
+  if (fromCents === parsed.toCents) throw new Error("Nothing changes: the new figure is the current one.")
+  const requiredPermission = requiredSpecPricePermission({ moveCents: parsed.toCents - fromCents, askingPriceCents: home.askingPriceCents, bands })
+  const apply = requiredPermission === SPEC_PRICE_SELF_SERVE_PERMISSION
+  const { data: moveId, error } = await context.supabase.rpc("record_spec_price_move", {
+    p_org_id: context.orgId,
+    p_lot_id: home.lot.id,
+    p_project_id: home.lot.projectId,
+    p_community_id: home.lot.communityId,
+    p_kind: parsed.kind,
+    p_asking_price_cents: home.askingPriceCents,
+    p_from_cents: fromCents,
+    p_to_cents: parsed.toCents,
+    p_expires_on: parsed.kind === "incentive" ? parsed.expiresOn : null,
+    p_reason: parsed.reason,
+    p_required_permission: requiredPermission,
+    p_apply: apply,
+    p_lot_updated_at: home.lot.updatedAt,
+  })
+  if (error) throw new Error(error.message)
+  const proposalId = z.string().uuid().parse(moveId)
+  const status = apply ? "applied" : "proposed"
+  const eventType = !apply ? "spec_home.price_change_proposed" : parsed.kind === "price" ? "spec_home.repriced" : "spec_home.incentive_changed"
+  const payload = { lot_id: home.lot.id, community_id: home.lot.communityId, project_id: home.lot.projectId, kind: parsed.kind, from_cents: fromCents, to_cents: parsed.toCents, asking_price_cents: home.askingPriceCents, required_permission: requiredPermission, reason: parsed.reason }
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "spec_home.repriced", entityType: "lot", entityId: lot.id, payload: { community_id: lot.community_id, project_id: lot.project_id, previous_asking_price_cents: current, asking_price_cents: nextAskingPriceCents, reason: parsed.reason } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: lot.id, before: { asking_price_override_cents: previousOverride, asking_price_cents: current }, after: { asking_price_override_cents: parsed.askingPriceCents, asking_price_cents: nextAskingPriceCents, reason: parsed.reason } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "spec_price_proposal", entityId: proposalId, payload }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "spec_price_proposal", entityId: proposalId, after: { ...payload, status } }),
   ])
-  return { lotId: lot.id, askingPriceCents: nextAskingPriceCents }
+  return {
+    proposalId,
+    status,
+    requiredPermission,
+    askingPriceCents: apply && parsed.kind === "price" ? parsed.toCents : home.askingPriceCents,
+    incentiveCents: apply && parsed.kind === "incentive" ? parsed.toCents : home.incentiveCents,
+  }
+}
+
+/**
+ * Approve or reject a waiting move. The decider needs the permission the move's
+ * band named, is never the proposer, and approves only the price they are
+ * looking at: the home must still ask (and still carry the incentive) it did
+ * when the move was proposed, and must still be unsold. The decision and the
+ * price it sets land in one transaction (`decide_spec_price_proposal`), claimed
+ * on the proposal's status, so two deciders cannot both act.
+ */
+export async function decideSpecPriceChange(input: unknown, orgId?: string) {
+  const parsed = specPriceDecisionSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.read", context)
+  const { data: proposal, error } = await context.supabase.from("spec_price_proposals").select(SPEC_MOVE_SELECT).eq("org_id", context.orgId).eq("id", parsed.proposalId).maybeSingle()
+  if (error || !proposal) throw new Error("Price change not found")
+  const move = proposal as SpecMoveRow
+  await requirePermission(move.required_permission, context)
+  const blocked = specPriceDecisionBlockReason({ status: move.status, proposedBy: move.proposed_by, deciderId: context.userId })
+  if (blocked) throw new Error(blocked)
+  let lotUpdatedAt: string | null = null
+  if (parsed.approve) {
+    const home = await readStandingSpec(context, move.lot_id)
+    if (home.askingPriceCents !== Number(move.asking_price_cents)) throw new Error("The home's asking price changed after this was proposed. Reject it and propose again from the current price.")
+    if (move.kind === "incentive" && home.incentiveCents !== Number(move.from_cents)) throw new Error("The home's incentive changed after this was proposed. Reject it and propose again.")
+    lotUpdatedAt = home.lot.updatedAt
+  } else {
+    await assertCommunityInSalesScope(context, move.community_id)
+  }
+  const { error: decideError } = await context.supabase.rpc("decide_spec_price_proposal", {
+    p_org_id: context.orgId,
+    p_proposal_id: move.id,
+    p_approve: parsed.approve,
+    p_note: parsed.note ?? null,
+    p_lot_updated_at: lotUpdatedAt,
+  })
+  if (decideError) throw new Error(decideError.message)
+  const status = parsed.approve ? "approved" : "rejected"
+  const payload = { lot_id: move.lot_id, community_id: move.community_id, project_id: move.project_id, kind: move.kind, from_cents: Number(move.from_cents), to_cents: Number(move.to_cents), proposed_by: move.proposed_by, note: parsed.note ?? null }
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: `spec_home.price_change_${status}`, entityType: "spec_price_proposal", entityId: move.id, payload }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "spec_price_proposal", entityId: move.id, before: { status: move.status }, after: { ...payload, status } }),
+  ])
+  return { proposalId: move.id, status }
+}
+
+/** The proposer takes back a move nobody has decided. */
+export async function withdrawSpecPriceChange(input: unknown, orgId?: string) {
+  const parsed = specPriceWithdrawalSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const { data, error } = await context.supabase.from("spec_price_proposals")
+    .update({ status: "withdrawn", decided_at: new Date().toISOString() })
+    .eq("org_id", context.orgId).eq("id", parsed.proposalId).eq("status", "proposed").eq("proposed_by", context.userId)
+    .select("id, lot_id").maybeSingle()
+  if (error) throw new Error(`Failed to withdraw the price change: ${error.message}`)
+  if (!data) throw new Error("Only a waiting price change you proposed can be withdrawn.")
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "spec_home.price_change_withdrawn", entityType: "spec_price_proposal", entityId: data.id, payload: { lot_id: data.lot_id } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "spec_price_proposal", entityId: data.id, before: { status: "proposed" }, after: { status: "withdrawn" } }),
+  ])
+  return { proposalId: data.id, status: "withdrawn" as const }
 }
 
 const SELLABLE_LOT_PICKER_LIMIT = 500
@@ -534,6 +798,23 @@ export async function createLotHoldFromProspect(input: { prospectId: string; lot
   return reservation
 }
 
+function dispositionKindLabel(kind: string) {
+  return kind === "bulk_sale" ? "bulk sale" : kind === "investor_sale" ? "investor sale" : "disposition"
+}
+
+/**
+ * While an approved disposition names a home's buyer, the home is that buyer's:
+ * a hold or an agreement for anybody else is refused (the hold insert trigger
+ * says the same). Proposed dispositions do not reserve anything.
+ */
+async function assertDispositionBuyer(context: OrgServiceContext, lotId: string, buyerIds: Array<string | null>) {
+  const { data, error } = await context.supabase.from("spec_dispositions").select("kind, counterparty_contact_id")
+    .eq("org_id", context.orgId).eq("lot_id", lotId).eq("status", "approved").maybeSingle()
+  if (error) throw new Error(`Failed to verify the home's disposition: ${error.message}`)
+  if (!data || buyerIds.includes(data.counterparty_contact_id)) return
+  throw new Error(`This home is being sold through an approved ${dispositionKindLabel(String(data.kind))} to another buyer. Cancel the disposition before selling it to someone else.`)
+}
+
 export async function createLotHold(input: unknown, orgId?: string) {
   const parsed = createLotHoldSchema.parse(input)
   const context = await requireOrgContext(orgId)
@@ -541,6 +822,7 @@ export async function createLotHold(input: unknown, orgId?: string) {
   const { data: lot, error } = await context.supabase.from("lots").select("id, community_id, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id").eq("org_id", context.orgId).eq("id", parsed.lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
   if (!["owned", "developed", "assigned", "started"].includes(lot.status)) throw new Error("This lot is not sellable")
+  await assertDispositionBuyer(context, lot.id, [parsed.buyerContactId, parsed.coBuyerContactId ?? null])
   const { data, error: insertError } = await context.supabase.from("lot_reservations").insert({
     org_id: context.orgId, community_id: lot.community_id, lot_id: lot.id,
     buyer_contact_id: parsed.buyerContactId, co_buyer_contact_id: parsed.coBuyerContactId ?? null,
@@ -548,7 +830,9 @@ export async function createLotHold(input: unknown, orgId?: string) {
     asking_price_cents: await deriveLotAskingPrice(context.supabase, context.orgId, lot.id), notes: parsed.notes ?? null,
     created_by: context.userId,
   }).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").single()
-  if (insertError || !data) throw new Error(insertError?.code === "23505" ? "This lot already has a live reservation" : `Failed to hold lot: ${insertError?.message}`)
+  // The insert locks the lot and expires its lapsed hold first, so only a live hold or the
+  // lot's home belonging to someone else (23514) refuses it.
+  if (insertError || !data) throw new Error(insertError?.code === "23505" ? "This lot already has a live reservation" : insertError?.code === "23514" ? insertError.message : `Failed to hold lot: ${insertError?.message}`)
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_hold_created", entityType: "lot_reservation", entityId: data.id, payload: { lot_id: lot.id, community_id: lot.community_id } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "lot_reservation", entityId: data.id, after: data }),
@@ -577,7 +861,6 @@ async function readReservationConversionSource(parsed: z.infer<typeof convertRes
   if (!buyers.data?.some(buyer => buyer.id === reservation.buyer_contact_id) || (reservation.co_buyer_contact_id && (reservation.co_buyer_contact_id === reservation.buyer_contact_id || !buyers.data.some(buyer => buyer.id === reservation.co_buyer_contact_id)))) throw new Error("The reservation buyer or co-buyer is unavailable in this organization.")
   if (!deposits.data || deposits.data.length) throw new Error("A previous deposit may already exist for this hold. Inspect its invoice before retrying the reservation.")
   let home: ReservationConversionExpected["home"] = null
-  let homeSource: { client_id: string | null; updated_at: string } | null = null
   if (reservation.lot.project_id) {
     await requireAuthorization({ ...context, projectId: reservation.lot.project_id, permission: "sales.manage" })
     const [homeResult, agreements] = await Promise.all([
@@ -587,65 +870,20 @@ async function readReservationConversionSource(parsed: z.infer<typeof convertRes
     if (homeResult.error || agreements.error || !homeResult.data || !agreements.data) throw new Error("The held home or existing agreement could not be verified.")
     if (homeResult.data.property_type !== "production" || (homeResult.data.client_id && homeResult.data.client_id !== reservation.buyer_contact_id) || agreements.data.length) throw new Error("This home already belongs to another sale or cannot be reserved.")
     home = homeResult.data
-    homeSource = { client_id: homeResult.data.client_id, updated_at: homeResult.data.updated_at }
   }
-  return { reservation, community: community.data, buyers: buyers.data, home, homeSource }
+  return { reservation, community: community.data, buyers: buyers.data, home }
 }
 
 export async function convertHoldToReservation(input: unknown, orgId?: string) {
-  if (reservationConversionEnabled()) {
-    const identity = reservationConversionIdentitySchema.extend({ input: savedReservationConversionInputSchema }).parse(input)
-    const body = identity.input
-    const context = await requireOrgContext(orgId)
-    await requirePermission("sales.manage", context)
-    if (body.reservationId !== identity.scope.reservationId) throw new Error("Original reservation identity required")
-    return callReservationConversion({ context, scope: identity.scope, action: "commit", requestKey: identity.requestKey, input: body })
-  }
-  const parsed = convertReservationSchema.parse(input)
+  const identity = reservationConversionIdentitySchema.extend({ input: savedReservationConversionInputSchema }).parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { reservation, buyers, homeSource } = await readReservationConversionSource(parsed, context)
-  // The deposit is billed to, and delivered to, the buyer who holds the lot.
-  const buyer = buyers?.find(row => row.id === reservation.buyer_contact_id)
-  // Claim the hold before anything is built. The write is a no-op on the row's
-  // values but moves its version, so of two conversions racing on one hold only
-  // the first gets past here; the loser fails before it has created a home or an
-  // invoice, instead of leaving them behind.
-  const claim = await context.supabase.from("lot_reservations").update({ status: "hold" }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", reservation.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("updated_at").maybeSingle()
-  if (claim.error || !claim.data) throw new Error("This hold was already converted, released or changed. Nothing was created; review the buyer file.")
-  let projectId = reservation.lot.project_id
-  if (!projectId) {
-    const project = await createProject({ input: { name: parsed.projectName ?? `Lot ${reservation.lot.lot_number}`, property_type: "production", status: "planning", client_id: reservation.buyer_contact_id, prospect_id: reservation.prospect_id ?? null }, orgId: context.orgId, context, authorizationPermission: "sales.manage" })
-    projectId = project.id
-    const linked = await context.supabase.from("lots").update({ project_id: projectId, status: reservation.lot.status === "developed" ? "assigned" : reservation.lot.status }).eq("org_id", context.orgId).eq("id", reservation.lot_id).is("project_id", null).eq("updated_at", reservation.lot.updated_at).select("id").maybeSingle()
-    if (linked.error || !linked.data) throw new Error("The home was created, but its lot link could not be confirmed. Review the home and lot before retrying.")
-  } else {
-    if (!homeSource) throw new Error("The held home source is unavailable.")
-    let link = context.supabase.from("projects").update({ client_id: reservation.buyer_contact_id }).eq("org_id", context.orgId).eq("id", projectId).eq("updated_at", homeSource.updated_at)
-    link = homeSource.client_id ? link.eq("client_id", homeSource.client_id) : link.is("client_id", null)
-    const linked = await link.select("id").maybeSingle()
-    if (linked.error || !linked.data) throw new Error("The held home changed or could not be assigned. No new deposit was created.")
-  }
-  let invoiceId: string | null = null
-  if (parsed.depositCents > 0) {
-    const invoice = await createInvoice({ input: {
-      project_id: projectId, invoice_number: `DEP-${Date.now().toString().slice(-9)}`, title: "Earnest deposit",
-      issue: true, issue_date: new Date().toISOString().slice(0, 10), due_date: new Date().toISOString().slice(0, 10),
-      tax_rate: 0, customer_id: reservation.buyer_contact_id, customer_name: buyer?.full_name ?? null, sent_to_emails: buyer?.email ? [buyer.email] : [],
-      lines: [{ description: "Earnest deposit", quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(parsed.depositCents), taxable: false }],
-      metadata: { invoice_kind: "earnest_deposit", source_reservation_id: reservation.id },
-    }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
-    invoiceId = invoice.id
-  }
-  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", claim.data.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").maybeSingle()
-  if (error || !data) throw new Error(`Reservation completion could not be confirmed. Inspect the home and deposit invoice before retrying: ${error?.message ?? "The hold changed"}`)
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reserved", entityType: "lot_reservation", entityId: data.id, payload: { project_id: projectId, deposit_invoice_id: invoiceId } })
-  return reservationDto(data)
+  if (identity.input.reservationId !== identity.scope.reservationId) throw new Error("Original reservation identity required")
+  return callReservationConversion({ context, scope: identity.scope, action: "commit", requestKey: identity.requestKey, input: identity.input })
 }
 
 /** Persist a review without creating a home, assigning its lot or issuing money. */
 export async function registerReservationConversion(input: unknown, orgId?: string) {
-  if (!reservationConversionEnabled()) throw new Error("Reservation review is not enabled")
   const parsed = reservationConversionRegistrationSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
@@ -725,25 +963,49 @@ async function forfeitReservationDeposit(
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "deposit_forfeited", entityType: "lot_reservation", entityId: reservation.id, payload: { amount_cents: forfeitedCents, invoice_id: invoice.id } })
 }
 
+/**
+ * Release a hold or reservation. The status transition is the fence and it is
+ * claimed first, in one locked database step (`release_lot_reservation`), so of
+ * two releases racing on one reservation only one ever moves the deposit. A
+ * reservation with an open purchase agreement is released by voiding the
+ * agreement, and a released sale hands its home back to inventory.
+ */
 export async function releaseReservation(input: unknown, orgId?: string) {
   const parsed = releaseReservationSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { data: reservation } = await context.supabase.from("lot_reservations").select("*, lot:lots(project_id, status)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
-  if (!reservation || !["hold", "reserved", "converted"].includes(reservation.status)) throw new Error("Live reservation not found")
-  if (parsed.depositDisposition === "refund" && reservation.deposit_invoice_id) {
-    await requirePermission("payment.release", context)
-    const { data: payments } = await context.supabase.from("payments").select("id, amount_cents").eq("org_id", context.orgId).eq("invoice_id", reservation.deposit_invoice_id).eq("status", "succeeded")
-    for (const payment of payments ?? []) await recordPaymentReversal({ paymentId: payment.id, amountCents: Number(payment.amount_cents), reversalType: "refund", reason: parsed.reason, metadata: { source_reservation_id: reservation.id }, orgId: context.orgId })
+  const { data: reservation, error: readError } = await context.supabase.from("lot_reservations").select("id, status, deposit_invoice_id, buyer_contact_id, lot:lots(project_id)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
+  if (readError) throw new Error(`Failed to load the reservation: ${readError.message}`)
+  if (!reservation || !LIVE_RESERVATION_STATUSES.includes(reservation.status)) throw new Error("Live reservation not found")
+  const depositInvoiceId: string | null = parsed.depositDisposition ? reservation.deposit_invoice_id : null
+  if (depositInvoiceId) await requirePermission("payment.release", context)
+
+  const { data: claim, error: claimError } = await createServiceSupabaseClient().rpc("release_lot_reservation", {
+    p_org_id: context.orgId, p_actor_id: context.userId, p_reservation_id: reservation.id, p_reason: parsed.reason, p_deposit_disposition: parsed.depositDisposition ?? null,
+  })
+  if (claimError) throw new Error(claimError.message)
+  const released = z.object({ before: z.record(z.unknown()), after: z.record(z.unknown()) }).parse(claim)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reservation_released", entityType: "lot_reservation", entityId: reservation.id, payload: { reason: parsed.reason, deposit_disposition: parsed.depositDisposition } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot_reservation", entityId: reservation.id, before: released.before, after: released.after }),
+  ])
+
+  if (depositInvoiceId) {
+    try {
+      if (parsed.depositDisposition === "refund") {
+        const { data: payments, error } = await context.supabase.from("payments").select("id, amount_cents").eq("org_id", context.orgId).eq("invoice_id", depositInvoiceId).eq("status", "succeeded")
+        if (error) throw new Error(`Failed to load deposit payments: ${error.message}`)
+        for (const payment of payments ?? []) await recordPaymentReversal({ paymentId: payment.id, amountCents: Number(payment.amount_cents), reversalType: "refund", reason: parsed.reason, metadata: { source_reservation_id: reservation.id }, orgId: context.orgId })
+      } else {
+        await forfeitReservationDeposit(context, { ...reservation, deposit_invoice_id: depositInvoiceId }, parsed.reason)
+      }
+    } catch (error) {
+      throw new Error(`The reservation was released, but its deposit ${parsed.depositDisposition} did not finish: ${(error as Error).message}. Complete it from the deposit invoice.`)
+    }
   }
-  if (parsed.depositDisposition === "forfeit" && reservation.deposit_invoice_id) {
-    await requirePermission("payment.release", context)
-    await forfeitReservationDeposit(context, reservation, parsed.reason)
-  }
-  const metadata = { ...(reservation.metadata ?? {}), deposit_disposition: parsed.depositDisposition ?? null }
-  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "released", released_at: new Date().toISOString(), release_reason: parsed.reason, metadata }).eq("org_id", context.orgId).eq("id", reservation.id).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").single()
-  if (error || !data) throw new Error(`Failed to release reservation: ${error?.message}`)
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reservation_released", entityType: "lot_reservation", entityId: data.id, payload: { reason: parsed.reason, deposit_disposition: parsed.depositDisposition } })
+
+  const { data, error } = await context.supabase.from("lot_reservations").select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").eq("org_id", context.orgId).eq("id", reservation.id).single()
+  if (error || !data) throw new Error(`Failed to read the released reservation: ${error?.message}`)
   return reservationDto(data)
 }
 
@@ -1201,6 +1463,26 @@ export async function endIncentive(id: string, orgId?: string) {
   if (error) throw new Error(`Failed to end incentive: ${error.message}`)
 }
 
+/**
+ * A spec home's own lines on its agreement. An approved disposition prices the
+ * sale at the approved figure (the line is the gap from what the sheet asks) for
+ * its own buyer only; it refuses while a below-cost write-down is still
+ * unapproved. Otherwise the home's incentive in force comes off the price.
+ */
+function specHomePriceLines(terms: SpecHomeTerms | null, totalBeforeCents: number): PurchaseAgreementIncentive[] {
+  if (!terms) return []
+  const disposition = terms.disposition
+  if (disposition?.status === "approved") {
+    if (disposition.blockedReason) throw new Error(disposition.blockedReason)
+    const name = disposition.kind === "bulk_sale" ? "Bulk sale price (approved disposition)" : "Investor sale price (approved disposition)"
+    return [{ incentiveId: disposition.id, name, incentiveType: "fixed_amount", appliesTo: "price", amountCents: Math.max(0, totalBeforeCents - disposition.priceCents) }]
+  }
+  if (terms.incentiveCents > 0 && terms.incentiveId) {
+    return [{ incentiveId: terms.incentiveId, name: "Home incentive", incentiveType: "fixed_amount", appliesTo: "price", amountCents: terms.incentiveCents }]
+  }
+  return []
+}
+
 export async function priceAgreementDraft(input: AgreementConfigurationInput, orgId?: string) {
   const parsed = agreementConfigurationSchema.parse(input)
   const context = await requireOrgContext(orgId)
@@ -1241,11 +1523,23 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   await assertSalesConfiguration(context.orgId, resolved, { communityId: lot.community_id, housePlanVersionId: versionId })
   const optionIds = resolved.map((item) => item.optionId).filter(Boolean) as string[]
   const packageIds = resolved.map((item) => item.packageId).filter(Boolean) as string[]
-  const [optionsResult, packagesResult, incentivesResult] = await Promise.all([
+  const [optionsResult, packagesResult, incentivesResult, homeTerms] = await Promise.all([
     optionIds.length ? context.supabase.from("selection_options").select("id, name, option_scope, category_id, category:selection_categories(name)").eq("org_id", context.orgId).in("id", optionIds) : Promise.resolve({ data: [] }),
     packageIds.length ? context.supabase.from("selection_packages").select("id, name").eq("org_id", context.orgId).in("id", packageIds) : Promise.resolve({ data: [] }),
     parsed.incentiveIds.length ? context.supabase.from("incentives").select("*").eq("org_id", context.orgId).in("id", parsed.incentiveIds) : Promise.resolve({ data: [] }),
+    lot.project_id ? readSpecHomeTerms(context, [{ lotId: lot.id, projectId: lot.project_id }]).then((terms) => terms.get(lot.id) ?? null) : Promise.resolve(null),
   ])
+  const disposition = homeTerms?.disposition?.status === "approved" ? homeTerms.disposition : null
+  if (disposition) {
+    // The agreement is written to the lot's live hold or reservation buyer; the disposition's price is that buyer's alone.
+    const { data: liveSale, error: liveSaleError } = await context.supabase.from("lot_reservations").select("buyer_contact_id, co_buyer_contact_id")
+      .eq("org_id", context.orgId).eq("lot_id", lot.id).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter())
+      .order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (liveSaleError) throw new Error(`Failed to verify the home's buyer: ${liveSaleError.message}`)
+    if (!liveSale || ![liveSale.buyer_contact_id, liveSale.co_buyer_contact_id].includes(disposition.counterpartyContactId)) {
+      throw new Error(`This home is being sold through an approved ${dispositionKindLabel(disposition.kind)} to another buyer. Write the agreement to that buyer, or cancel the disposition to sell it at retail.`)
+    }
+  }
   const options = optionsResult.data
   const packages = packagesResult.data
   const incentiveRows = incentivesResult.data
@@ -1276,13 +1570,16 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
     const category = Array.isArray(option?.category) ? option.category[0] : option?.category
     return { optionId: item.optionId, packageId: item.packageId, label: option?.name ?? selectionPackage?.name ?? "Option", category: category?.name ?? null, priceCents: item.priceCents, source: item.source, scope: option?.option_scope } as PurchaseAgreementPricedItem & { scope?: string }
   })
-  const pricing = composePurchaseAgreementPricing({ basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural"), incentives: requestedIncentives.map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent })) })
+  const pricingBasis = { basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural") }
+  const communityIncentives: PurchaseAgreementIncentive[] = requestedIncentives.map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent }))
+  const pricing = composePurchaseAgreementPricing({ ...pricingBasis, incentives: [...communityIncentives, ...specHomePriceLines(homeTerms, composePurchaseAgreementPricing({ ...pricingBasis, incentives: communityIncentives }).totalCents)] })
   const choicePrices = parsed.optionItems.map((choice, index) => {
     const item = resolved[index]
     if (!item) throw new Error("Configured choices could not be fully priced")
     return { ...choice, priceCents: item.priceCents }
   })
-  const quote = { ...pricing, choicePrices, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing, planLabel: (Array.isArray(version.plan) ? version.plan[0] : version.plan)?.name ?? version.label ?? "Plan", elevationLabel: selectedElevation?.name ?? selectedElevation?.code ?? null, optionItems: parsed.optionItems }
+  // The agreement's snapshot carries the disposition it was priced through; carrying the disposition out requires it.
+  const quote = { ...pricing, disposition: disposition ? { id: disposition.id, kind: disposition.kind } : null, choicePrices, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing, planLabel: (Array.isArray(version.plan) ? version.plan[0] : version.plan)?.name ?? version.label ?? "Plan", elevationLabel: selectedElevation?.name ?? selectedElevation?.code ?? null, optionItems: parsed.optionItems }
   if (catalogRevision !== null && await readAgreementCatalogRevision(context) !== catalogRevision) throw new AgreementQuoteChangedError()
   const reviewedQuote = catalogRevision === null ? quote : { ...quote, catalogRevision }
   return { ...reviewedQuote, quoteHash: agreementQuoteFingerprint(reviewedQuote), catalogRevision }

@@ -5,7 +5,8 @@ import { OfferingIncentives } from "@/components/communities/offering-incentives
 import { OfferingPriceSheet, type OfferingPlanRow } from "@/components/communities/offering-price-sheet"
 import { OfferingSummary } from "@/components/communities/offering-summary"
 import { getCommunityLane } from "@/lib/services/community-portfolio"
-import { getCommunityOfferingCosts, getCommunityPriceSheet, listSpecInventory } from "@/lib/services/community-sales"
+import { getCommunityOfferingCosts, getCommunityPriceSheet, getSpecPriceApprovalBands, listSpecInventory } from "@/lib/services/community-sales"
+import { DEFAULT_SPEC_PRICE_APPROVAL_BANDS } from "@/lib/sales/spec-price-approval-thresholds"
 import { listCommunityTraffic } from "@/lib/services/community-traffic"
 import { listPlansWithPublishedModels } from "@/lib/services/floorplan-models"
 import { getCurrentUserPermissions, hasPermission } from "@/lib/services/permissions"
@@ -58,7 +59,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
       .catch(() => new Set<string>()),
   )
   const permissionsPromise = getCurrentUserPermissions()
-  const [sheet, permissions, traffic, specs, lane, costs, plansWith3d] = await Promise.all([
+  const [sheet, permissions, traffic, specs, lane, costs, plansWith3d, priceBands] = await Promise.all([
     sheetPromise,
     permissionsPromise,
     listCommunityTraffic(id, { days: TRAFFIC_WINDOW_DAYS }).catch(() => []),
@@ -66,6 +67,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
     getCommunityLane(id).catch(() => null),
     getCommunityOfferingCosts(id).catch(() => null),
     modelsPromise,
+    getSpecPriceApprovalBands().catch(() => DEFAULT_SPEC_PRICE_APPROVAL_BANDS),
   ])
   const canManage = canManagePlans(permissions.permissions)
 
@@ -146,7 +148,14 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
       baths: spec.baths,
       sqft: spec.sqft,
       agingDays: spec.agingDays,
+      underConstruction: spec.underConstruction,
+      completedAt: spec.completedAt,
+      completionFromBooks: spec.completionFromBooks,
       askingPriceCents: spec.askingPriceCents,
+      incentiveCents: spec.incentiveCents,
+      incentiveExpiresOn: spec.incentiveExpiresOn,
+      pendingChange: spec.pendingChange,
+      disposition: spec.disposition,
     }))
 
   return (
@@ -203,7 +212,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           requiredPacePerMonth={lane?.requiredPacePerMonth ?? null}
           canManage={canManage}
         />
-        <CommunitySpecInventory rows={specRows} communityId={id} canManage={canManage} />
+        <CommunitySpecInventory rows={specRows} communityId={id} canManage={canManage} currentUserId={permissions.userId} bands={priceBands} />
       </div>
     </div>
   )

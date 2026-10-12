@@ -33,7 +33,7 @@ function reliefByComponent(kit, org, projectId) {
 // and homes each on its own lot under a purchase agreement with a buyer.
 async function builder(kit, name, homes, password) {
   const { q } = kit
-  const ids = { communityId: randomUUID(), vendorId: randomUUID(), costCodeId: randomUUID(), developmentId: randomUUID(), developmentLotIds: [randomUUID(), randomUUID(), randomUUID()] }
+  const ids = { communityId: randomUUID(), vendorId: randomUUID(), costCodeId: randomUUID(), developmentId: randomUUID(), developmentPhaseId: randomUUID(), developmentLotIds: [randomUUID(), randomUUID(), randomUUID()] }
   const org = await greenfieldOrg(kit, { name, password, periods: ["2026-06", "2026-07", "2026-08"], setup: (org) => {
     Object.assign(org, ids, { homes: homes.map((home, index) => ({ ...home, projectId: randomUUID(), lotId: randomUUID(), buyerId: randomUUID(), contractId: randomUUID(), lotNumber: String(index + 1) })) })
     kit.sql(`begin;
@@ -44,7 +44,8 @@ insert into public.projects(id,org_id,name,property_type,created_by) values(${q(
 insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(org.developmentId)}) on conflict do nothing;
 insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date)
   values(${q(randomUUID())},${q(org.orgId)},${q(org.developmentId)},'Community land plan','active',0,'usd','purchase_agreement',0,'2026-06-01');
-${org.developmentLotIds.map((id, index) => `insert into public.lots(id,org_id,community_id,lot_number,status) values(${q(id)},${q(org.orgId)},${q(org.communityId)},${q(`D${index + 1}`)},'controlled');`).join("\n")}
+insert into public.community_phases(id,org_id,community_id,name,phase_number,development_project_id) values(${q(org.developmentPhaseId)},${q(org.orgId)},${q(org.communityId)},'Phase 1',1,${q(org.developmentId)});
+${org.developmentLotIds.map((id, index) => `insert into public.lots(id,org_id,community_id,community_phase_id,lot_number,status) values(${q(id)},${q(org.orgId)},${q(org.communityId)},${q(org.developmentPhaseId)},${q(`D${index + 1}`)},'controlled');`).join("\n")}
 ${org.homes.map((home) => `insert into public.contacts(id,org_id,full_name,email) values(${q(home.buyerId)},${q(org.orgId)},${q(`${home.name} buyer`)},${q(`buyer-${home.lotNumber}@acceptance.example.test`)});
 insert into public.projects(id,org_id,name,property_type,created_by,client_id) values(${q(home.projectId)},${q(org.orgId)},${q(home.name)},'production',${q(org.owner.userId)},${q(home.buyerId)});
 insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(home.projectId)}) on conflict do nothing;

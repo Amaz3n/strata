@@ -60,13 +60,15 @@ test("lot lifecycle requires projects for started and force for leaving terminal
   )
 })
 
-test("a lot closes only with a home, and a home never sits on a lot in a land state", () => {
+test("a lot closes only with a home, and a home never sits on a controlled or developed lot", () => {
   assert.throws(() => assertLotStatusTransition({ from: "assigned", to: "closed", hasProject: false }), /cannot be closed without a home/i)
   assert.throws(() => assertLotStatusTransition({ from: "controlled", to: "closed", hasProject: false }), /cannot be closed without a home/i)
   assert.doesNotThrow(() => assertLotStatusTransition({ from: "started", to: "closed", hasProject: true, force: true }))
-  for (const to of ["controlled", "owned", "developed"]) {
+  for (const to of ["controlled", "developed"]) {
     assert.throws(() => assertLotStatusTransition({ from: "started", to, hasProject: true, force: true }), /detach the home first/i)
   }
+  // A presale on owned land keeps the land status, so an owned lot may carry its home.
+  assert.doesNotThrow(() => assertLotStatusTransition({ from: "started", to: "owned", hasProject: true, force: true }))
   assert.doesNotThrow(() => assertLotStatusTransition({ from: "controlled", to: "developed", hasProject: false }))
 })
 
@@ -111,11 +113,11 @@ test("legacy camelCase dimensions are still read, and are removed on the next sa
   assert.deepEqual(storeLotDimensions({ widthFt: 52, depthFt: 115 }, {}, "fill"), { width_ft: 52, depth_ft: 115 })
 })
 
-test("a house cannot start on a lot land development has not delivered, unless an exception is on the record", () => {
-  const exception = { delivery_exception: { reason: "Lot finishes with the house pad", by: "00000000-0000-4000-8000-0000000000aa", at: "2026-10-01T00:00:00Z" } }
-  assert.equal(verticalStartRefusal({ status: "developed", deliveredAt: "2026-06-01T00:00:00Z", metadata: {} }), null)
-  assert.match(verticalStartRefusal({ status: "assigned", deliveredAt: null, metadata: {} }), /not been delivered/)
-  assert.equal(verticalStartRefusal({ status: "assigned", deliveredAt: null, metadata: exception }), null)
-  assert.match(verticalStartRefusal({ status: "assigned", deliveredAt: null, metadata: { delivery_exception: { reason: "short", by: "x", at: "y" } } }), /not been delivered/)
-  assert.match(verticalStartRefusal({ status: "owned", deliveredAt: "2026-06-01T00:00:00Z", metadata: {} }), /Only developed or assigned/)
+test("a house cannot start on a lot land development has not delivered, unless a live exception is on the record", () => {
+  const exception = { id: "e1", reason: "Lot finishes with the house pad", approved_by: "00000000-0000-4000-8000-0000000000aa", approved_at: "2026-10-01T00:00:00Z", revoked_at: null }
+  assert.equal(verticalStartRefusal({ status: "developed", deliveredAt: "2026-06-01T00:00:00Z", deliveryExceptions: [] }), null)
+  assert.match(verticalStartRefusal({ status: "assigned", deliveredAt: null, deliveryExceptions: [] }), /not been delivered/)
+  assert.equal(verticalStartRefusal({ status: "assigned", deliveredAt: null, deliveryExceptions: [exception] }), null)
+  assert.match(verticalStartRefusal({ status: "assigned", deliveredAt: null, deliveryExceptions: [{ ...exception, revoked_at: "2026-10-02T00:00:00Z" }] }), /not been delivered/)
+  assert.match(verticalStartRefusal({ status: "owned", deliveredAt: "2026-06-01T00:00:00Z", deliveryExceptions: [] }), /Only developed or assigned/)
 })

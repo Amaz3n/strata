@@ -10,6 +10,7 @@ import {
   deleteLotAction,
   detachProjectFromLotAction,
   recordLotDeliveryExceptionAction,
+  revokeLotDeliveryExceptionAction,
   setLotStatusAction,
   updateLotAction,
 } from "@/app/(app)/communities/actions"
@@ -415,15 +416,37 @@ export function LotInspector({
                   <Row label="Delivery">
                     {lot.deliveryRefusal ? (
                       <span className="text-warning">Not delivered</span>
-                    ) : lot.deliveryExceptionReason ? (
-                      "Exception recorded"
+                    ) : lot.deliveryException ? (
+                      <span className="text-warning">Exception on record</span>
                     ) : (
                       "Delivered"
                     )}
                   </Row>
                 </dl>
-                {lot.deliveryExceptionReason ? (
-                  <p className="mt-1.5 text-xs text-muted-foreground">Exception: {lot.deliveryExceptionReason}</p>
+                {lot.deliveryException ? (
+                  <div className="mt-1.5 flex items-start justify-between gap-3 text-xs">
+                    <p className="text-muted-foreground">
+                      Exception: {lot.deliveryException.reason}
+                      <span className="block tabular-nums">Approved {lot.deliveryException.approvedAt.slice(0, 10)}</span>
+                    </p>
+                    {capabilities.canRecordDeliveryException ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 rounded-none text-xs"
+                        disabled={isPending}
+                        onClick={() =>
+                          apply(
+                            () => revokeLotDeliveryExceptionAction(lot.id, community.id),
+                            "Delivery exception revoked",
+                            "Unable to revoke the exception",
+                          )
+                        }
+                      >
+                        Revoke
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : null}
                 {lot.deliveryRefusal && deliveryOpen ? (
                   <div className="mt-2 space-y-2 border border-warning/40 bg-warning/10 px-3 py-2.5">
@@ -439,7 +462,7 @@ export function LotInspector({
                     </Button>
                     {capabilities.canRecordDeliveryException ? null : (
                       <p className="text-xs text-muted-foreground">
-                        Recording an exception needs lot.write and community.write.
+                        Recording an exception needs the lot.delivery_override permission.
                       </p>
                     )}
                   </div>
@@ -793,7 +816,7 @@ export function LotInspector({
               open={recordingException}
               onOpenChange={setRecordingException}
               title={`Delivery exception · Lot ${lotLabel(lot)}`}
-              description="Lets a house start on a lot land development has not delivered. The reason stays on the lot as the evidence the start gate reads back."
+              description="Lets a house start on a lot land development has not delivered. It is recorded in your name with the reason, and the start gates read it back until it is revoked."
               minLength={MIN_DELIVERY_EXCEPTION_REASON_LENGTH}
               submitLabel="Record exception"
               success="Delivery exception recorded"

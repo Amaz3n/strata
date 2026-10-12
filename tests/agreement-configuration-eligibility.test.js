@@ -83,6 +83,8 @@ function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedO
         publishOwnedAgreementDocument: async () => ({ documentId: id(22), envelopeId: id(24), reason: "Buyer invitations are queued for delivery" }),
       }
       if (name === "@/lib/land/paging") return require("../lib/land/paging")
+      if (name === "@/lib/utils") return require("../lib/utils")
+      if (name === "@/lib/sales/spec-inventory") return require("../lib/sales/spec-inventory")
       if (name === "@/lib/services/lot-fit") return require("../lib/services/lot-fit")
       if (name === "@/lib/sales/agreement-quote") return require("../lib/sales/agreement-quote")
       if (name === "@/lib/sales/agreement-selections") return require("../lib/sales/agreement-selections")

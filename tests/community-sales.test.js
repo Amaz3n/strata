@@ -9,27 +9,35 @@
 const assert = require("node:assert/strict")
 const { describe, test } = require("node:test")
 
-const { createServiceHarness, replies, id, ORG } = require("./support/service")
+const { createServiceHarness, replies, id, ORG, ACTOR } = require("./support/service")
 const { freshRequire, stubModule } = require("./support/modules")
 const { withIlike } = require("./support/postgrest-extras")
+const { specPricingRpc } = require("./support/spec-pricing")
 
-// Building a home and issuing an invoice have their own suites; here they are
-// recorded so a test can prove whether a conversion created one.
-const created = { homes: [], invoices: [] }
-stubModule("@/lib/services/projects", {
-  createProject: async (request) => {
-    created.homes.push(request)
-    return { id: HOME_ID }
-  },
-})
-stubModule("@/lib/services/invoices", {
-  createInvoice: async (request) => {
-    created.invoices.push(request)
-    return { id: id(77) }
+// Building a home, issuing an invoice and reversing a payment have their own suites;
+// here a refund is recorded so a test can prove how many a release made.
+const refunds = []
+stubModule("@/lib/services/projects", {})
+stubModule("@/lib/services/invoices", { createInvoice: async () => ({ id: id(77) }) })
+stubModule("@/lib/services/payments", {
+  recordPaymentReversal: async (request) => {
+    refunds.push(request)
   },
 })
 
-const { bulkRepriceCommunityPlans, convertHoldToReservation, createLotHoldFromProspect, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, setSpecAskingPrice, voidPurchaseAgreement } =
+/**
+ * `release_lot_reservation`'s contract as the service sees it: one guarded
+ * transition, and a second caller finds nothing live to release.
+ */
+function releaseLotReservation({ p_reservation_id, p_reason, p_deposit_disposition }, store) {
+  const row = store.lot_reservations.find((reservation) => reservation.id === p_reservation_id)
+  if (!row || !["hold", "reserved", "converted"].includes(row.status)) return { data: null, error: { message: "Live reservation not found" } }
+  const before = { ...row }
+  Object.assign(row, { status: "released", release_reason: p_reason, metadata: { ...row.metadata, deposit_disposition: p_deposit_disposition } })
+  return { data: { before, after: { ...row } }, error: null }
+}
+
+const { bulkRepriceCommunityPlans, createLotHold, createLotHoldFromProspect, priceAgreementDraft, registerReservationConversion, releaseReservation, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, proposeSpecPriceChange, decideSpecPriceChange, voidPurchaseAgreement } =
   freshRequire("lib/services/community-sales.ts")
 
 const COMMUNITY = id(1)
@@ -38,7 +46,6 @@ const CONTRACT = id(3)
 const RESERVATION = id(4)
 const LEAD = id(5)
 const TOKEN = id(6)
-const HOME_ID = id(90)
 
 /**
  * The rows `sellable_lot_inventory` would hold for these lots. The view derives price and
@@ -126,6 +133,7 @@ describe("voidPurchaseAgreement", () => {
   function harness({ permissions = ["sales.manage", "project.manage"] } = {}) {
     return createServiceHarness({
       permissions,
+      rpc: { release_lot_reservation: releaseLotReservation },
       tables: {
         contracts: [
           { id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "active", snapshot: {} },
@@ -166,7 +174,7 @@ describe("voidPurchaseAgreement", () => {
     assert.equal(service.db.external_identity_grants[0].status, "revoked")
     assert.deepEqual(
       service.audits.map((entry) => [entry.entityType, entry.after.status]),
-      [["contract", "void"]],
+      [["lot_reservation", "released"], ["contract", "void"]],
     )
     assert.ok(service.events.some((event) => event.eventType === "purchase_agreement_voided"))
   })
@@ -235,10 +243,10 @@ describe("listSpecInventoryPage standing-spec age", () => {
   const today = new Date()
   const daysAgo = (days) => new Date(today.getTime() - days * 86_400_000).toISOString().slice(0, 10)
   const daysAhead = (days) => daysAgo(-days)
-  const spec = (n, status, endDate) => ({
+  const spec = (n, status, endDate, completedOn = null) => ({
     id: id(2000 + n), org_id: ORG, community_id: COMMUNITY, lot_number: String(n), status: "started", premium_cents: 0, asking_price_override_cents: null,
     project_id: id(3000 + n), house_plan_id: null, house_plan_elevation_id: null,
-    project: { id: id(3000 + n), name: `Home ${n}`, start_date: daysAgo(200), end_date: endDate, status }, plan: null, community: { name: "Oak Ridge" },
+    project: { id: id(3000 + n), name: `Home ${n}`, start_date: daysAgo(200), end_date: endDate, status, completed_on: completedOn }, plan: null, community: { name: "Oak Ridge" },
   })
   const completion = (n, completedOn) => ({ org_id: ORG, project_id: id(3000 + n), books_inventory_completed_on: completedOn })
   const ages = async (lots, completions) => {
@@ -267,6 +275,18 @@ describe("listSpecInventoryPage standing-spec age", () => {
       3: [0, null, true], // still building past its projected end: not stale stock
       4: [0, null, true], // completion recorded for a day that has not arrived does not start the clock
       5: [10, daysAgo(10), false],
+    })
+  })
+
+  test("a finished home Books does not carry ages from the completion sales recorded, and Books' date wins", async () => {
+    const result = await ages(
+      [spec(6, "completed", daysAgo(150), daysAgo(30)), spec(7, "completed", daysAgo(150), daysAgo(30)), spec(8, "active", daysAgo(150), daysAhead(5))],
+      [completion(7, daysAgo(60))],
+    )
+    assert.deepEqual(result, {
+      6: [30, daysAgo(30), false],
+      7: [60, daysAgo(60), false],
+      8: [0, null, true], // a recorded completion that has not arrived does not start the clock
     })
   })
 })
@@ -578,20 +598,28 @@ describe("createLotHoldFromProspect", () => {
     await assert.rejects(hold(service), /Add a contact/)
     assert.deepEqual(service.writes("lot_reservations"), [])
   })
+
+  test("a lot whose home already belongs to another buyer is refused in the database's words", async () => {
+    const service = harness()
+    const fence = "This lot's home belongs to another buyer. Release that sale before holding the lot."
+    service.tamper("lot_reservations", (result) => ({ ...result, data: null, error: { code: "23514", message: fence } }), { on: "insert" })
+    await assert.rejects(hold(service), (error) => error.message === fence)
+    assert.deepEqual(service.events, [])
+  })
 })
 
-describe("convertHoldToReservation (live path)", () => {
+describe("registerReservationConversion", () => {
   const LOT = id(31)
   const BUYER = id(32)
   const DIVISION = id(33)
   const STAMP = "2026-10-01T00:00:00+00:00"
+  const scope = { orgId: ORG, actorId: ACTOR, reservationId: RESERVATION }
 
-  function harness({ lotStatus = "developed", lotProject = null, reservation = {} } = {}) {
-    created.homes.length = 0
-    created.invoices.length = 0
-    const lot = { id: LOT, org_id: ORG, community_id: COMMUNITY, division_id: DIVISION, lot_number: "47", status: lotStatus, project_id: lotProject, updated_at: STAMP }
+  function harness(reservation = {}) {
+    const lot = { id: LOT, org_id: ORG, community_id: COMMUNITY, division_id: DIVISION, lot_number: "47", status: "developed", project_id: null, updated_at: STAMP }
     return createServiceHarness({
       permissions: ["sales.manage"],
+      rpc: { reservation_conversion: () => ({ data: { scope, latest: null }, error: null }) },
       tables: {
         lot_reservations: [
           { id: RESERVATION, org_id: ORG, lot_id: LOT, community_id: COMMUNITY, buyer_contact_id: BUYER, co_buyer_contact_id: null, prospect_id: null, status: "hold", expires_at: new Date(Date.now() + 86_400_000).toISOString(), updated_at: STAMP, deposit_invoice_id: null, contract_id: null, lot, ...reservation },
@@ -600,140 +628,252 @@ describe("convertHoldToReservation (live path)", () => {
         communities: [{ id: COMMUNITY, org_id: ORG, division_id: DIVISION, updated_at: STAMP }],
         contacts: [{ id: BUYER, org_id: ORG, full_name: "Pat Buyer", email: "pat@example.com", updated_at: STAMP }],
         invoices: [],
-        contracts: [],
-        projects: [],
       },
     })
   }
-  const convert = (service, depositCents = 500_001) => service.run(() => convertHoldToReservation({ reservationId: RESERVATION, depositCents }))
+  const register = (service) => service.run(() => registerReservationConversion({ scope, requestKey: id(60), input: { reservationId: RESERVATION, depositCents: 500_001 } }))
+  // The saved-review probe is the only call that may run: nothing is registered or written.
+  const onlyProbed = (service) => service.writes().map((write) => write.payload?.p_action ?? write.action)
 
-  test("a hold converts to a reservation with one home and the exact deposit", async () => {
-    const service = harness()
-    const reservation = await convert(service)
-    assert.equal(reservation.status, "reserved")
-    assert.equal(created.homes.length, 1)
-    assert.equal(created.invoices.length, 1)
-    assert.equal(created.invoices[0].input.lines[0].unit_cost, 5000.01)
-    assert.equal(service.db.lot_reservations[0].deposit_required_cents, 500_001)
-    assert.equal(service.db.lots[0].project_id, HOME_ID)
+  test("an expired hold cannot be reviewed for a reservation", async () => {
+    const service = harness({ expires_at: new Date(Date.now() - 1000).toISOString() })
+    await assert.rejects(register(service), /hold has expired/)
+    assert.deepEqual(onlyProbed(service), ["inspect"])
   })
 
-  test("the deposit invoice is addressed to the buyer it bills", async () => {
-    const service = harness()
-    await convert(service)
-    assert.deepEqual(created.invoices[0].input.sent_to_emails, ["pat@example.com"])
-    assert.equal(created.invoices[0].input.customer_name, "Pat Buyer")
-  })
-
-  test("two conversions racing on one hold build one home and issue one deposit", async () => {
-    const service = harness()
-    const outcomes = await Promise.allSettled([convert(service), convert(service)])
-    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1)
-    assert.equal(created.homes.length, 1)
-    assert.equal(created.invoices.length, 1)
-  })
-
-  test("a hold that changed after it was read stops before anything is created", async () => {
-    const service = harness()
-    service.tamper("lot_reservations", (result) => ({ ...result, data: null }), { on: "update" })
-    await assert.rejects(convert(service), /already converted, released or changed/)
-    assert.equal(created.homes.length, 0)
-    assert.equal(created.invoices.length, 0)
-  })
-
-  test("reserving an undeveloped lot does not mark its land assigned", async () => {
-    for (const [lotStatus, expected] of [["owned", "owned"], ["developed", "assigned"]]) {
-      const service = harness({ lotStatus })
-      await convert(service)
-      assert.equal(service.db.lots[0].status, expected)
-    }
-  })
-
-  test("a zero deposit issues no invoice", async () => {
-    const service = harness()
-    await convert(service, 0)
-    assert.equal(created.invoices.length, 0)
-  })
-
-  test("a deposit past the supported amount is refused before any write", async () => {
-    const service = harness()
-    await assert.rejects(convert(service, Number.MAX_SAFE_INTEGER + 1))
-    assert.deepEqual(service.writes(), [])
-  })
-
-  test("an expired hold cannot become a reservation", async () => {
-    const service = harness({ reservation: { expires_at: new Date(Date.now() - 1000).toISOString() } })
-    await assert.rejects(convert(service), /hold has expired/)
-    assert.deepEqual(service.writes(), [])
-    assert.equal(created.homes.length + created.invoices.length, 0)
-    assert.equal(service.db.lot_reservations[0].status, "hold")
-  })
-
-  test("a hold that is released, or already carries a deposit or an agreement, cannot be reserved", async () => {
+  test("a hold that is released, or already carries a deposit or an agreement, cannot be reviewed", async () => {
     for (const reservation of [{ status: "released" }, { status: "expired" }, { deposit_invoice_id: id(80) }, { contract_id: id(81) }]) {
-      const service = harness({ reservation })
-      await assert.rejects(convert(service), /"hold"|already has a deposit or agreement/, JSON.stringify(reservation))
-      assert.deepEqual(service.writes(), [], JSON.stringify(reservation))
-      assert.equal(created.homes.length + created.invoices.length, 0, JSON.stringify(reservation))
+      const service = harness(reservation)
+      await assert.rejects(register(service), /"hold"|already has a deposit or agreement/, JSON.stringify(reservation))
+      assert.deepEqual(onlyProbed(service), ["inspect"], JSON.stringify(reservation))
     }
   })
 })
 
-describe("setSpecAskingPrice", () => {
-  const LOT = id(41)
-  const PLAN = id(42)
-
-  function harness({ permissions = ["sales.manage"], override = null, reservations = [], contracts = [], projectId = HOME } = {}) {
+describe("releaseReservation", () => {
+  const DEPOSIT = id(51)
+  function harness({ permissions = ["sales.manage", "payment.release"] } = {}) {
+    refunds.length = 0
     return createServiceHarness({
       permissions,
+      rpc: { release_lot_reservation: releaseLotReservation },
       tables: {
-        lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 10_000_00, asking_price_override_cents: override, project_id: projectId, house_plan_id: PLAN, house_plan_elevation_id: null, metadata: {}, updated_at: "2026-10-01T00:00:00+00:00" }],
-        sellable_lot_inventory: [{ lot_id: LOT, org_id: ORG, asking_price_cents: override ?? 410_000_00 }],
-        lot_reservations: reservations,
-        contracts,
-        communities: [{ id: COMMUNITY, org_id: ORG }],
+        lot_reservations: [{ id: RESERVATION, org_id: ORG, lot_id: id(52), status: "reserved", deposit_invoice_id: DEPOSIT, buyer_contact_id: id(53), contract_id: null, metadata: {}, lot: { project_id: HOME, lot_number: "47" }, buyer: { full_name: "Pat Buyer" } }],
+        payments: [{ id: id(54), org_id: ORG, invoice_id: DEPOSIT, amount_cents: 500_000, status: "succeeded" }],
       },
     })
   }
-  const reprice = (service, patch = {}) =>
-    service.run(() => setSpecAskingPrice({ lotId: LOT, askingPriceCents: 395_000_00, expectedAskingPriceCents: 410_000_00, reason: "Standing 110 days; match the comparable", ...patch }))
+  const release = (service) => service.run(() => releaseReservation({ reservationId: RESERVATION, reason: "Buyer withdrew", depositDisposition: "refund" }))
 
-  test("a manager moves a standing spec's asking price and the move is on the record", async () => {
+  test("two releases racing on one reservation refund its deposit once", async () => {
     const service = harness()
-    assert.deepEqual(await reprice(service), { lotId: LOT, askingPriceCents: 395_000_00 })
-    assert.equal(service.db.lots[0].asking_price_override_cents, 395_000_00)
-    assert.equal(service.db.lots[0].metadata.last_price_change.previous_asking_price_cents, 410_000_00)
-    assert.equal(service.db.lots[0].metadata.last_price_change.reason, "Standing 110 days; match the comparable")
-    assert.deepEqual(service.audits.map((entry) => [entry.before.asking_price_cents, entry.after.asking_price_cents]), [[410_000_00, 395_000_00]])
+    const outcomes = await Promise.allSettled([release(service), release(service)])
+    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1)
+    assert.match(outcomes.find((outcome) => outcome.status === "rejected").reason.message, /Live reservation not found/)
+    assert.deepEqual(refunds.map((refund) => [refund.paymentId, refund.amountCents]), [[id(54), 500_000]])
+    assert.equal(service.events.filter((event) => event.eventType === "lot_reservation_released").length, 1)
+    assert.deepEqual(service.audits.map((audit) => [audit.entityType, audit.before.status, audit.after.status]), [["lot_reservation", "reserved", "released"]])
+  })
+
+  test("a release that would move the deposit needs payment authority before the reservation is touched", async () => {
+    const service = harness({ permissions: ["sales.manage"] })
+    await assert.rejects(release(service), /Missing permission/)
+    assert.equal(service.queries.some((query) => query.table === "rpc:release_lot_reservation"), false)
+    assert.equal(service.db.lot_reservations[0].status, "reserved")
+    assert.deepEqual(refunds, [])
+  })
+})
+
+describe("a standing spec's price and incentive moves", () => {
+  const LOT = id(41)
+  const PLAN = id(42)
+  const MANAGER = id(43)
+  const STAMP = "2026-10-01T00:00:00+00:00"
+  const REASON = "Standing 110 days; match the comparable"
+
+  function harness({ permissions = ["sales.manage"], userId, reservations = [], contracts = [], proposals = [], dispositions = [], bands } = {}) {
+    const actor = userId ?? ACTOR
+    return createServiceHarness({
+      permissions,
+      userId: actor,
+      rpc: specPricingRpc(actor),
+      tables: {
+        lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 10_000_00, asking_price_override_cents: null, project_id: HOME, house_plan_id: PLAN, house_plan_elevation_id: null, metadata: {}, updated_at: STAMP }],
+        sellable_lot_inventory: [{ lot_id: LOT, org_id: ORG, asking_price_cents: 410_000_00 }],
+        lot_reservations: reservations,
+        contracts,
+        communities: [{ id: COMMUNITY, org_id: ORG }],
+        spec_price_proposals: proposals,
+        spec_dispositions: dispositions,
+        org_settings: bands ? [{ org_id: ORG, settings: { spec_price_approval_bands: bands } }] : [],
+        home_margin_baselines: [{ id: id(44), org_id: ORG, project_id: HOME, sale_price_cents: 405_000_00 }],
+      },
+    })
+  }
+  const move = (service, patch = {}) =>
+    service.run(() => proposeSpecPriceChange({ kind: "price", lotId: LOT, toCents: 402_000_00, expectedAskingPriceCents: 410_000_00, reason: REASON, ...patch }))
+  const waiting = (patch = {}) => ({
+    id: id(45), org_id: ORG, lot_id: LOT, project_id: HOME, community_id: COMMUNITY, kind: "price", status: "proposed",
+    asking_price_cents: 410_000_00, from_cents: 410_000_00, to_cents: 380_000_00, incentive_expires_on: null,
+    required_permission: "sales.price_approve", proposed_by: ACTOR, proposed_at: "2026-10-02T00:00:00Z", decided_at: null, reason: REASON, ...patch,
+  })
+  const decide = (service, approve = true) => service.run(() => decideSpecPriceChange({ proposalId: id(45), approve }))
+
+  test("a move inside the band applies at once and is kept as the home's price history", async () => {
+    const service = harness()
+    const result = await move(service)
+    assert.equal(result.status, "applied")
+    assert.equal(service.db.lots[0].asking_price_override_cents, 402_000_00)
+    assert.deepEqual(service.db.spec_price_proposals.map((row) => [row.status, row.from_cents, row.to_cents, row.reason]), [["applied", 410_000_00, 402_000_00, REASON]])
     assert.deepEqual(service.events.map((event) => event.eventType), ["spec_home.repriced"])
   })
 
-  test("clearing the override returns the home to its plan-sheet price", async () => {
-    const service = harness({ override: 395_000_00 })
-    // The view answers 395,000 while the override stands and the sheet's 410,000 once it is cleared.
-    let reads = 0
-    service.tamper("sellable_lot_inventory", (result) => (reads++ === 0 ? result : { ...result, data: { ...result.data, asking_price_cents: 410_000_00 } }))
-    const result = await reprice(service, { askingPriceCents: null, expectedAskingPriceCents: 395_000_00 })
-    assert.equal(result.askingPriceCents, 410_000_00)
-    assert.equal(service.db.lots[0].asking_price_override_cents, null)
+  test("a move past 5% or past $10,000 waits for approval and leaves the price alone", async () => {
+    for (const toCents of [389_000_00, 399_000_00]) {
+      const service = harness()
+      const result = await move(service, { toCents })
+      assert.equal(result.status, "proposed", String(toCents))
+      assert.equal(result.requiredPermission, "sales.price_approve")
+      assert.equal(service.db.lots[0].asking_price_override_cents, null)
+      assert.deepEqual(service.events.map((event) => event.eventType), ["spec_home.price_change_proposed"])
+    }
   })
 
-  test("a price the manager did not see is not overwritten", async () => {
-    const service = harness({ override: 405_000_00 })
-    await assert.rejects(reprice(service), /asking price changed/)
+  test("an organization's own band decides what needs approval", async () => {
+    const service = harness({ bands: [{ up_to_percent: 1, up_to_cents: 500_000, permission: "sales.manage" }, { up_to_percent: null, up_to_cents: null, permission: "sales.price_approve" }] })
+    assert.equal((await move(service)).status, "proposed")
+  })
+
+  test("a home's incentive moves through the same band", async () => {
+    const service = harness()
+    const result = await move(service, { kind: "incentive", toCents: 5_000_00, expectedIncentiveCents: 0, expiresOn: null })
+    assert.equal(result.status, "applied")
+    assert.equal(result.incentiveCents, 5_000_00)
+    assert.equal(service.db.lots[0].asking_price_override_cents, null)
+    const large = harness()
+    assert.equal((await move(large, { kind: "incentive", toCents: 25_000_00, expectedIncentiveCents: 0, expiresOn: null })).status, "proposed")
+  })
+
+  test("a price the manager did not see is not moved", async () => {
+    const service = harness()
+    await assert.rejects(move(service, { expectedAskingPriceCents: 415_000_00 }), /asking price changed/)
     assert.deepEqual(service.writes(), [])
   })
 
   test("a home that is reserved or under agreement keeps the agreement's price", async () => {
     const held = harness({ reservations: [{ id: RESERVATION, org_id: ORG, lot_id: LOT, status: "reserved", expires_at: null }] })
-    await assert.rejects(reprice(held), /reserved or under agreement/)
+    await assert.rejects(move(held), /reserved or under agreement/)
     const sold = harness({ contracts: [{ id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "active" }] })
-    await assert.rejects(reprice(sold), /reserved or under agreement/)
+    await assert.rejects(move(sold), /reserved or under agreement/)
     assert.deepEqual(held.writes().concat(sold.writes()), [])
   })
 
-  test("a reason is required and a reader cannot reprice", async () => {
-    await assert.rejects(reprice(harness(), { reason: "cheaper" }), /at least 10 characters/)
-    await assert.rejects(reprice(harness({ permissions: ["sales.read"] })), /Missing permission/)
+  test("a home takes no other move while one waits for approval", async () => {
+    const service = harness({ proposals: [waiting()] })
+    await assert.rejects(move(service), /waiting for approval/)
+    assert.deepEqual(service.writes(), [])
+  })
+
+  test("a reason is required and a reader cannot move a price", async () => {
+    await assert.rejects(move(harness(), { reason: "cheaper" }), /at least 10 characters/)
+    await assert.rejects(move(harness({ permissions: ["sales.read"] })), /Missing permission/)
+  })
+
+  test("a second person with the band's permission approves the move and the price changes", async () => {
+    const service = harness({ userId: MANAGER, permissions: ["sales.read", "sales.price_approve"], proposals: [waiting()] })
+    assert.deepEqual(await decide(service), { proposalId: id(45), status: "approved" })
+    assert.equal(service.db.lots[0].asking_price_override_cents, 380_000_00)
+    assert.equal(service.db.spec_price_proposals[0].decided_by, MANAGER)
+    assert.deepEqual(service.events.map((event) => event.eventType), ["spec_home.price_change_approved"])
+  })
+
+  test("the person who proposed a move cannot approve it", async () => {
+    const service = harness({ permissions: ["sales.read", "sales.price_approve"], proposals: [waiting()] })
+    await assert.rejects(decide(service), /someone other than the person who proposed it/)
+    assert.deepEqual(service.writes(), [])
+  })
+
+  test("approval needs the permission the band named", async () => {
+    const service = harness({ userId: MANAGER, permissions: ["sales.read", "sales.manage"], proposals: [waiting()] })
+    await assert.rejects(decide(service), /Missing permission/)
+    assert.deepEqual(service.writes(), [])
+  })
+
+  test("a move proposed against a price that has since changed is not approved", async () => {
+    const service = harness({ userId: MANAGER, permissions: ["sales.read", "sales.price_approve"], proposals: [waiting({ asking_price_cents: 420_000_00, from_cents: 420_000_00 })] })
+    await assert.rejects(decide(service), /asking price changed after this was proposed/)
+    assert.deepEqual(service.writes(), [])
+  })
+
+  test("a move on a home that was reserved meanwhile is not approved, but can be rejected", async () => {
+    const reservations = [{ id: RESERVATION, org_id: ORG, lot_id: LOT, status: "reserved", expires_at: null }]
+    const approving = harness({ userId: MANAGER, permissions: ["sales.read", "sales.price_approve"], proposals: [waiting()], reservations })
+    await assert.rejects(decide(approving), /reserved or under agreement/)
+    assert.equal(approving.db.lots[0].asking_price_override_cents, null)
+    const rejecting = harness({ userId: MANAGER, permissions: ["sales.read", "sales.price_approve"], proposals: [waiting()], reservations })
+    assert.equal((await decide(rejecting, false)).status, "rejected")
+    assert.equal(rejecting.db.lots[0].asking_price_override_cents, null)
+  })
+
+  test("no move touches a margin baseline, a reservation or an agreement", async () => {
+    const service = harness()
+    await move(service)
+    const approving = harness({ userId: MANAGER, permissions: ["sales.read", "sales.price_approve"], proposals: [waiting()] })
+    await decide(approving)
+    const touched = [...service.writes(), ...approving.writes()].map((write) => write.table)
+    assert.deepEqual([...new Set(touched)], ["rpc:record_spec_price_move", "rpc:decide_spec_price_proposal"])
+    assert.equal(approving.db.home_margin_baselines[0].sale_price_cents, 405_000_00)
+  })
+})
+
+describe("a home under an approved sell-off belongs to the disposition's buyer", () => {
+  const LOT = id(61)
+  const PLAN = id(62)
+  const VERSION = id(63)
+  const INVESTOR = id(64)
+  const WALK_IN = id(65)
+  const DISPOSITION = id(66)
+  const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString()
+
+  function harness({ reservations = [], disposition = {} } = {}) {
+    return createServiceHarness({
+      permissions: ["sales.manage", "sales.read"],
+      projects: [HOME],
+      tables: {
+        lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 0, asking_price_override_cents: null, project_id: HOME, house_plan_id: PLAN, house_plan_version_id: VERSION, house_plan_elevation_id: null, swing: "left", lot_number: "61" }],
+        communities: [{ id: COMMUNITY, org_id: ORG, division_id: null }],
+        projects: [{ id: HOME, org_id: ORG, division_id: null }],
+        house_plan_versions: [{ id: VERSION, org_id: ORG, house_plan_id: PLAN, status: "released", label: "v1", plan: { name: "Oak", org_id: ORG } }],
+        community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, effective_start: null, effective_end: null, base_price_cents: 320_000_00 }],
+        lot_reservations: reservations,
+        contracts: [],
+        spec_price_proposals: [],
+        spec_dispositions: [{ id: DISPOSITION, org_id: ORG, lot_id: LOT, project_id: HOME, community_id: COMMUNITY, kind: "investor_sale", status: "approved", counterparty_contact_id: INVESTOR, price_cents: 300_000_00, carrying_cents: 0, impairment_id: null, ...disposition }],
+      },
+    })
+  }
+  const hold = (service, buyerContactId) => service.run(() => createLotHold({ lotId: LOT, buyerContactId, expiresAt }))
+  const live = (buyerContactId) => ({ id: id(67), org_id: ORG, lot_id: LOT, status: "reserved", buyer_contact_id: buyerContactId, co_buyer_contact_id: null, expires_at: null, created_at: "2026-10-01T00:00:00Z" })
+  const quote = (service) => service.run(() => priceAgreementDraft({ lotId: LOT, optionItems: [], incentiveIds: [] }))
+
+  test("nobody but the named buyer may hold the lot", async () => {
+    const service = harness()
+    await assert.rejects(hold(service, WALK_IN), /approved investor sale to another buyer/)
+    assert.deepEqual(service.writes(), [])
+    await hold(service, INVESTOR)
+    assert.equal(service.db.lot_reservations[0].buyer_contact_id, INVESTOR)
+  })
+
+  test("a proposed sell-off reserves nothing", async () => {
+    await hold(harness({ disposition: { status: "proposed" } }), WALK_IN)
+  })
+
+  test("the disposition's price is the named buyer's alone, and the agreement carries the disposition", async () => {
+    await assert.rejects(quote(harness({ reservations: [live(WALK_IN)] })), /approved investor sale to another buyer/)
+    await assert.rejects(quote(harness()), /approved investor sale to another buyer/)
+
+    const priced = await quote(harness({ reservations: [live(INVESTOR)] }))
+    assert.equal(priced.totalCents, 300_000_00)
+    assert.deepEqual(priced.disposition, { id: DISPOSITION, kind: "investor_sale" })
   })
 })

@@ -7,8 +7,8 @@ import {
   assertLotStatusTransition,
   ATTACHED_LOT_STATUS,
   DETACHED_LOT_STATUS,
+  LOT_DELIVERY_EXCEPTIONS_EMBED,
   lotDeliveryRefusal,
-  MIN_DELIVERY_EXCEPTION_REASON_LENGTH,
   type LotStatus,
 } from "@/lib/land/lot-lifecycle"
 import { readLotDimensions, storeLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
@@ -702,14 +702,16 @@ export async function attachProjectToLot(
   const { data: project, error: projectError } = await context.supabase.from("projects").select("id, org_id, name, property_type, division_id, client_id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
   if (projectError || !project) throw new Error("Project not found")
   const [delivery, reservations] = await Promise.all([
-    context.supabase.from("lots").select("delivered_at, metadata").eq("org_id", context.orgId).eq("id", lotId).maybeSingle(),
+    context.supabase.from("lots").select(`delivered_at, ${LOT_DELIVERY_EXCEPTIONS_EMBED}`).eq("org_id", context.orgId).eq("id", lotId).maybeSingle(),
     context.supabase.from("lot_reservations").select("buyer_contact_id, co_buyer_contact_id").eq("org_id", context.orgId).eq("lot_id", lotId).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(10),
   ])
   if (delivery.error || !delivery.data || reservations.error) throw new Error("The lot's delivery and reservation status could not be verified. No home was attached.")
-  const undelivered = lotDeliveryRefusal({ deliveredAt: delivery.data.delivered_at, metadata: delivery.data.metadata })
+  const undelivered = lotDeliveryRefusal({ deliveredAt: delivery.data.delivered_at, deliveryExceptions: delivery.data.delivery_exceptions })
   if (undelivered) throw new Error(undelivered)
   // A live hold or reservation belongs to its buyer. Only that buyer's own
-  // home may be attached; anyone else's would sell the lot twice.
+  // home may be attached; anyone else's would sell the lot twice. This read
+  // refuses early; the lot update below is the fence (lots_home_reservation_guard
+  // serializes it with hold inserts on the lot row).
   const heldForOthers = (reservations.data ?? []).some((reservation) => !project.client_id || ![reservation.buyer_contact_id, reservation.co_buyer_contact_id].includes(project.client_id))
   if (heldForOthers) throw new Error("This lot has a live hold or reservation for another buyer. Release it before attaching a different home.")
   if (project.property_type && project.property_type !== "production") throw new Error("Only production-posture projects can be attached to lots.")
@@ -725,7 +727,7 @@ export async function attachProjectToLot(
       .update({ property_type: project.property_type, division_id: project.division_id })
       .eq("org_id", context.orgId)
       .eq("id", projectId)
-    throw new Error(`Failed to attach project: ${error.message}`)
+    throw new Error(error.code === "23514" ? error.message : `Failed to attach project: ${error.message}`)
   }
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_attached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, project_name: project.name, force } })
   return mapLot(data as LotRow)
@@ -733,8 +735,10 @@ export async function attachProjectToLot(
 
 /**
  * Let a house start on a lot land development has not delivered. The exception
- * takes the same authority as a forced status change, needs a reason, and
- * stays on the lot as the evidence the start gate reads back.
+ * is its own authority (`lot.delivery_override`), needs a reason, and is a
+ * record the start gates read back — the database refuses a start package or a
+ * `started` status on an undelivered lot without a live one. Recording a new
+ * exception is refused while one is live; revoke it first.
  */
 export async function recordLotDeliveryException(
   lotId: string,
@@ -743,18 +747,36 @@ export async function recordLotDeliveryException(
 ): Promise<void> {
   const parsed = lotDeliveryExceptionSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await Promise.all([requirePermission("lot.write", context), requirePermission("community.write", context)])
+  await requirePermission("lot.delivery_override", context)
   const before = await getLotById(context.supabase, context.orgId, lotId)
   await requireCommunityScope(before.community_id, context)
-  const { data: current, error } = await context.supabase.from("lots").select("metadata, updated_at").eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
-  if (error || !current) throw new Error("Lot not found")
-  const exception = { reason: parsed.reason, by: context.userId, at: new Date().toISOString() }
-  const { data, error: updateError } = await context.supabase.from("lots")
-    .update({ metadata: { ...(current.metadata ?? {}), delivery_exception: exception } })
-    .eq("org_id", context.orgId).eq("id", lotId).eq("updated_at", current.updated_at).select("id").maybeSingle()
-  if (updateError) throw new Error(`Failed to record the delivery exception: ${updateError.message}`)
-  if (!data) throw new Error("The lot changed while you were recording the exception. Review it and try again.")
-  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.delivery_exception_recorded", entityId: lotId, action: "update", before: { delivery_exception: current.metadata?.delivery_exception ?? null }, after: { delivery_exception: exception }, payload: { community_id: before.community_id, reason: parsed.reason } })
+  const { data, error } = await context.supabase
+    .from("lot_delivery_exceptions")
+    .insert({ org_id: context.orgId, lot_id: lotId, reason: parsed.reason, approved_by: context.userId })
+    .select("id, reason, approved_by, approved_at")
+    .single()
+  if (error?.code === "23505") throw new Error("This lot already has a delivery exception. Revoke it before recording another.")
+  if (error || !data) throw new Error(`Failed to record the delivery exception: ${error?.message ?? "no row returned"}`)
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.delivery_exception_recorded", entityId: lotId, action: "insert", after: data, payload: { community_id: before.community_id, exception_id: data.id, reason: parsed.reason } })
+}
+
+/** Withdraw a lot's live delivery exception. A house already started on it stays started. */
+export async function revokeLotDeliveryException(lotId: string, orgId?: string): Promise<void> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("lot.delivery_override", context)
+  const before = await getLotById(context.supabase, context.orgId, lotId)
+  await requireCommunityScope(before.community_id, context)
+  const { data, error } = await context.supabase
+    .from("lot_delivery_exceptions")
+    .update({ revoked_at: new Date().toISOString(), revoked_by: context.userId })
+    .eq("org_id", context.orgId)
+    .eq("lot_id", lotId)
+    .is("revoked_at", null)
+    .select("id, reason, approved_by, approved_at, revoked_at")
+    .maybeSingle()
+  if (error) throw new Error(`Failed to revoke the delivery exception: ${error.message}`)
+  if (!data) throw new Error("This lot has no live delivery exception.")
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.delivery_exception_revoked", entityId: lotId, action: "update", after: data, payload: { community_id: before.community_id, exception_id: data.id } })
 }
 
 /**

@@ -42,11 +42,11 @@ const forecastHistory: ReportDefinition = {
 
 const cashFlowForecast: ReportDefinition = {
   slug: "cash-flow-forecast", title: "Cash-Flow Forecast", group: "financial",
-  summary: "Expected owner receipts less approved bills and committed-but-unbilled cost by month.", scopes: ["org","project"], permissions: ["report.read"], ambientScope: "full",
+  summary: "Expected owner receipts less approved bills, committed-but-unbilled cost and land obligations (takedowns net of deposits, deposits, extension fees) by month.", scopes: ["org","project"], permissions: ["report.read"], ambientScope: "full",
   run: async (ctx) => {
     const report = await getCashFlowForecast({ projectId: ctx.projectId, divisionId: ctx.divisionId, communityId: ctx.communityId })
     const net = report.rows.reduce((sum, row) => sum + row.net_cents, 0)
-    return { stats: [{ key: "net", label: "Forecast net", value: formatMoneyCents(net), tone: net < 0 ? "warning" : "positive" }], tables: [{ key: "cash_flow", columns: [{ key: "month", header: "Month" }, { key: "inflow", header: "Inflows", type: "money" }, { key: "outflow", header: "Approved bills", type: "money" }, { key: "unbilled", header: "Committed unbilled", type: "money" }, { key: "net", header: "Net", type: "money" }], rows: report.rows.map((row) => ({ key: row.month, cells: { month: row.month, inflow: row.inflow_cents, outflow: row.outflow_cents, unbilled: row.committed_unbilled_cents, net: { value: row.net_cents, tone: row.net_cents < 0 ? "warning" : "positive" } } })), emptyMessage: "No forecast cash movements in this scope." }] }
+    return { stats: [{ key: "net", label: "Forecast net", value: formatMoneyCents(net), tone: net < 0 ? "warning" : "positive" }], tables: [{ key: "cash_flow", columns: [{ key: "month", header: "Month" }, { key: "inflow", header: "Inflows", type: "money" }, { key: "outflow", header: "Approved bills", type: "money" }, { key: "unbilled", header: "Committed unbilled", type: "money" }, { key: "land", header: "Land obligations", type: "money" }, { key: "net", header: "Net", type: "money" }], rows: report.rows.map((row) => ({ key: row.month, cells: { month: row.month, inflow: row.inflow_cents, outflow: row.outflow_cents, unbilled: row.committed_unbilled_cents, land: row.land_obligations_cents, net: { value: row.net_cents, tone: row.net_cents < 0 ? "warning" : "positive" } } })), emptyMessage: "No forecast cash movements in this scope." }] }
   },
 }
 

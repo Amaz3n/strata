@@ -147,7 +147,7 @@ test("an adoption and its change order are recorded by the server, never written
   const org = await reviewOrg(t)
   const project = await insert(org.db, "projects", { org_id: org.orgId, name: "Oak 2" })
   const lot = await insert(org.db, "lots", {
-    org_id: org.orgId, community_id: org.oakLot.community_id, lot_number: "Oak 2", project_id: project.id,
+    org_id: org.orgId, community_id: org.oakLot.community_id, lot_number: "Oak 2", project_id: project.id, status: "assigned",
     house_plan_id: org.plan.id, house_plan_version_id: org.v1.id,
   })
   const sold = await insert(org.db, "plan_change_proposal_homes", {

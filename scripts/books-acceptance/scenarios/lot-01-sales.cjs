@@ -6,6 +6,7 @@ const { randomUUID } = require("node:crypto")
 const seed = require("../production-seed.cjs")
 const { app } = require("./shared.cjs")
 const fx = require("./lot-01-sales-fixtures.cjs")
+const { race } = require("./sessions.cjs")
 
 const lot = () => require("./lot-01.cjs").helpers
 const { refusal } = fx
@@ -37,7 +38,7 @@ async function buyerLifecycleIsOneTraceableChain(kit, expected, check) {
     onTheHeldLot: holdRow.lot_id === home.id, lotHasNoHomeYet: kit.rows(`select project_id from public.lots where id=${q(home.id)}`)[0].project_id === null,
   }
 
-  const reservation = await kit.as(org.team.sales, () => sales.convertHoldToReservation({ reservationId: hold.id, depositCents: 1200000 }))
+  const reservation = await seed.reserveHold(kit, org.team.sales, { reservationId: hold.id, depositCents: 1200000 })
   const reservedRow = kit.rows(`select status, deposit_required_cents::bigint deposit, deposit_invoice_id, buyer_contact_id, prospect_id from public.lot_reservations where id=${q(hold.id)}`)[0]
   const homeId = kit.rows(`select project_id from public.lots where id=${q(home.id)}`)[0].project_id
   const homeRow = kit.rows(`select property_type, client_id, prospect_id from public.projects where id=${q(homeId)}`)[0]
@@ -103,7 +104,7 @@ async function invalidAndExpiredReservationsCannotProduceAgreements(kit, expecte
     const prospect = await seed.registerBuyer(kit, org, { name: "Slow Buyer", email: `slow.buyer.${fx.tag()}@acceptance.example.test` })
     const hold = await asSales(() => sales.createLotHoldFromProspect({ prospectId: prospect.id, lotId: home.id, expiresAt: future(48) }))
     kit.sql(`update public.lot_reservations set expires_at = now() - interval '2 hours' where id=${q(hold.id)}`)
-    const reserve = await refusal(() => asSales(() => sales.convertHoldToReservation({ reservationId: hold.id, depositCents: 500000 })))
+    const reserve = await refusal(() => seed.reserveHold(kit, org.team.sales, { reservationId: hold.id, depositCents: 500000 }))
     const sign = await create(org.team.sales, { reservation: hold, lot: home })
     await kit.service(() => sales.sweepExpiredLotHolds())
     const row = kit.rows(`select status, released_at is not null released, release_reason from public.lot_reservations where id=${q(hold.id)}`)[0]
@@ -769,6 +770,242 @@ async function warrantyDeskOpensAClaimOnASoldHome(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// ---------------------------------------------------------------------------
+// EP04-06 multi_session: one lot, one owner. Holds, conversions, home attaches, expiry,
+// releases and cancellation race on the same lot from independent database sessions
+// (sessions.cjs: separate psql backends released by a barrier) or as two API requests.
+
+// Each racing statement keeps its locks a moment before committing, so the other session
+// runs against it in flight rather than merely after it.
+const inFlight = (statement) => `set role service_role;\nbegin;\n${statement};\nselect pg_sleep(0.3);\ncommit;`
+const firstLine = (session) => session.stdout.split("\n").map((line) => line.trim()).find(Boolean) ?? ""
+const ALLOCATION_REFUSALS = [
+  [/already has a live reservation|lot_reservations_live_lot_uniq/, "refused: lot already held"],
+  [/live hold or reservation for another buyer/, "refused: held for another buyer"],
+  [/home belongs to another buyer/, "refused: home belongs to another buyer"],
+  // The loser of two conversions may first fail the signing check on the home the winner just built.
+  [/Live sellable hold is required|source changed|ancestry changed|Home belongs to another sale|Inspect the existing deposit|Agreement signing home/, "refused: hold no longer live"],
+  [/Cancelled reservation review cannot be committed/, "refused: review cancelled"],
+  [/Live reservation not found/, "refused: nothing live to release"],
+]
+const refusedAs = (message) => label(message, ALLOCATION_REFUSALS)
+
+function buyerContact(kit, org, name) {
+  const contactId = randomUUID()
+  kit.sql(`insert into public.contacts(id, org_id, full_name, email) values(${kit.q(contactId)}, ${kit.q(org.orgId)}, ${kit.q(name)}, ${kit.q(`${name.toLowerCase().replace(/[^a-z0-9]+/g, ".")}.${fx.tag()}@acceptance.example.test`)})`)
+  return contactId
+}
+const holdSql = (kit, org, lotId, buyerId) => `insert into public.lot_reservations(org_id, community_id, lot_id, buyer_contact_id, status, expires_at, created_by) values(${kit.q(org.orgId)}, ${kit.q(org.communityId)}, ${kit.q(lotId)}, ${kit.q(buyerId)}, 'hold', now() + interval '14 days', ${kit.q(org.team.sales.userId)})`
+const attachSql = (kit, lotId, homeId) => `update public.lots set project_id = ${kit.q(homeId)}, status = 'started' where id = ${kit.q(lotId)}`
+const commitSql = (kit, org, actor, reservationId, key, action = "commit") => `select public.reservation_conversion(${kit.q(org.orgId)}, ${kit.q(actor.userId)}, ${kit.q(reservationId)}, ${kit.q(action)}, ${kit.q(key)}, (select request from public.reservation_conversion_requests where id = ${kit.q(key)}), null)->>'status'`
+const releaseSql = (kit, org, reservationId) => `select public.release_lot_reservation(${kit.q(org.orgId)}, ${kit.q(org.team.sales.userId)}, ${kit.q(reservationId)}, 'Buyer went quiet', null)->'after'->>'status'`
+const sweepSql = (kit, reservationId) => `update public.lot_reservations set status = 'expired', released_at = now(), release_reason = 'Hold expired' where id = ${kit.q(reservationId)} and status = 'hold' and expires_at < now()`
+
+/** A held lot for a fresh buyer, with the consultant's saved review ready to commit. */
+async function heldWithReview(kit, org, name, { depositCents = 500000, reviewers = [org.team.sales] } = {}) {
+  const sales = app("community-sales")
+  const home = await fx.newLot(kit, org)
+  const buyerId = buyerContact(kit, org, name)
+  const hold = await kit.as(org.team.sales, () => sales.createLotHold({ lotId: home.id, buyerContactId: buyerId, expiresAt: future(24 * 14) }))
+  const keys = []
+  for (const actor of reviewers) {
+    const requestKey = randomUUID()
+    await kit.as(actor, () => sales.registerReservationConversion({ scope: { orgId: org.orgId, actorId: actor.userId, reservationId: hold.id }, requestKey, input: { reservationId: hold.id, depositCents } }))
+    keys.push(requestKey)
+  }
+  return { lot: home, buyerId, hold, keys }
+}
+
+/** Who owns the lot now: its live holds and reservations, and its home's buyer. */
+function lotOwnership(kit, org, lotId) {
+  const q = kit.q
+  const row = kit.rows(`select l.project_id, p.client_id,
+      (select coalesce(json_agg(distinct r.buyer_contact_id), '[]') from public.lot_reservations r where r.org_id = l.org_id and r.lot_id = l.id
+        and r.status in ('hold', 'reserved', 'converted') and (r.status <> 'hold' or r.expires_at is null or r.expires_at > now())) live_buyers,
+      (select count(*)::int from public.invoices i where i.org_id = l.org_id and i.metadata->>'invoice_kind' = 'earnest_deposit'
+        and i.metadata->>'source_reservation_id' in (select r.id::text from public.lot_reservations r where r.lot_id = l.id)) deposit_invoices,
+      (select count(*)::int from public.reservation_conversion_receipts c join public.lot_reservations r on r.id = c.reservation_id where r.lot_id = l.id) homes_built
+    from public.lots l left join public.projects p on p.id = l.project_id where l.org_id = ${q(org.orgId)} and l.id = ${q(lotId)}`)[0]
+  const owners = new Set([...row.live_buyers, ...(row.client_id ? [row.client_id] : [])])
+  return { owners: owners.size, liveReservations: row.live_buyers.length, hasHome: Boolean(row.project_id), homeBuyer: row.client_id, homesBuilt: row.homes_built, depositInvoices: row.deposit_invoices }
+}
+
+async function raceTwoHoldsOnOneLot(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const sales = app("community-sales")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const service = await fx.newLot(kit, org)
+    const buyers = [buyerContact(kit, org, `Hold Alma ${round}`), buyerContact(kit, org, `Hold Bao ${round}`)]
+    const requests = await Promise.allSettled(buyers.map((buyerContactId) => kit.as(org.team.sales, () => sales.createLotHold({ lotId: service.id, buyerContactId, expiresAt: future(48) }))))
+    const database = await fx.newLot(kit, org)
+    const sessions = await race(kit, buyers.map((buyerId) => inFlight(holdSql(kit, org, database.id, buyerId))))
+    const occupancy = (lotId) => {
+      const { owners, liveReservations, hasHome } = lotOwnership(kit, org, lotId)
+      return { owners, liveReservations, hasHome }
+    }
+    rounds.push({
+      viaService: { held: requests.filter((r) => r.status === "fulfilled").length, refused: requests.filter((r) => r.status === "rejected").map((r) => refusedAs(r.reason.message)), ...occupancy(service.id) },
+      atDatabase: { held: sessions.filter((s) => s.ok).length, refused: sessions.filter((s) => !s.ok).map((s) => refusedAs(s.stderr)), ...occupancy(database.id) },
+    })
+  }
+  equal(check, "two holds on one lot, as two requests and as two database sessions: one holds, the other is refused, and the lot has one owner", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
+async function raceTwoConversionsOfOneHold(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const sale = await heldWithReview(kit, org, `Twice Reserved ${round}`, { reviewers: [org.team.sales, org.owner] })
+    const actors = [org.team.sales, org.owner]
+    const sessions = await race(kit, actors.map((actor, index) => inFlight(commitSql(kit, org, actor, sale.hold.id, sale.keys[index]))))
+    const ownership = lotOwnership(kit, org, sale.lot.id)
+    rounds.push({
+      committed: sessions.filter((s) => s.ok && firstLine(s) === "committed").length,
+      refused: sessions.filter((s) => !s.ok).map((s) => refusedAs(s.stderr)),
+      reservation: kit.rows(`select status from public.lot_reservations where id=${kit.q(sale.hold.id)}`)[0].status,
+      homeIsTheBuyers: ownership.homeBuyer === sale.buyerId,
+      owners: ownership.owners, homesBuilt: ownership.homesBuilt, depositInvoices: ownership.depositInvoices,
+    })
+  }
+  equal(check, "two sessions committing two reviews of one hold: one reservation, one home and one deposit invoice; the other is refused", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
+async function raceConversionAgainstAnotherBuyersHome(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const sale = await heldWithReview(kit, org, `Holding Buyer ${round}`)
+    const otherBuyer = buyerContact(kit, org, `Other Buyer ${round}`)
+    const otherHome = await kit.as(org.owner, () => app("projects").createProject({ input: { name: `Other home ${round}`, property_type: "production", status: "planning", client_id: otherBuyer } }))
+    const [conversion, attach] = await race(kit, [inFlight(commitSql(kit, org, org.team.sales, sale.hold.id, sale.keys[0])), inFlight(attachSql(kit, sale.lot.id, otherHome.id))])
+    const ownership = lotOwnership(kit, org, sale.lot.id)
+    rounds.push({
+      conversion: conversion.ok ? firstLine(conversion) : refusedAs(conversion.stderr),
+      attach: attach.ok ? "attached" : refusedAs(attach.stderr),
+      homeIsTheHoldingBuyers: ownership.homeBuyer === sale.buyerId,
+      otherHomeOnNoLot: Number(kit.rows(`select count(*)::int n from public.lots where project_id=${kit.q(otherHome.id)}`)[0].n) === 0,
+      owners: ownership.owners, homesBuilt: ownership.homesBuilt, depositInvoices: ownership.depositInvoices,
+    })
+  }
+  equal(check, "a conversion and another buyer's home attach racing on one held lot: the conversion stands with one home and one deposit invoice, and the other home is refused", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
+async function raceHoldAgainstHomeAttach(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const home = await fx.newLot(kit, org)
+    const holder = buyerContact(kit, org, `Walk-in ${round}`)
+    const otherBuyer = buyerContact(kit, org, `Contract Buyer ${round}`)
+    const otherHome = await kit.as(org.owner, () => app("projects").createProject({ input: { name: `Contract home ${round}`, property_type: "production", status: "planning", client_id: otherBuyer } }))
+    const sessions = await race(kit, [inFlight(holdSql(kit, org, home.id, holder)), inFlight(attachSql(kit, home.id, otherHome.id))])
+    const ownership = lotOwnership(kit, org, home.id)
+    const [held, attached] = sessions.map((s) => s.ok)
+    rounds.push({
+      winners: sessions.filter((s) => s.ok).length,
+      loserRefusedCleanly: sessions.filter((s) => !s.ok).every((s) => ["refused: held for another buyer", "refused: home belongs to another buyer"].includes(refusedAs(s.stderr))),
+      finalStateIsTheWinners: held ? ownership.liveReservations === 1 && !ownership.hasHome : attached && ownership.liveReservations === 0 && ownership.homeBuyer === otherBuyer,
+      owners: ownership.owners,
+    })
+  }
+  equal(check, "a hold and another buyer's home attach racing on one lot: exactly one stands, the other is refused, and the lot has one owner", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
+async function raceExpiryConversionAndRelease(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const sale = await heldWithReview(kit, org, `Lapsed Buyer ${round}`)
+    kit.sql(`update public.lot_reservations set expires_at = now() - interval '1 minute' where id=${kit.q(sale.hold.id)}`)
+    const nextBuyer = buyerContact(kit, org, `Next Buyer ${round}`)
+    const [sweep, conversion, release, nextHold] = await race(kit, [
+      inFlight(sweepSql(kit, sale.hold.id)),
+      inFlight(commitSql(kit, org, org.team.sales, sale.hold.id, sale.keys[0])),
+      inFlight(releaseSql(kit, org, sale.hold.id)),
+      inFlight(holdSql(kit, org, sale.lot.id, nextBuyer)),
+    ])
+    const lapsed = kit.rows(`select status from public.lot_reservations where id=${kit.q(sale.hold.id)}`)[0].status
+    const ownership = lotOwnership(kit, org, sale.lot.id)
+    rounds.push({
+      sweep: sweep.ok ? "ran" : refusedAs(sweep.stderr),
+      conversion: conversion.ok ? firstLine(conversion) : refusedAs(conversion.stderr),
+      releaseEndedItOrFoundNothing: release.ok || refusedAs(release.stderr) === "refused: nothing live to release",
+      nextHold: nextHold.ok ? "held" : refusedAs(nextHold.stderr),
+      lapsedHoldEndedOnce: release.ok ? lapsed === "released" : lapsed === "expired",
+      liveReservations: ownership.liveReservations, owners: ownership.owners, hasHome: ownership.hasHome,
+      homesBuilt: ownership.homesBuilt, depositInvoices: ownership.depositInvoices,
+    })
+  }
+  equal(check, "a lapsed hold raced by the sweep, its conversion, its release and another buyer's hold: it is never converted, it ends once, and the next buyer owns the lot", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
+async function raceTwoReleasesRefundOnce(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const sales = app("community-sales"), q = kit.q
+  org.closingDeskTwo ??= kit.addMember(org, "org_owner")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const depositCents = expected.inputs.depositCents + round * 1000
+    const buyer = await fx.reservedBuyer(kit, org, { name: `Withdrawn Buyer ${round}`, depositCents, receivedOn: "2026-06-06" })
+    const release = (actor) => kit.as(actor, () => sales.releaseReservation({ reservationId: buyer.reservation.id, reason: "Buyer financing was declined", depositDisposition: "refund" }))
+    const results = await Promise.allSettled([release(org.owner), release(org.closingDeskTwo)])
+    const refunds = kit.rows(`select r.amount_cents::bigint cents from public.payment_reversals r join public.payments p on p.id = r.payment_id
+      where r.org_id=${q(org.orgId)} and p.invoice_id=${q(buyer.reservation.depositInvoiceId)} and r.reversal_type = 'refund' and r.status = 'succeeded'`)
+    const ownership = lotOwnership(kit, org, buyer.lot.id)
+    rounds.push({
+      released: results.filter((r) => r.status === "fulfilled").length,
+      refused: results.filter((r) => r.status === "rejected").map((r) => refusedAs(r.reason.message)),
+      refundsCents: refunds.map((row) => Number(row.cents)),
+      reservation: kit.rows(`select status from public.lot_reservations where id=${q(buyer.reservation.id)}`)[0].status,
+      releasedEvents: Number(kit.rows(`select count(*)::int n from public.events where org_id=${q(org.orgId)} and event_type='lot_reservation_released' and entity_id=${q(buyer.reservation.id)}`)[0].n),
+      homeBackInInventory: ownership.hasHome && ownership.homeBuyer === null,
+      owners: ownership.owners, depositInvoices: ownership.depositInvoices,
+    })
+  }
+  equal(check, "two members releasing one reserved buyer with a refund: one release, one refund of the buyer's deposit, and the home returns to inventory with no owner", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
+async function raceConversionCancelAgainstCommit(kit, expected, check) {
+  const { equal } = lot()
+  const { org } = await lot().stage(kit, "land")
+  const rounds = []
+  for (let round = 1; round <= expected.inputs.rounds; round += 1) {
+    const sale = await heldWithReview(kit, org, `Undecided Buyer ${round}`)
+    const [commit, cancel] = await race(kit, [
+      inFlight(commitSql(kit, org, org.team.sales, sale.hold.id, sale.keys[0])),
+      inFlight(commitSql(kit, org, org.team.sales, sale.hold.id, sale.keys[0], "cancel")),
+    ])
+    const request = kit.rows(`select status from public.reservation_conversion_requests where id=${kit.q(sale.keys[0])}`)[0].status
+    const reservation = kit.rows(`select status from public.lot_reservations where id=${kit.q(sale.hold.id)}`)[0].status
+    const ownership = lotOwnership(kit, org, sale.lot.id)
+    const committed = request === "committed"
+    rounds.push({
+      oneOutcome: committed
+        ? commit.ok && firstLine(commit) === "committed" && cancel.ok && firstLine(cancel) === "committed"
+        : request === "cancelled" && cancel.ok && refusedAs(commit.stderr) === "refused: review cancelled",
+      reservationMatches: reservation === (committed ? "reserved" : "hold"),
+      homesMatch: ownership.homesBuilt === (committed ? 1 : 0) && ownership.hasHome === committed,
+      depositInvoicesMatch: ownership.depositInvoices === (committed ? 1 : 0),
+      owners: ownership.owners,
+    })
+  }
+  equal(check, "cancelling a saved review while it is committed: either it commits with one home and one deposit invoice, or it is cancelled with neither, never both", expected.expected, { rounds })
+  return { orgId: org.orgId }
+}
+
 const subcases = {
 
   "buyer-lifecycle-is-one-traceable-chain": buyerLifecycleIsOneTraceableChain,
@@ -785,5 +1022,12 @@ const subcases = {
   "warranty-coverage-is-frozen-at-calendar-boundaries": warrantyCoverageIsFrozenAtCalendarBoundaries,
   "voiding-a-signed-agreement-unwinds-the-sale": voidingASignedAgreementUnwindsTheSale,
   "warranty-desk-opens-a-claim-on-a-sold-home": warrantyDeskOpensAClaimOnASoldHome,
+  "race-two-holds-on-one-lot": raceTwoHoldsOnOneLot,
+  "race-two-conversions-of-one-hold": raceTwoConversionsOfOneHold,
+  "race-conversion-against-another-buyers-home": raceConversionAgainstAnotherBuyersHome,
+  "race-hold-against-home-attach": raceHoldAgainstHomeAttach,
+  "race-expiry-conversion-and-release": raceExpiryConversionAndRelease,
+  "race-two-releases-refund-once": raceTwoReleasesRefundOnce,
+  "race-conversion-cancel-against-commit": raceConversionCancelAgainstCommit,
 }
 module.exports = { subcases }

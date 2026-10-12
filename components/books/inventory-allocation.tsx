@@ -25,14 +25,14 @@ export function InventoryAllocation({ projectId }: { projectId: string }) {
   const [pending, startTransition] = useTransition()
   const [basis, setBasis] = useState<(typeof BASES)[number][0]>("equal")
   const [rows, setRows] = useState([{ lotId: "", weight: "1" }])
-  const open = (next: "development" | "interest") => startTransition(async () => { const result = await loadInventoryAllocationWorkspaceAction(); if (!result.success) { toast.error(result.error); return } setWorkspace(result.data); setMode(next) })
+  const open = (next: "development" | "interest") => startTransition(async () => { const result = await loadInventoryAllocationWorkspaceAction(projectId); if (!result.success) { toast.error(result.error); return } setWorkspace(result.data); setMode(next) })
   const review = (allocationId: string, approve: boolean) => startTransition(async () => {
     const note = approve ? "" : window.prompt("Why is this allocation rejected?") ?? ""
     if (!approve && note.trim().length < 10) { toast.error("Say why the allocation is rejected"); return }
     const result = await reviewDevelopmentAllocationAction({ allocationId, approve, note: note || undefined })
     if (!result.success) { toast.error(result.error); return }
     toast.success(approve ? "Allocation approved and posted" : "Allocation rejected")
-    const reloaded = await loadInventoryAllocationWorkspaceAction(); if (reloaded.success) setWorkspace(reloaded.data)
+    const reloaded = await loadInventoryAllocationWorkspaceAction(projectId); if (reloaded.success) setWorkspace(reloaded.data)
   })
   const proposals = workspace?.pending.filter(row => row.projectId === projectId) ?? []
   return <><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending} onClick={() => open("development")}>Allocate shared development cost</Button><Button variant="outline" disabled={pending} onClick={() => open("interest")}>Capitalize eligible interest</Button></div>
@@ -56,12 +56,13 @@ export function InventoryAllocation({ projectId }: { projectId: string }) {
             : await capitalizeInventoryInterestAction({ ...base, sourceLineId: String(data.get("sourceLineId") ?? ""), amountCents: cents(String(data.get("amount") ?? "")) })
           if (!result.success) { toast.error(result.error); return }
           toast.success(mode === "development" ? "Allocation proposed. Another member approves it." : "Inventory journal recorded")
-          if (mode === "development") { const reloaded = await loadInventoryAllocationWorkspaceAction(); if (reloaded.success) setWorkspace(reloaded.data) } else setMode(null)
+          if (mode === "development") { const reloaded = await loadInventoryAllocationWorkspaceAction(projectId); if (reloaded.success) setWorkspace(reloaded.data) } else setMode(null)
         } catch (error) { toast.error(error instanceof Error ? error.message : "Check the allocation") }
       }) }}>
         {mode === "development" ? <>
           <div className="space-y-1"><Label htmlFor="allocation-basis">Basis</Label><Select value={basis} onValueChange={value => { const next = BASES.find(([key]) => key === value); if (next) setBasis(next[0]) }}><SelectTrigger id="allocation-basis"><SelectValue /></SelectTrigger><SelectContent>{BASES.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
           <div className="space-y-1"><Label htmlFor="allocation-total">Total to allocate</Label><Input id="allocation-total" name="total" inputMode="decimal" required /></div>
+          {workspace?.lots.length === 0 ? <p className="text-xs text-warning">No lot can receive this job&apos;s cost yet. Link the job to the phases it develops on the community&apos;s Land tab.</p> : null}
           {rows.map((row, index) => <div className="grid grid-cols-2 gap-2" key={index}><Select value={row.lotId} onValueChange={lotId => setRows(current => current.map((item, i) => i === index ? { ...item, lotId } : item))}><SelectTrigger aria-label={`Receiving lot ${index + 1}`}><SelectValue placeholder="Receiving lot" /></SelectTrigger><SelectContent>{workspace?.lots.map(lot => <SelectItem key={lot.id} value={lot.id}>{lot.name}</SelectItem>)}</SelectContent></Select>
             {basis === "equal" ? <span className="self-center text-xs text-muted-foreground">Equal share</span> : <Input aria-label={`Basis for lot ${index + 1}`} inputMode="decimal" value={row.weight} onChange={event => { const weight = event.target.value; setRows(current => current.map((item, i) => i === index ? { ...item, weight } : item)) }} />}</div>)}
           <Button type="button" variant="ghost" onClick={() => setRows(current => [...current, { lotId: "", weight: "1" }])}>Add receiving lot</Button>

@@ -44,7 +44,7 @@ const STEPS = {
     await seed.seedProduct(kit, org)
     // A tranche whose land has not been bought cannot close on its expected price.
     const communities = app("communities"), lotsService = app("lots")
-    const second = await kit.as(org.team.land, () => communities.createLotTakedown(org.communityId, { name: "Tranche 2", scheduledDate: seed.isoDay(60), lotCount: 2, pricePerLotCents: 7200000, depositCents: 0 }))
+    const second = await kit.as(org.team.land, () => communities.createLotTakedown(org.communityId, { name: "Tranche 2", scheduledDate: seed.isoDay(60), lotCount: 2, pricePerLotCents: 7200000 }))
     await kit.as(org.team.land, () => lotsService.bulkUpdateLots(org.communityId, { lotIds: org.lots.slice(10, 12).map((lot) => lot.id), patch: { takedownId: second.id } }))
     const closeWithoutLand = await refusal(() => kit.as(org.team.land, () => communities.closeLotTakedown(second.id, { actualDate: seed.isoDay(0) })))
     await seed.takeDownTranche(kit, org)

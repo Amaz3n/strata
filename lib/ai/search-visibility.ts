@@ -56,11 +56,17 @@ export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> =
   // Production
   community: "community.read",
   lot: "community.read",
+  land_opportunity: "land.read",
+  land_entitlement: "community.read",
+  // Land contracts read like takedowns: every community reader sees their terms.
+  land_contract: "community.read",
   house_plan: "plan.read",
   selection_option: "selections.read",
   price_agreement: "price_book.read",
   start_package: "start.read",
   closing: "sales.read",
+  spec_price_proposal: "sales.read",
+  spec_disposition: "sales.read",
 
   // Field and correspondence
   safety_incident: "safety.read",

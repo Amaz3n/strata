@@ -1303,11 +1303,11 @@ export async function acquireLandInventoryAction(
   );
 }
 
-export async function loadInventoryAllocationWorkspaceAction() {
+export async function loadInventoryAllocationWorkspaceAction(projectId: string) {
   return read(async () =>
     (
       await import("@/lib/services/books/inventory")
-    ).getInventoryAllocationWorkspace(),
+    ).getInventoryAllocationWorkspace(projectId),
   );
 }
 export async function proposeDevelopmentAllocationAction(

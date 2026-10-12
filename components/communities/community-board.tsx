@@ -438,11 +438,14 @@ export function CommunityBoard({
   portfolio,
   divisions,
   canWrite,
+  canReadLand,
   status,
 }: {
   portfolio: CommunityPortfolio
   divisions: DivisionDTO[]
   canWrite: boolean
+  /** Holds land.read: the board links to the land deals desk, where communities come from. */
+  canReadLand: boolean
   status?: string
 }) {
   const router = useRouter()
@@ -592,6 +595,12 @@ export function CommunityBoard({
     </Dialog>
   ) : null
 
+  const landDealsLink = canReadLand ? (
+    <Button asChild size="sm" variant="outline" className="rounded-none">
+      <OptimisticLink href="/communities/land-deals" prefetchOnIntent>Land deals</OptimisticLink>
+    </Button>
+  ) : null
+
   if (portfolio.lanes.length === 0 && !status) {
     return (
       <div className="flex min-h-full flex-col p-4">
@@ -606,7 +615,12 @@ export function CommunityBoard({
               tracking land through closing.
             </EmptyDescription>
           </EmptyHeader>
-          {canWrite ? <EmptyContent>{createDialog}</EmptyContent> : null}
+          {canWrite || canReadLand ? (
+            <EmptyContent className="flex-row justify-center gap-2">
+              {landDealsLink}
+              {canWrite ? createDialog : null}
+            </EmptyContent>
+          ) : null}
         </Empty>
       </div>
     )
@@ -674,6 +688,7 @@ export function CommunityBoard({
               </button>
             ))}
           </div>
+          {landDealsLink}
           {createDialog}
         </div>
       </div>

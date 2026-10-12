@@ -68,10 +68,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
     ? {
         reservationId: reservation.id,
         conversionScope: { ...detail.viewer, reservationId: reservation.id },
-        atomicConversionEnabled: process.env.ARC_RESERVATION_CONVERSION_ENABLED === "true",
         lotLabel: deal.lotLabel,
-        buyerName: deal.buyerName,
-        askingPriceCents: reservation.askingPriceCents ?? deal.priceCents,
         depositRequiredCents: reservation.depositRequiredCents,
         hasProject: Boolean(deal.projectId),
       }

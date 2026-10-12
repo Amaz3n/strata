@@ -99,6 +99,10 @@ export type NotificationType =
   | "variance_digest"
   | "selection_change_variance_unrouted"
   | "takedown_due"
+  | "land_review_requested"
+  | "land_review_decided"
+  | "land_diligence_due"
+  | "entitlement_condition_due"
   | "start_package_ready"
   | "start_released"
   | "start_release_failed"
@@ -197,7 +201,12 @@ export const NOTIFICATION_EMAIL_CATEGORIES = [
   {
     key: "starts",
     label: "Starts & production",
-    description: "Lot start packages, release failures, and land takedowns coming due.",
+    description: "Lot start packages and release failures.",
+  },
+  {
+    key: "land",
+    label: "Land & entitlements",
+    description: "Land deal reviews, diligence and entitlement deadlines, and takedowns coming due.",
   },
   {
     key: "sales",
@@ -643,9 +652,33 @@ export const EMAIL_NOTIFICATION_TYPES = [
   },
   {
     key: "takedown_due",
-    category: "starts",
+    category: "land",
     label: "Land takedown due",
     description: "Email me as a contracted lot takedown approaches its close date.",
+  },
+  {
+    key: "land_review_requested",
+    category: "land",
+    label: "Land acquisition awaiting my approval",
+    description: "Email me when I am named an approver on a land acquisition review.",
+  },
+  {
+    key: "land_review_decided",
+    category: "land",
+    label: "Land acquisition decided",
+    description: "Email me when a land acquisition review I submitted or lead is approved or returned.",
+  },
+  {
+    key: "land_diligence_due",
+    category: "land",
+    label: "Land diligence deadline",
+    description: "Email me as a diligence item I own, or a deal's feasibility period, comes due.",
+  },
+  {
+    key: "entitlement_condition_due",
+    category: "land",
+    label: "Entitlement deadline",
+    description: "Email me as an entitlement condition comes due or an approval nears its target or expiry.",
   },
 ] as const satisfies ReadonlyArray<{
   key: NotificationType

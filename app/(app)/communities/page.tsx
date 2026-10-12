@@ -27,15 +27,13 @@ async function CommunitiesData({ searchParams }: CommunitiesPageProps) {
     getCurrentUserPermissions(),
   ])
   const permissions = permissionResult.permissions
+  const holds = (key: string) => permissions.some((permission) => [key, "org.admin", "*"].includes(permission))
   return (
     <CommunityBoard
       portfolio={portfolio}
       divisions={divisions}
-      canWrite={
-        permissions.includes("community.write") ||
-        permissions.includes("org.admin") ||
-        permissions.includes("*")
-      }
+      canWrite={holds("community.write")}
+      canReadLand={holds("land.read")}
       status={params.status}
     />
   )

@@ -84,7 +84,9 @@ async function build(kit) {
   kit.sql(`insert into public.project_selections(org_id, project_id, category_id, selected_option_id, status, price_cents_snapshot, cost_cents_snapshot)
     values(${q(org.orgId)}, ${q(homeOf("PK-05"))}, ${q(org.categoryIds.Structure)}, ${q(org.optionIds["ST-GAR"])}, 'confirmed', 1850000, 1100000)`)
   const current = (await kit.as(org.owner, () => sales.listSpecInventoryPage({ communityId: org.communityId, search: "PK-06", includeToBeBuilt: true }))).lots[0].askingPriceCents
-  await kit.as(org.owner, () => sales.setSpecAskingPrice({ lotId: byNumber["PK-06"], askingPriceCents: 41234500, expectedAskingPriceCents: current, reason: PRICE_REASON }))
+  // A move past the price band waits for a second person: the consultant proposes it and the owner approves.
+  const move = await kit.as(org.team.sales, () => sales.proposeSpecPriceChange({ kind: "price", lotId: byNumber["PK-06"], toCents: 41234500, expectedAskingPriceCents: current, reason: PRICE_REASON }))
+  if (move.status === "proposed") await kit.as(org.owner, () => sales.decideSpecPriceChange({ proposalId: move.proposalId, approve: true }))
 
   // A second division with a community and one lot, and consultants limited to each division.
   const divisionB = await kit.as(org.owner, () => divisions.createDivision({ name: "Atlantic", code: "AT", region: "Treasure Coast" }))

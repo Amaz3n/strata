@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 
 import { requireOrgMembership } from "@/lib/auth/context"
 import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
+import { assertLandFileReadable } from "@/lib/services/land-opportunities"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { convertDocxToPreviewHtml } from "@/lib/services/word-preview"
@@ -30,7 +31,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ fileId:
 
     const { data: file, error } = await svc
       .from("files")
-      .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata")
+      .select("id, org_id, project_id, land_opportunity_id, file_name, storage_path, mime_type, metadata")
       .eq("id", fileId)
       .maybeSingle()
 
@@ -53,6 +54,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ fileId:
           userId: context.user.id,
         })
       }
+      // A diligence document is walled like its land deal.
+      if (file.land_opportunity_id) await assertLandFileReadable(file.land_opportunity_id, file.org_id)
     } catch {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }

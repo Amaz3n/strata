@@ -49,7 +49,7 @@ export const gateDefinitionSchema = z.object({
   checkKind: z.enum(["auto", "manual"]),
   autoSource: z.enum([
     "selections_locked", "budget_generated", "pos_generated", "plan_pinned",
-    "plot_plan_file", "po_exceptions_clear",
+    "plot_plan_file", "po_exceptions_clear", "entitlements_clear",
   ]).optional().nullable(),
   requiresAttestationPermission: z.string().trim().max(100).optional().nullable(),
   appliesWhen: z.enum(["always", "financed_only", "purchasing_enabled"]).default("always"),

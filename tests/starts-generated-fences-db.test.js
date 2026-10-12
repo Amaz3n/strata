@@ -73,7 +73,7 @@ test("on the real schema a claimed release writes its own home's artifacts and n
   const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
   const home = await full.insert(db, "projects", { org_id: orgId, name: "Lot 7" })
   const otherHome = await full.insert(db, "projects", { org_id: orgId, name: "Lot 8" })
-  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "developed" })
+  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "assigned" })
   const pkg = await full.insert(db, "start_packages", { org_id: orgId, lot_id: lot.id, community_id: community.id, project_id: home.id, status: "releasing" })
   await full.insert(db, "outbox", { org_id: orgId, job_type: "start_release", payload: { start_package_id: pkg.id, actor_id: userId } })
   const [job] = await full.rpc(db, "claim_starts_jobs", { p_limit: 1 })

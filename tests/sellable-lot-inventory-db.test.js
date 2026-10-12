@@ -84,3 +84,22 @@ test("a price the manager set outranks the sheet", async (t) => {
   await db.query("update lots set asking_price_override_cents = $1 where id = $2", [412_340_00, lot.id])
   assert.equal(Number(await askingPrice(db, owner, lot.id)), 412_340_00)
 })
+
+test("a home ages from its Books completion, else from the completion sales recorded, and never from a future date", async (t) => {
+  const { db, owner, lot, project } = await specHome(t)
+  const agingDays = () =>
+    asRole(db, { role: "authenticated", userId: owner.userId }, async (tx) =>
+      (await tx.query("select aging_days from sellable_lot_inventory where lot_id = $1", [lot.id])).rows[0].aging_days,
+    )
+  assert.equal(await agingDays(), 0, "no recorded completion, no age")
+
+  await db.query("update projects set completed_on = current_date - 30 where id = $1", [project.id])
+  assert.equal(await agingDays(), 30)
+
+  await insert(db, "project_financial_settings", { org_id: owner.orgId, project_id: project.id, books_inventory_completed_on: new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10) })
+  assert.equal(await agingDays(), 45, "Books' date wins")
+
+  await db.query("update project_financial_settings set books_inventory_completed_on = null where project_id = $1", [project.id])
+  await db.query("update projects set completed_on = current_date + 3 where id = $1", [project.id])
+  assert.equal(await agingDays(), 0, "a completion that has not arrived does not start the clock")
+})

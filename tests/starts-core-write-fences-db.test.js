@@ -76,7 +76,7 @@ async function desk(t, { role = "org_starts_coordinator", status = "ready" } = {
   const { orgId, userId: actorId } = await full.seedMember(db, { role })
   const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
   const home = await full.insert(db, "projects", { org_id: orgId, name: "Lot 7" })
-  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "developed" })
+  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "assigned" })
   const pkg = await full.insert(db, "start_packages", { org_id: orgId, lot_id: lot.id, community_id: community.id, project_id: home.id, status })
   const h = { db, orgId, actorId, community, home, lot, pkg }
   const scope = { p_org_id: orgId, p_package_id: pkg.id, p_actor_id: actorId }
@@ -363,7 +363,7 @@ test("an open that fails leaves no orphaned home behind", async (t) => {
 test("a lot that already has a home keeps it and the prepared one is never built", async (t) => {
   const y = await yard(t)
   const existing = await full.insert(y.db, "projects", { org_id: y.orgId, name: "Lot 9" })
-  await y.db.query("update lots set project_id = $1 where id = $2", [existing.id, y.lot.id])
+  await y.db.query("update lots set project_id = $1, status = 'assigned' where id = $2", [existing.id, y.lot.id])
   const opened = await y.open()
   assert.equal(opened.project_id, existing.id)
   assert.equal(await y.count("select count(*)::int as n from projects where org_id = $1", [y.orgId]), 1)

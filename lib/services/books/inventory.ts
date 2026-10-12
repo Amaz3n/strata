@@ -133,11 +133,17 @@ export async function capitalizeInventoryInterest(input: z.input<typeof interest
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.interest_capitalized", entityType: "project", entityId: parsed.projectId, payload: { journal_entry_id: id } })
   return { id }
 }
-export async function getInventoryAllocationWorkspace() {
+/**
+ * What a development allocation from this job can reach: acquired, unstarted
+ * lots in the phases the job develops (the database refuses any other), plus
+ * the interest and pending proposals the workspace shows.
+ */
+export async function getInventoryAllocationWorkspace(projectId: string) {
+  const parsedProjectId = z.string().uuid().parse(projectId)
   const context = await inventoryContext("books.adjust")
   const service = createServiceSupabaseClient()
   const [lots, interest] = await Promise.all([
-    collectBooksRows((from,to) => service.from("lots").select("id,lot_number").eq("org_id",context.orgId).in("status",["owned","developed","assigned"]).not("books_acquisition_entry_id","is",null).order("id").range(from,to)),
+    collectBooksRows((from,to) => service.from("lots").select("id,lot_number,phase:community_phases!inner(development_project_id)").eq("org_id",context.orgId).eq("phase.development_project_id",parsedProjectId).in("status",["owned","developed","assigned"]).not("books_acquisition_entry_id","is",null).order("id").range(from,to)),
     collectBooksRows((from,to) => service.from("journal_lines").select("id,debit_cents,description,entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date,status),account:gl_accounts!journal_lines_account_owner_fk!inner(subtype)").eq("org_id",context.orgId).eq("entry.status","posted").eq("account.subtype","interest").gt("debit_cents",0).order("id").range(from,to)),
   ])
   const { data: proposals, error: proposalError } = await service.from("books_development_allocations").select("id,project_id,reference,basis,total_cents,shares,note,prepared_by,prepared_at").eq("org_id", context.orgId).eq("status", "proposed").order("prepared_at").limit(100)
