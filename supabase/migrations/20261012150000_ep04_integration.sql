@@ -327,3 +327,46 @@ end;
 $$;
 revoke all on function public.allocate_books_development_cost(uuid,uuid,date,jsonb,text,text,uuid) from public,anon,authenticated;
 grant execute on function public.allocate_books_development_cost(uuid,uuid,date,jsonb,text,text,uuid) to service_role;
+
+-- ---------------------------------------------------------------------------
+-- An owned lot under an authorized delivery exception can open a start
+-- package (LAND-01): the service rule (verticalStartRefusal) and the RPC agree.
+-- ---------------------------------------------------------------------------
+create or replace function public.open_start_package(p_org_id uuid,p_actor_id uuid,p_lot_id uuid,p_is_financed boolean,p_target_week date,p_home jsonb)
+returns jsonb language plpgsql set search_path=public,pg_catalog as $$
+declare v_lot public.lots%rowtype; v_scope public.start_packages%rowtype; v_actor public.outbox%rowtype;
+  v_pkg public.start_packages%rowtype; v_home uuid; v_created boolean:=false;
+begin
+  perform public.assert_starts_desk_caller();
+  if p_org_id is null or p_actor_id is null or p_lot_id is null or p_is_financed is null then raise exception 'Invalid start package request'; end if;
+  select * into v_lot from public.lots where org_id=p_org_id and id=p_lot_id for update;
+  if not found then raise exception 'Lot not found' using errcode='42501'; end if;
+  -- Delivering land is what makes a lot developed, so owned land enters only
+  -- under an authorized delivery exception (lot_delivery_exceptions).
+  if v_lot.status not in ('developed','assigned') and not (v_lot.status='owned' and exists(
+    select 1 from public.lot_delivery_exceptions e where e.org_id=p_org_id and e.lot_id=p_lot_id and e.revoked_at is null)) then
+    raise exception 'Only developed or assigned lots, or owned lots with a delivery exception, can enter the start pipeline.'; end if;
+  if exists(select 1 from public.start_packages where lot_id=p_lot_id and status<>'cancelled') then
+    raise exception 'This lot already has an active start package.' using errcode='23505'; end if;
+  v_scope.org_id:=p_org_id; v_scope.lot_id:=v_lot.id; v_scope.community_id:=v_lot.community_id; v_scope.project_id:=v_lot.project_id;
+  v_actor.org_id:=p_org_id; v_actor.job_type:='start_release'; v_actor.payload:=jsonb_build_object('actor_id',p_actor_id);
+  perform public.assert_starts_actor_permission(v_actor,v_scope,'start.write');
+  v_home:=v_lot.project_id;
+  if v_home is null then
+    perform public.assert_starts_actor_permission(v_actor,v_scope,'project.manage');
+    v_home:=public.create_start_home(p_org_id,p_actor_id,v_lot,p_home);
+    perform public.link_start_home(p_org_id,p_actor_id,v_lot,v_home);
+    v_created:=true;
+  end if;
+  insert into public.start_packages(org_id,lot_id,community_id,project_id,is_financed,target_week)
+    values(p_org_id,v_lot.id,v_lot.community_id,v_home,p_is_financed,p_target_week) returning * into v_pkg;
+  insert into public.start_package_gates(org_id,start_package_id,gate_definition_id)
+    select p_org_id,v_pkg.id,d.id from public.start_gate_definitions d where d.org_id=p_org_id and d.is_active order by d.id;
+  insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source)
+    values(p_org_id,p_actor_id,'insert','start_package',v_pkg.id,to_jsonb(v_pkg),'starts.package_opened');
+  insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel)
+    values(p_org_id,'start_package.opened','start_package',v_pkg.id,jsonb_build_object('lot_id',v_lot.id,'community_id',v_lot.community_id,
+      'project_id',v_home,'created_home',v_created,'actor_id',p_actor_id),'activity');
+  insert into public.outbox(org_id,job_type,payload) values(p_org_id,'reindex_search',jsonb_build_object('entity_type','start_package','entity_id',v_pkg.id));
+  return jsonb_build_object('start_package_id',v_pkg.id,'project_id',v_home,'created_home',v_created);
+end $$;

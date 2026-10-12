@@ -310,6 +310,18 @@ async function yard(t, { role = "org_starts_coordinator" } = {}) {
   return { db, orgId, actorId, community, lot, count, open }
 }
 
+test("owned land opens a package only under a live delivery exception", async (t) => {
+  const y = await yard(t)
+  await y.db.query("update lots set status = 'owned', delivered_at = null where id = $1", [y.lot.id])
+  await assert.rejects(y.open(), /owned lots with a delivery exception/)
+
+  await full.insert(y.db, "lot_delivery_exceptions", { org_id: y.orgId, lot_id: y.lot.id, reason: "Pad is graded; the plat records next week.", approved_by: y.actorId })
+  const opened = await y.open()
+
+  assert.equal(await y.count("select count(*)::int as n from start_packages where id = $1", [opened.start_package_id]), 1)
+  assert.equal((await y.db.query("select project_id from lots where id = $1", [y.lot.id])).rows[0].project_id, opened.project_id)
+})
+
 test("opening a lot creates its home, links it and opens the package with every active gate at once", async (t) => {
   const y = await yard(t)
   const home = preparedHome(y.orgId, y.actorId)
