@@ -134,6 +134,16 @@ test('atomic sale reserves incentive capacity, rolls it back on audit failure, a
  assert.equal((await f.create({probe:true,request})).rows[0].receipt.contract.id,saved.contract.id)
  assert.equal((await f.db.query('select used_count::int n from agreement_incentive_capacity')).rows[0].n,1)
 })
+test("a home's own price line is not a community incentive and claims no incentive capacity",async t=>{
+ const f=await database(t),disposition=id(71)
+ const revision=(await f.db.query('select revision::text revision from agreement_catalog_revisions where org_id=$1',[f.org])).rows[0].revision
+ const expected={...f.expected,catalog_revision:revision},snapshot=structuredClone(f.snapshot)
+ Object.assign(snapshot.purchase_agreement.pricing,{catalogRevision:revision,totalCents:28000000,incentives:[],incentivesCents:0,homeAdjustmentsCents:-2000000,
+  homeAdjustments:[{kind:'disposition',sourceId:disposition,label:'Investor sale price (approved disposition)',amountCents:-2000000}]})
+ const saved=(await f.create({expected,snapshot})).rows[0].receipt
+ assert.equal(saved.created,true);assert.equal(Number(saved.contract.total_cents),28000000)
+ assert.equal((await f.db.query('select count(*)::int n from agreement_incentive_capacity where used_count>0')).rows[0].n,0)
+})
 test('only a live reservation can create an agreement: a hold, an expired hold or a released reservation cannot',async t=>{
  const f=await database(t)
  for(const sql of ["update lot_reservations set status='hold',expires_at=now()+interval '1 day'","update lot_reservations set status='hold',expires_at=now()-interval '1 day'","update lot_reservations set status='expired',expires_at=null","update lot_reservations set status='released',expires_at=null"]){

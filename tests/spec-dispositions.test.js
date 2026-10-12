@@ -69,7 +69,8 @@ function harness({ permissions = ["sales.manage"], userId = ACTOR, carryingCents
 /** An agreement priced through the disposition: its snapshot names the disposition and its kind. */
 const agreement = (patch = {}) => ({
   id: AGREEMENT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "draft", buyer_contact_id: BUYER, total_cents: 300_000_00,
-  snapshot: { purchase_agreement: { pricing: { totalCents: 300_000_00, disposition: { id: DISPOSITION, kind: "bulk_sale" } } } },
+  snapshot: { purchase_agreement: { incentive_ids: [], pricing: { totalCents: 300_000_00, incentives: [], disposition: { id: DISPOSITION, kind: "bulk_sale" },
+    homeAdjustments: [{ kind: "disposition", sourceId: DISPOSITION, label: "Bulk sale price (approved disposition)", amountCents: -110_000_00 }], homeAdjustmentsCents: -110_000_00 } } },
   ...patch,
 })
 

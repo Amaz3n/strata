@@ -16,16 +16,45 @@ export type PurchaseAgreementIncentive = {
   percent?: number | null
 }
 
+export const HOME_PRICE_ADJUSTMENT_KINDS = ["disposition", "home_incentive"] as const
+export type HomePriceAdjustmentKind = (typeof HOME_PRICE_ADJUSTMENT_KINDS)[number]
+
+/**
+ * A line that belongs to the home rather than to the community: the gap to an
+ * approved disposition's price, or the home's own incentive from an approved
+ * spec price move. It is not a community incentive — it consumes no incentive
+ * capacity and its `sourceId` is the disposition or price proposal, never an
+ * `incentives` row. Signed the buyer's way: a concession is negative.
+ */
+export type HomePriceAdjustment = {
+  kind: HomePriceAdjustmentKind
+  sourceId: string
+  label: string
+  amountCents: number
+}
+
 export type PurchaseAgreementPricing = {
   basePriceCents: number
   lotPremiumCents: number
   structuralOptions: PurchaseAgreementPricedItem[]
   designSelections: PurchaseAgreementPricedItem[]
   incentives: Array<PurchaseAgreementIncentive & { valueCents: number }>
+  /** Absent on agreements priced before home lines were separated; read through `homePriceAdjustments()`. */
+  homeAdjustments?: HomePriceAdjustment[]
   structuralOptionsCents: number
   designSelectionsCents: number
   incentivesCents: number
+  /** Absent with `homeAdjustments`; read through `homePriceAdjustmentsCents()`. */
+  homeAdjustmentsCents?: number
   totalCents: number
+}
+
+export function homePriceAdjustments(pricing: Pick<PurchaseAgreementPricing, "homeAdjustments">): HomePriceAdjustment[] {
+  return pricing.homeAdjustments ?? []
+}
+
+export function homePriceAdjustmentsCents(pricing: Pick<PurchaseAgreementPricing, "homeAdjustmentsCents">): number {
+  return pricing.homeAdjustmentsCents ?? 0
 }
 
 export type SettlementDeposit = {
@@ -134,6 +163,7 @@ export function composePurchaseAgreementPricing(input: {
   structuralOptions?: PurchaseAgreementPricedItem[]
   designSelections?: PurchaseAgreementPricedItem[]
   incentives?: PurchaseAgreementIncentive[]
+  homeAdjustments?: HomePriceAdjustment[]
 }): PurchaseAgreementPricing {
   const structuralOptions = input.structuralOptions ?? []
   const designSelections = input.designSelections ?? []
@@ -144,21 +174,26 @@ export function composePurchaseAgreementPricing(input: {
     valueCents: calculateIncentiveValue(incentive, input.basePriceCents, designSelectionsCents),
   }))
   const incentivesCents = incentives.reduce((sum, incentive) => sum + incentive.valueCents, 0)
+  const homeAdjustments = input.homeAdjustments ?? []
+  const homeAdjustmentsCents = homeAdjustments.reduce((sum, adjustment) => sum + adjustment.amountCents, 0)
   return {
     basePriceCents: Math.round(input.basePriceCents),
     lotPremiumCents: Math.round(input.lotPremiumCents),
     structuralOptions,
     designSelections,
     incentives,
+    homeAdjustments,
     structuralOptionsCents,
     designSelectionsCents,
     incentivesCents,
+    homeAdjustmentsCents,
     totalCents:
       Math.round(input.basePriceCents) +
       Math.round(input.lotPremiumCents) +
       structuralOptionsCents +
       designSelectionsCents -
-      incentivesCents,
+      incentivesCents +
+      homeAdjustmentsCents,
   }
 }
 
@@ -251,6 +286,7 @@ export function buildSettlementStatementLines(input: SettlementStatementInput): 
     ...input.pricing.structuralOptions.map((item) => ({ description: `Structural option — ${item.label}`, amountCents: item.priceCents })),
     ...input.pricing.designSelections.map((item) => ({ description: `Design selection — ${item.label}`, amountCents: item.priceCents })),
     ...input.pricing.incentives.map((item) => ({ description: `Incentive — ${item.name}`, amountCents: -item.valueCents })),
+    ...homePriceAdjustments(input.pricing).map((item) => ({ description: item.label, amountCents: item.amountCents })),
   ].filter((line) => line.amountCents !== 0)
   const changeOrders = input.approvedChangeOrders
     .map((changeOrder) => ({

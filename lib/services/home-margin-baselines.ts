@@ -10,6 +10,7 @@ import {
   type HomeMarginBaselineStage,
 } from "@/lib/financials/home-margin-baseline"
 import type { PlanTakeoffPricingLine } from "@/lib/financials/plan-pricing"
+import { homePriceAdjustmentsCents } from "@/lib/financials/purchase-agreement-pricing"
 import type { PriceAgreementCandidate } from "@/lib/financials/price-resolution"
 import { readAllRowsById } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
@@ -37,6 +38,8 @@ const agreementPricingSchema = z.object({
   structuralOptionsCents: z.number().int(),
   designSelectionsCents: z.number().int(),
   incentivesCents: z.number().int(),
+  /** The home's own price lines (disposition gap, home incentive), signed the buyer's way; absent on older agreements. */
+  homeAdjustmentsCents: z.number().int().optional(),
   /** The catalog revision the quote was priced against: a bigint, carried as digits. */
   catalogRevision: z.string().regex(/^[1-9][0-9]{0,18}$/).nullable().optional(),
 })
@@ -337,7 +340,8 @@ export async function captureHomeMarginBaseline(input: {
     contract_id: contract?.id ?? null,
     stage,
     sale_price_cents: salePriceCents,
-    incentives_cents: pricing ? pricing.incentivesCents : contract ? null : 0,
+    // Every concession off the sheet price: the community's incentives and the home's own lines.
+    incentives_cents: pricing ? pricing.incentivesCents - homePriceAdjustmentsCents(pricing) : contract ? null : 0,
     lot_premium_cents: pricing?.lotPremiumCents ?? null,
     options_price_cents: pricing ? pricing.structuralOptionsCents + pricing.designSelectionsCents : null,
     base_cost_cents: figures.baseCostCents,
@@ -348,6 +352,7 @@ export async function captureHomeMarginBaseline(input: {
     catalog_revision: pricing?.catalogRevision ?? null,
     basis: {
       sale_price_source: contract ? "purchase_agreement" : "asking_price",
+      home_adjustments_cents: pricing ? homePriceAdjustmentsCents(pricing) : null,
       cost_source: budget ? "budget" : estimate?.costCents != null ? "takeoff_estimate" : null,
       takeoff_estimate: estimate?.basis ?? null,
       budget_id: budget?.id ?? null,

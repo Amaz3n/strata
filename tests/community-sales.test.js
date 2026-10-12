@@ -835,7 +835,7 @@ describe("a home under an approved sell-off belongs to the disposition's buyer",
   const DISPOSITION = id(66)
   const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString()
 
-  function harness({ reservations = [], disposition = {} } = {}) {
+  function harness({ reservations = [], disposition = {}, dispositions, proposals = [] } = {}) {
     return createServiceHarness({
       permissions: ["sales.manage", "sales.read"],
       projects: [HOME],
@@ -847,8 +847,8 @@ describe("a home under an approved sell-off belongs to the disposition's buyer",
         community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, effective_start: null, effective_end: null, base_price_cents: 320_000_00 }],
         lot_reservations: reservations,
         contracts: [],
-        spec_price_proposals: [],
-        spec_dispositions: [{ id: DISPOSITION, org_id: ORG, lot_id: LOT, project_id: HOME, community_id: COMMUNITY, kind: "investor_sale", status: "approved", counterparty_contact_id: INVESTOR, price_cents: 300_000_00, carrying_cents: 0, impairment_id: null, ...disposition }],
+        spec_price_proposals: proposals,
+        spec_dispositions: dispositions ?? [{ id: DISPOSITION, org_id: ORG, lot_id: LOT, project_id: HOME, community_id: COMMUNITY, kind: "investor_sale", status: "approved", counterparty_contact_id: INVESTOR, price_cents: 300_000_00, carrying_cents: 0, impairment_id: null, ...disposition }],
       },
     })
   }
@@ -875,5 +875,22 @@ describe("a home under an approved sell-off belongs to the disposition's buyer",
     const priced = await quote(harness({ reservations: [live(INVESTOR)] }))
     assert.equal(priced.totalCents, 300_000_00)
     assert.deepEqual(priced.disposition, { id: DISPOSITION, kind: "investor_sale" })
+    // The sale-off is the home's own line; the database counts every `incentives` id against community capacity.
+    assert.deepEqual(priced.incentives, [])
+    assert.deepEqual(priced.homeAdjustments, [{ kind: "disposition", sourceId: DISPOSITION, label: "Investor sale price (approved disposition)", amountCents: -20_000_00 }])
+    assert.equal(priced.homeAdjustmentsCents, -20_000_00)
+  })
+
+  test("a spec home's own incentive comes off the price without posing as a community incentive", async () => {
+    const PROPOSAL = id(68)
+    const priced = await quote(harness({ dispositions: [], proposals: [{
+      id: PROPOSAL, org_id: ORG, lot_id: LOT, project_id: HOME, community_id: COMMUNITY, kind: "incentive", status: "applied", asking_price_cents: 320_000_00,
+      from_cents: 0, to_cents: 7_500_00, incentive_expires_on: null, required_permission: "sales.manage", proposed_by: ACTOR, proposed_at: "2026-10-01T00:00:00Z", decided_at: null,
+    }] }))
+    assert.deepEqual(priced.incentives, [])
+    assert.equal(priced.incentivesCents, 0)
+    assert.deepEqual(priced.homeAdjustments, [{ kind: "home_incentive", sourceId: PROPOSAL, label: "Home incentive", amountCents: -7_500_00 }])
+    assert.equal(priced.totalCents, 312_500_00)
+    assert.equal(priced.disposition, null)
   })
 })

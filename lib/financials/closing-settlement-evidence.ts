@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { buildPurchaseAgreementSettlement, buildClosingInvoiceLines, closingInvoiceLinesTotalCents } from "@/lib/financials/purchase-agreement-pricing"
+import { HOME_PRICE_ADJUSTMENT_KINDS, buildPurchaseAgreementSettlement, buildClosingInvoiceLines, closingInvoiceLinesTotalCents } from "@/lib/financials/purchase-agreement-pricing"
 
 // Evidence is verified, never rewritten: every object keeps the keys it was
 // recorded with. The settlement and its closing invoice are compared by digest,
@@ -10,7 +10,8 @@ const cents = z.number().int().safe()
 const pricedItem = z.object({ optionId: z.string().optional(), packageId: z.string().optional(), category: z.string().nullable().optional(), label: z.string(), priceCents: cents, source: z.string() }).passthrough()
 const pricing = z.object({ basePriceCents: cents, lotPremiumCents: cents, structuralOptions: z.array(pricedItem), designSelections: z.array(pricedItem),
   incentives: z.array(z.object({ incentiveId: z.string(), name: z.string(), incentiveType: z.enum(["fixed_amount", "percent_of_base"]), appliesTo: z.enum(["price", "design_credit"]), amountCents: cents.nullable().optional(), percent: z.number().finite().nullable().optional(), valueCents: cents }).passthrough()),
-  structuralOptionsCents: cents, designSelectionsCents: cents, incentivesCents: cents, totalCents: cents }).passthrough()
+  homeAdjustments: z.array(z.object({ kind: z.enum(HOME_PRICE_ADJUSTMENT_KINDS), sourceId: z.string(), label: z.string(), amountCents: cents }).passthrough()).optional(),
+  structuralOptionsCents: cents, designSelectionsCents: cents, incentivesCents: cents, homeAdjustmentsCents: cents.optional(), totalCents: cents }).passthrough()
 const schema = z.object({ builtAt: z.string().datetime(), contractId: z.string().uuid(), agreementEvidenceDigest: z.string().regex(/^[a-f0-9]{64}$/),
   agreement: z.object({ id: z.string().uuid(), number: z.string().nullable(), signed_at: z.string().nullable() }).passthrough(), pricing,
   changeOrders: z.array(z.object({ id: z.string().uuid(), title: z.string().nullable().optional(), total_cents: cents, metadata: z.record(z.string(), z.unknown()).nullable().optional() }).passthrough()),

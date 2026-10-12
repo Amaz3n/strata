@@ -9,7 +9,7 @@ import { agreementQuoteFingerprint, AgreementQuoteChangedError } from "@/lib/sal
 import { agreementStructuralSelections, assertOneStructuralOptionPerCategory } from "@/lib/sales/agreement-selections"
 import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
-import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementIncentive, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
+import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, homePriceAdjustments, type HomePriceAdjustment, type PurchaseAgreementIncentive, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
 import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -1469,17 +1469,19 @@ export async function endIncentive(id: string, orgId?: string) {
  * sale at the approved figure (the line is the gap from what the sheet asks) for
  * its own buyer only; it refuses while a below-cost write-down is still
  * unapproved. Otherwise the home's incentive in force comes off the price.
+ * These are the home's, not the community's: they never enter `incentives`,
+ * whose every id is an `incentives` row the database counts against capacity.
  */
-function specHomePriceLines(terms: SpecHomeTerms | null, totalBeforeCents: number): PurchaseAgreementIncentive[] {
+function specHomePriceLines(terms: SpecHomeTerms | null, totalBeforeCents: number): HomePriceAdjustment[] {
   if (!terms) return []
   const disposition = terms.disposition
   if (disposition?.status === "approved") {
     if (disposition.blockedReason) throw new Error(disposition.blockedReason)
-    const name = disposition.kind === "bulk_sale" ? "Bulk sale price (approved disposition)" : "Investor sale price (approved disposition)"
-    return [{ incentiveId: disposition.id, name, incentiveType: "fixed_amount", appliesTo: "price", amountCents: Math.max(0, totalBeforeCents - disposition.priceCents) }]
+    const label = disposition.kind === "bulk_sale" ? "Bulk sale price (approved disposition)" : "Investor sale price (approved disposition)"
+    return [{ kind: "disposition", sourceId: disposition.id, label, amountCents: disposition.priceCents - totalBeforeCents }]
   }
   if (terms.incentiveCents > 0 && terms.incentiveId) {
-    return [{ incentiveId: terms.incentiveId, name: "Home incentive", incentiveType: "fixed_amount", appliesTo: "price", amountCents: terms.incentiveCents }]
+    return [{ kind: "home_incentive", sourceId: terms.incentiveId, label: "Home incentive", amountCents: -terms.incentiveCents }]
   }
   return []
 }
@@ -1573,7 +1575,7 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   })
   const pricingBasis = { basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural") }
   const communityIncentives: PurchaseAgreementIncentive[] = requestedIncentives.map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent }))
-  const pricing = composePurchaseAgreementPricing({ ...pricingBasis, incentives: [...communityIncentives, ...specHomePriceLines(homeTerms, composePurchaseAgreementPricing({ ...pricingBasis, incentives: communityIncentives }).totalCents)] })
+  const pricing = composePurchaseAgreementPricing({ ...pricingBasis, incentives: communityIncentives, homeAdjustments: specHomePriceLines(homeTerms, composePurchaseAgreementPricing({ ...pricingBasis, incentives: communityIncentives }).totalCents) })
   const choicePrices = parsed.optionItems.map((choice, index) => {
     const item = resolved[index]
     if (!item) throw new Error("Configured choices could not be fully priced")
@@ -1920,6 +1922,7 @@ export async function generatePurchaseAgreementSigningDocument(contractId: strin
     ...pricing.structuralOptions.map((item) => ({ description: item.label, quantity: 1, unit: "option", unit_cost_cents: item.priceCents, markup_pct: 0 })),
     ...pricing.designSelections.map((item) => ({ description: item.label, quantity: 1, unit: "selection", unit_cost_cents: item.priceCents, markup_pct: 0 })),
     ...pricing.incentives.map((item) => ({ description: `Incentive — ${item.name}`, quantity: 1, unit: "credit", unit_cost_cents: -item.valueCents, markup_pct: 0 })),
+    ...homePriceAdjustments(pricing).map((item) => ({ description: item.label, quantity: 1, unit: "agreement", unit_cost_cents: item.amountCents, markup_pct: 0 })),
   ]
   const branding = await getOrgBranding(context.orgId, context.supabase)
   const pdf = await renderProposalPdf({ orgName: branding.name, orgLogoUrl: branding.logoUrl, orgAddress: branding.address, proposalTitle: contract.title, proposalNumber: contract.number, recipientName: buyer.full_name, recipientEmail: buyer.email, projectName: project?.name ?? null, summary: "New home purchase agreement", terms: contract.terms ?? null, subtotalCents: pricing.totalCents, taxCents: 0, totalCents: pricing.totalCents, validUntil: null, signers: [{ role: "Buyer", name: buyer.full_name }, ...(coBuyer ? [{ role: "Co-buyer", name: coBuyer.full_name }] : []), { role: branding.name ?? "Builder", name: builder.full_name }], lines })

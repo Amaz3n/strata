@@ -5,7 +5,7 @@ import { BAND_X } from "@/components/overview/primitives"
 import { DealPeople } from "@/components/sales/deal-people"
 import { DealAttentionBlock } from "@/components/sales/overview/deal-overview-attention"
 import { Fact, MetaBlock, Note } from "@/components/sales/overview/meta-block"
-import type { PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
+import { homePriceAdjustments, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { formatDealDate } from "@/lib/sales/dates"
 import type { DealAttentionItem } from "@/lib/sales/deal-attention"
 import { daysUntil } from "@/lib/sales/next-action"
@@ -132,6 +132,14 @@ export function DealOverviewMeta({
                 positive
               />
             ) : null}
+            {homePriceAdjustments(pricing).map((line) => (
+              <Fact
+                key={`${line.kind}:${line.sourceId}`}
+                label={line.label}
+                value={line.amountCents < 0 ? `−${formatMoneyCents(-line.amountCents)}` : `+${formatMoneyCents(line.amountCents)}`}
+                positive={line.amountCents < 0}
+              />
+            ))}
             {/* The total is the last line in the block, the way a total is. */}
             <Fact label="Contract price" value={formatMoneyCents(pricing.totalCents)} emphasis />
             {optionsCents > 0 ? (

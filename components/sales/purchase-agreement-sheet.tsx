@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { unwrapAction } from "@/lib/action-result"
+import { homePriceAdjustments } from "@/lib/financials/purchase-agreement-pricing"
 import type {
   AgreementCatalogItem,
   AgreementDraftContext,
@@ -441,6 +442,7 @@ function PriceSummary({ pricing }: { pricing: AgreementDraftPricing }) {
         {pricing.lotPremiumCents > 0 ? ` · premium ${formatMoneyCents(pricing.lotPremiumCents)}` : ""}
         {options > 0 ? ` · options ${formatMoneyCents(options)}` : ""}
         {pricing.incentivesCents > 0 ? ` · incentives −${formatMoneyCents(pricing.incentivesCents)}` : ""}
+        {homePriceAdjustments(pricing).map((line) => ` · ${line.label.toLowerCase()} ${line.amountCents < 0 ? "−" : "+"}${formatMoneyCents(Math.abs(line.amountCents))}`).join("")}
       </p>
     </div>
   )

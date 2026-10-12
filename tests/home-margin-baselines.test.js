@@ -78,6 +78,18 @@ test("release locks the sale price against the instantiated budget and the optio
   assert.equal(service.audits.length, 1)
 })
 
+test("a home's own incentive counts as a concession on its baseline and stays separable", async () => {
+  const pricing = { ...signedPricing, homeAdjustments: [{ kind: "home_incentive", sourceId: id(7), label: "Home incentive", amountCents: -5_000_00 }], homeAdjustmentsCents: -5_000_00, totalCents: 460_000_00 }
+  const service = home({ budgets: [releasedBudget], contracts: [{
+    id: AGREEMENT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "active",
+    signed_at: "2026-09-01T00:00:00Z", total_cents: 460_000_00, snapshot: { purchase_agreement: { pricing } },
+  }] })
+  const baseline = await service.run(() => captureHomeMarginBaseline({ orgId: ORG, projectId: HOME, stage: "release", actorId: ACTOR }))
+  assert.equal(baseline.salePriceCents, 460_000_00)
+  assert.equal(baseline.incentivesCents, 15_000_00)
+  assert.equal(service.db.home_margin_baselines[0].basis.home_adjustments_cents, -5_000_00)
+})
+
 test("a later repricing of the catalog, the budget or a selection does not move a captured baseline", async () => {
   const service = home({ budgets: [releasedBudget] })
   const captured = await service.run(() => captureHomeMarginBaseline({ orgId: ORG, projectId: HOME, stage: "release", actorId: ACTOR }))
