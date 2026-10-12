@@ -12,6 +12,8 @@
 //   departure-cancels-queued-authority        EP02-03
 //   enterer-cannot-approve-own-bill           EP02-05
 //   lost-audit-is-never-a-clean-success       EP02-06
+//   audit-evidence-is-append-only             EP02-07  no role can change, delete or empty the evidence
+//   audit-export-is-complete-scoped-and-sealed EP02-07 an auditor's file holds every row of this org only
 //
 // Support access (EP02-08) is a browser journey: journeys/support-access.spec.ts.
 //
@@ -403,6 +405,75 @@ create trigger ${fault} before insert on public.audit_log for each row execute f
   return { orgId: org.orgId, commitmentId: order.id }
 }
 
+// ---------------------------------------------------------------------------
+// 8. EP02-07: the audit evidence cannot be changed or removed, not even by the stack superuser.
+
+async function auditEvidenceIsAppendOnly(kit, expected, check) {
+  const { org } = await world(kit)
+  const { q } = kit
+  const change = kit.rows(`select id from public.audit_log where org_id=${q(org.orgId)} order by created_at limit 1`)[0].id
+  const access = kit.rows(`select id from public.authorization_audit_log where org_id=${q(org.orgId)} order by occurred_at limit 1`)[0].id
+  // As postgres, the most privileged role an application path could use.
+  const tried = (sql) => { try { kit.sql(sql); return "allowed" } catch (error) { return /append-only/.test(error.message) ? "refused: append-only" : error.message.slice(0, 120) } }
+  const observed = {
+    editChange: tried(`update public.audit_log set action='delete' where id=${q(change)}`),
+    deleteChange: tried(`delete from public.audit_log where id=${q(change)}`),
+    editAccessDecision: tried(`update public.authorization_audit_log set decision='allow' where id=${q(access)}`),
+    deleteAccessDecision: tried(`delete from public.authorization_audit_log where id=${q(access)}`),
+    emptyChanges: tried("begin; truncate public.audit_log cascade; rollback;"),
+    emptyAccessDecisions: tried("begin; truncate public.authorization_audit_log cascade; rollback;"),
+    bothRowsStillThere: kit.rows(`select (select count(*) from public.audit_log where id=${q(change)})::int + (select count(*) from public.authorization_audit_log where id=${q(access)})::int n`)[0].n,
+  }
+  check.equal("no update, delete or truncate of the change log or the access-decision log is allowed, even as the database owner; the rows are unchanged", expected.expected, observed)
+  return { orgId: org.orgId, auditRow: change, accessRow: access }
+}
+
+// ---------------------------------------------------------------------------
+// 9. EP02-07: an auditor exports every row of this organization, and only those, sealed.
+
+async function auditExportIsCompleteScopedAndSealed(kit, expected, check) {
+  const { org, foreign, gulf } = await world(kit)
+  const { q } = kit
+  const exporter = () => app("audit-export")
+  const format = require("../../../lib/audit/export-format")
+  // The range closes before the export runs, so the export's own audit row (and any
+  // other write during it) falls outside it and the expected count is fixed.
+  const from = kit.rows(`select (min(created_at) - interval '1 minute') at from public.audit_log where org_id=${q(org.orgId)}`)[0].at
+  // Another builder's evidence inside the same range (fixture): it must never appear.
+  kit.sql(`insert into public.audit_log(org_id, action, entity_type, entity_id, after_data, created_at) values(${q(foreign.orgId)}, 'insert', 'project', gen_random_uuid(), '{"name":"Not yours"}', now() - interval '1 second')`)
+  const to = kit.rows("select now() at")[0].at
+  const expectedIds = kit.rows(`select id from public.audit_log where org_id=${q(org.orgId)} and created_at >= ${q(from)}::timestamptz and created_at < ${q(to)}::timestamptz`).map((row) => String(row.id)).sort()
+  const file = await kit.as(org.owner, () => exporter().exportOrgAuditEvidence({ source: "changes", from, to }))
+  const verified = format.verifyAuditExport(file.csv)
+  const records = file.csv.split("\n").slice(4).filter(Boolean)
+  const exportedIds = records.map((line) => line.split(",")[0].replace(/^"|"$/g, "")).sort()
+  const foreignIds = kit.rows(`select id from public.audit_log where org_id=${q(foreign.orgId)}`).map((row) => String(row.id))
+  // Change one character of one row: the seal must break.
+  const lines = file.csv.split("\n")
+  lines[4] = lines[4].replace(/^("?)([0-9a-f])/, (_, quote, first) => `${quote}${first === "0" ? "1" : "0"}`)
+  const tampered = lines.join("\n")
+  const orgIdsIn = (csv) => [...new Set(csv.split("\n").slice(4).filter(Boolean).map((line) => line.split(",")[2].replace(/^"|"$/g, "")))]
+  const superintendent = org.team.superintendent
+  const limitedAuditor = await limitedMember(kit, org, "org_land_manager", [gulf.divisionId])
+  // audit.read for a division-limited member is a direct grant (fixture): no stock limited role carries it.
+  kit.sql(`insert into public.membership_permission_overrides(membership_id,permission_key,effect) values(${q(limitedAuditor.membershipId)},'audit.read','grant')`)
+  const exportsRecorded = kit.rows(`select count(*)::int n from public.audit_log where org_id=${q(org.orgId)} and entity_type='audit_export' and actor_user_id=${q(org.owner.userId)} and after_data->>'digest'=${q(file.digest)}`)[0].n
+  const observed = {
+    rowsMatchTheDatabase: file.manifest.row_count === expectedIds.length && expectedIds.length > 0,
+    everyRowOfTheRange: JSON.stringify(exportedIds) === JSON.stringify(expectedIds),
+    anotherBuildersRows: exportedIds.filter((id) => foreignIds.includes(id)).length,
+    sealVerifies: verified.valid,
+    tamperedSealVerifies: format.verifyAuditExport(tampered).valid,
+    exportRecorded: exportsRecorded,
+    withoutAuditRead: await attempt(() => kit.as(superintendent, () => exporter().exportOrgAuditEvidence({ source: "changes", from, to }))),
+    divisionLimitedAuditor: await attempt(() => kit.as(limitedAuditor, () => exporter().exportOrgAuditEvidence({ source: "changes", from, to }))),
+    anotherBuildersOwnerSees: orgIdsIn((await kit.as(foreign.owner, () => exporter().exportOrgAuditEvidence({ source: "changes", from, to }))).csv)
+      .map((orgId) => (orgId === foreign.orgId ? "their own organization" : orgId === org.orgId ? "this organization" : orgId)),
+  }
+  check.equal("the owner's export of the change log holds exactly this organization's rows in the range and no other builder's, its seal verifies and breaks when one cell changes, the export is recorded; a member without audit.read and a division-limited auditor are refused; another builder's owner exports only their own rows", expected.expected, observed)
+  return { orgId: org.orgId, digest: file.digest, rows: file.manifest.row_count }
+}
+
 module.exports = {
   id: "SEC-01",
   subcases: {
@@ -413,5 +484,7 @@ module.exports = {
     "departure-cancels-queued-authority": departureCancelsQueuedAuthority,
     "enterer-cannot-approve-own-bill": entererCannotApproveOwnBill,
     "lost-audit-is-never-a-clean-success": lostAuditIsNeverACleanSuccess,
+    "audit-evidence-is-append-only": auditEvidenceIsAppendOnly,
+    "audit-export-is-complete-scoped-and-sealed": auditExportIsCompleteScopedAndSealed,
   },
 }
