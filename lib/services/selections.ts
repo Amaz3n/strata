@@ -7,6 +7,7 @@ import { recordEvent } from "@/lib/services/events"
 import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
 import { allocatePackageTotal, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { requirePermission } from "@/lib/services/permissions"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createVarianceOrdersForSelectionChange } from "@/lib/services/selection-change-orders"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
@@ -412,7 +413,17 @@ export async function selectProjectPackage(input: {
 
 export async function createProjectSelection({ input, orgId }: { input: SelectionInput; orgId?: string }) {
   const context = await requireOrgContext(orgId)
+  // The design studio works across homes whose team it is not on, which the
+  // row policy (team members and admins) would refuse: the permission is the
+  // org's, the home must sit in the member's divisions, and the service writes.
   await requirePermission("selections.write", context)
+  const service = createServiceSupabaseClient()
+  const [{ data: home, error: homeError }, access] = await Promise.all([
+    service.from("projects").select("id, division_id").eq("org_id", context.orgId).eq("id", input.project_id).maybeSingle(),
+    getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId }),
+  ])
+  if (homeError) throw new Error(`Failed to load the home: ${homeError.message}`)
+  if (!home || (access.assignedOnly && !access.divisionIds.includes(String(home.division_id)))) throw new Error("Home not found")
   const payload = {
     org_id: context.orgId,
     project_id: input.project_id,
@@ -421,7 +432,7 @@ export async function createProjectSelection({ input, orgId }: { input: Selectio
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
   }
-  const { data, error } = await context.supabase
+  const { data, error } = await service
     .from("project_selections")
     .insert(payload)
     .select("id, org_id, project_id, category_id, selected_option_id, status, due_date, selected_at, confirmed_at, notes")

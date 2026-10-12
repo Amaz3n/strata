@@ -53,7 +53,7 @@ stubModule("@/lib/services/selection-change-orders", {
   createVarianceOrdersForSelectionChange: async () => ({ created: 0, unrouted: 0 }),
 })
 
-const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, selectProjectOption, selectProjectPackage } = freshRequire("lib/services/selections.ts")
+const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, createProjectSelection, selectProjectOption, selectProjectPackage } = freshRequire("lib/services/selections.ts")
 
 const priced = (optionId, priceCents) => ({ available: true, optionId, priceCents, costCents: priceCents / 2, categoryIds: [CATEGORY] })
 
@@ -360,5 +360,31 @@ describe("how a home's selections are priced", () => {
       await service.run(() => selectProjectOption({ orgId: ORG, projectId: HOME, selectionId: SELECTION, optionId: UPGRADE }))
       assert.deepEqual(pricingScopes.map((scope) => scope.requirePlanVersion), [true])
     }
+  })
+})
+
+describe("createProjectSelection", () => {
+  const DIVISION = id(70)
+  const OTHER_DIVISION = id(71)
+  const open = (service) => service.run(() => createProjectSelection({ input: { project_id: HOME, category_id: CATEGORY } }))
+
+  test("the design studio opens a selection on a home in its division without being on the home's team", async () => {
+    const { service } = harness({ selections: [] })
+    service.db.projects[0].division_id = DIVISION
+    service.grant(["selections.write"], { divisions: [DIVISION] })
+
+    const created = await open(service)
+
+    assert.equal(created.project_id, HOME)
+    assert.equal(service.db.project_selections.length, 1)
+  })
+
+  test("a member limited to another division cannot open a selection on the home", async () => {
+    const { service } = harness({ selections: [] })
+    service.db.projects[0].division_id = DIVISION
+    service.grant(["selections.write"], { divisions: [OTHER_DIVISION] })
+
+    await assert.rejects(open(service))
+    assert.equal(service.db.project_selections.length, 0)
   })
 })
