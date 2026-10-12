@@ -194,8 +194,8 @@
       "mandatory": true,
       "weight": 3,
       "acceptanceCriteria": [
-        "Configured enterprise identity provider signs users in and enforces required MFA",
-        "recovery and failure paths are demonstrated in a sandbox."
+        "Arc's own sign-in enforces an organization's required two-factor",
+        "recovery and failure paths are demonstrated on the acceptance stack."
       ],
       "verificationRequired": [
         "source_review",
@@ -2457,7 +2457,7 @@
       ]
     }
   ],
-  "scopeSha256": "2bc315dc55b6424d95dcf879940aa1334e7fe0c4d4ca409c11689259214458d1",
+  "scopeSha256": "5c3c508cca37e731401def256e9ec96635d7d0103a180f31bf9eb13a0d92bef4",
   "governance": {
     "scopeChange": "Do not add mandatory items, raise targets, or split/reweight items during execution without explicit user approval. Record proposals in deferredBacklog. A defect that prevents an existing criterion is fixed within that item, not new scope.",
     "noSpeculativeHardening": "Tie every implementation/hardening change to a failing criterion, missing required evidence, or a reproducible defect under a checklist ID. Stop improving a satisfied criterion.",
@@ -4777,8 +4777,8 @@
         "SSO, automated provisioning/deprovisioning and MFA policy"
       ],
       "acceptanceCriteria": [
-        "Configured enterprise identity provider signs users in and enforces required MFA",
-        "recovery and failure paths are demonstrated in a sandbox."
+        "Arc's own sign-in enforces an organization's required two-factor",
+        "recovery and failure paths are demonstrated on the acceptance stack."
       ],
       "verificationRequired": [
         "source_review",
@@ -4786,10 +4786,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Pull-forward done: owners can require two-factor for their org (web enforcement in proxy.ts; 23c11d1d, migration 20261010230000 pending approval); MFA reset follows the rank rule and signs the person out (b7fb3740). Enterprise SSO is not built.",
+      "status": "verified",
+      "implementationNotes": "Org policy (23c11d1d) enforced by the proxy through lib/auth/session-mfa-gates.ts, which fails closed (5224d28c), and by every membership-based row-security helper (20261011240000); the admin who turns it on is held at once (f34d5dda); resets follow the rank rule and revoke sessions (b7fb3740, a78cb887). Documented in docs/production-org-playbook.md 'Required two-factor'.",
       "remainingWork": [
-        "Later: enterprise SSO (SAML) with recovery and failure paths demonstrated in a customer IdP sandbox."
+        "Apply 20261010230000 (org policy), 20261011240000 (two-factor in row security) with the code (pending approval)."
       ],
       "sources": [
         "proxy.ts",
@@ -4852,7 +4852,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -4892,12 +4892,58 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "MFA-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "MFA01-journeys11",
+            "SUPPORT-ACCESS-journeys11"
+          ],
+          "head": "1ccbd4d4",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "MFA-01 browser journey in its own organization on the acceptance stack; database enforcement covered by tests/division-scope-db.test.js.",
+          "regression": {
+            "lot01": "81/81 run subcases passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-02-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1ccbd4d4",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "All four prior defects are fixed. (High) supabase/migrations/20261011240000_org_mfa_in_row_security.sql:39-56 adds session_meets_org_mfa() (definer, search_path '', reads the live policy, aal2 from auth.jwt()). It is ANDed into is_org_member:85-100, has_org_permission:102-136, is_org_admin_member, can_manage_members, is_project_member, shares_org_with_current_user, member_can_reach_project, member_unscoped/division_unscoped/reachable_project/reachable_division_ids:214-330, project_structural_option_cents, void_pay_application, assert_inspection_lifecycle_actor:530, trade_workspace_readable_homes:589 and can_write_deal:625. I diffed each body against its latest earlier definition: the only changes are the MFA predicate, auth.uid() becoming (select auth.uid()), and search_path spelling. org_security_policies_member_read:79-83 keeps its old semantics through is_org_member_at_any_assurance, so the proxy's aal1 policy read still works (test at tests/division-scope-db.test.js:971). Independent sweep on a PGlite build of all 518 migrations, with Supabase default grants modelled: (a) every permissive authenticated/public/anon policy routes through a gated helper or an invoker subquery on memberships/project_members, whose own select policies are is_org_member. The exceptions are self rows (app_users id=uid), global catalogs (plans, permissions), deny/service-only rules, and project_cost_code_progress, which keys on a jwt org_id claim that does not exist. (b) Of 32 SECURITY DEFINER functions executable by authenticated, 28 are gated directly or transitively. The rest are get_user_sessions/revoke_user_session (self), membership_is_org_admin (a fact about a role) and is_org_member_at_any_assurance. The 14 ungated definer functions that read memberships are all revoked from authenticated. (c) Every view is security_invoker. drawing_sheets_list_mv is revoked by 20261011250000. No RLS-less table is selectable. (d) No helper is used under NOT in a way that widens access. Realtime reads only notifications, which is is_org_member-gated. node --test tests/division-scope-db.test.js passes 31/31, including the aal1/aal2 read, write and RPC cases at :931-1000. (Medium) proxy.ts:128-134 skips the gate only for GET/HEAD of root or /models/ files, and app/ has no root dynamic segment. (Low) proxy.ts:136-138 matches whole segments, and all 108 PUBLIC_API_ROUTES matches are exact or intended subtrees. The web gate stays fail-closed (proxy.ts:225-245). Server-action forwarding re-enters the proxy, and the /auth pages import only auth actions."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "The MFA-01 journey (scripts/books-acceptance/journeys/required-mfa.spec.ts:125-262) shows: the admin is held at once, a member is forced to enrollment at sign-in, the API answers 403 mfa_enrollment_required and then 200 after enrolling, a wrong code is refused and the page stays, an admin reset deletes factors, audits and emits an event, auth.sessions drops to 0 and the member re-enrolls, and turning the policy off frees new sessions. The fail-closed and cookie-binding gates are unit-tested (tests/team.test.js:543-565, 32/32 pass). An unfinished reset is now surfaced: lib/services/team.ts:1807 returns sessionsEnded, and components/team/team-roster.tsx:428 shows a warning toast with a remedy. Documented in docs/production-org-playbook.md:448-471."
+            }
+          ],
+          "scope": "Independent review of EP02-02 at 1ccbd4d4."
         }
       ],
       "releaseState": "unverified",
-      "blockers": [
-        "Requires a named customer owner and an identity-provider sandbox."
-      ],
+      "blockers": [],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
       "sourceAcceptanceIndices": [
@@ -4905,17 +4951,22 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Password-only sessions could reach org data through the Data API; static-extension paths skipped the gates — fixed in d6962bfb/a78cb887"
+      ],
       "plain": {
-        "title": "Company sign-in and required two-factor",
-        "description": "People who turn on two-factor are challenged at sign-in, and approving payments always requires it. A builder can't yet require two-factor for all staff, and there's no 'sign in with your company account' (Okta, Microsoft, Google Workspace)."
+        "title": "Required two-factor",
+        "description": "An owner can require two-factor for everyone. People without it are sent to set it up before anything opens, a code is asked at every sign-in, and a password alone reaches no company data, in the app or through the database. A lost phone is fixed by an admin reset that signs the person out; a sole admin is reset by Arc support through a logged, time-limited grant. There is no 'sign in with your company account' (SSO): Arc signs everyone in itself."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "SSO is an enterprise need; a 25-250 closing builder can run on per-user two-factor, with an org-wide 'require two-factor' switch as a small pull-forward if asked.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "The owner decided Arc needs no SSO (2026-10-11); required two-factor through Arc's own sign-in is the item.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "MFA-01"
+      ]
     },
     {
       "id": "EP02-03",
@@ -5798,10 +5849,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Audit rows are kept, readable by audit.read holders (20261010130000) and carry correlation ids (20261011150000); no customer-facing scoped export, written retention policy or append-only guard yet.",
+      "status": "verified",
+      "implementationNotes": "Append-only guard on audit_log and authorization_audit_log, organization deletion as one transaction (20261011230000); export service, route and Settings → Organization → Audit trail with per-row hashes and a digest (b378ee14, a78cb887). Retention and export policy in docs/reference/audit-trail.md.",
       "remainingWork": [
-        "Later: retention policy, permission-gated org audit export with integrity hash, append-only guard on audit_log."
+        "Apply 20261011230000 (append-only evidence, delete_organization) with the code (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20260710091000_retention_pruning.sql",
@@ -5863,7 +5914,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP01-EP02"
           ],
@@ -5903,6 +5954,53 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-11",
+          "runIds": [
+            "SEC01-final5"
+          ],
+          "head": "1ccbd4d4",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEC-01 subcases audit-evidence-is-append-only and audit-export-is-complete-scoped-and-sealed on the acceptance stack.",
+          "regression": {
+            "lot01": "81/81 run subcases passed",
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP02-07-FINAL"
+          ],
+          "date": "2026-10-11",
+          "head": "1ccbd4d4",
+          "confidence": "medium-high",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Retention is explicit in docs/reference/audit-trail.md:30-57 (append-only, life of account, only org deletion removes) and enforced by supabase/migrations/20261011230000_audit_append_only.sql: row triggers refuse UPDATE/DELETE, statement triggers refuse TRUNCATE for every non-owner role; guard function is SECURITY DEFINER with search_path='' and revoked from API roles. The arc.purge_org GUC is not reachable from clients (PostgREST exposes no set_config, one statement per request, and authenticated has no DELETE policy anyway); the 'org no longer exists' branch cannot fire for a live row because audit_log.org_id is an FK to orgs. Only update allowed is project_id->null for a deleted project. delete_organization is service_role-only and atomic; deleteOrganizationAction now uses it. Scoped export policy explicit (audit-trail.md:58+) and implemented (lib/services/audit-export.ts, lib/validation/audit-export.ts, app/api/audit/export/route.ts, components/settings/audit-export-group.tsx). SEC-01 audit-evidence-is-append-only covers it."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Auth: route is session-authenticated, not in PUBLIC_API_ROUTES, GET only, generic 500 (route.ts). audit.read checked and logged; division/project-limited members refused 403 (audit-export.ts:85). Every page is .eq('org_id') with a per-row org assertion (:129). Keyset on (time,id) with tie-break (:123-124) is correct for equal timestamps; microsecond timestamps round-trip as strings; [from,to) with offset-validated ISO bounds. >200k refused not truncated (:107,:132). Digest binds manifest (org, range, exporter, row_count, columns) + row hashes in order; verifyAuditExport recomputes, strict manifest schema, catches added/removed/reordered/edited rows (lib/audit/export-format.ts:230). CSV formula guard on = + - @ tab CR and leading quote, hash over value not guard (:123). Export itself recorded via recordAudit + recordEvent with the digest (:154). tests/audit.test.js 20/20 pass; SEC-01 audit-export-is-complete-scoped-and-sealed covers it."
+            }
+          ],
+          "scope": "Independent review of EP02-07 at 1ccbd4d4."
         }
       ],
       "releaseState": "unverified",
@@ -5914,17 +6012,22 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "No retention policy, customer export or append-only guard — built in b378ee14"
+      ],
       "plain": {
         "title": "Keep and export the audit trail",
-        "description": "The change history is kept forever and accounting exports can be verified, but only Arc staff can browse or export the history. There's no written retention policy, no way for a builder's own auditor to export their history, and the history isn't locked against edits."
+        "description": "The change history and every access decision are kept for the life of the account and can't be edited or deleted by anyone, not even Arc. An owner or admin exports their company's full history for any period from Settings, sealed with a fingerprint an auditor can check; the file holds only their company's records, and the export itself is recorded."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Customer auditor exports and formal retention are enterprise/compliance asks a first 25-250 closing builder rarely makes; Books exports cover their accountant.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled forward by the owner on 2026-10-11 to finish EP02.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEC-01"
+      ]
     },
     {
       "id": "EP02-08",
@@ -34495,6 +34598,12 @@
       "approvedBy": "proposed_awaiting_owner_review",
       "change": "EP02 batch (proposed): region is represented as the division's region attribute; SSO (EP02-02), audit export/retention (EP02-07), SCIM provisioning and periodic access-review attestation are later; the org require-MFA policy was pulled forward.",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-11",
+      "approvedBy": "owner",
+      "change": "EP02-02: no SSO; the item is required two-factor through Arc's own sign-in (criteria reworded). EP02-07 pulled into the first batch. The frozen baseline records EP02-02's reworded criteria; the denominator (items and weights) is unchanged.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -38856,9 +38965,20 @@
           "EP02-04",
           "EP02-05",
           "EP02-06",
-          "EP02-08"
+          "EP02-08",
+          "EP02-07"
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/sec-01.cjs (7 subcases) and journeys/support-access.spec.ts (playwright.support.config.ts)",
+        "result": "passed"
+      },
+      {
+        "id": "MFA-01",
+        "story": "Required two-factor: an owner turns it on and is held to it at once; a member without a factor is sent to set it up and the API refuses them; a wrong code is refused at sign-in and a password-only session cannot open the app; an admin reset ends the member's sessions and sends them back to setup; turning it off frees new sessions. Runs in its own organization on the acceptance stack (journeys/required-mfa.spec.ts).",
+        "harness": "exists",
+        "covers": [
+          "EP02-02"
+        ],
+        "existingSupport": "scripts/books-acceptance/journeys/required-mfa.spec.ts (playwright.support.config.ts); database enforcement in tests/division-scope-db.test.js",
         "result": "passed"
       }
     ]
