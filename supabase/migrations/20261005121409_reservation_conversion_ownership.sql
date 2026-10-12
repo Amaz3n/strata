@@ -58,6 +58,18 @@ create trigger reservation_conversion_receipt_guard before update or delete on p
 -- invoice for the same original financial operation. Existing ambiguity aborts.
 create unique index invoice_reservation_deposit_owner on public.invoices(org_id,(metadata->>'source_reservation_id'))
  where metadata->>'invoice_kind'='earnest_deposit' and metadata->>'source_reservation_id' is not null;
+-- A conversion that creates a home reads the org's default accounting mapping
+-- as part of its reviewed bundle; inserting that default waits for it.
+create function public.tg_accounting_entity_map_default_fence() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ if new.project_id is null and new.community_id is null and new.division_id is null then
+  perform pg_advisory_xact_lock(hashtextextended('accounting_entity_map_default:'||new.org_id::text,0));
+ end if;
+ return new;
+end $$;
+revoke all on function public.tg_accounting_entity_map_default_fence() from public,anon,authenticated,service_role;
+create trigger accounting_entity_map_default_fence before insert on public.accounting_entity_map for each row execute function public.tg_accounting_entity_map_default_fence();
 create function public.assert_reservation_conversion_community_actor(p_org_id uuid,p_actor_id uuid,p_community_id uuid,p_permission text default 'sales.manage') returns void
 language plpgsql security definer set search_path='' as $$
 declare members uuid[]; org_roles uuid[]; platform_roles uuid[]; all_roles uuid[]; base_permissions text[]; platform_permissions text[];
@@ -65,7 +77,7 @@ declare members uuid[]; org_roles uuid[]; platform_roles uuid[]; all_roles uuid[
 begin
  if p_permission <> 'sales.manage' or p_permission is null then raise exception 'Invalid reservation permission';end if;
  if p_org_id is null or p_actor_id is null then raise exception 'Reservation publication authorization required' using errcode='42501';end if;
- perform 1 from public.app_users where id=p_actor_id for update;
+ perform 1 from public.app_users where id=p_actor_id for share;
  if not found then raise exception 'Reservation publication actor is unavailable' using errcode='42501';end if;
  perform 1 from public.permissions where key=p_permission for share;
  if not found then raise exception 'Reservation management permission is not registered' using errcode='42501';end if;
@@ -73,8 +85,10 @@ begin
   select division_id into community_division from public.communities where id=p_community_id and org_id=p_org_id for share;
   if not found then raise exception 'Reservation community belongs to another organization or is unavailable' using errcode='42501';end if;
  end if;
- perform 1 from public.memberships where org_id=p_org_id and user_id=p_actor_id order by id for update;
- perform 1 from public.platform_memberships where user_id=p_actor_id order by id for update;
+ -- FOR SHARE fences role edits without blocking the foreign-key checks every
+ -- concurrent insert in the org takes on these rows.
+ perform 1 from public.memberships where org_id=p_org_id and user_id=p_actor_id order by id for share;
+ perform 1 from public.platform_memberships where user_id=p_actor_id order by id for share;
  select coalesce(array_agg(id),'{}'),coalesce(array_agg(distinct role_id),'{}'),coalesce(bool_or(division_scope='assigned'),false)
  into members,org_roles,assigned from public.memberships where org_id=p_org_id and user_id=p_actor_id and status='active';
  select coalesce(array_agg(distinct role_id),'{}') into platform_roles from public.platform_memberships where user_id=p_actor_id and status='active';
@@ -162,10 +176,11 @@ begin
  -- signing authority owner; new homes require current organization/division sales.
  if first_home is not null then perform public.assert_agreement_signing_actor(p_org_id,first_home,p_actor_id);end if;
  perform public.assert_reservation_conversion_community_actor(p_org_id,p_actor_id,first_community);
- -- New-home defaults include an optional org mapping. FOR UPDATE fences insertion
- -- of a previously absent FK-backed default. Measure this contention in E13 QA.
- if first_home is null then perform 1 from public.orgs where id=p_org_id for update;
- else perform 1 from public.orgs where id=p_org_id for share;end if;
+ -- New-home defaults include an optional org mapping. A row lock on the org
+ -- deadlocked every concurrent insert's foreign-key check (RACE-02), so an
+ -- absent default is fenced by the advisory lock its insertion takes.
+ perform 1 from public.orgs where id=p_org_id for share;
+ if first_home is null then perform pg_advisory_xact_lock_shared(hashtextextended('accounting_entity_map_default:'||p_org_id::text,0));end if;
  select * into c from public.communities where org_id=p_org_id and id=first_community for share;
  select * into l from public.lots where org_id=p_org_id and id=first_lot for update;
  select * into r from public.lot_reservations where org_id=p_org_id and id=p_reservation_id for update;

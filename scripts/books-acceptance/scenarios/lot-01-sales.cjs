@@ -797,7 +797,12 @@ function buyerContact(kit, org, name) {
 }
 const holdSql = (kit, org, lotId, buyerId) => `insert into public.lot_reservations(org_id, community_id, lot_id, buyer_contact_id, status, expires_at, created_by) values(${kit.q(org.orgId)}, ${kit.q(org.communityId)}, ${kit.q(lotId)}, ${kit.q(buyerId)}, 'hold', now() + interval '14 days', ${kit.q(org.team.sales.userId)})`
 const attachSql = (kit, lotId, homeId) => `update public.lots set project_id = ${kit.q(homeId)}, status = 'started' where id = ${kit.q(lotId)}`
-const commitSql = (kit, org, actor, reservationId, key, action = "commit") => `select public.reservation_conversion(${kit.q(org.orgId)}, ${kit.q(actor.userId)}, ${kit.q(reservationId)}, ${kit.q(action)}, ${kit.q(key)}, (select request from public.reservation_conversion_requests where id = ${kit.q(key)}), null)->>'status'`
+// The saved request is private to the RPC, so it is read before the race and
+// passed in as the server passes it: the racing session runs as service_role.
+const commitSql = (kit, org, actor, reservationId, key, action = "commit") => {
+  const request = kit.rows(`select request::text as request from public.reservation_conversion_requests where id = ${kit.q(key)}`)[0]?.request ?? null
+  return `select public.reservation_conversion(${kit.q(org.orgId)}, ${kit.q(actor.userId)}, ${kit.q(reservationId)}, ${kit.q(action)}, ${kit.q(key)}, ${request === null ? "null" : `${kit.q(request)}::jsonb`}, null)->>'status'`
+}
 const releaseSql = (kit, org, reservationId) => `select public.release_lot_reservation(${kit.q(org.orgId)}, ${kit.q(org.team.sales.userId)}, ${kit.q(reservationId)}, 'Buyer went quiet', null)->'after'->>'status'`
 const sweepSql = (kit, reservationId) => `update public.lot_reservations set status = 'expired', released_at = now(), release_reason = 'Hold expired' where id = ${kit.q(reservationId)} and status = 'hold' and expires_at < now()`
 

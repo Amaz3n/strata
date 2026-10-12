@@ -898,14 +898,15 @@ export async function registerReservationConversion(input: unknown, orgId?: stri
   }
   const source = await readReservationConversionSource(parsed.input, context)
   const [organization, accounting] = await Promise.all([
-    context.supabase.from("orgs").select("name, email, phone, address").eq("id", context.orgId).maybeSingle(),
+    context.supabase.from("orgs").select("name, billing_email, address").eq("id", context.orgId).maybeSingle(),
     source.home ? Promise.resolve({ data: null, error: null }) : context.supabase.from("accounting_entity_map").select("*").eq("org_id", context.orgId).is("project_id", null).is("community_id", null).is("division_id", null).maybeSingle(),
   ])
   if (organization.error || !organization.data || accounting.error) throw new Error("The original billing defaults could not be verified. No reservation review was saved.")
   const { lot, ...reservation } = source.reservation
   const bundle = prepareReservationConversionBundle({ context, requestKey: parsed.requestKey, input: body, expected: {
     reservation, lot, community: source.community, home: source.home, buyers: source.buyers,
-    organization: organization.data, accountingDefault: accounting.data,
+    // The database verifies the sender as it reads it: billing email, no phone.
+    organization: { name: organization.data.name, email: organization.data.billing_email, phone: null, address: organization.data.address }, accountingDefault: accounting.data,
   } })
   return callReservationConversion({ context, scope: parsed.scope, action: "register", requestKey: parsed.requestKey, input: body, bundle })
 }
