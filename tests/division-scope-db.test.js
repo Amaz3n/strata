@@ -863,3 +863,138 @@ test("a bid package bid for a community is found only by that community's divisi
   await db.query("update bid_packages set community_id = $2 where community_id = $1", [oak.id, pine.id])
   assert.deepEqual(await found(seller.userId), [])
 })
+
+/**
+ * Two orgs that share a member: Strict requires two-factor, Relaxed does not.
+ * Each holds a home with the money, schedule, task, audit and closing rows a
+ * password-only session must not reach in Strict.
+ */
+async function twoFactorOrgs(t) {
+  const db = await createDatabase(t)
+  const { orgId: strictId, userId: ownerId } = await seedMember(db)
+  const { orgId: relaxedId } = await seedMember(db)
+  await db.query(
+    "insert into memberships (org_id, user_id, role_id, status) select $1, $2, id, 'active' from roles where key = 'org_owner'",
+    [relaxedId, ownerId],
+  )
+  await insert(db, "org_security_policies", { org_id: strictId, require_mfa: true })
+
+  const homes = {}
+  for (const [orgId, name] of [
+    [strictId, "Strict"],
+    [relaxedId, "Relaxed"],
+  ]) {
+    await db.query("update orgs set name = $2 where id = $1", [orgId, name])
+    const home = await insert(db, "projects", { org_id: orgId, name })
+    await insert(db, "invoices", { org_id: orgId, project_id: home.id, invoice_number: name })
+    await insert(db, "vendor_bills", { org_id: orgId, project_id: home.id, bill_number: name })
+    await insert(db, "tasks", { org_id: orgId, project_id: home.id, title: name })
+    await insert(db, "schedule_items", { org_id: orgId, project_id: home.id, name })
+    await insert(db, "closings", { org_id: orgId, project_id: home.id, notes: name })
+    await insert(db, "audit_log", { org_id: orgId, action: "insert", entity_type: name, entity_id: home.id })
+    homes[name] = home
+  }
+  const assignedSuper = await member(db, strictId, {
+    role: "org_superintendent",
+    projectScope: "assigned",
+    projects: [homes.Strict.id],
+  })
+
+  return { db, strictId, relaxedId, ownerId, assignedSuper, homes }
+}
+
+const TWO_FACTOR_READS = {
+  orgs: "select name from orgs",
+  projects: "select name from projects",
+  invoices: "select invoice_number as name from invoices",
+  vendor_bills: "select bill_number as name from vendor_bills",
+  tasks: "select title as name from tasks",
+  schedule_items: "select name from schedule_items",
+  closings: "select notes as name from closings",
+  audit_log: "select entity_type as name from audit_log",
+}
+
+async function readOrgRows(db, userId, aal) {
+  return asRole(db, { role: "authenticated", userId, aal }, async (tx) => {
+    const seen = {}
+    for (const [table, sql] of Object.entries(TWO_FACTOR_READS)) {
+      seen[table] = (await tx.query(`${sql} order by 1`)).rows.map((row) => row.name)
+    }
+    return seen
+  })
+}
+
+function everyTable(names) {
+  return Object.fromEntries(Object.keys(TWO_FACTOR_READS).map((table) => [table, [...names]]))
+}
+
+test("a password-only session reads nothing of an org that requires two-factor, and an aal2 session reads it all", async (t) => {
+  const { db, ownerId, assignedSuper } = await twoFactorOrgs(t)
+
+  // The owner also belongs to Relaxed, which keeps working on the same session.
+  assert.deepEqual(await readOrgRows(db, ownerId, "aal1"), everyTable(["Relaxed"]))
+  assert.deepEqual(await readOrgRows(db, ownerId, "aal2"), everyTable(["Relaxed", "Strict"]))
+
+  // An assigned-only member reaches their home through project membership; that
+  // path holds the line too.
+  const superSeen = await readOrgRows(db, assignedSuper.userId, "aal1")
+  assert.deepEqual(superSeen.projects, [])
+  assert.deepEqual(superSeen.tasks, [])
+  assert.deepEqual(superSeen.schedule_items, [])
+  assert.deepEqual((await readOrgRows(db, assignedSuper.userId, "aal2")).projects, ["Strict"])
+})
+
+test("a password-only session cannot write into an org that requires two-factor", async (t) => {
+  const { db, strictId, relaxedId, ownerId, homes } = await twoFactorOrgs(t)
+  const as = (aal, fn) => asRole(db, { role: "authenticated", userId: ownerId, aal }, fn)
+
+  await assert.rejects(
+    as("aal1", (tx) => tx.query("insert into projects (org_id, name) values ($1, 'Sneaked')", [strictId])),
+    /row-level security/,
+  )
+  await assert.rejects(
+    as("aal1", (tx) => tx.query("insert into tasks (org_id, project_id, title) values ($1, $2, 'Sneaked')", [strictId, homes.Strict.id])),
+    /row-level security/,
+  )
+  const touched = await as("aal1", async (tx) => ({
+    renamed: (await tx.query("update projects set name = 'Mine' where id = $1", [homes.Strict.id])).affectedRows,
+    deleted: (await tx.query("delete from vendor_bills where org_id = $1", [strictId])).affectedRows,
+  }))
+  assert.deepEqual(touched, { renamed: 0, deleted: 0 })
+
+  const written = await as("aal1", async (tx) => (await tx.query("insert into tasks (org_id, project_id, title) values ($1, $2, 'Relaxed punch') returning title", [relaxedId, homes.Relaxed.id])).rows)
+  assert.deepEqual(written, [{ title: "Relaxed punch" }])
+  const stepped = await as("aal2", async (tx) => (await tx.query("insert into tasks (org_id, project_id, title) values ($1, $2, 'Strict punch') returning title", [strictId, homes.Strict.id])).rows)
+  assert.deepEqual(stepped, [{ title: "Strict punch" }])
+})
+
+test("a password-only session can still learn which of its orgs require two-factor", async (t) => {
+  const { db, strictId, ownerId } = await twoFactorOrgs(t)
+
+  // The proxy asks this with the member's own session to send them to enrollment.
+  const policies = await asRole(db, { role: "authenticated", userId: ownerId, aal: "aal1" }, async (tx) =>
+    (await tx.query("select org_id from org_security_policies where require_mfa")).rows,
+  )
+  assert.deepEqual(policies, [{ org_id: strictId }])
+})
+
+test("voiding a pay application refuses a password-only session in an org that requires two-factor", async (t) => {
+  const { db, strictId, ownerId, homes } = await twoFactorOrgs(t)
+  const contract = await insert(db, "contracts", { org_id: strictId, project_id: homes.Strict.id, title: "Strict agreement" })
+  const payApp = await insert(db, "pay_applications", {
+    org_id: strictId,
+    project_id: homes.Strict.id,
+    contract_id: contract.id,
+    application_number: 1,
+    period_end: "2026-09-30",
+    status: "submitted",
+  })
+  const voidAs = (aal) =>
+    asRole(db, { role: "authenticated", userId: ownerId, aal }, (tx) =>
+      tx.query("select public.void_pay_application($1, $2) as result", [strictId, payApp.id]),
+    )
+
+  await assert.rejects(voidAs("aal1"), /Missing permission: payapp.write/)
+  const { rows } = await voidAs("aal2")
+  assert.equal(rows[0].result.pay_application_id, payApp.id)
+})

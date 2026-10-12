@@ -491,11 +491,12 @@ async function createDatabase(t) {
 
 /**
  * Run `fn(tx)` in a transaction as `role`, with the JWT claims PostgREST would
- * set for `userId`. The role and claims end with the transaction; an error in
- * `fn` rolls it back and is rethrown.
+ * set for `userId`. `aal` is the session's assurance level ("aal1" after a
+ * password, "aal2" after a two-factor code). The role and claims end with the
+ * transaction; an error in `fn` rolls it back and is rethrown.
  */
-async function asRole(db, { role, userId = null }, fn) {
-  const jwt = userId ? { role, sub: userId } : { role }
+async function asRole(db, { role, userId = null, aal = null }, fn) {
+  const jwt = { role, ...(userId ? { sub: userId } : {}), ...(aal ? { aal } : {}) }
   return db.transaction(async (tx) => {
     await tx.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify(jwt)])
     await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [userId ?? ""])
