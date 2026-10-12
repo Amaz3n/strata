@@ -48,6 +48,7 @@ import {
   type DealView,
 } from "@/lib/sales/board";
 import { formatLostReason } from "@/lib/sales/lost-reasons";
+import type { MilestoneDeskSignal } from "@/lib/sales/agreement-milestones";
 import { DEAL_FILTER_LABELS, type DealFilter } from "@/lib/sales/next-action";
 import { STAGE_ACCENT, STAGE_LABELS } from "@/lib/sales/stages";
 import type { SalesDeal, SalesDealStage } from "@/lib/services/sales-deals";
@@ -78,6 +79,8 @@ interface DealBoardProps {
   communities: SalesCommunityOption[];
   /** True when the query hit its row cap, so the footer can say so. */
   truncated: boolean;
+  /** Each sold home's contingency and lender/title position, by project; null when it could not be read. */
+  milestones: Record<string, MilestoneDeskSignal> | null;
   /** Page-level buttons, rendered at the end of the toolbar. */
   actions?: React.ReactNode;
   now: Date;
@@ -97,6 +100,7 @@ export function DealBoard({
   lostReasons,
   communities,
   truncated,
+  milestones,
   actions,
   now,
 }: DealBoardProps) {
@@ -111,8 +115,8 @@ export function DealBoard({
   const [homesDeal, setHomesDeal] = useState<SalesDeal | null>(null);
 
   const board = useMemo(
-    () => buildBoard(deals, { view, filter, stage, search, now }),
-    [deals, view, filter, stage, search, now],
+    () => buildBoard(deals, { view, filter, stage, search, now, milestones: milestones ?? {} }),
+    [deals, view, filter, stage, search, now, milestones],
   );
 
   // The two lenses are exclusive — holding both at once produces empty lists
@@ -281,6 +285,11 @@ export function DealBoard({
             </Table>
           </div>
 
+          {milestones === null ? (
+            <p role="status" className="border-t px-3 py-2.5 text-[11px] text-warning">
+              Contingency and lender milestones could not be read, so late ones are not ranked here. Reload to try again.
+            </p>
+          ) : null}
           {truncated ? (
             <p className="border-t px-3 py-2.5 text-[11px] text-muted-foreground">
               Showing the first {deals.length} deals. Narrow the community lens

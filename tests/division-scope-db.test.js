@@ -522,7 +522,12 @@ test("the closing backlog counts a home closed this year for the division it clo
   await insert(db, "contracts", {
     org_id: orgId, project_id: northHome.id, title: "Purchase agreement", contract_type: "purchase_agreement", status: "active", total_cents: 41_000_000,
   })
-  // A closing is recorded closed only with its invoice and a completed gate.
+  // A closing is recorded closed only with its invoice, a completed gate and the
+  // agreement's lender and title milestones resolved.
+  await db.query(
+    "update agreement_milestones set status = 'waived', resolution_note = 'Cash at the closing table', resolved_at = now(), resolved_on = current_date where project_id = $1",
+    [northHome.id],
+  )
   const invoice = await insert(db, "invoices", { org_id: orgId, project_id: northHome.id, total_cents: 41_000_000 })
   const closing = await insert(db, "closings", { org_id: orgId, project_id: northHome.id, lot_id: oakLot.id, community_id: oak.id, status: "scheduled", scheduled_date: new Date().toISOString().slice(0, 10) })
   await insert(db, "closing_checklist_items", {

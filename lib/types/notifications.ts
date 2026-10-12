@@ -103,12 +103,14 @@ export type NotificationType =
   | "land_review_decided"
   | "land_diligence_due"
   | "entitlement_condition_due"
+  | "agreement_milestone_due"
   | "start_package_ready"
   | "start_released"
   | "start_release_failed"
   | "start_gate_waived"
   | "project_superintendent_assigned"
   | "purchase_agreement_executed"
+  | "lead_assigned"
   | "warranty_visit_assigned"
   | "warranty_visit_confirmed"
   | "warranty_visit_rescheduled"
@@ -553,6 +555,18 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "warranty",
     label: "Warranty first response overdue",
     description: "Email me when nobody has contacted the homeowner within the first-response target.",
+  },
+  {
+    key: "lead_assigned",
+    category: "sales",
+    label: "New lead assigned",
+    description: "Email me when a website lead is routed to me.",
+  },
+  {
+    key: "agreement_milestone_due",
+    category: "sales",
+    label: "Contingency or lender/title deadline",
+    description: "Email me as a buyer's contingency or a lender or title milestone I own comes due or runs late.",
   },
   {
     key: "purchase_agreement_executed",

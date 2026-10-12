@@ -1633,6 +1633,12 @@ export async function approveChangeOrder({
   const approvalNote = approval?.note?.trim() || null
   const signedFileId = approval?.signedFileId?.trim() || null
 
+  // On a sold home this change amends the buyer's agreement, so an offline
+  // approval must carry the buyer's signed copy (the database refuses it too).
+  if (existing.requires_signature !== false && !signedFileId && await hasSignedPurchaseAgreement(supabase, resolvedOrgId, existing.project_id)) {
+    throw new Error("This change order amends the buyer's signed purchase agreement. Attach the copy the buyer signed, or send it for signature.")
+  }
+
   if (signedFileId) {
     const { data: file, error: fileError } = await supabase
       .from("files")
@@ -1823,6 +1829,10 @@ export async function voidChangeOrder({
     throw new Error("This change order is already voided.")
   }
 
+  if (existing.lifecycle === "approved" && await isSignedAgreementAmendment(supabase, resolvedOrgId, changeOrderId)) {
+    throw new Error("This change order is a signed amendment to the buyer's purchase agreement and cannot be voided. Reverse it with a new change order the buyer signs.")
+  }
+
   if (existing.lifecycle !== "approved") {
     if (!["draft", "pricing", "proposed"].includes(existing.lifecycle ?? "draft")) {
       throw new Error("Only an active potential change can be voided.")
@@ -1897,6 +1907,20 @@ export async function voidChangeOrder({
   })
 
   return data
+}
+
+async function hasSignedPurchaseAgreement(supabase: SupabaseClient, orgId: string, projectId: string) {
+  const { count, error } = await supabase.from("contracts").select("id", { count: "exact", head: true })
+    .eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active")
+  if (error) throw new Error(`Failed to check the home's purchase agreement: ${error.message}`)
+  return (count ?? 0) > 0
+}
+
+async function isSignedAgreementAmendment(supabase: SupabaseClient, orgId: string, changeOrderId: string) {
+  const { data, error } = await supabase.from("purchase_agreement_versions").select("id")
+    .eq("org_id", orgId).eq("change_order_id", changeOrderId).maybeSingle()
+  if (error) throw new Error(`Failed to check the agreement's amendments: ${error.message}`)
+  return Boolean(data)
 }
 
 async function applyChangeOrderFinancialImpact({

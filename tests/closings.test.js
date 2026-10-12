@@ -65,6 +65,22 @@ stubModule("@/lib/services/receivables-writer", { receivablesWriter: () => activ
 const { composePurchaseAgreementPricing } = require("@/lib/financials/purchase-agreement-pricing")
 const { buildSettlement, reverseClosing, settleClosing } = freshRequire("lib/services/closings.ts")
 
+/** One signed version of the agreement, as the database's version triggers write it. */
+function version(number, row) {
+  return { id: id(90 + number), org_id: ORG, project_id: HOME, contract_id: CONTRACT, version_number: number, executed_at: "2026-09-01T00:00:00Z", change_order: null, ...row }
+}
+
+/** A change order the buyer signed after the agreement: the next version. */
+function amendment(service, { changeOrderId, title, deltaCents, contractId = CONTRACT }) {
+  const chain = service.db.purchase_agreement_versions.filter((row) => row.contract_id === contractId)
+  const head = chain[chain.length - 1]
+  service.db.purchase_agreement_versions.push(version(head.version_number + 1, {
+    id: id(100 + service.db.purchase_agreement_versions.length), contract_id: contractId, kind: "amendment", change_order_id: changeOrderId,
+    price_delta_cents: deltaCents, authorized_total_cents: head.authorized_total_cents + deltaCents,
+    change_order: { id: changeOrderId, title, metadata: {} },
+  }))
+}
+
 function harness() {
   calls.invoices = []
   calls.depositApplications = []
@@ -104,7 +120,7 @@ function harness() {
         { id: DEPOSIT_PAYMENT, org_id: ORG, invoice_id: DEPOSIT_INVOICE, status: "succeeded", amount_cents: 10_000_00, created_at: "2026-09-01T00:00:00Z", metadata: {} },
       ],
       payment_reversals: [],
-      change_orders: [],
+      purchase_agreement_versions: [version(1, { kind: "original", change_order_id: null, price_delta_cents: 400_000_00, authorized_total_cents: 400_000_00 })],
     },
   })
   active = { service, createInvoice: null }
@@ -151,6 +167,7 @@ describe("what a closing bills and collects", () => {
   test("an agreement total the pricing snapshot does not support is refused before anything is billed", async () => {
     const service = harness()
     service.db.contracts[0].total_cents = 410_000_00
+    Object.assign(service.db.purchase_agreement_versions[0], { price_delta_cents: 410_000_00, authorized_total_cents: 410_000_00 })
     await assert.rejects(settle(service), /Closing invoice lines total 40000000 but the settlement final price is 41000000/)
     assert.deepEqual(calls.invoices, [])
     assert.deepEqual(calls.depositApplications, [])
@@ -171,7 +188,7 @@ describe("what a closing bills and collects", () => {
 
   test("the closing invoice bills the full final price, adjustments and approved changes included, as exact cents", async () => {
     const service = harness()
-    service.db.change_orders.push({ id: id(60), org_id: ORG, project_id: HOME, status: "approved", title: "Pool prep", total_cents: 3_000_00, metadata: {} })
+    amendment(service, { changeOrderId: id(60), title: "Pool prep", deltaCents: 3_000_00 })
     service.db.closings[0].metadata = { adjustments: [{ id: "credit", label: "Closing-cost assistance", kind: "seller_credit", amountCents: -6_000_01 }] }
     active.createInvoice = (input) => {
       const total = input.lines.reduce((sum, line) => sum + Math.round(line.unit_cost * 100), 0)
@@ -218,6 +235,42 @@ describe("what a closing bills and collects", () => {
     const spent = await settlement()
     assert.deepEqual(spent.depositsApplied, [])
     assert.equal(spent.balanceDueCents, 400_000_00)
+  })
+})
+
+describe("the price a closing settles", () => {
+  const settlement = (service) => service.run(() => buildSettlement(CLOSING))
+
+  test("is the agreement's signed versions: a prior buyer's amendments and unsigned changes are not this sale's price", async () => {
+    const service = harness()
+    // A prior buyer's agreement on the same home, voided after its own amendment.
+    service.db.purchase_agreement_versions.push(
+      version(1, { id: id(120), contract_id: id(121), kind: "original", change_order_id: null, price_delta_cents: 395_000_00, authorized_total_cents: 395_000_00 }),
+      version(2, { id: id(122), contract_id: id(121), kind: "amendment", change_order_id: id(123), price_delta_cents: 20_000_00, authorized_total_cents: 415_000_00, change_order: { id: id(123), title: "Prior buyer's pool", metadata: {} } }),
+    )
+    amendment(service, { changeOrderId: id(60), title: "Upgraded kitchen", deltaCents: 12_500_00 })
+    amendment(service, { changeOrderId: id(61), title: "Deleted fireplace", deltaCents: -3_000_00 })
+
+    const result = await settlement(service)
+    assert.equal(result.finalPriceCents, 409_500_00)
+    assert.deepEqual(result.changeOrders.map((row) => [row.id, row.total_cents]), [[id(60), 12_500_00], [id(61), -3_000_00]])
+  })
+
+  test("a version history with a gap or a total that does not follow its changes is refused", async () => {
+    const service = harness()
+    amendment(service, { changeOrderId: id(60), title: "Upgraded kitchen", deltaCents: 12_500_00 })
+    service.db.purchase_agreement_versions[1].authorized_total_cents = 420_000_00
+    await assert.rejects(settlement(service), /authorized totals do not follow/)
+    service.db.purchase_agreement_versions[1].authorized_total_cents = 412_500_00
+    service.db.purchase_agreement_versions[1].version_number = 3
+    await assert.rejects(settlement(service), /version history is broken/)
+  })
+
+  test("an agreement whose original version disagrees with its signed price is not settled", async () => {
+    const service = harness()
+    service.db.purchase_agreement_versions[0].authorized_total_cents = 399_000_00
+    service.db.purchase_agreement_versions[0].price_delta_cents = 399_000_00
+    await assert.rejects(settlement(service), /original version does not match its signed price/)
   })
 })
 

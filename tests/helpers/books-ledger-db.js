@@ -50,6 +50,8 @@ async function createBooksLedgerDb({ coreOwnerRelationships = true, exactReversa
   await db.exec(read("20261003012630_books_completed_wip_carryforward.sql"))
   await db.exec(read("20261003013441_books_wip_input_integrity.sql"))
   await db.exec(read("20261003014320_books_expected_loss_provisions.sql"))
+  // The chart template's sales commission accounts carry their own subtypes.
+  await db.exec(definition(read("20261013040000_sales_commissions.sql"), "alter table public.gl_accounts\n  drop constraint if exists gl_accounts_subtype_check;", "\n  ));"))
   const fences=read('20261003235436_books_period_and_payroll_fences.sql')
   await db.exec(fences.slice(0,fences.indexOf('-- Ordinary source writers')))
   if (coreOwnerRelationships) await db.exec(read("20261004193127_books_core_ledger_owner_relationships.sql"))

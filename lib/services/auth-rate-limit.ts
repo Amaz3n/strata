@@ -22,6 +22,7 @@ export type RateLimitAction =
   | "portal_pin"
   | "account_lookup"
   | "password_setup"
+  | "lead_intake"
 
 interface RateLimitRule {
   limit: number
@@ -36,6 +37,9 @@ const RULES: Record<RateLimitAction, RateLimitRule> = {
   portal_pin: { limit: 20, windowSeconds: 15 * 60 },
   account_lookup: { limit: 20, windowSeconds: 15 * 60 },
   password_setup: { limit: 5, windowSeconds: 60 * 60 },
+  // Signed website lead deliveries, per source and sending IP. The signature is
+  // the real gate; this bounds a flood of unsigned requests.
+  lead_intake: { limit: 120, windowSeconds: 15 * 60 },
 }
 
 export class RateLimitError extends Error {

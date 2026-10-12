@@ -83,7 +83,6 @@ export function InspectionsClient({
   locations,
   canManageLocations,
   canWrite,
-  lifecycleEnabled,
   canReview,
   obligationPage,
   selectedObligation,
@@ -97,7 +96,6 @@ export function InspectionsClient({
   locations: ProjectLocation[]
   canManageLocations: boolean
   canWrite: boolean
-  lifecycleEnabled: boolean
   canReview: boolean
   obligationPage: { rows: InspectionObligation[]; nextCursor: string | null }
   selectedObligation: InspectionObligation | null
@@ -165,7 +163,6 @@ export function InspectionsClient({
           projectId={projectId}
           inspection={selected}
           canWrite={canWrite}
-          lifecycleEnabled={lifecycleEnabled}
           canReview={canReview}
           obligation={selectedObligation}
           companies={companies}
@@ -175,7 +172,7 @@ export function InspectionsClient({
       ) : null}
 
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
-        {lifecycleEnabled ? <InspectionObligationsPanel projectId={projectId} page={obligationPage} /> : null}
+        <InspectionObligationsPanel projectId={projectId} page={obligationPage} />
         {isMobile ? (
           <div className="sticky top-0 z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm">
             <div className="flex items-center gap-2 px-3 pt-3">
@@ -342,7 +339,6 @@ function InspectionDetailSheet({
   projectId,
   inspection,
   canWrite,
-  lifecycleEnabled,
   canReview,
   obligation,
   companies,
@@ -352,7 +348,6 @@ function InspectionDetailSheet({
   projectId: string
   inspection: InspectionDetail
   canWrite: boolean
-  lifecycleEnabled?: boolean
   canReview?: boolean
   obligation?: InspectionObligation | null
   companies: Array<{ id: string; name: string }>
@@ -469,7 +464,7 @@ function InspectionDetailSheet({
               }}
             />
           </div>
-          {lifecycleEnabled ? <InspectionLifecycleControls inspection={inspection} obligation={obligation ?? null} canWrite={canWrite} canReview={canReview ?? false} /> : null}
+          <InspectionLifecycleControls inspection={inspection} obligation={obligation ?? null} canWrite={canWrite} canReview={canReview ?? false} />
         </div>
 
         <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 p-4">

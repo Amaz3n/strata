@@ -3,6 +3,9 @@ import { resolveTemplateSection } from "./sections"
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { WaiverTemplateLibrary } from "@/components/settings/waiver-template-library";
+import { AgreementTemplateLibrary } from "@/components/settings/agreement-template-library";
+import { runAction } from "@/lib/action-result";
+import { listAgreementTemplates } from "@/lib/services/agreement-templates";
 import { listCompanyWaiverTemplates } from "./waiver-actions";
 import { requireOrgContext } from "@/lib/services/context";
 import { authorize } from "@/lib/services/authorization";
@@ -25,6 +28,7 @@ async function TemplatesPageContent({ searchParams }: { searchParams: Promise<{ 
   if (section === "budgets") return <BudgetsSection />;
   if (section === "schedules") return <SchedulesSection />;
   if (section === "checklists") return <ChecklistsSection />;
+  if (section === "agreements") return <AgreementsSection />;
   return <WaiversSection />;
 }
 
@@ -67,6 +71,24 @@ async function ChecklistsSection() {
     authorize({ ...ctx, permission: "org.admin" }),
   ]);
   return <ChecklistsClient templates={templates} canManage={writeDecision.allowed} canSeed={seedDecision.allowed} />;
+}
+
+async function AgreementsSection() {
+  const ctx = await requireOrgContext();
+  const [result, decision, communities] = await Promise.all([
+    runAction(() => listAgreementTemplates({ includeRetired: false })),
+    authorize({ ...ctx, permission: "agreement_template.manage" }),
+    ctx.supabase.from("communities").select("id,name,state").eq("org_id", ctx.orgId).is("archived_at", null).order("name").limit(500),
+  ]);
+  return (
+    <AgreementTemplateLibrary
+      templates={result.success ? result.data.templates : []}
+      truncated={result.success ? result.data.truncated : false}
+      loadError={result.success ? (communities.error ? communities.error.message : null) : result.error}
+      communities={communities.data ?? []}
+      canManage={decision.allowed}
+    />
+  );
 }
 
 async function WaiversSection() {

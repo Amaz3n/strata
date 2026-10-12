@@ -7,6 +7,7 @@ import {
   type DealFilter,
   type NextAction,
 } from "@/lib/sales/next-action"
+import type { MilestoneDeskSignal } from "@/lib/sales/agreement-milestones"
 import { FUNNEL_STAGES } from "@/lib/sales/stages"
 import type { SalesDeal, SalesDealStage } from "@/lib/services/sales-deals"
 
@@ -125,15 +126,21 @@ export function buildBoard(
     stage,
     search,
     now,
-  }: { view: DealView; filter: DealFilter; stage: SalesDealStage | null; search: string; now: Date },
+    milestones = {},
+  }: {
+    view: DealView; filter: DealFilter; stage: SalesDealStage | null; search: string; now: Date
+    /** Each sold home's contingency and lender/title position (`readMilestoneDeskSignals`), by project. */
+    milestones?: Readonly<Record<string, MilestoneDeskSignal>>
+  },
 ): Board {
+  const signal = (deal: SalesDeal) => (deal.projectId ? milestones[deal.projectId] ?? null : null)
   const inScope = deals.filter((deal) => inView(deal, view))
   const searched = inScope.filter((deal) => matchesSearch(deal, search))
 
   // Both narrowings count against the searched set, never against each other —
   // clicking one lens must not blank out the numbers on the other.
   const counts = Object.fromEntries(
-    DEAL_FILTERS.map((key) => [key, searched.filter((deal) => matchesDealFilter(deal, key, now)).length]),
+    DEAL_FILTERS.map((key) => [key, searched.filter((deal) => matchesDealFilter(deal, key, now, signal(deal))).length]),
   ) as Record<DealFilter, number>
 
   const funnel: FunnelStageSummary[] = FUNNEL_STAGES.map((key) => {
@@ -146,21 +153,21 @@ export function buildBoard(
   })
 
   const visible = searched
-    .filter((deal) => matchesDealFilter(deal, filter, now))
+    .filter((deal) => matchesDealFilter(deal, filter, now, signal(deal)))
     .filter((deal) => (stage ? deal.stage === stage : true))
 
   const rows: BoardDeal[] =
     view === "open"
       ? visible
           .map((deal) => {
-            const action = nextActionFor(deal, now)
+            const action = nextActionFor(deal, now, signal(deal))
             return { deal, action, bucket: bucketFor(action, now) }
           })
           .sort((a, b) => compareByNextAction(a.action, b.action))
       : visible
           .sort(compareByRecency)
           .map((deal) => {
-            const action = nextActionFor(deal, now)
+            const action = nextActionFor(deal, now, signal(deal))
             return { deal, action, bucket: bucketFor(action, now) }
           })
 

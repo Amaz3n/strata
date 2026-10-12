@@ -1493,17 +1493,31 @@ async function loadPortalFinancialSummary({
 
 async function loadProductionPortalFinancialSummary({ orgId, projectId }: { orgId: string; projectId: string }): Promise<PortalFinancialSummary> {
   const supabase = createServiceSupabaseClient()
-  const [{ data: contract }, { data: changeOrders }, { data: invoices }, { data: closing }] = await Promise.all([
-    supabase.from("contracts").select("total_cents").eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active").order("signed_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("change_orders").select("total_cents").eq("org_id", orgId).eq("project_id", projectId).eq("status", "approved").eq("client_visible", true),
+  const [terms, { data: invoices }, { data: closing }] = await Promise.all([
+    readActiveAgreementTerms(supabase, orgId, projectId),
     supabase.from("invoices").select("id, metadata, payments(amount_cents, status)").eq("org_id", orgId).eq("project_id", projectId).contains("metadata", { invoice_kind: "earnest_deposit" }),
     supabase.from("closings").select("scheduled_date").eq("org_id", orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
   ])
-  const purchasePriceCents = Number(contract?.total_cents ?? 0)
-  const approvedChangeOrdersCents = (changeOrders ?? []).reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+  // The signed price and what the buyer's signed change orders added to it: the
+  // agreement's versions, not the original contract total or every approved change.
+  const purchasePriceCents = terms?.originalTotalCents ?? 0
+  const approvedChangeOrdersCents = terms ? terms.authorizedTotalCents - terms.originalTotalCents : 0
   const depositsReceivedCents = (invoices ?? []).reduce((sum, invoice: any) => sum + (invoice.payments ?? []).filter((payment: any) => payment.status === "succeeded").reduce((paymentSum: number, payment: any) => paymentSum + Number(payment.amount_cents ?? 0), 0), 0)
   const finalPrice = purchasePriceCents + approvedChangeOrdersCents
   return { mode: "closing", contractTotal: finalPrice, totalPaid: depositsReceivedCents, balanceRemaining: finalPrice - depositsReceivedCents, purchasePriceCents, depositsReceivedCents, approvedChangeOrdersCents, balanceDueAtClosingCents: finalPrice - depositsReceivedCents, scheduledClosingDate: closing?.scheduled_date ?? null, draws: [] }
+}
+
+/** The active purchase agreement's authorized price, from its signed versions; null before one is signed. */
+async function readActiveAgreementTerms(supabase: SupabaseClient, orgId: string, projectId: string) {
+  const { data: contract, error } = await supabase.from("contracts").select("id").eq("org_id", orgId).eq("project_id", projectId)
+    .eq("contract_type", "purchase_agreement").eq("status", "active").order("signed_at", { ascending: false }).limit(1).maybeSingle()
+  if (error) throw new Error(`Unable to read the purchase agreement: ${error.message}`)
+  if (!contract) return null
+  const { data: terms, error: termsError } = await supabase.from("purchase_agreement_authorized_terms")
+    .select("authorized_total_cents, original_total_cents").eq("org_id", orgId).eq("contract_id", contract.id).maybeSingle()
+  if (termsError) throw new Error(`Unable to read the agreement's authorized price: ${termsError.message}`)
+  if (!terms) throw new Error("The signed agreement has no recorded version")
+  return { authorizedTotalCents: Number(terms.authorized_total_cents), originalTotalCents: Number(terms.original_total_cents) }
 }
 
 function mapPortalDailyLog(row: any): DailyLog {

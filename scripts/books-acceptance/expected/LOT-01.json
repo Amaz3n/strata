@@ -104,13 +104,13 @@
       }
     },
     "start-gates-and-roles": {
-      "derivation": "A package opened for lot 1 has the plan-pinned gate passed (the agreement pinned it), the selections gate passed (the buyer's design group is already locked) financing not applicable (cash buyer) and entitlements passed (the community has no open condition); the release produces the budget and PO set, so those two wait. The starts coordinator attests the permit, the plot plan is on file, the price book resolves in a dry run, and the coordinator gives final approval: the package is ready. A superintendent and a sales consultant cannot release (start.release).",
+      "derivation": "A package opened for lot 1 has the plan-pinned gate passed (the agreement pinned it), the selections gate passed (the buyer's design group is already locked) financing passed (the agreement holds no milestone before start) and entitlements passed (the community has no open condition); the release produces the budget and PO set, so those two wait. The starts coordinator attests the permit, the plot plan is on file, the price book resolves in a dry run, and the coordinator gives final approval: the package is ready. A superintendent and a sales consultant cannot release (start.release).",
       "inputs": {},
       "expected": {
         "opened": {
           "budget": "pending",
           "final_approval": "pending",
-          "financing": "not_applicable",
+          "financing": "passed",
           "permit": "pending",
           "plan_pinned": "passed",
           "plot_plan": "pending",
@@ -124,7 +124,7 @@
           "gates": {
             "budget": "pending",
             "final_approval": "passed",
-            "financing": "not_applicable",
+            "financing": "passed",
             "permit": "passed",
             "plan_pinned": "passed",
             "plot_plan": "passed",

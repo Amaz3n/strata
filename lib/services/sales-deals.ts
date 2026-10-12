@@ -3,9 +3,19 @@ import type { AgreementSigningState } from "@/lib/sales/agreement-signing-state"
 import type { PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { salesAgreementDetailSchema, salesReservationDetailSchema } from "@/lib/validation/sales-deals"
 import { authorize, requireAuthorization, getDivisionAccessForUser } from "@/lib/services/authorization"
+import { shouldShowCustomBuildNavigation } from "@/lib/product-tier"
 import { requireOrgContext } from "@/lib/services/context"
+import { orgHasActiveNonProductionProjects } from "@/lib/services/production-desk-scope"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
-import { getProspect, listProspectActivity, type Prospect, type ProspectActivity } from "@/lib/services/prospects"
+import { canWriteDeals } from "@/lib/services/prospect-write-access"
+import {
+  getProspect,
+  listProspectActivity,
+  listProspectAttributions,
+  type Prospect,
+  type ProspectActivity,
+  type ProspectAttributionHistory,
+} from "@/lib/services/prospects"
 
 /**
  * The seven stages of a production sale, in order. Observed from real state
@@ -171,12 +181,18 @@ export interface SalesBoard {
  * getBacklogReport: the RPC filters on the requested division, and an
  * assigned-only user is additionally filtered down to their own divisions.
  * Deals with no community (an unattributed lead) stay visible to everyone —
- * otherwise a brand-new inquiry would be invisible until someone tags it.
+ * otherwise a brand-new inquiry would be invisible until someone tags it —
+ * except on an org that also builds custom homes, where a lead with no
+ * community is a Pipeline deal (`leadDesk`) and is listed there only. A single
+ * deal asked for by id is always found, whichever desk lists it.
  */
 export async function listSalesBoard(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesBoard> {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
-  const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  const [access, hasCustomWork] = await Promise.all([
+    getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId }),
+    opts.dealId ? Promise.resolve(false) : orgHasActiveNonProductionProjects(context.orgId),
+  ])
   if (opts.divisionId && access.assignedOnly && !access.divisionIds.includes(opts.divisionId)) {
     return { deals: [], truncated: false }
   }
@@ -189,6 +205,7 @@ export async function listSalesBoard(opts: ListSalesDealsOptions = {}, orgId?: s
     p_include_closed: opts.includeClosed ?? true,
     p_limit: limit,
     p_deal_id: opts.dealId ?? null,
+    p_include_communityless: Boolean(opts.dealId) || !shouldShowCustomBuildNavigation(context.productTier, hasCustomWork),
   })
   if (error) throw new Error(`Failed to load sales deals: ${error.message}`)
 
@@ -239,6 +256,8 @@ export interface SalesDealDetail {
    * consultant edits. Null for a deal anchored by an imported agreement.
    */
   prospect: Prospect | null
+  /** Every touch that brought the buyer in, and the earlier deal when they came back. */
+  attribution: ProspectAttributionHistory | null
 }
 
 /**
@@ -274,11 +293,11 @@ export async function getSalesDealDetail(dealId: string, orgId?: string): Promis
   await requirePermission("sales.read", context)
   if (deal.projectId) await requireAuthorization({ ...context, projectId: deal.projectId, permission: "sales.read" })
   const [editOrg, manageOrg, editHome, manageHome] = await Promise.all([
-    hasPermission("org.member", context), hasPermission("sales.manage", context),
+    canWriteDeals(context), hasPermission("sales.manage", context),
     deal.projectId ? authorize({ ...context, projectId: deal.projectId, permission: "project.manage" }).then(result => result.allowed) : Promise.resolve(true),
     deal.projectId ? authorize({ ...context, projectId: deal.projectId, permission: "sales.manage" }).then(result => result.allowed) : Promise.resolve(true),
   ])
-  const [reservationResult, contractResult, activity, prospect, signing] = await Promise.all([
+  const [reservationResult, contractResult, activity, prospect, signing, attribution] = await Promise.all([
     deal.reservationId
       ? context.supabase
           .from("lot_reservations")
@@ -298,6 +317,7 @@ export async function getSalesDealDetail(dealId: string, orgId?: string): Promis
     deal.prospectId ? listProspectActivity(deal.prospectId, context.orgId, 60) : Promise.resolve([]),
     deal.prospectId ? getProspect(deal.prospectId, context.orgId) : Promise.resolve(null),
     deal.contractId && deal.contractStatus === "draft" ? getAgreementSigningState(deal.contractId,context.orgId) : Promise.resolve(null),
+    deal.prospectId ? listProspectAttributions(deal.prospectId, context.orgId) : Promise.resolve(null),
   ])
 
   if (reservationResult.error) throw new Error(`Failed to load deal reservation: ${reservationResult.error.message}`)
@@ -332,5 +352,6 @@ export async function getSalesDealDetail(dealId: string, orgId?: string): Promis
     pricing: contract?.snapshot.purchase_agreement?.pricing ?? null,
     activity,
     prospect,
+    attribution,
   }
 }

@@ -277,7 +277,7 @@ async function preflightRejectsInvalidEffectiveConfigurations(kit, expected, che
   const unsold = await reserveNext(kit, org, "Quote Refused")
   const missing = configFor(kit, org, unsold.lotRow.id, ["ST-GAR", "KT-QTZ", "FL-LVP"])
   observed.salesQuoteMissingRequirement = await configRefusal(() => kit.as(org.team.sales, () => app("community-sales").priceAgreementDraft(missing)))
-  observed.salesAgreementMissingRequirement = await configRefusal(() => kit.as(org.team.sales, () => app("community-sales").createPurchaseAgreement({ ...missing, reservationId: unsold.reservation.id, expectedQuoteHash: "0".repeat(64) })))
+  observed.salesAgreementMissingRequirement = await configRefusal(() => kit.as(org.team.sales, () => app("community-sales").createPurchaseAgreement({ ...missing, ...seed.agreementPacketFor(kit, org, missing.lotId), reservationId: unsold.reservation.id, expectedQuoteHash: "0".repeat(64) })))
   observed.agreementsWrittenForRefused = count(kit, `select id from public.contracts where org_id=${q(kit, org.orgId)} and contract_type='purchase_agreement' and id in (select contract_id from public.lot_reservations where id=${q(kit, unsold.reservation.id)})`)
   observed.salesQuoteWithRequirement = (await refusal(() => kit.as(org.team.sales, () => app("community-sales").priceAgreementDraft(configFor(kit, org, unsold.lotRow.id, SKUS))))) === "allowed" ? "accepted" : "refused"
 

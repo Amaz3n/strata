@@ -873,8 +873,21 @@ async function projectionCandidates(
     // when it fully accounts for the bill. A partially-coded bill falls back to
     // a single header line so the GL still balances; the nightly tie-out reports
     // the gap rather than the projector inventing detail it does not have.
-    const costLines: FactCostLine[] =
-      subledgerLines.length > 0 && subledgerTotal === totalCents + useTaxCents
+    // A sales commission (and its clawback credit) is a selling expense posted to
+    // 6100: it never enters the job-cost subledger and is never home inventory.
+    const salesCommission =
+      typeof (row.metadata as { sales_commission_obligation_id?: unknown } | null)
+        ?.sales_commission_obligation_id === "string";
+    const costLines: FactCostLine[] = salesCommission
+      ? [
+          {
+            amount_cents: totalCents + useTaxCents,
+            project_id: row.project_id ? String(row.project_id) : null,
+            account_code: SYSTEM_ACCOUNT_CODES.salesCommissions,
+            dimensions: { cost_type: "Sales commission" },
+          },
+        ]
+      : subledgerLines.length > 0 && subledgerTotal === totalCents + useTaxCents
         ? subledgerLines
         : [
             {
@@ -894,7 +907,7 @@ async function projectionCandidates(
         retainage_cents: Number(row.retainage_cents ?? 0),
         project_id: row.project_id ?? null,
         company_id: row.company_id ?? null,
-        cost_lines: costLines.map(item => { const policy = inventoryPolicies.get(item.project_id ?? ""); const code = inventoryCostAccount(policy, String(row.bill_date), item.account_code); const tagged = isClosedHomeCost(policy, String(row.bill_date)) ? { ...item, dimensions: { ...item.dimensions, closed_home_cost: true } } : item; return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? tagged : { ...tagged, account_code: code }; }),
+        cost_lines: costLines.map(item => { const policy = inventoryPolicies.get(item.project_id ?? ""); const accountType = salesCommission ? "expense" : "cogs"; const code = inventoryCostAccount(policy, String(row.bill_date), item.account_code, accountType); const tagged = isClosedHomeCost(policy, String(row.bill_date), accountType) ? { ...item, dimensions: { ...item.dimensions, closed_home_cost: true } } : item; return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? tagged : { ...tagged, account_code: code }; }),
       },
     });
   }

@@ -2,6 +2,7 @@ import "server-only"
 import { z } from "zod"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ensureFrozenSigningSource } from "@/lib/services/esign-execution"
+import { agreementPacketRefusal } from "@/lib/sales/agreement-packet"
 
 import { agreementSigningInput, type SigningContract } from "@/lib/sales/agreement-signing-source"
 export { agreementSigningInput } from "@/lib/sales/agreement-signing-source"
@@ -17,6 +18,8 @@ export async function reserveAgreementSigningDocument(input: {
     p_org_id: input.orgId, p_contract_id: input.contract.id, p_actor_id: input.actorId,
     p_expected: agreementSigningInput(input.contract), p_file_id: input.fileId ?? null, p_recipients: input.recipients ?? null,
   })
+  const packetRefusal = agreementPacketRefusal(error)
+  if (packetRefusal) throw packetRefusal
   if (error) throw new Error(`Agreement signing ownership could not be confirmed: ${error.message}`)
   if (data === null && !input.fileId) return null
   const parsed = ownedDocumentSchema.safeParse(data)

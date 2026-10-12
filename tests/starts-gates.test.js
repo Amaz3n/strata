@@ -309,3 +309,32 @@ test("an open condition required before vertical start holds the lot's phase, an
   harness.store.land_entitlement_conditions.find((condition) => condition.id === "signal").status = "met"
   assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "entitlements"), "passed", "phase 1's open condition does not hold phase 2")
 })
+
+test("the financing gate holds a sold house while a milestone its agreement requires before start is open", async () => {
+  const tables = gateFixture({
+    selectionGroups: [{ id: "psg-1", org_id: ORG, project_id: PROJECT, status: "locked" }],
+    poRuns: [{ id: "run-1", org_id: ORG, project_id: PROJECT, mode: "dry_run", status: "succeeded" }],
+  })
+  const definition = {
+    id: "def-financing", org_id: ORG, key: "financing", label: "Financing milestones clear", check_kind: "auto",
+    auto_source: "agreement_milestones_clear", applies_when: "always", sort_order: 80, is_active: true, requires_attestation_permission: null, description: null,
+  }
+  tables.start_gate_definitions.push(definition)
+  tables.start_package_gates.push({
+    id: "gate-financing", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: definition.id, status: "pending",
+    passed_via: null, attested_by: null, attested_at: null, waived_reason: null, evidence_file_id: null,
+    created_at: "2026-09-01T00:09:00.000Z", definition, attested_user: null,
+  })
+  tables.contracts = [...(tables.contracts ?? []), { id: "00000000-0000-4000-8000-0000000000c1", org_id: ORG, project_id: PROJECT, contract_type: "purchase_agreement", status: "active" }]
+  const milestone = (id, title, requiredBefore) => ({ id, org_id: ORG, project_id: PROJECT, contract_id: "00000000-0000-4000-8000-0000000000c1", title, status: "open", required_before: requiredBefore, due_on: null })
+  tables.agreement_milestones = [
+    milestone("00000000-0000-4000-8000-0000000000a1", "Loan approval issued", "start"),
+    milestone("00000000-0000-4000-8000-0000000000a2", "Lender clear to close", "closing"),
+  ]
+  const harness = buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+
+  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "financing"), "pending")
+
+  harness.store.agreement_milestones.find((row) => row.title === "Loan approval issued").status = "satisfied"
+  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "financing"), "passed", "a milestone held for closing does not hold the start")
+})

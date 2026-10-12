@@ -4,7 +4,8 @@ import { z } from "zod"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission, hasPermission } from "@/lib/services/permissions"
 import { authorize, requireAuthorization } from "@/lib/services/authorization"
-import { deriveAgreementSigningState, signingState, agreementReconciliationState, type AgreementSigningState } from "@/lib/sales/agreement-signing-state"
+import { deriveAgreementSigningState, signingState, agreementReconciliationState, packetStaleState, type AgreementSigningState } from "@/lib/sales/agreement-signing-state"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 import { agreementSigningSourceMatches } from "@/lib/sales/agreement-signing-source"
 
@@ -24,7 +25,7 @@ export async function getAgreementSigningState(contractId: string, orgId?: strin
     hasPermission("sales.manage",context),
     authorize({permission:"sales.manage",orgId:context.orgId,userId:context.userId,projectId:contract.project_id,supabase:context.supabase}),
   ])
-  const canManage = process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED === "true" && Boolean(process.env.DOCUMENT_SIGNING_SECRET) && getFilesStorageProvider() === "r2" && contract.status === "draft" && orgManage && homeManage.allowed
+  const canManage = Boolean(process.env.DOCUMENT_SIGNING_SECRET) && getFilesStorageProvider() === "r2" && contract.status === "draft" && orgManage && homeManage.allowed
   const docs = await context.supabase.from("documents").select("id,status,metadata,current_revision").eq("org_id",context.orgId).eq("project_id",contract.project_id)
     .eq("source_entity_type","contract").eq("source_entity_id",contractId).contains("metadata",{purchase_agreement:true}).limit(2)
   if (docs.error || !docs.data) return signingState("unavailable")
@@ -46,6 +47,11 @@ export async function getAgreementSigningState(contractId: string, orgId?: strin
       || lot.data.house_plan_elevation_id !== saved.elevation_id || lot.data.swing !== saved.swing) return agreementReconciliationState("configuration", documentId)
     if (reservations.data.length !== 1 || reservations.data[0].lot_id !== saved.lot_id || reservations.data[0].status !== "reserved") return agreementReconciliationState("reservation", documentId)
     return signingState(stage, documentId, canManage && (!doc || Boolean(doc.metadata?.agreement_signing_input)))
+  }
+  if (!doc && contract.status === "draft") {
+    const stale = await createServiceSupabaseClient().rpc("agreement_packet_stale_reason", { p_org_id: context.orgId, p_contract_id: contract.id })
+    if (stale.error) return signingState("unavailable")
+    if (typeof stale.data === "string") return packetStaleState(stale.data, canManage)
   }
   if (!doc) return contract.status === "draft" ? preparationState("not_prepared") : signingState("reconcile")
   if (doc.metadata && Object.hasOwn(doc.metadata, "agreement_signing_input") && !agreementSigningSourceMatches(doc.metadata.agreement_signing_input, contract)) return agreementReconciliationState("source", doc.id)

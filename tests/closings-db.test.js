@@ -117,3 +117,35 @@ test("replaying a deposit application with a different amount is refused", async
   await assert.rejects(home.apply(300_000), /already applied to the invoice for a different amount/)
   assert.equal(await home.applied(), 400_000)
 })
+
+test("reversing a closing voids the home's warranty coverage, so the next closing enrolls it once again", async (t) => {
+  const db = await createDatabase(t)
+  const { orgId } = await seedMember(db)
+  const project = await insert(db, "projects", { org_id: orgId, name: "Lot 12" })
+  const program = await insert(db, "warranty_programs", { org_id: orgId, name: "Standard", is_default: true })
+  const closing = await insert(db, "closings", { org_id: orgId, project_id: project.id, status: "scheduled", scheduled_date: "2026-09-01" })
+  // The recorded settlement is fixture state; the reversal under test is the status change.
+  await db.exec("set session_replication_role = replica")
+  await db.query("update closings set status = 'closed', actual_date = '2026-09-01' where id = $1", [closing.id])
+  await db.exec("set session_replication_role = origin")
+  const enroll = (date) => insert(db, "project_warranty_coverage", {
+    org_id: orgId, project_id: project.id, program_id: program.id, effective_date: date, effective_source: "closing",
+    terms_snapshot: JSON.stringify([{ key: "workmanship", expires_on: "2027-09-01" }]),
+  })
+  const first = await enroll("2026-09-01")
+  await assert.rejects(enroll("2026-09-01"), /project_warranty_coverage_live_project_idx/)
+
+  // As reverse_books_home_closing does it: the one change a recorded closing allows.
+  await db.exec("begin")
+  await db.query("select set_config('arc.closing_reversal', $1, true)", [closing.id])
+  await db.query("update closings set status = 'cancelled', cancel_reason = 'Buyer financing fell through after funding' where id = $1", [closing.id])
+  await db.exec("commit")
+  const { rows: [voided] } = await db.query("select voided_at, void_reason, voided_closing_id from project_warranty_coverage where id = $1", [first.id])
+  assert.ok(voided.voided_at)
+  assert.equal(voided.voided_closing_id, closing.id)
+  await assert.rejects(db.query("update project_warranty_coverage set voided_at = null, void_reason = null where id = $1", [first.id]), /stays voided/)
+
+  await enroll("2026-10-15")
+  const { rows } = await db.query("select effective_date::text from project_warranty_coverage where project_id = $1 and voided_at is null", [project.id])
+  assert.deepEqual(rows, [{ effective_date: "2026-10-15" }])
+})

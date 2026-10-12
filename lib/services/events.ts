@@ -385,6 +385,10 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return landNotificationRecipients(supabase, orgId, event, actorId)
   }
 
+  if (event.event_type === "agreement_milestone.due") {
+    return agreementMilestoneRecipients(supabase, orgId, event)
+  }
+
   // Requests route to whoever decides them; decisions route back to whoever
   // raises them. The decision half was declared as a notification type, given a
   // title, and emitted — but never given a recipient set, so five event types
@@ -1825,6 +1829,26 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    case "agreement_milestone.due": {
+      const payload: Record<string, unknown> = event.payload ?? {}
+      const title = payloadText(payload, "title") ?? "A milestone"
+      const daysOut = typeof payload.days_out === "number" ? payload.days_out : null
+      const projectId = payloadText(payload, "project_id")
+      const when = daysOut === null ? "soon" : daysOut < 0 ? `${-daysOut} ${daysOut === -1 ? "day" : "days"} late` : daysOut === 0 ? "due today" : `due in ${daysOut} ${daysOut === 1 ? "day" : "days"}`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "agreement_milestone_due" as const,
+        title: `${title} ${when}`,
+        message: payload.required_before === "closing" ? `${title} holds this home's closing until it is resolved.` : `${title} is ${when}.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: projectId ? `/projects/${projectId}/closing#milestones` : "/sales" },
+      }
+    }
+
     case "land_acquisition_review.submitted":
     case "land_acquisition_review.decided":
     case "land_diligence_item.due":
@@ -2080,6 +2104,27 @@ async function landNotificationRecipients(
     recipients = await admitted(await usersWithAnyPermission(supabase, orgId, [fallback]), fallback)
   }
   return recipients.filter((id) => id !== actorId)
+}
+
+/**
+ * A milestone coming due goes to its owner, or to whoever runs closings on the
+ * home when nobody owns it — and only to people who can still open the home.
+ */
+async function agreementMilestoneRecipients(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  event: EventRecord,
+): Promise<string[]> {
+  const payload: Record<string, unknown> = event.payload ?? {}
+  const projectId = payloadText(payload, "project_id")
+  if (!projectId) return []
+  const owner = payloadText(payload, "owner_user_id")
+  const candidates = owner ? [owner] : await usersWithAnyPermission(supabase, orgId, ["closing.manage"])
+  const checks = await Promise.all(uniqUserIds(candidates).slice(0, LAND_NOTIFICATION_CANDIDATE_CAP).map(async (userId) => {
+    const decision = await authorize({ permission: "sales.read", orgId, userId, projectId, supabase })
+    return decision.allowed ? userId : null
+  }))
+  return uniqUserIds(checks)
 }
 
 /** Merge the bid package's title, project_id and creator onto a bid event's

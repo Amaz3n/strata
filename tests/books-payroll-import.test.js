@@ -116,3 +116,17 @@ test('custom native cost-account codes remain valid and impossible native burden
  labor[0].estimated_burden_cents=-1;labor[0].cost_cents--;labor[0].clearing_cents--
  assert.throws(()=>reconcilePayrollImport(run,labor,custom),/signs differ/)
 })
+test('a commission paid through payroll relieves accrued commissions instead of expensing it twice',()=>{
+ const chart=[...accounts,{org_id:org,code:'2240',account_type:'liability',subtype:'accrued_commissions',active:true},{org_id:org,code:'2250',account_type:'liability',subtype:'sales_use_tax',active:true}]
+ const {run,labor}=fixture(),employee=run.employees[0]
+ const commission={id:id(30),project_id:null,cost_code_id:null,cost_account_code:'2240',gross_cents:20000,employer_taxes_cents:0,employer_benefits_cents:0,labor_evidence_ids:[]}
+ employee.allocations.push(commission);employee.gross_cents+=20000;employee.net_cents+=20000;run.controls.gross_cents+=20000;run.controls.net_cents+=20000;run.controls.funding_cents+=20000
+ const result=reconcilePayrollImport(run,labor,chart)
+ assert.equal(net(result.draft.lines,'2240'),20000,'the accrual is relieved by the commission gross')
+ assert.equal(net(result.draft.lines,'5030'),25000,'construction labor is unchanged by the commission')
+ assert.ok(!result.variances.some(row=>row.allocationId===commission.id),'an accrual relief is not a wage variance')
+ commission.employer_taxes_cents=1000;employee.employer_taxes_cents+=1000;run.controls.employer_taxes_cents+=1000;run.controls.funding_cents+=1000
+ assert.throws(()=>reconcilePayrollImport(run,labor,chart),/only the commission gross/)
+ commission.employer_taxes_cents=0;employee.employer_taxes_cents-=1000;run.controls.employer_taxes_cents-=1000;run.controls.funding_cents-=1000
+ assert.throws(()=>reconcilePayrollImport(run,labor,chart.map(row=>row.code==='2240'?{...row,subtype:'other_liability'}:row)),/cost or construction-inventory account/)
+})

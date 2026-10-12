@@ -18,6 +18,9 @@ const PUBLIC_API_ROUTES = [
   // Resend inbound-email webhook (emailed vendor bills) — self-authenticates
   // via the svix signature (RESEND_INBOUND_WEBHOOK_SECRET).
   "/api/webhooks/resend-inbound",
+  // Website lead deliveries — no session; each request self-authenticates by
+  // the source's HMAC signature (x-arc-timestamp / x-arc-signature).
+  "/api/leads/intake/",
   // Accounting infra routes — no user session; they self-authenticate via
   // CRON_SECRET. Without these, the proxy redirects them to /auth/signin (307)
   // and they never run.
@@ -80,6 +83,8 @@ const PUBLIC_API_ROUTES = [
   "/api/portal/s/",
   "/api/portal/b/",
   "/api/webhooks/plaid",
+  // Lender/title milestone updates — server to server, self-authenticated by the feed's HMAC signature.
+  "/api/inbound/v1/agreement-milestones",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",

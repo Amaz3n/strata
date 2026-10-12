@@ -414,6 +414,7 @@ export async function listWarrantyPrograms(orgId?: string): Promise<WarrantyProg
         .select("id", { count: "exact", head: true })
         .eq("org_id", resolvedOrgId)
         .eq("program_id", program.id)
+        .is("voided_at", null)
       if (error) throw new Error(`Failed to load warranty program usage: ${error.message}`)
       if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
         throw new Error("Warranty program usage is unavailable. Reload before reviewing coverage.")
@@ -466,7 +467,7 @@ export async function upsertWarrantySlaTargets(input: unknown, orgId?: string) {
 }
 
 async function loadCoverage(supabase: SupabaseClient, orgId: string, projectId: string): Promise<ProjectWarrantyCoverageDTO | null> {
-  const { data, error } = await supabase.from("project_warranty_coverage").select("project_id,program_id,effective_date,effective_source,terms_snapshot,structural_carrier,structural_policy_number").eq("org_id", orgId).eq("project_id", projectId).maybeSingle()
+  const { data, error } = await supabase.from("project_warranty_coverage").select("project_id,program_id,effective_date,effective_source,terms_snapshot,structural_carrier,structural_policy_number").eq("org_id", orgId).eq("project_id", projectId).is("voided_at", null).maybeSingle()
   if (error) throw new Error(`Failed to load warranty coverage: ${error.message}`)
   if (!data) return null
   const today = new Date().toISOString().slice(0, 10)
@@ -490,7 +491,7 @@ export async function enrollProjectWarrantyCoverage(input: { projectId: string; 
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
   await requireAuthorization({ permission: "warranty.manage", orgId: resolvedOrgId, userId, projectId: input.projectId, supabase, resourceType: "project", resourceId: input.projectId, logDecision: true })
   const [existingResult, closingResult] = await Promise.all([
-    supabase.from("project_warranty_coverage").select("id").eq("org_id", resolvedOrgId).eq("project_id", input.projectId).maybeSingle(),
+    supabase.from("project_warranty_coverage").select("id").eq("org_id", resolvedOrgId).eq("project_id", input.projectId).is("voided_at", null).maybeSingle(),
     supabase.from("closings").select("actual_date,status").eq("org_id", resolvedOrgId).eq("project_id", input.projectId).maybeSingle(),
   ])
   if (existingResult.error) throw new Error(`Unable to read existing warranty coverage: ${existingResult.error.message}`)
@@ -1915,6 +1916,7 @@ async function createCourtesyInspectionsForOrg(supabase: SupabaseClient, orgId: 
       // A 30-day walk and an 11-month walk are the whole ritual, so only homes
       // inside that band can have anything due.
       .eq("org_id", orgId)
+      .is("voided_at", null)
       .gte("effective_date", new Date(asOf.getTime() - 425 * 86_400_000).toISOString().slice(0, 10))
       .lte("effective_date", asOf.toISOString().slice(0, 10))
       .order("project_id", { ascending: true })

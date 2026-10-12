@@ -196,6 +196,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   land_contract: "/communities/{community_id}/land#land-contracts",
   house_plan: "/plans/{id}",
   budget_template: "/settings/templates?budgetTemplate={id}",
+  agreement_template: "/settings/templates?section=agreements&template={id}",
   project: "/projects/{id}",
   task: "/tasks/{id}",
   file: "/files/{id}",

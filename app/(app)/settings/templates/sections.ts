@@ -5,6 +5,12 @@ export const TEMPLATE_SECTIONS = [
     description: "Company documents that are ready for every project.",
   },
   {
+    key: "agreements",
+    label: "Agreements",
+    description:
+      "Your purchase agreement and addenda, as your counsel wrote them. Each version is immutable once live, and where it applies decides which homes are sold on it.",
+  },
+  {
     key: "estimates",
     label: "Estimates",
     description:

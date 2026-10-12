@@ -2,7 +2,7 @@
 
 import type { ComponentType } from "react"
 
-import { Bell, Clock, FileText, Home, UserPlus } from "@/components/icons"
+import { AlertTriangle, Bell, Clock, FileText, Home, User, UserPlus } from "@/components/icons"
 import { DEAL_FILTER_LABELS, type DealFilter } from "@/lib/sales/next-action"
 import { cn } from "@/lib/utils"
 
@@ -19,6 +19,8 @@ const ITEMS: AttentionItem[] = [
   { key: "out_for_signature", icon: FileText, tone: "border-chart-1/40 bg-chart-1/10 text-chart-1" },
   { key: "closing_soon", icon: Home, tone: "border-success/40 bg-success/10 text-success" },
   { key: "new_inquiries", icon: UserPlus, tone: "border-chart-2/40 bg-chart-2/10 text-chart-2" },
+  { key: "unassigned", icon: User, tone: "border-warning/40 bg-warning/10 text-warning" },
+  { key: "milestones_overdue", icon: AlertTriangle, tone: "border-destructive/40 bg-destructive/10 text-destructive" },
 ]
 
 /**

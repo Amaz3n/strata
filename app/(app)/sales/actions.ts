@@ -27,6 +27,11 @@ import {
   withdrawSpecPriceChange,
   upsertIncentive,
   voidPurchaseAgreement,
+  previewAgreementPacket,
+  refreshPurchaseAgreementPacket,
+  previewAgreementCancellation,
+  completeAgreementCancellation,
+  type AgreementCancellationPlan,
   type AgreementDraftContext,
   type AgreementDraftPricing,
 } from "@/lib/services/community-sales"
@@ -145,9 +150,31 @@ export async function resumePurchaseAgreementSigningAction(input: unknown) {
   return run(() => resumePurchaseAgreementSigning(input))
 }
 
-/** Unwinds an agreement: releases the lot and un-wins the lead. */
+/** The documents the agreement will be signed on, for the optional addenda the seller picked. Read-only. */
+export async function previewAgreementPacketAction(input: unknown) {
+  try { return { success: true as const, data: await previewAgreementPacket(input) } }
+  catch (error) { return actionError(error) }
+}
+
+/** A draft whose packet went stale takes the packet the seller reviewed, then signing is prepared. */
+export async function refreshPurchaseAgreementPacketAction(input: unknown) {
+  return run(() => refreshPurchaseAgreementPacket(input))
+}
+
+/** What cancelling the sale will do, for review before confirming. Read-only. */
+export async function previewAgreementCancellationAction(contractId: string): Promise<ActionResult<AgreementCancellationPlan>> {
+  try { return { success: true, data: await previewAgreementCancellation(z.string().uuid().parse(contractId)) } }
+  catch (error) { return actionError(error) }
+}
+
+/** Cancels the sale against the reviewed plan: the agreement, its envelopes and changes, the start, the lot and the deposit. */
 export async function voidPurchaseAgreementAction(input: unknown) {
   return run(() => voidPurchaseAgreement(input))
+}
+
+/** Retries the money and access steps of a cancellation that did not finish. */
+export async function completeAgreementCancellationAction(input: unknown) {
+  return run(() => completeAgreementCancellation(input))
 }
 
 export async function upsertIncentiveAction(input: unknown) { return run(() => upsertIncentive(input as Parameters<typeof upsertIncentive>[0])) }

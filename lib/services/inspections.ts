@@ -1,6 +1,6 @@
 import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { isInspectionLifecycleEnabled, inspectionItemNeedsCorrection, inspectionReviewSource, inspectionCompletionResponseSchema, inspectionLifecycleInputSchema, inspectionLifecycleResponseSchema, inspectionObligationPageSchema } from "@/lib/inspections/lifecycle"
+import { inspectionItemNeedsCorrection, inspectionReviewSource, inspectionCompletionResponseSchema, inspectionLifecycleInputSchema, inspectionLifecycleResponseSchema, inspectionObligationPageSchema } from "@/lib/inspections/lifecycle"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { readAllRowsById } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
@@ -658,18 +658,6 @@ export async function updateInspectionItem(
   return data as InspectionItem
 }
 
-async function completeInspectionScheduledWork(
-  detail: InspectionDetail,
-  context: Awaited<ReturnType<typeof requireOrgContext>>,
-) {
-  if (!detail.schedule_item_id || detail.result !== "pass") return
-  const { data, error } = await context.supabase.from("schedule_items")
-    .update({ status: "completed", progress: 100 }).eq("org_id", context.orgId)
-    .eq("project_id", detail.project_id).eq("id", detail.schedule_item_id)
-    .neq("status", "cancelled").select("id").single()
-  if (error || !data) throw new Error(`Inspection is recorded; retry scheduled work completion after resolving its home or status: ${error?.message ?? "Scheduled item unavailable"}`)
-}
-
 export async function completeInspection(inspectionId: string, orgId?: string): Promise<InspectionDetail> {
   const context = await requireOrgContext(orgId)
   const { supabase, orgId: resolvedOrgId, userId } = context
@@ -677,38 +665,15 @@ export async function completeInspection(inspectionId: string, orgId?: string): 
   const detail = await getInspection(inspectionId, resolvedOrgId)
   await requireAuthorization({ ...context, permission: "inspection.write", projectId: detail.project_id,
     resourceType: "inspection", resourceId: inspectionId, logDecision: true })
-  if (isInspectionLifecycleEnabled()) {
-    const { data, error } = await supabase.rpc("complete_inspection_attempt", {
-      p_org: resolvedOrgId, p_home: detail.project_id, p_id: inspectionId, p_actor: userId,
-      p_source: inspectionReviewSource(detail),
-    })
-    if (error) throw new Error(`Unable to complete inspection attempt: ${error.message}`)
-    const receipt = inspectionCompletionResponseSchema.parse(data)
-    if (receipt.inspectionId !== detail.id) throw new Error("Inspection completion returned another attempt")
-    const recorded = await getInspection(inspectionId, resolvedOrgId)
-    return recorded.result === "fail" ? raiseCorrectiveWorkForFailedItems(recorded, context) : recorded
-  }
-  const answered = detail.items.filter((item) => item.response !== null && item.response !== "" && item.response !== "n/a")
-  const hasDeficiency = detail.items.some(inspectionItemNeedsCorrection)
-  const result: "pass" | "fail" | "partial" = hasDeficiency
-    ? "fail"
-    : !detail.items.length || answered.length < detail.items.length ? "partial" : "pass"
-  if (detail.status === "completed") {
-    if (detail.result === "pass" && result !== "pass") throw new Error("Recorded inspection no longer matches its passing checklist; reconcile its evidence before advancing scheduled work")
-    await completeInspectionScheduledWork(detail, context)
-    return detail.result === "fail" ? raiseCorrectiveWorkForFailedItems(detail, context) : detail
-  }
-  const { data, error } = await supabase.from("inspections")
-    .update({ status: "completed", result, inspected_at: detail.inspected_at ?? new Date().toISOString() })
-    .eq("org_id", resolvedOrgId).eq("project_id", detail.project_id).eq("id", inspectionId)
-    .eq("status", detail.status).select(INSPECTION_SELECT).single()
-  if (error || !data) throw new Error(`Failed to complete inspection: ${error?.message ?? "Inspection changed concurrently"}`)
-  const completed = { ...mapInspection(data), items: detail.items }
-  await recordEvent({ orgId: resolvedOrgId, eventType: "inspection_completed", entityType: "inspection", entityId: inspectionId,
-    payload: { project_id: detail.project_id, kind: detail.kind, result, deficient_items: detail.items.filter((item) => item.is_deficient).length } })
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "inspection", entityId: inspectionId, after: data })
-  await completeInspectionScheduledWork(completed, context)
-  return result === "fail" ? raiseCorrectiveWorkForFailedItems(completed, context) : completed
+  const { data, error } = await supabase.rpc("complete_inspection_attempt", {
+    p_org: resolvedOrgId, p_home: detail.project_id, p_id: inspectionId, p_actor: userId,
+    p_source: inspectionReviewSource(detail),
+  })
+  if (error) throw new Error(`Unable to complete inspection attempt: ${error.message}`)
+  const receipt = inspectionCompletionResponseSchema.parse(data)
+  if (receipt.inspectionId !== detail.id) throw new Error("Inspection completion returned another attempt")
+  const recorded = await getInspection(inspectionId, resolvedOrgId)
+  return recorded.result === "fail" ? raiseCorrectiveWorkForFailedItems(recorded, context) : recorded
 }
 
 /**
@@ -877,9 +842,8 @@ export async function createObservationFromInspectionItem(
   return updated as InspectionItem
 }
 
-/** Original inspection owner; staged until its SQL and legacy writers are accepted. */
+/** Required inspections of a home: each obligation with its attempts, newest page first. */
 export async function listInspectionObligations(projectId: string, after?: string, orgId?: string, inspectionId?: string) {
-  if (!isInspectionLifecycleEnabled()) return { rows: [], nextCursor: null }
   z.string().uuid().parse(projectId)
   if (after) z.string().uuid().parse(after)
   if (inspectionId) z.string().uuid().parse(inspectionId)
@@ -893,7 +857,6 @@ export async function listInspectionObligations(projectId: string, after?: strin
 }
 
 export async function mutateInspectionObligation(projectId: string, input: unknown, orgId?: string) {
-  if (!isInspectionLifecycleEnabled()) throw new Error("Inspection lifecycle is pending release acceptance")
   z.string().uuid().parse(projectId)
   const parsed = inspectionLifecycleInputSchema.parse(input)
   if (parsed.request.source.project_id !== projectId || parsed.request.source.id !== parsed.request.inspectionId) throw new Error("Inspection request source belongs to another home or attempt")

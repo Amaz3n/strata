@@ -73,6 +73,7 @@ const CATEGORY_BY_TYPE: Record<SearchEntityType, PreviewCategory> = {
   land_contract: "financial",
   house_plan: "general",
   budget_template: "financial",
+  agreement_template: "document",
   bid_package: "financial",
   invoice: "financial",
   payment: "financial",

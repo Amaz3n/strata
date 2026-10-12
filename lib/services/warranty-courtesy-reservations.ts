@@ -43,7 +43,7 @@ export async function generateReservedCourtesyInspections(input: {
   const start = new Date(input.asOf.getTime() - 425 * 86400000).toISOString().slice(0, 10)
   let cursor: string | null = null, created = 0
   for (;;) {
-    let query = input.supabase.from("project_warranty_coverage").select("id,project_id,effective_date").eq("org_id", orgId)
+    let query = input.supabase.from("project_warranty_coverage").select("id,project_id,effective_date").eq("org_id", orgId).is("voided_at", null)
       .gte("effective_date", start).lte("effective_date", asOf).order("id").limit(100)
     if (cursor) query = query.gt("id", cursor)
     const page = await query

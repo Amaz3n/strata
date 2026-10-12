@@ -67,6 +67,7 @@ export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> =
   closing: "sales.read",
   spec_price_proposal: "sales.read",
   spec_disposition: "sales.read",
+  agreement_template: "sales.read",
 
   // Field and correspondence
   safety_incident: "safety.read",

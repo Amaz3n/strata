@@ -39,6 +39,7 @@ export const GL_ACCOUNT_SUBTYPES = [
   "long_term_debt",
   "other_liability",
   "expected_contract_loss_reserve",
+  "accrued_commissions",
   "owner_equity",
   "owner_contributions",
   "owner_distributions",
@@ -64,6 +65,7 @@ export const GL_ACCOUNT_SUBTYPES = [
   "payroll",
   "depreciation",
   "other_expense",
+  "sales_commissions",
 ] as const
 
 export type GlAccountSubtype = (typeof GL_ACCOUNT_SUBTYPES)[number]
@@ -90,6 +92,7 @@ export const GL_ACCOUNT_SUBTYPE_TYPES: Record<GlAccountSubtype, GlAccountType> =
   long_term_debt: "liability",
   other_liability: "liability",
   expected_contract_loss_reserve: "liability",
+  accrued_commissions: "liability",
   owner_equity: "equity",
   owner_contributions: "equity",
   owner_distributions: "equity",
@@ -115,6 +118,7 @@ export const GL_ACCOUNT_SUBTYPE_TYPES: Record<GlAccountSubtype, GlAccountType> =
   payroll: "expense",
   depreciation: "expense",
   other_expense: "expense",
+  sales_commissions: "expense",
 }
 
 export function normalBalanceForSubtype(subtype: GlAccountSubtype): NormalBalance {

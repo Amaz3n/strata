@@ -1,4 +1,5 @@
-import { assertProspectWriteAccess, assertProspectOwner } from "@/lib/services/prospect-write-access";
+import { z } from "zod";
+import { assertCanWriteDeals, assertProspectWriteAccess, assertProspectOwner } from "@/lib/services/prospect-write-access";
 import { COOP_AGENT_ROLE } from "@/lib/sales/activity";
 import { promotePersonToDirectoryWithClient } from "@/lib/services/party-promotion";
 import { serializeLostReason } from "@/lib/sales/lost-reasons";
@@ -502,11 +503,7 @@ export async function createProspect({
     orgId: resolvedOrgId,
     userId,
   } = await requireOrgContext(orgId);
-  await requirePermission("org.member", {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-  });
+  await assertCanWriteDeals({ supabase, orgId: resolvedOrgId, userId });
 
   await assertProspectOwner(resolvedOrgId, parsed.owner_user_id ?? userId);
 
@@ -1336,4 +1333,107 @@ export async function deleteProspectContact({
     entityId: contactId,
     before: existing,
   });
+}
+
+export interface ProspectAttribution {
+  id: string;
+  touch: number;
+  channel: "walk_in" | "appointment" | "web" | "phone" | "import";
+  sourceLabel: string | null;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmTerm: string | null;
+  utmContent: string | null;
+  referrerUrl: string | null;
+  landingUrl: string | null;
+  communityName: string | null;
+  occurredAt: string;
+}
+
+export interface ProspectAttributionHistory {
+  touches: ProspectAttribution[];
+  /** The earlier deal this buyer was won or lost on, when they came back. */
+  returningFrom: { prospectId: string; status: string; closedAt: string | null } | null;
+  truncated: boolean;
+}
+
+const ATTRIBUTION_CAP = 50;
+
+const attributionRowSchema = z.object({
+  id: z.string(),
+  touch: z.number(),
+  channel: z.enum(["walk_in", "appointment", "web", "phone", "import"]),
+  source_label: z.string().nullable(),
+  utm_source: z.string().nullable(),
+  utm_medium: z.string().nullable(),
+  utm_campaign: z.string().nullable(),
+  utm_term: z.string().nullable(),
+  utm_content: z.string().nullable(),
+  referrer_url: z.string().nullable(),
+  landing_url: z.string().nullable(),
+  occurred_at: z.string(),
+});
+
+/**
+ * Every touch that brought this buyer in, first touch first: the source,
+ * campaign and landing page of each submission, kept when later ones merged
+ * into the same deal. Written only by `file_lead()`.
+ */
+export async function listProspectAttributions(
+  prospectId: string,
+  orgId?: string,
+): Promise<ProspectAttributionHistory> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId });
+
+  const [touches, returning] = await Promise.all([
+    supabase
+      .from("prospect_attributions")
+      .select("id, touch, channel, source_label, utm_source, utm_medium, utm_campaign, utm_term, utm_content, referrer_url, landing_url, occurred_at, community:communities(name)")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospectId)
+      .order("touch", { ascending: true })
+      .limit(ATTRIBUTION_CAP + 1),
+    supabase
+      .from("lead_intake_receipts")
+      .select("prior_prospect_id, prior:prospects!lead_intake_receipts_prior_prospect_fkey(status, won_at, lost_at)")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospectId)
+      .not("prior_prospect_id", "is", null)
+      .order("received_at", { ascending: true })
+      .limit(1),
+  ]);
+  if (touches.error) throw new Error(`Failed to load lead attribution: ${touches.error.message}`);
+  if (returning.error) throw new Error(`Failed to load the buyer's earlier deal: ${returning.error.message}`);
+
+  const named = z.object({ name: z.string() }).nullable();
+  const rows = z.array(attributionRowSchema.extend({ community: named })).parse(touches.data ?? []);
+  const prior = z
+    .array(z.object({
+      prior_prospect_id: z.string(),
+      prior: z.object({ status: z.string(), won_at: z.string().nullable(), lost_at: z.string().nullable() }).nullable(),
+    }))
+    .parse(returning.data ?? [])[0] ?? null;
+  return {
+    touches: rows.slice(0, ATTRIBUTION_CAP).map((row) => ({
+      id: row.id,
+      touch: row.touch,
+      channel: row.channel,
+      sourceLabel: row.source_label,
+      utmSource: row.utm_source,
+      utmMedium: row.utm_medium,
+      utmCampaign: row.utm_campaign,
+      utmTerm: row.utm_term,
+      utmContent: row.utm_content,
+      referrerUrl: row.referrer_url,
+      landingUrl: row.landing_url,
+      communityName: row.community?.name ?? null,
+      occurredAt: row.occurred_at,
+    })),
+    returningFrom: prior
+      ? { prospectId: prior.prior_prospect_id, status: prior.prior?.status ?? "lost", closedAt: prior.prior?.won_at ?? prior.prior?.lost_at ?? null }
+      : null,
+    truncated: rows.length > ATTRIBUTION_CAP,
+  };
 }

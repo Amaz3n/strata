@@ -90,10 +90,43 @@ async function productionBuilder(kit, { name = "Production builder", password = 
     superintendent: "org_superintendent", warranty: "org_warranty_manager", design: "org_design_studio_coordinator",
   }
   org.team = Object.fromEntries(Object.entries(roles).map(([key, role]) => [key, kit.addMember(org, role, { password })]))
+  seedAgreementPacket(kit, org)
   org.plans = []
   org.lots = []
   org.lotCount = lots
   return org
+}
+
+/**
+ * The org's own purchase agreement, published for its Florida homes (Arc ships
+ * no legal text; every production community the scenarios build is in Florida). The stack has no file storage: the template is a file row and a
+ * checksum, which is all the packet binds; rendering it needs --storage-env.
+ */
+function seedAgreementPacket(kit, org) {
+  const { q } = kit
+  const fileId = randomUUID(), templateId = randomUUID(), versionId = randomUUID()
+  kit.sql(`begin;
+insert into public.files(id,org_id,file_name,storage_path,mime_type,size_bytes) values(${q(fileId)},${q(org.orgId)},'purchase-agreement.pdf','acceptance/purchase-agreement.pdf','application/pdf',48000);
+insert into public.agreement_templates(id,org_id,kind,name,created_by) values(${q(templateId)},${q(org.orgId)},'agreement','Florida purchase agreement',${q(org.owner.userId)});
+insert into public.agreement_template_versions(id,org_id,template_id,version_number,title,required,applies_to_states,source_file_id,content_sha256,size_bytes,page_count,storage_path,created_by)
+  values(${q(versionId)},${q(org.orgId)},${q(templateId)},1,'Florida new home purchase agreement',true,'{FL}',${q(fileId)},${q("a".repeat(64))},48000,12,'acceptance/purchase-agreement.pdf',${q(org.owner.userId)});
+select public.publish_agreement_template_version(${q(org.orgId)},${q(versionId)},${q(org.owner.userId)});
+commit;`)
+  org.agreementTemplateId = templateId
+}
+
+/** The documents a sale on this lot is written on, as the seller reviews them: none optional picked, and the hash creation checks. */
+function agreementPacketFor(kit, org, lotId, optionalAddendumTemplateIds = []) {
+  const { q } = kit
+  const [row] = kit.rows(`select public.resolve_agreement_packet(${q(org.orgId)},(select community_id from public.lots where id=${q(lotId)}),${q(JSON.stringify(optionalAddendumTemplateIds))}::jsonb)->>'hash' as hash`)
+  return { optionalAddendumTemplateIds, expectedPacketHash: row.hash }
+}
+
+/** The copy of a change order the buyer signed on paper, as a file on the home: what an offline amendment approval must carry. */
+function signedCopyFile(kit, org, projectId, name = "signed-change-order.pdf") {
+  const id = randomUUID()
+  kit.sql(`insert into public.files(id,org_id,project_id,file_name,storage_path,mime_type) values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(projectId)},${kit.q(name)},${kit.q(`acceptance/${id}.pdf`)},'application/pdf')`)
+  return id
 }
 
 /** Division, community, phases, lots, takedown and team assignments. */
@@ -230,7 +263,7 @@ function configuration(org, { lotId, plan, swing, skus = [], incentiveIds = [] }
 async function signAgreement(kit, org, { reservationId, config }) {
   const sales = app("community-sales")
   const quote = await kit.as(org.team.sales, () => sales.priceAgreementDraft(config))
-  const created = await kit.as(org.team.sales, () => sales.createPurchaseAgreement({ ...config, reservationId, expectedQuoteHash: quote.quoteHash }))
+  const created = await kit.as(org.team.sales, () => sales.createPurchaseAgreement({ ...config, ...agreementPacketFor(kit, org, config.lotId), reservationId, expectedQuoteHash: quote.quoteHash }))
     .catch((error) => { if (!/^Missing (R2 credentials|DOCUMENT_SIGNING_SECRET)/.test(error.message)) throw error; return null })
   const contract = kit.rows(`select id, status, project_id, total_cents from public.contracts where org_id=${kit.q(org.orgId)} and contract_type='purchase_agreement' and id in (select contract_id from public.lot_reservations where id=${kit.q(reservationId)})`)[0]
   if (!contract) throw Error("The purchase agreement was not saved")
@@ -359,14 +392,40 @@ update public.invoices set metadata=jsonb_set(metadata,'{settlement}',${json(red
 commit;`, "supabase_admin")
 }
 
+/**
+ * The closing desk's gates as a coordinator clears them: the certificate of
+ * occupancy gate completed with its evidence file on the home (it cannot be
+ * waived), every other gate waived with a reason, every contingency or
+ * lender/title milestone that holds closing waived with a reason, and, for an
+ * agreement that never had commission terms, the sales desk declaring none
+ * (terms a scenario set itself are left for it to approve).
+ */
+async function prepareClosingGates(kit, org, closingId) {
+  const closings = app("closings"), milestones = app("agreement-milestones")
+  const { project_id: projectId } = kit.rows(`select project_id from public.closings where id=${kit.q(closingId)}`)[0]
+  for (const item of kit.rows(`select id, evidence_required from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate and status='open'`)) {
+    if (item.evidence_required) {
+      // File storage is not on the stack; the file record stands in for the uploaded certificate.
+      const fileId = kit.rows(`insert into public.files(org_id,project_id,file_name,storage_path,metadata) values(${kit.q(org.orgId)},${kit.q(projectId)},'certificate-of-occupancy.pdf',${kit.q(`acceptance/co-${closingId}.pdf`)},'{}') returning id`)[0].id
+      await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "complete", fileId }))
+    } else {
+      await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+    }
+  }
+  for (const row of kit.rows(`select m.id, m.version from public.agreement_milestones m join public.contracts c on c.id=m.contract_id and c.status='active' where m.project_id=${kit.q(projectId)} and m.required_before='closing' and m.status in ('open','failed') order by m.sort_order`))
+    await kit.as(org.owner, () => milestones.resolveAgreementMilestone({ milestoneId: row.id, version: row.version, resolution: "waived", resolvedOn: isoDay(0), note: "Cleared by the title agent at the closing table." }))
+  for (const row of kit.rows(`select c.id from public.contracts c where c.project_id=${kit.q(projectId)} and c.contract_type='purchase_agreement' and c.status='active'
+    and not exists (select 1 from public.sales_commission_plans p where p.contract_id=c.id and p.status in ('proposed','approved'))`))
+    await kit.as(org.owner, () => app("sales-commissions").proposeCommissionPlan({ contractId: row.id, plan: { coopBroker: "none", lines: [] } }))
+}
+
 /** The closing desk's path, as in HOME-01: clear every gate, settle, let the outbox post it. */
 async function closeHome(kit, org, { projectId, date = isoDay(21) }) {
   const closings = app("closings")
   const closingId = kit.rows(`select id from public.closings where project_id=${kit.q(projectId)} and status<>'cancelled'`)[0].id
   const status = () => kit.rows(`select status from public.closings where id=${kit.q(closingId)}`)[0].status
   await kit.as(org.owner, () => closings.scheduleClosing({ closingId, scheduledDate: date }))
-  for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
-    await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+  await prepareClosingGates(kit, org, closingId)
   await kit.as(org.owner, () => closings.markClearedToClose(closingId))
   // The closing statement PDF needs file storage; recording the closing does not.
   const settle = () => kit.as(org.owner, () => closings.settleClosing({ closingId, actualDate: date, paymentMethod: "wire", paymentReference: "WIRE-PRODUCTION" }))
@@ -419,5 +478,6 @@ module.exports = {
   EVIDENCE, COST_CODES, TRADES, PLANS, OPTIONS, DESIGN_PICKS,
   defaultPeriods, isoDay, glId, csv, planTradeCostCents,
   productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveHold, reserveLot, configuration, signAgreement,
-  chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
+  agreementPacketFor, signedCopyFile,
+  chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, prepareClosingGates, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
 }

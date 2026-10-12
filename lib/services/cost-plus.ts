@@ -1389,12 +1389,15 @@ export async function propagateApprovalToLedger(args: {
   if (args.source === "vendor_bill") {
     const { data: bill, error: billError } = await supabase
       .from("vendor_bills")
-      .select("id, project_id")
+      .select("id, project_id, metadata")
       .eq("org_id", resolvedOrgId)
       .eq("id", args.sourceId)
       .maybeSingle();
 
     if (billError || !bill) throw new Error("Vendor bill not found");
+    // A sales commission is a selling expense of the sale, not construction cost:
+    // it never reaches job cost, budget variance or a cost-plus owner's bill.
+    if ((bill.metadata as Record<string, unknown> | null)?.sales_commission_obligation_id) return;
     const contract = await getProjectCostContract(
       supabase,
       resolvedOrgId,

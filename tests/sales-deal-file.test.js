@@ -18,7 +18,8 @@ function fixture({ denyHome=false, edit=false, manage=false, homeEdit=true, home
     '@/lib/services/context':{requireOrgContext:async()=>({supabase:db,orgId:ORG,userId:id(9)})},
     '@/lib/services/permissions':{requirePermission:async()=>{},hasPermission:async key=>key==='org.member'?edit:manage},
     '@/lib/services/authorization':{getDivisionAccessForUser:async()=>({assignedOnly:false,divisionIds:[]}),requireAuthorization:async input=>{checks.push(input);if(denyHome)throw Error('Forbidden home')},authorize:async input=>({allowed:input.permission==='project.manage'?homeEdit:homeManage})},
-    '@/lib/services/prospects':{getProspect:async()=>({id:PROSPECT,status:'contacted'}),listProspectActivity:async()=>[]},
+    '@/lib/services/prospects':{getProspect:async()=>({id:PROSPECT,status:'contacted'}),listProspectActivity:async()=>[],listProspectAttributions:async()=>({touches:[],returningFrom:null,truncated:false})},
+    '@/lib/services/prospect-write-access':{canWriteDeals:async()=>edit},
     '@/lib/services/agreement-signing-status':{getAgreementSigningState:async()=>null},
     '@/lib/validation/sales-deals':require('../lib/validation/sales-deals'),
   })

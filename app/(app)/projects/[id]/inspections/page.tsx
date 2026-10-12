@@ -1,4 +1,3 @@
-import { isInspectionLifecycleEnabled } from "@/lib/inspections/lifecycle"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -34,11 +33,11 @@ async function InspectionsPageContent({
     listProjectLocations(id),
     hasPermission("project.manage"),
     authorize({ ...context, permission: "inspection.write", projectId: id, logDecision: false }),
-    isInspectionLifecycleEnabled() ? authorize({ ...context, permission: "inspection.review", projectId: id, logDecision: false }) : Promise.resolve({ allowed: false }),
+    authorize({ ...context, permission: "inspection.review", projectId: id, logDecision: false }),
     listInspectionObligations(id, query.obligations_after),
     query.inspection ? listInspectionObligations(id, undefined, undefined, query.inspection) : Promise.resolve({ rows: [], nextCursor: null }),
     hasPermission("inspection.write"),
-    isInspectionLifecycleEnabled() ? hasPermission("inspection.review") : Promise.resolve(false),
+    hasPermission("inspection.review"),
   ])
   if (selected && selected.project_id !== id) notFound()
 
@@ -52,7 +51,7 @@ async function InspectionsPageContent({
 
   return (
     <PageLayout title="Inspections" breadcrumbs={[{ label: "Project" }, { label: "Inspections" }]}>
-      <InspectionsClient projectId={id} inspections={inspections} templates={templates} selected={selected} companies={companies} locations={locations} canManageLocations={canManageLocations} canWrite={canWriteOrg && writeDecision.allowed} lifecycleEnabled={isInspectionLifecycleEnabled()} canReview={canReviewOrg && reviewDecision.allowed && selected?.inspector_user_id !== context.userId} obligationPage={obligationPage} selectedObligation={selectedObligations.rows[0] ?? null} scheduleLink={scheduleLink} />
+      <InspectionsClient projectId={id} inspections={inspections} templates={templates} selected={selected} companies={companies} locations={locations} canManageLocations={canManageLocations} canWrite={canWriteOrg && writeDecision.allowed} canReview={canReviewOrg && reviewDecision.allowed && selected?.inspector_user_id !== context.userId} obligationPage={obligationPage} selectedObligation={selectedObligations.rows[0] ?? null} scheduleLink={scheduleLink} />
     </PageLayout>
   )
 }

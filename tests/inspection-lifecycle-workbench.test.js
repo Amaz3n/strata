@@ -11,14 +11,14 @@ function declarations(file,names,bindings) {
  const code=ts.transpileModule(nodes.map(n=>n.getText(source)).join('\n')+`\nexport {${names.join(',')}};`,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText
  const exports={};new Function('exports','require',...Object.keys(bindings),code)(exports,require,...Object.values(bindings));return exports
 }
-function service({enabled=true,denied=false,response=null,error=null}={}) {
+function service({denied=false,response=null,error=null}={}) {
  const calls=[],gates=[]
  const supabase=createClient('https://inspection-lifecycle.invalid','isolated-key',{auth:{persistSession:false,autoRefreshToken:false},global:{fetch:async(url,options)=>{
   const body=JSON.parse(options.body);calls.push({name:new URL(url).pathname.split('/').pop(),body})
   return new Response(JSON.stringify(error??response??{obligationId:OBL,inspectionId:INSP,attemptNumber:1}),{status:error?400:200,headers:{'content-type':'application/json'}})
  }}})
  const context={supabase,orgId:ORG,userId:ACTOR}
- const bindings={...lifecycle,z,isInspectionLifecycleEnabled:()=>enabled,requireOrgContext:async()=>context,requirePermission:async()=>{},getInspection:async()=>detail,requireAuthorization:async input=>{gates.push(input);if(denied)throw new Error('Home denied')}}
+ const bindings={...lifecycle,z,requireOrgContext:async()=>context,requirePermission:async()=>{},getInspection:async()=>detail,requireAuthorization:async input=>{gates.push(input);if(denied)throw new Error('Home denied')}}
  return {...declarations('lib/services/inspections.ts',['listInspectionObligations','mutateInspectionObligation','completeInspection'],bindings),calls,gates}
 }
 test('original lifecycle service binds exact request actor/home and separates review authority',async()=>{
@@ -30,9 +30,9 @@ test('original lifecycle service binds exact request actor/home and separates re
   assert.equal(h.gates[0].permission,operation==='accept'?'inspection.review':'inspection.write')
  }
 })
-test('disabled lifecycle, wrong source home and denied home do not reach mutation transport',async()=>{
+test('wrong source home and denied home do not reach mutation transport',async()=>{
  const input={key:id(100),request:{operation:'create',inspectionId:INSP,source:lifecycle.inspectionReviewSource(detail)}}
- for(const options of [{enabled:false},{denied:true}]) {const h=service(options);await assert.rejects(h.mutateInspectionObligation(HOME,input));assert.equal(h.calls.length,0)}
+ for(const options of [{denied:true}]) {const h=service(options);await assert.rejects(h.mutateInspectionObligation(HOME,input));assert.equal(h.calls.length,0)}
  const h=service();await assert.rejects(h.mutateInspectionObligation(id(99),input),/another home/);assert.equal(h.calls.length,0)
 })
 test('discovery applies bounded cursor and selected-attempt lookup and rejects returned foreign scope',async()=>{
@@ -84,14 +84,6 @@ test('completion cutover calls the atomic owner without duplicate service-side e
  assert.deepEqual(h.calls[0].body.p_source,lifecycle.inspectionReviewSource(detail))
  assert.equal(h.calls[0].body.p_home,HOME);assert.equal(h.calls[0].body.p_actor,ACTOR)
  await assert.rejects(service({response:{inspectionId:id(999),result:'pass',existing:false,awaitingReview:true}}).completeInspection(INSP),/another attempt/)
-})
-test('staged closing readiness rejects missing required-inspection proof before other closing reads',async()=>{
- let calls=0
- const {assertClosingReadiness}=declarations('lib/services/closing-readiness.ts',['assertClosingReadiness'],{
-  authorizeClosingProject:async()=>{},isInspectionLifecycleEnabled:()=>true,z,
- })
- const input={orgId:ORG,projectId:HOME,userId:ACTOR,supabase:{rpc:async(name)=>{calls++;assert.equal(name,'read_inspection_closing_readiness');return{data:null,error:{message:'Required obligation not accepted'}}}}}
- await assert.rejects(assertClosingReadiness(input),/not accepted/);assert.equal(calls,1)
 })
 test('completed deficiency rows retain evidence while corrective actions require write authority',()=>{
  const bindings={inspectionItemNeedsCorrection:lifecycle.inspectionItemNeedsCorrection,useState:React.useState,cn:(...parts)=>parts.filter(Boolean).join(' '),ItemDeficiencyPhoto:function StubPhoto(){return null}}

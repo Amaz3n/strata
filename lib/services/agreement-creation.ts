@@ -1,5 +1,6 @@
 import "server-only"
 import { z } from "zod"
+import { agreementPacketRefusal } from "@/lib/sales/agreement-packet"
 import { AgreementQuoteChangedError } from "@/lib/sales/agreement-quote"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -26,6 +27,8 @@ export async function saveAgreementCreation(input: {
     p_request: input.request, p_expected: input.expected ?? null, p_snapshot: input.snapshot ?? null,
   })
   if (error?.details === "AGREEMENT_QUOTE_CHANGED") throw new AgreementQuoteChangedError()
+  const packetRefusal = agreementPacketRefusal(error)
+  if (packetRefusal) throw packetRefusal
   if (error) throw new Error(`Agreement creation could not be confirmed. Review the saved agreement before retrying: ${error.message}`)
   if (data === null && !input.snapshot) return null
   const parsed = receiptSchema.safeParse(data)

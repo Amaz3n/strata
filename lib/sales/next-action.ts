@@ -1,3 +1,4 @@
+import { isoToday, milestoneDeskAction, type MilestoneDeskSignal } from "@/lib/sales/agreement-milestones"
 import type { SalesDeal } from "@/lib/services/sales-deals"
 
 /**
@@ -94,9 +95,16 @@ function dueFollowUp(deal: SalesDeal, now: Date): string | null {
  * appointment is Design Studio's to schedule, so the deal only ever surfaces
  * and links to it.
  */
-export function nextActionFor(deal: SalesDeal, now: Date = new Date()): NextAction {
+export function nextActionFor(deal: SalesDeal, now: Date = new Date(), milestones: MilestoneDeskSignal | null = null): NextAction {
   const followUp = dueFollowUp(deal, now)
   if (followUp) return dated("Follow up", followUp, now)
+
+  // On a sold home a late or failed contingency, or a lender or title
+  // milestone about to slip, outranks the closing date it threatens.
+  if (deal.stage === "contract" || deal.stage === "building" || deal.stage === "closing") {
+    const chase = milestoneDeskAction(milestones, isoToday(now))
+    if (chase) return chase
+  }
 
   switch (deal.stage) {
     case "inquiry": {
@@ -189,6 +197,8 @@ export const DEAL_FILTERS = [
   "out_for_signature",
   "closing_soon",
   "new_inquiries",
+  "milestones_overdue",
+  "unassigned",
 ] as const
 
 export type DealFilter = (typeof DEAL_FILTERS)[number]
@@ -204,9 +214,11 @@ export const DEAL_FILTER_LABELS: Record<DealFilter, string> = {
   out_for_signature: "Draft agreements",
   closing_soon: "Closing this week",
   new_inquiries: "New inquiries",
+  milestones_overdue: "Contingencies late",
+  unassigned: "Unassigned",
 }
 
-export function matchesDealFilter(deal: SalesDeal, filter: DealFilter, now: Date = new Date()): boolean {
+export function matchesDealFilter(deal: SalesDeal, filter: DealFilter, now: Date = new Date(), milestones: MilestoneDeskSignal | null = null): boolean {
   switch (filter) {
     case "all":
       return true
@@ -230,5 +242,10 @@ export function matchesDealFilter(deal: SalesDeal, filter: DealFilter, now: Date
     }
     case "new_inquiries":
       return deal.stage === "inquiry"
+    case "milestones_overdue":
+      return deal.stage !== "closed" && deal.stage !== "lost" && milestones !== null && (milestones.overdueCount > 0 || milestones.failedCount > 0)
+    case "unassigned":
+      // A routed lead with nobody on it is the sales manager's to hand out.
+      return deal.stage !== "closed" && deal.stage !== "lost" && deal.prospectId !== null && deal.ownerUserId === null
   }
 }

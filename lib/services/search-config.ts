@@ -55,6 +55,7 @@ export type SearchEntityType =
   | 'land_contract'
   | 'house_plan'
   | 'budget_template'
+  | 'agreement_template'
   | 'selection_option'
   | 'design_studio_appointment'
   | 'price_agreement'
@@ -202,6 +203,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     descriptionFields: ['description'],
     searchableFields: ['name', 'description', 'property_type'],
     hrefTemplate: '/settings/templates?budgetTemplate={id}',
+  },
+  agreement_template: {
+    table: 'agreement_templates',
+    titleField: 'name',
+    subtitleFields: ['kind', 'status'],
+    descriptionFields: [],
+    searchableFields: ['name', 'kind'],
+    hrefTemplate: '/settings/templates?section=agreements&template={id}',
   },
   community: {
     table: 'communities',

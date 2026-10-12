@@ -58,6 +58,7 @@ import { BOOKS_EXPORT_JOB_TYPE, runBooksExportJob } from "@/lib/services/books/e
 import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceIssuance, runScheduledInvoiceSend } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import { AUDIT_RETRY_JOB_TYPE, writeDeferredAudit } from "@/lib/services/audit"
+import { LEAD_INTAKE_JOB_TYPE, runLeadIntakeJob } from "@/lib/services/lead-intake"
 import { withCorrelation } from "@/lib/observability/correlation"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
@@ -168,6 +169,7 @@ const OUTBOX_JOB_TYPES = [
   SCHEDULED_INVOICE_SEND_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
   AUDIT_RETRY_JOB_TYPE,
+  LEAD_INTAKE_JOB_TYPE,
 ]
 
 // Create a VISIBLE test image for the tiled viewer
@@ -654,6 +656,8 @@ async function processOutboxQueue(request: NextRequest) {
           await runFloorplanInterpretation({ orgId: job.org_id, target: target.data, generationId: typeof job.payload?.generationId === "string" ? job.payload.generationId : undefined })
         } else if (job.job_type === AUDIT_RETRY_JOB_TYPE) {
           await writeDeferredAudit(job.org_id, job.payload)
+        } else if (job.job_type === LEAD_INTAKE_JOB_TYPE) {
+          await runLeadIntakeJob(job.org_id, job.payload ?? {})
         } else {
           return false
         }

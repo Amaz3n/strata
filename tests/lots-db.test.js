@@ -292,34 +292,20 @@ test("a member creates a reservation only as a hold; reserving and converting ar
   assert.equal((await insertAs("hold", await lot({ status: "developed" }))).rows[0].status, "hold")
 })
 
-test("a draft agreement takes its reservation and configures its home only through attach_purchase_agreement_draft", async (t) => {
-  const { db, orgId, ownerId, lot, buyer, home, hold } = await sales(t)
+test("a sales member cannot attach an agreement to a reservation with their own client", async (t) => {
+  const { db, orgId, lot, buyer, home, hold } = await sales(t)
   const { userId: salesAgent } = await seedMember(db, { orgId, role: "org_sales_agent" })
   const alma = await buyer("Alma")
   const homeId = await home(alma)
-  const plan = await insert(db, "house_plans", { org_id: orgId, name: "Oak", code: "OAK" })
   const row = await lot({ status: "assigned", project_id: homeId })
   const reservation = await hold(row, alma, { status: "reserved", expires_at: null })
   const draft = await insert(db, "contracts", { org_id: orgId, project_id: homeId, title: "Purchase agreement", contract_type: "purchase_agreement", status: "draft" })
-  const attach = (actorId = ownerId) => rpc(db, "attach_purchase_agreement_draft", {
-    p_org_id: orgId, p_contract_id: draft.id, p_reservation_id: reservation.id,
-    p_house_plan_id: plan.id, p_house_plan_version_id: null, p_elevation_id: null, p_swing: "left", p_actor_id: actorId,
-  })
 
-  // The path the default agreement creation used to take: the sales member's own client.
+  // Agreement creation takes the reservation inside create_purchase_agreement_atomic, the only path.
   await assert.rejects(
     asRole(db, { role: "authenticated", userId: salesAgent }, (tx) => tx.query("update lot_reservations set contract_id = $2 where id = $1", [reservation.id, draft.id])),
     /through the sales flow/,
   )
-  await assert.rejects(
-    asRole(db, { role: "authenticated", userId: salesAgent }, (tx) => tx.query("select public.attach_purchase_agreement_draft($1, $2, $3, $4, null, null, 'left', $5)", [orgId, draft.id, reservation.id, plan.id, salesAgent])),
-    /permission denied/,
-  )
-
-  await attach(salesAgent)
-  const { rows: [after] } = await db.query("select r.contract_id, l.house_plan_id, l.swing from lot_reservations r join lots l on l.id = r.lot_id where r.id = $1", [reservation.id])
-  assert.deepEqual(after, { contract_id: draft.id, house_plan_id: plan.id, swing: "left" })
-  await assert.rejects(attach(), /no longer reserved without an agreement/)
 })
 
 test("a home's asking price moves only by repricing: a member changes neither its lot premium nor its plan's price", async (t) => {

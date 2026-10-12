@@ -154,6 +154,12 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   const startDate = startPackage?.actual_start_date ?? startPackage?.released_at?.slice(0, 10) ?? project.start_date
   const elapsed = startDate ? Math.max(0, Math.floor((Date.now() - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000)) : null
   const contract = contracts?.[0]
+  // A signed agreement's price is its newest version: the original plus every change order the buyer signed.
+  const { data: terms, error: termsError } = contract?.signed_at
+    ? await context.supabase.from("purchase_agreement_authorized_terms").select("authorized_total_cents")
+      .eq("org_id", context.orgId).eq("contract_id", contract.id).maybeSingle()
+    : { data: null, error: null }
+  if (termsError) throw new Error(`Unable to read the agreement's authorized price: ${termsError.message}`)
   const pricing = (contract?.snapshot as any)?.purchase_agreement?.pricing ?? {}
   // The agreement snapshot stores PurchaseAgreementPricing (camelCase).
   const basePrice = Number(pricing.basePriceCents ?? 0)
@@ -161,7 +167,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   const structuralOptions = Number(pricing.structuralOptionsCents ?? 0)
   const selectionPrice = Number(pricing.designSelectionsCents ?? selections.reduce((total, row) => total + Number(row.price_cents_snapshot ?? 0), 0))
   const changeOrders = approvedCos.reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
-  const salePrice = Number(contract?.total_cents ?? basePrice + lotPremium + structuralOptions + selectionPrice + changeOrders)
+  const salePrice = Number(terms?.authorized_total_cents ?? contract?.total_cents ?? basePrice + lotPremium + structuralOptions + selectionPrice + changeOrders)
   const budget = Number(budgetRows?.[0]?.total_cents ?? 0)
   const actualCost = costs.reduce((total, row) => total + Number(row.cost_cents ?? 0), 0)
   const vpoCents = vpos.reduce((total, row) => total + Number(row.total_cents ?? 0), 0)

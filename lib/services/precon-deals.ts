@@ -109,6 +109,8 @@ export async function listPipelineDeals(): Promise<PipelineDeals> {
       .from("prospects")
       .select("id, name, status, lost_reason, notes, created_at, updated_at, won_at")
       .eq("org_id", orgId)
+      // A lead for a community is a production buyer, worked on the Sales desk (`leadDesk`).
+      .is("community_id", null)
       .or(`status.in.(${ACTIVE_STATUSES.join(",")}),and(status.eq.won,won_at.gte."${startedSince}")`)
       .order("updated_at", { ascending: false })
       .limit(PIPELINE_DEAL_CAP + 1),
@@ -116,6 +118,7 @@ export async function listPipelineDeals(): Promise<PipelineDeals> {
       .from("prospects")
       .select("id, name, lost_reason, lost_at")
       .eq("org_id", orgId)
+      .is("community_id", null)
       .eq("status", "lost")
       .order("lost_at", { ascending: false, nullsFirst: false })
       .limit(LOST_SHOWN),

@@ -73,6 +73,22 @@ export function reconcilePayrollImport(input: unknown, laborInput: unknown, acco
     const deductionShares = apportion(employee.employee_deductions_cents,employee.allocations.map((row,index) => ({id:row.id,cents:row.gross_cents-taxShares[index]})))
     for (const [index,allocation] of employee.allocations.entries()) {
       const account = chart.get(allocation.cost_account_code)
+      // The one liability a payroll allocation may hit: commission comp accrued at
+      // settlement (Dr 6100 / Cr 2240) is paid by payroll, so its gross relieves
+      // 2240 instead of being expensed twice. It carries no labor, no employer
+      // burden and no variance to review.
+      if (account?.account_type === "liability" && account.subtype === "accrued_commissions") {
+        if (allocation.labor_evidence_ids.length || allocation.employer_taxes_cents || allocation.employer_benefits_cents) throw new Error("An accrued-commission payroll allocation carries only the commission gross")
+        if (allocation.gross_cents) lines.push(
+          { accountCode:allocation.cost_account_code,debitCents:allocation.gross_cents,creditCents:0,description:"Payroll accrued_commission_relief",dimensions:{ payroll_run_id:run.id, payroll_worker_id:employee.worker_id, payroll_allocation_id:allocation.id, payroll_component:"accrued_commission_relief" } },
+          { accountCode:"2200",debitCents:0,creditCents:allocation.gross_cents,description:"Payroll accrued_commission_relief",dimensions:{ payroll_run_id:run.id, payroll_worker_id:employee.worker_id, payroll_allocation_id:allocation.id, payroll_component:"accrued_commission_relief" } },
+        )
+        for (const [amount,component] of [[taxShares[index],"employee_taxes"],[deductionShares[index],"employee_deductions"]] as const) if (amount) lines.push(
+          { accountCode:"2200",debitCents:amount,creditCents:0,description:`Payroll ${component}`,dimensions:{ payroll_run_id:run.id, payroll_worker_id:employee.worker_id, payroll_allocation_id:allocation.id, payroll_component:component } },
+          { accountCode:"2230",debitCents:0,creditCents:amount,description:`Payroll ${component}`,dimensions:{ payroll_run_id:run.id, payroll_worker_id:employee.worker_id, payroll_allocation_id:allocation.id, payroll_component:component } },
+        )
+        continue
+      }
       if (!account || !(["cogs","expense"].includes(account.account_type) || (account.account_type === "asset" && account.subtype === "work_in_progress"))) throw new Error("Payroll allocation requires an active cost or construction-inventory account")
       if (account.account_type === "asset" && !allocation.project_id) throw new Error("Capitalized payroll requires a construction project")
       const original = allocation.labor_evidence_ids.map(id => {

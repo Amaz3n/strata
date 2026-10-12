@@ -1,4 +1,3 @@
-import { AgreementSigningRecovery } from "@/components/sales/agreement-signing-recovery"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -6,9 +5,12 @@ import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { BAND_X } from "@/components/overview/primitives"
+import { AgreementCommissionSigningHold } from "@/components/sales/agreement-commission-plan"
+import { AgreementSigningRecovery } from "@/components/sales/agreement-signing-recovery"
 import { DealActionsMenu } from "@/components/sales/deal-actions-menu"
 import { DealPrimaryAction } from "@/components/sales/deal-primary-action"
 import { DealStageTrack } from "@/components/sales/deal-stage-track"
+import { PurchaseAgreementRecord, PurchaseAgreementRecordSkeleton } from "@/components/sales/purchase-agreement-record"
 import type { HoldBuyer } from "@/components/sales/lot-hold-form"
 import type { ReserveLotTarget } from "@/components/sales/reserve-lot-dialog"
 import {
@@ -175,6 +177,19 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
 
         {signing && deal.contractId && deal.projectId && deal.contractStatus === "draft" ? <AgreementSigningRecovery contractId={deal.contractId} projectId={deal.projectId} state={signing} /> : null}
 
+        {agreement && deal.projectId ? (
+          <section className={cn(BAND_X, "border-b py-4")} aria-label="Commissions">
+            <p className="mb-3 text-sm font-medium">Commissions</p>
+            <AgreementCommissionSigningHold contractId={agreement.contractId} projectId={deal.projectId} />
+          </section>
+        ) : null}
+
+        {deal.contractId ? (
+          <Suspense fallback={<PurchaseAgreementRecordSkeleton />}>
+            <PurchaseAgreementRecord contractId={deal.contractId} canManageSale={capabilities.canManageSale} />
+          </Suspense>
+        ) : null}
+
         {deal.stage === "lost" ? (
           <p
             className={cn(
@@ -210,6 +225,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             contacts={contacts}
             attention={attention}
             links={links}
+            attribution={detail.attribution}
           />
         </div>
       </div>

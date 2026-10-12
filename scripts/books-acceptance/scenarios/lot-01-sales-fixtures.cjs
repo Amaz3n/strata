@@ -59,8 +59,7 @@ const closingRow = (kit, closingId) => kit.rows(`select status, actual_date::tex
 async function clearToClose(kit, org, closingId, date) {
   const closings = app("closings")
   await kit.as(org.owner, () => closings.scheduleClosing({ closingId, scheduledDate: date }))
-  for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
-    await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+  await require("../production-seed.cjs").prepareClosingGates(kit, org, closingId)
   await kit.as(org.owner, () => closings.markClearedToClose(closingId))
 }
 

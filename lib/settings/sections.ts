@@ -5,6 +5,7 @@ import {
   CreditCard,
   FileSpreadsheet,
   FileText,
+  Inbox,
   KeyRound,
   Layers,
   Link2,
@@ -84,6 +85,18 @@ export const settingsSections: SettingsSection[] = [
         url: "/settings/warranty",
         icon: ClipboardCheck,
         requiredAny: ["warranty.manage"],
+      },
+      {
+        title: "Lead intake",
+        url: "/settings/lead-intake",
+        icon: Inbox,
+        requiredAny: ["lead_intake.manage"],
+      },
+      {
+        title: "Lender and title feeds",
+        url: "/settings/milestone-feeds",
+        icon: Link2,
+        requiredAny: ["org.settings.update"],
       },
       {
         title: "Data imports",

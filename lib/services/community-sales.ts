@@ -52,22 +52,23 @@ import { chunk } from "@/lib/utils"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { createDocument } from "@/lib/services/documents"
-import { ensureDraftEnvelopeForDocument, replaceEnvelopeRecipients, createEnvelopeSigningRequests } from "@/lib/services/envelopes"
 import { createFileRecord } from "@/lib/services/files"
 import { getOrgBranding } from "@/lib/services/estimate-portal"
-import { renderProposalPdf } from "@/lib/pdfs/proposal"
+import { renderPurchaseAgreementPacket } from "@/lib/pdfs/purchase-agreement-packet"
+import { loadAgreementPacketDocuments } from "@/lib/services/agreement-templates"
+import { AgreementPacketError, agreementPacketRefusal, agreementPacketSchema, buildScheduleA, describeAgreementPacketRefusal, resolvedAgreementPacketSchema, storedAgreementPacket, type AgreementPacket, type ResolvedAgreementPacket } from "@/lib/sales/agreement-packet"
 import { buildOrgScopedPath, getFilesStorageProvider, uploadFilesObject } from "@/lib/storage/files-storage"
-import { createRecoverableSigningToken } from "@/lib/esign/signing-tokens"
-import { buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
-import { sendSignerRequestEmail } from "@/lib/services/signature-delivery"
 import { publishOwnedAgreementDocument, reserveAgreementSigningDocument } from "@/lib/services/agreement-signing-ownership"
+import { commissionSigningRefusal } from "@/lib/services/sales-commissions"
 import {
   agreementConfigurationSchema,
+  agreementContingencySchema,
   communityBulkRepriceSchema,
   communityPlanPriceSchema,
   createLotHoldSchema,
   createPurchaseAgreementSchema,
+  agreementCancellationSchema,
+  refreshAgreementPacketSchema,
   convertReservationSchema,
   reservationConversionSourceSchema,
   incentiveSchema,
@@ -953,45 +954,6 @@ export async function cancelReservationConversion(input: unknown, orgId?: string
 }
 
 /**
- * A forfeited deposit stops being the buyer's money and becomes the builder's
- * income. Recording only a metadata label would leave the receipt sitting as a
- * customer-deposit liability forever, so bill the forfeiture and apply the
- * deposit to it: the liability clears and the revenue posts.
- */
-async function forfeitReservationDeposit(
-  context: OrgServiceContext,
-  reservation: { id: string; deposit_invoice_id: string; buyer_contact_id: string | null; lot: { project_id: string | null } | { project_id: string | null }[] | null },
-  reason: string,
-) {
-  const { data: payments, error } = await context.supabase
-    .from("payments")
-    .select("id, amount_cents, metadata")
-    .eq("org_id", context.orgId)
-    .eq("invoice_id", reservation.deposit_invoice_id)
-    .in("status", ["succeeded", "completed"])
-  if (error) throw new Error(`Failed to load deposit payments: ${error.message}`)
-  const collected = (payments ?? []).filter((payment) => !(payment.metadata as Record<string, unknown> | null)?.customer_deposit_application)
-  const forfeitedCents = collected.reduce((sum, payment) => sum + Number(payment.amount_cents ?? 0), 0)
-  if (forfeitedCents <= 0) return
-  const lot = Array.isArray(reservation.lot) ? reservation.lot[0] : reservation.lot
-  const projectId = lot?.project_id
-  if (!projectId) throw new Error("A forfeited deposit needs the reservation's project to post against")
-  const today = new Date().toISOString().slice(0, 10)
-  const invoice = await createInvoice({ input: {
-    project_id: projectId, invoice_number: `FORFEIT-${Date.now().toString().slice(-9)}`, title: "Forfeited earnest deposit",
-    issue: false, issue_date: today, due_date: today, tax_rate: 0,
-    customer_id: reservation.buyer_contact_id ?? null,
-    lines: [{ description: `Forfeited earnest deposit — ${reason}`, quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(forfeitedCents), taxable: false }],
-    metadata: { invoice_kind: "deposit_forfeiture", source_reservation_id: reservation.id },
-  }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
-  for (const payment of collected) {
-    await applyCustomerDepositWithContext(context, { depositPaymentId: payment.id, targetInvoiceId: invoice.id, amountCents: Number(payment.amount_cents), appliedAt: new Date().toISOString() })
-  }
-  await projectJournal(context.orgId, { full: false })
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "deposit_forfeited", entityType: "lot_reservation", entityId: reservation.id, payload: { amount_cents: forfeitedCents, invoice_id: invoice.id } })
-}
-
-/**
  * Release a hold or reservation. The status transition is the fence and it is
  * claimed first, in one locked database step (`release_lot_reservation`), so of
  * two releases racing on one reservation only one ever moves the deposit. A
@@ -1020,12 +982,16 @@ export async function releaseReservation(input: unknown, orgId?: string) {
 
   if (depositInvoiceId) {
     try {
+      const payments = await availableDepositPayments(context, depositInvoiceId)
+      const availableCents = payments.reduce((sum, payment) => sum + payment.availableCents, 0)
       if (parsed.depositDisposition === "refund") {
-        const { data: payments, error } = await context.supabase.from("payments").select("id, amount_cents").eq("org_id", context.orgId).eq("invoice_id", depositInvoiceId).eq("status", "succeeded")
-        if (error) throw new Error(`Failed to load deposit payments: ${error.message}`)
-        for (const payment of payments ?? []) await recordPaymentReversal({ paymentId: payment.id, amountCents: Number(payment.amount_cents), reversalType: "refund", reason: parsed.reason, metadata: { source_reservation_id: reservation.id }, orgId: context.orgId })
+        await refundDeposit(context, { amountCents: availableCents, payments, reason: parsed.reason, metadata: { source_reservation_id: reservation.id } })
       } else {
-        await forfeitReservationDeposit(context, { ...reservation, deposit_invoice_id: depositInvoiceId }, parsed.reason)
+        const lot = Array.isArray(reservation.lot) ? reservation.lot[0] : reservation.lot
+        if (!lot?.project_id) throw new Error("A forfeited deposit needs the reservation's project to post against")
+        await forfeitDeposit(context, { source: { source_reservation_id: reservation.id }, projectId: lot.project_id, buyerContactId: reservation.buyer_contact_id ?? null,
+          reason: parsed.reason, amountCents: availableCents, payments })
+        await projectJournal(context.orgId, { full: false })
       }
     } catch (error) {
       throw new Error(`The reservation was released, but its deposit ${parsed.depositDisposition} did not finish: ${(error as Error).message}. Complete it from the deposit invoice.`)
@@ -1431,37 +1397,23 @@ export async function upsertIncentive(input: IncentiveInput, orgId?: string) {
   return result.data
 }
 
-/** Draft and active capacity is authoritative on the atomic creation path. */
+/** Draft and active agreements hold incentive capacity; the database counts it as they are written. */
 async function countIncentiveUses(context: OrgServiceContext, incentiveIds: string[]) {
   const counts = new Map<string, number>()
   if (incentiveIds.length === 0) return counts
-  if (process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true") {
-    const ids = [...new Set(incentiveIds)]
-    const pages = await Promise.all(Array.from({ length: Math.ceil(ids.length / 500) }, async (_, index) => {
-      const pageIds = ids.slice(index * 500, (index + 1) * 500)
-      const { data, error } = await context.supabase.from("agreement_incentive_capacity")
-        .select("incentive_id,used_count").eq("org_id", context.orgId).in("incentive_id", pageIds).limit(pageIds.length)
-      if (error || !data || data.length !== pageIds.length) throw new Error("Incentive capacity could not be verified")
-      return data
-    }))
-    for (const row of pages.flat()) {
-      const count = typeof row.used_count === "string" && /^[0-9]+$/.test(row.used_count) ? Number(row.used_count) : row.used_count
-      if (!ids.includes(row.incentive_id) || counts.has(row.incentive_id) || !Number.isSafeInteger(count) || count < 0) throw new Error("Incentive capacity evidence is invalid")
-      counts.set(row.incentive_id, count)
-    }
-    return counts
-  }
-  await Promise.all(incentiveIds.map(async (incentiveId) => {
-    const { count, error } = await context.supabase
-      .from("contracts")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", context.orgId)
-      .eq("contract_type", "purchase_agreement")
-      .in("status", ["draft", "active"])
-      .contains("snapshot", { purchase_agreement: { pricing: { incentives: [{ incentiveId }] } } })
-    if (error || count === null || count === undefined) throw new Error(`Failed to count incentive usage: ${error?.message ?? "Exact usage count unavailable"}`)
-    counts.set(incentiveId, count)
+  const ids = [...new Set(incentiveIds)]
+  const pages = await Promise.all(Array.from({ length: Math.ceil(ids.length / 500) }, async (_, index) => {
+    const pageIds = ids.slice(index * 500, (index + 1) * 500)
+    const { data, error } = await context.supabase.from("agreement_incentive_capacity")
+      .select("incentive_id,used_count").eq("org_id", context.orgId).in("incentive_id", pageIds).limit(pageIds.length)
+    if (error || !data || data.length !== pageIds.length) throw new Error("Incentive capacity could not be verified")
+    return data
   }))
+  for (const row of pages.flat()) {
+    const count = typeof row.used_count === "string" && /^[0-9]+$/.test(row.used_count) ? Number(row.used_count) : row.used_count
+    if (!ids.includes(row.incentive_id) || counts.has(row.incentive_id) || !Number.isSafeInteger(count) || count < 0) throw new Error("Incentive capacity evidence is invalid")
+    counts.set(row.incentive_id, count)
+  }
   return counts
 }
 
@@ -1523,7 +1475,7 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   await assertCommunityInSalesScope(context, lot.community_id)
   if (lot.project_id) await requireAuthorization({ permission: "sales.read", userId: context.userId, orgId: context.orgId,
     projectId: lot.project_id, supabase: context.supabase })
-  const catalogRevision = process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true" ? await readAgreementCatalogRevision(context) : null
+  const catalogRevision = await readAgreementCatalogRevision(context)
   const versionId = parsed.housePlanVersionId ?? lot.house_plan_version_id
   if (!versionId) throw new Error("Choose a released plan version")
   if (lot.project_id && lot.house_plan_version_id && parsed.housePlanVersionId && parsed.housePlanVersionId !== lot.house_plan_version_id) throw new Error("A spec home's pinned plan version cannot be changed")
@@ -1611,9 +1563,9 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   })
   // The agreement's snapshot carries the disposition it was priced through; carrying the disposition out requires it.
   const quote = { ...pricing, disposition: disposition ? { id: disposition.id, kind: disposition.kind } : null, choicePrices, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing, planLabel: (Array.isArray(version.plan) ? version.plan[0] : version.plan)?.name ?? version.label ?? "Plan", elevationLabel: selectedElevation?.name ?? selectedElevation?.code ?? null, optionItems: parsed.optionItems }
-  if (catalogRevision !== null && await readAgreementCatalogRevision(context) !== catalogRevision) throw new AgreementQuoteChangedError()
-  const reviewedQuote = catalogRevision === null ? quote : { ...quote, catalogRevision }
-  return { ...reviewedQuote, quoteHash: agreementQuoteFingerprint(reviewedQuote), catalogRevision }
+  if (await readAgreementCatalogRevision(context) !== catalogRevision) throw new AgreementQuoteChangedError()
+  const reviewedQuote = { ...quote, catalogRevision }
+  return { ...reviewedQuote, quoteHash: agreementQuoteFingerprint(reviewedQuote) }
 }
 
 /** What a priced-but-unwritten configuration looks like. */
@@ -1651,6 +1603,9 @@ export type AgreementDraftContext = {
   designSelections: AgreementCatalogItem[]
   packages: AgreementCatalogItem[]
   incentives: { id: string; name: string; summary: string }[]
+  /** The org's documents this home is sold on, or why there are none to sell it on. */
+  packet: ResolvedAgreementPacket | null
+  packetRefusal: string | null
 }
 
 function incentiveSummary(row: {
@@ -1709,7 +1664,7 @@ export async function getAgreementDraftContext(
   const plan = Array.isArray(lot.plan) ? lot.plan[0] : lot.plan
   const elevation = Array.isArray(lot.elevation) ? lot.elevation[0] : lot.elevation
 
-  const [versions, elevations, catalog, incentiveRows] = await Promise.all([
+  const [versions, elevations, catalog, incentiveRows, packetResolution] = await Promise.all([
     readAllRowsById((afterId, take) => {
       const query = context.supabase.from("house_plan_versions").select("id, label, released_at")
         .eq("org_id", context.orgId).eq("house_plan_id", lot.house_plan_id).eq("status", "released")
@@ -1724,6 +1679,13 @@ export async function getAgreementDraftContext(
     }, { cap: 2000, label: "Agreement elevations", pageSize: 500 }),
     listCatalog({ communityId: lot.community_id }, context.orgId),
     listIncentives({ communityId: lot.community_id, status: "active", eligibleOnly: true }, context.orgId),
+    resolveHomePacket(context, lot.community_id, []).then(
+      (packet) => ({ packet, refusal: null }),
+      (error: unknown) => {
+        if (error instanceof AgreementPacketError) return { packet: null, refusal: error.message }
+        throw error
+      },
+    ),
   ])
   versions.sort((a, b) => (b.released_at ?? "").localeCompare(a.released_at ?? "") || a.id.localeCompare(b.id))
   elevations.sort((a, b) => (a.name ?? a.code ?? "").localeCompare(b.name ?? b.code ?? "") || a.id.localeCompare(b.id))
@@ -1789,64 +1751,67 @@ export async function getAgreementDraftContext(
         },
       ),
     })),
+    packet: packetResolution.packet,
+    packetRefusal: packetResolution.refusal,
   }
 }
 
+/** The packet a home in this community resolves to now, with the optional addenda on offer. */
+async function resolveHomePacket(context: OrgServiceContext, communityId: string, optionalTemplateIds: string[]): Promise<ResolvedAgreementPacket> {
+  const { data, error } = await createServiceSupabaseClient().rpc("resolve_agreement_packet", {
+    p_org_id: context.orgId, p_community_id: communityId, p_optional_template_ids: optionalTemplateIds,
+  })
+  const refusal = agreementPacketRefusal(error)
+  if (refusal) throw refusal
+  if (error) throw new Error(`The agreement documents could not be resolved: ${error.message}`)
+  return resolvedAgreementPacketSchema.parse(data)
+}
+
+const packetPreviewSchema = z.union([
+  z.object({ lotId: z.string().uuid(), optionalAddendumTemplateIds: z.array(z.string().uuid()).max(50).default([]) }),
+  z.object({ contractId: z.string().uuid(), optionalAddendumTemplateIds: z.array(z.string().uuid()).max(50).default([]) }),
+])
+
+/**
+ * The documents a sale on this home would be signed on: the agreement form
+ * shows it while the seller picks optional addenda, and a draft whose packet
+ * went stale shows it before refreshing. The hash is what creation and refresh
+ * are then checked against.
+ */
+export async function previewAgreementPacket(input: unknown, orgId?: string): Promise<{ packet: ResolvedAgreementPacket; current: AgreementPacket | null }> {
+  const parsed = packetPreviewSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  let lotId: string
+  let current: AgreementPacket | null = null
+  if ("contractId" in parsed) {
+    const { data: contract, error } = await context.supabase.from("contracts").select("id, project_id, status, snapshot")
+      .eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+    if (error || !contract) throw new Error("Purchase agreement not found")
+    const saved = z.object({ purchase_agreement: z.object({ configuration: z.object({ lot_id: z.string().uuid() }), packet: agreementPacketSchema.optional() }) }).safeParse(contract.snapshot)
+    if (!saved.success) throw new Error("The saved agreement configuration needs reconciliation")
+    lotId = saved.data.purchase_agreement.configuration.lot_id
+    current = saved.data.purchase_agreement.packet ?? null
+  } else {
+    lotId = parsed.lotId
+  }
+  const { data: lot, error: lotError } = await context.supabase.from("lots").select("id, community_id, project_id").eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
+  if (lotError || !lot) throw new Error("Lot not found")
+  await assertCommunityInSalesScope(context, lot.community_id)
+  if (lot.project_id) await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId, projectId: lot.project_id, supabase: context.supabase })
+  return { packet: await resolveHomePacket(context, lot.community_id, parsed.optionalAddendumTemplateIds), current }
+}
+
+/**
+ * Write the draft agreement in one transaction (`create_purchase_agreement_atomic`):
+ * the contract, its reservation, the home's configuration, the packet it will be
+ * signed on, the event, the audit row and an immutable receipt. A retry with
+ * the same reviewed request recovers the saved sale instead of writing another.
+ */
 export async function createPurchaseAgreement(input: unknown, orgId?: string) {
   const parsed = createPurchaseAgreementSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  if (process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true") return createPurchaseAgreementAtomically(parsed, context)
-  const { data: reservation, error: reservationError } = await context.supabase.from("lot_reservations").select("*, lot:lots(project_id, lot_number)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
-  if (reservationError || !reservation || reservation.status !== "reserved" || !reservation.lot?.project_id) throw new Error("Reserved lot with a project is required and must be verified")
-  if (reservation.lot_id !== parsed.lotId) throw new Error("Reservation and lot do not match")
-  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
-    projectId: reservation.lot.project_id, supabase: context.supabase })
-  if (reservation.contract_id) throw new Error("This reservation already has a purchase agreement. Reconcile the existing agreement before creating another")
-  const { count: openAgreementCount, error: openAgreementError } = await context.supabase.from("contracts")
-    .select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
-    .eq("project_id", reservation.lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"])
-  if (openAgreementError || openAgreementCount === null || openAgreementCount === undefined) throw new Error("Existing purchase agreements could not be verified; no new agreement was created")
-  if (openAgreementCount > 0) throw new Error("This home already has an open purchase agreement. Resume or reconcile the existing agreement before creating another")
-  const pricing = await priceAgreementDraft(parsed, context.orgId)
-  if (pricing.quoteHash !== parsed.expectedQuoteHash) throw new AgreementQuoteChangedError()
-  const now = new Date()
-  const number = `PA-${now.getUTCFullYear()}-${now.getTime().toString().slice(-7)}`
-  const snapshot = { purchase_agreement: { version: 1, configuration: { lot_id: parsed.lotId, house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, elevation_id: pricing.elevationId, swing: pricing.swing, option_items: pricing.optionItems }, pricing, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds } }
-  const { data: contract, error } = await context.supabase.from("contracts").insert({ org_id: context.orgId, project_id: reservation.lot.project_id, number, title: `Purchase Agreement — Lot ${reservation.lot.lot_number}`, status: "draft", contract_type: "purchase_agreement", total_cents: pricing.totalCents, currency: "usd", terms: parsed.terms ?? null, effective_date: parsed.effectiveDate ?? now.toISOString().slice(0, 10), snapshot,
-    // The buyer belongs on the instrument. Before this, the buyer of record on
-    // the largest transaction Arc touches was reachable only by joining out
-    // through projects.client_id — the project's CURRENT client, which is not
-    // necessarily who signed this agreement.
-    buyer_contact_id: reservation.buyer_contact_id ?? null,
-    co_buyer_contact_id: reservation.co_buyer_contact_id ?? null }).select("*").single()
-  if (error?.code === "23505" && error.message.includes("contracts_open_purchase_agreement_home_unique")) throw new Error("Another purchase agreement already owns this home. Reconcile the existing agreement instead of retrying creation")
-  if (error || !contract) throw new Error(`Failed to create purchase agreement: ${error?.message}`)
-  // The database refuses a member's direct write to a reservation's sale or a home's
-  // configuration; after the checks above the draft takes both as the system, together.
-  const service = createServiceSupabaseClient()
-  const attached = await service.rpc("attach_purchase_agreement_draft", {
-    p_org_id: context.orgId, p_contract_id: contract.id, p_reservation_id: reservation.id,
-    p_house_plan_id: pricing.housePlanId, p_house_plan_version_id: pricing.housePlanVersionId,
-    p_elevation_id: pricing.elevationId, p_swing: pricing.swing, p_actor_id: context.userId,
-  })
-  if (attached.error) {
-    // A draft that owns no sale would block every retry as the home's open agreement.
-    const removed = await service.from("contracts").delete().eq("org_id", context.orgId).eq("id", contract.id).eq("status", "draft")
-    if (removed.error) throw new Error("The agreement was saved but could not take its reservation, and the draft could not be removed. Reconcile the existing agreement before retrying")
-    throw new Error(`The agreement could not take its reservation, so nothing was saved: ${attached.error.message}`)
-  }
-  await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_created", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, total_cents: contract.total_cents } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "contract", entityId: contract.id, after: contract }),
-  ])
-  const signing = await generatePurchaseAgreementSigningDocument(contract.id, context.orgId)
-  return { ...contract, pricing, signing }
-}
-
-/** Save once, then report signing preparation separately from the committed sale. */
-async function createPurchaseAgreementAtomically(parsed: z.infer<typeof createPurchaseAgreementSchema>, context: OrgServiceContext) {
-  if (process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED !== "true") throw new Error("Atomic agreement creation requires durable signing recovery to be enabled")
   const request = { ...parsed, terms: parsed.terms ?? null }
   const base = { orgId: context.orgId, actorId: context.userId, reservationId: parsed.reservationId, request }
   let receipt = await saveAgreementCreation(base)
@@ -1857,14 +1822,19 @@ async function createPurchaseAgreementAtomically(parsed: z.infer<typeof createPu
     await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
       projectId: reservation.lot.project_id, supabase: context.supabase })
     const expectedFacts = agreementCreationExpected(reservation, reservation.lot)
-    const pricing = await priceAgreementDraft(parsed, context.orgId)
+    const [pricing, resolved] = await Promise.all([
+      priceAgreementDraft(parsed, context.orgId),
+      resolveHomePacket(context, reservation.lot.community_id, parsed.optionalAddendumTemplateIds),
+    ])
     if (pricing.quoteHash !== parsed.expectedQuoteHash) throw new AgreementQuoteChangedError()
-    if (!pricing.catalogRevision) throw new Error("Atomic agreement creation requires a verified catalog revision")
+    const packet = storedAgreementPacket(resolved)
+    if (packet.hash !== parsed.expectedPacketHash) throw new AgreementPacketError("AGREEMENT_PACKET_CHANGED", describeAgreementPacketRefusal("AGREEMENT_PACKET_CHANGED"))
     const expected = { ...expectedFacts, catalog_revision: pricing.catalogRevision }
     const snapshot = { purchase_agreement: { version: 1, configuration: {
       lot_id: parsed.lotId, house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId,
       elevation_id: pricing.elevationId, swing: pricing.swing, option_items: pricing.optionItems,
-    }, pricing, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds } }
+    }, pricing, packet, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds,
+    financing: parsed.financing, contingencies: parsed.contingencies } }
     receipt = await saveAgreementCreation({ ...base, expected, snapshot })
     if (!receipt) throw new Error("Agreement creation receipt was not returned; reconcile the sale before retrying")
   }
@@ -1901,7 +1871,6 @@ export async function resumePurchaseAgreementSigning(input: unknown, orgId?: str
     .eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
   if (error || !contract || contract.project_id !== parsed.projectId || contract.status !== "draft") throw new Error("The draft agreement or home changed. Reload before resuming signatures.")
   await requireAuthorization({permission:"sales.manage",orgId:context.orgId,userId:context.userId,projectId:contract.project_id,supabase:context.supabase})
-  if (process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED !== "true") throw new Error("Agreement signing recovery is not enabled yet")
   const snapshot = z.object({ purchase_agreement: z.object({ configuration: z.object({
     lot_id: z.string().uuid(), house_plan_id: z.string().uuid().nullable(), house_plan_version_id: z.string().uuid().nullable(),
     elevation_id: z.string().uuid().nullable(), swing: z.enum(["left","right"]),
@@ -1920,6 +1889,54 @@ export async function resumePurchaseAgreementSigning(input: unknown, orgId?: str
   return generatePurchaseAgreementSigningDocument(contract.id,context.orgId,{expectedProjectId:parsed.projectId})
 }
 
+/**
+ * A draft whose packet went stale before its signing document was prepared (a
+ * version was withdrawn, or a new required addendum was published) takes the
+ * packet the seller just reviewed, then signing is prepared on it.
+ */
+export async function refreshPurchaseAgreementPacket(input: unknown, orgId?: string) {
+  const parsed = refreshAgreementPacketSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const { data: contract, error } = await context.supabase.from("contracts").select("id, project_id, status")
+    .eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  if (error || !contract) throw new Error("Purchase agreement not found")
+  if (contract.status !== "draft") throw new Error("A signed or voided agreement's documents cannot change. Amend a signed agreement with a change order.")
+  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId, projectId: contract.project_id, supabase: context.supabase })
+  const { data, error: refreshError } = await createServiceSupabaseClient().rpc("refresh_purchase_agreement_packet", {
+    p_org_id: context.orgId, p_contract_id: contract.id, p_actor_id: context.userId,
+    p_optional_template_ids: parsed.optionalAddendumTemplateIds, p_expected_hash: parsed.expectedPacketHash,
+  })
+  const refusal = agreementPacketRefusal(refreshError)
+  if (refusal) throw refusal
+  if (refreshError) throw new Error(refreshError.message)
+  const packet = agreementPacketSchema.parse(data)
+  const signing = await generatePurchaseAgreementSigningDocument(contract.id, context.orgId, { expectedProjectId: contract.project_id })
+  return { packet, signing }
+}
+
+const signingSnapshotSchema = z.object({ purchase_agreement: z.object({
+  configuration: z.object({ lot_id: z.string().uuid(), swing: z.enum(["left", "right"]) }).passthrough(),
+  pricing: z.object({ totalCents: z.number().int(), planLabel: z.string().optional(), elevationLabel: z.string().nullable().optional() }).passthrough(),
+  packet: agreementPacketSchema,
+  // Drafts written before financing was captured seed as financed with no contingencies; so do they print.
+  financing: z.enum(["cash", "financed"]).default("financed"),
+  contingencies: z.array(agreementContingencySchema).default([]),
+}) })
+
+/**
+ * Why signing cannot be prepared for this draft yet, each in the seller's
+ * words. Every precondition that is decided outside the signing transaction
+ * belongs here, so the seller sees all of them at once and no envelope is
+ * reserved for an agreement that cannot be signed.
+ */
+async function agreementSigningRefusals(context: OrgContext, contract: { id: string; snapshot: unknown }): Promise<string[]> {
+  const snapshot = signingSnapshotSchema.safeParse(contract.snapshot)
+  const refusals = snapshot.success ? [] : [describeAgreementPacketRefusal("AGREEMENT_PACKET_STALE")]
+  const commission = await commissionSigningRefusal(context.supabase, context.orgId, contract.id)
+  return commission ? [...refusals, commission] : refusals
+}
+
 export async function generatePurchaseAgreementSigningDocument(contractId: string, orgId?: string, options: { expectedProjectId?: string } = {}) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
@@ -1930,91 +1947,65 @@ export async function generatePurchaseAgreementSigningDocument(contractId: strin
     projectId: contract.project_id, supabase: context.supabase })
   if (contract.status !== "draft") throw new Error("Only a draft purchase agreement can be prepared for signature")
   if (getFilesStorageProvider() !== "r2") return { documentId: null, envelopeId: null, reason: "Document signing storage is not configured" }
-  const signingSecret = process.env.DOCUMENT_SIGNING_SECRET
-  if (!signingSecret) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
+  if (!process.env.DOCUMENT_SIGNING_SECRET) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
   if (!contract.buyer_contact_id) throw new Error("The agreement needs a buyer of record before signing")
   if (contract.co_buyer_contact_id === contract.buyer_contact_id) throw new Error("Buyer and co-buyer must be different contacts")
-  const durableSigning = process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED === "true"
-  if (durableSigning) {
-    const owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract })
-    if (owned) return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
+  const refusals = await agreementSigningRefusals(context, contract)
+  if (refusals.length > 0) return { documentId: null, envelopeId: null, reason: refusals.join(" ") }
+  let owned: Awaited<ReturnType<typeof reserveAgreementSigningDocument>>
+  try {
+    owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract })
+  } catch (reserveError) {
+    if (reserveError instanceof AgreementPacketError) return { documentId: null, envelopeId: null, reason: reserveError.message }
+    throw reserveError
   }
-  const project = Array.isArray(contract.project) ? contract.project[0] : contract.project
+  if (owned) return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
   const contactIds = [contract.buyer_contact_id, ...(contract.co_buyer_contact_id ? [contract.co_buyer_contact_id] : [])]
-  const [contactsResult, builderResult] = await Promise.all([
+  const snapshot = signingSnapshotSchema.parse(contract.snapshot).purchase_agreement
+  const pricing: PurchaseAgreementPricing = contract.snapshot.purchase_agreement.pricing
+  const [contactsResult, builderResult, lotResult, branding, documents] = await Promise.all([
     context.supabase.from("contacts").select("id, full_name, email").eq("org_id", context.orgId).in("id", contactIds),
     context.supabase.from("app_users").select("id, full_name, email").eq("id", context.userId).maybeSingle(),
+    context.supabase.from("lots").select("lot_number, block, address, community:communities(name)").eq("org_id", context.orgId).eq("id", snapshot.configuration.lot_id).maybeSingle(),
+    getOrgBranding(context.orgId, context.supabase),
+    loadAgreementPacketDocuments(context.orgId, snapshot.packet.documents),
   ])
   if (contactsResult.error || contactsResult.data?.length !== contactIds.length) throw new Error("Agreement signer contacts could not be verified in this organization")
   if (builderResult.error) throw new Error("The builder signer could not be verified")
+  if (lotResult.error || !lotResult.data) throw new Error("The agreement's lot could not be verified")
   const buyer = contactsResult.data.find((contact) => contact.id === contract.buyer_contact_id)
   const coBuyer = contract.co_buyer_contact_id ? contactsResult.data.find((contact) => contact.id === contract.co_buyer_contact_id) : null
   const builder = builderResult.data
   if (!buyer?.email) throw new Error("Buyer email is required before creating a signing envelope")
   if (contract.co_buyer_contact_id && !coBuyer?.email) throw new Error("Co-buyer email is required before creating a signing envelope")
   if (!builder?.email) throw new Error("The builder signer needs an email address")
-  const pricing = (contract.snapshot as any)?.purchase_agreement?.pricing as PurchaseAgreementPricing
-  const lines = [
-    { description: "Community base price", quantity: 1, unit: "agreement", unit_cost_cents: pricing.basePriceCents, markup_pct: 0 },
-    ...(pricing.lotPremiumCents ? [{ description: "Lot premium", quantity: 1, unit: "agreement", unit_cost_cents: pricing.lotPremiumCents, markup_pct: 0 }] : []),
-    ...pricing.structuralOptions.map((item) => ({ description: item.label, quantity: 1, unit: "option", unit_cost_cents: item.priceCents, markup_pct: 0 })),
-    ...pricing.designSelections.map((item) => ({ description: item.label, quantity: 1, unit: "selection", unit_cost_cents: item.priceCents, markup_pct: 0 })),
-    ...pricing.incentives.map((item) => ({ description: `Incentive — ${item.name}`, quantity: 1, unit: "credit", unit_cost_cents: -item.valueCents, markup_pct: 0 })),
-    ...homePriceAdjustments(pricing).map((item) => ({ description: item.label, quantity: 1, unit: "agreement", unit_cost_cents: item.amountCents, markup_pct: 0 })),
-  ]
-  const branding = await getOrgBranding(context.orgId, context.supabase)
-  const pdf = await renderProposalPdf({ orgName: branding.name, orgLogoUrl: branding.logoUrl, orgAddress: branding.address, proposalTitle: contract.title, proposalNumber: contract.number, recipientName: buyer.full_name, recipientEmail: buyer.email, projectName: project?.name ?? null, summary: "New home purchase agreement", terms: contract.terms ?? null, subtotalCents: pricing.totalCents, taxCents: 0, totalCents: pricing.totalCents, validUntil: null, signers: [{ role: "Buyer", name: buyer.full_name }, ...(coBuyer ? [{ role: "Co-buyer", name: coBuyer.full_name }] : []), { role: branding.name ?? "Builder", name: builder.full_name }], lines })
+  const lot = lotResult.data
+  const community = Array.isArray(lot.community) ? lot.community[0] : lot.community
+  const scheduleA = buildScheduleA({
+    agreementNumber: contract.number ?? contract.id, effectiveDate: contract.effective_date ?? null,
+    buyer: { name: buyer.full_name, email: buyer.email }, coBuyer: coBuyer ? { name: coBuyer.full_name, email: coBuyer.email ?? null } : null,
+    community: community?.name ?? null, lot: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number ?? null, address: lot.address ?? null,
+    plan: snapshot.pricing.planLabel ?? null, elevation: snapshot.pricing.elevationLabel ?? null, swing: snapshot.configuration.swing,
+    pricing, stipulations: contract.terms ?? null, financing: snapshot.financing, contingencies: snapshot.contingencies,
+  })
+  const pdf = await renderPurchaseAgreementPacket({
+    orgName: branding.name ?? "Builder", title: contract.title, scheduleA, documents, packetHash: snapshot.packet.hash,
+    signers: [{ role: "Buyer", name: buyer.full_name }, ...(coBuyer ? [{ role: "Co-buyer", name: coBuyer.full_name }] : []), { role: branding.name ?? "Builder", name: builder.full_name }],
+  })
   const fileName = `purchase-agreement-${contract.number ?? contract.id}.pdf`.replace(/[^a-zA-Z0-9.-]/g, "_")
   const storagePath = buildOrgScopedPath(context.orgId, "projects", contract.project_id, "esign", "source", `${randomUUID()}_${fileName}`)
   await uploadFilesObject({ supabase: context.supabase, orgId: context.orgId, path: storagePath, bytes: pdf, contentType: "application/pdf", upsert: false })
   const file = await createFileRecord({ project_id: contract.project_id, file_name: fileName, storage_path: storagePath, mime_type: "application/pdf", size_bytes: pdf.length, checksum: createHash("sha256").update(pdf).digest("hex"), visibility: "private", category: "contracts", folder_path: "/contracts", source: "generated" }, context.orgId, { authorizationPermission: "sales.manage" })
   const recipients = [
-    { recipient_type: "contact" as const, contact_id: buyer.id, name: buyer.full_name, email: buyer.email, role: "signer" as const, signer_role: "buyer", sequence: 1, required: true },
-    ...(coBuyer?.email ? [{ recipient_type: "contact" as const, contact_id: coBuyer.id, name: coBuyer.full_name, email: coBuyer.email, role: "signer" as const, signer_role: "co_buyer", sequence: 1, required: true }] : []),
-    { recipient_type: "internal_user" as const, user_id: builder.id, name: builder.full_name, email: builder.email, role: "signer" as const, signer_role: "builder", sequence: 2, required: true },
+    { type: "contact", contact_id: buyer.id, user_id: null, name: buyer.full_name, email: buyer.email, role: "signer", signer_role: "buyer", sequence: 1, required: true },
+    ...(coBuyer?.email ? [{ type: "contact", contact_id: coBuyer.id, user_id: null, name: coBuyer.full_name, email: coBuyer.email, role: "signer", signer_role: "co_buyer", sequence: 1, required: true }] : []),
+    { type: "internal_user", contact_id: null, user_id: builder.id, name: builder.full_name, email: builder.email, role: "signer", signer_role: "builder", sequence: 2, required: true },
   ]
   // Probe and reservation share contract ownership; a concurrent winner is
   // resumed instead of replacing its file, builder signer or invitation IDs.
-  // Never fall back after an uncertain reservation/publication reply.
-  if (durableSigning) {
-    const owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract, fileId: file.id,
-      recipients: recipients.map(recipient => ({ type: recipient.recipient_type, name: recipient.name, email: recipient.email, role: recipient.role,
-        signer_role: recipient.signer_role, sequence: recipient.sequence, required: recipient.required,
-        contact_id: "contact_id" in recipient ? recipient.contact_id : null, user_id: "user_id" in recipient ? recipient.user_id : null })) })
-    if (!owned) throw new Error("Agreement signing document reservation is missing. Reconcile before retrying.")
-    return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
-  }
-  const document = await createDocument({ project_id: contract.project_id, document_type: "contract", title: contract.title, source_file_id: file.id, source_entity_type: "contract", source_entity_id: contract.id, metadata: { contract_id: contract.id, purchase_agreement: true } }, context.orgId, { authorizationPermission: "sales.manage" })
-  const envelope = await ensureDraftEnvelopeForDocument({ document_id: document.id, source_entity_type: "contract", source_entity_id: contract.id, subject: contract.title, metadata: { contract_id: contract.id } }, context.orgId, "sales.manage")
-  await replaceEnvelopeRecipients({ envelope_id: envelope.id, recipients }, context.orgId, "sales.manage")
-  const signingRequests = await createEnvelopeSigningRequests({ envelope_id: envelope.id }, context.orgId, "sales.manage")
-  const requests = signingRequests.requests ?? []
-  if (requests.length !== recipients.length || recipients.some((recipient) => {
-    const matches = requests.filter((request) => request.signer_role === recipient.signer_role)
-    return matches.length !== 1 || matches[0].sent_to_email !== recipient.email || Number(matches[0].sequence) !== recipient.sequence
-      || matches[0].required !== true || matches[0].org_id !== context.orgId || matches[0].envelope_id !== envelope.id
-      || matches[0].document_id !== document.id || !matches[0].token_hash
-      || matches[0].recipient_contact_id !== ("contact_id" in recipient ? recipient.contact_id : null)
-  })) throw new Error("Signing requests do not match the agreement's required recipients")
-  const firstBatch = requests.filter((request) => Number(request.sequence) === 1)
-  await Promise.all(firstBatch.map(async (request: any) => {
-    const signingUrl = buildUnifiedSigningUrl(createRecoverableSigningToken(request))
-    const { data: prepared, error: requestError } = await context.supabase.from("document_signing_requests").update({ status: "sent", sent_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", request.id).eq("token_hash", request.token_hash).eq("status", "draft").select("id").single()
-    if (requestError || !prepared) throw new Error(`Failed to prepare signing delivery: ${requestError?.message ?? "Signing request changed or disappeared"}`)
-    const recipient = recipients.find((row) => row.signer_role === request.signer_role)
-    await sendSignerRequestEmail({ orgId: context.orgId, toEmail: request.sent_to_email,
-      requestId: request.id, expectedTokenHash: request.token_hash, documentId: document.id,
-      documentTitle: contract.title, signingUrl, recipientName: recipient?.name ?? undefined,
-      subject: `Signature requested: ${contract.title}`, message: "Review and sign your new home purchase agreement.",
-      idempotencyKey: `esign-invitation:${request.id}:${createHash("sha256").update(request.token_hash).digest("hex").slice(0, 24)}` })
-  }))
-  const sentAt = new Date().toISOString()
-  const sentResults = await Promise.all([
-    context.supabase.from("documents").update({ status: "sent", updated_at: sentAt }).eq("org_id", context.orgId).eq("id", document.id),
-    context.supabase.from("envelopes").update({ status: "sent", sent_at: sentAt, updated_at: sentAt }).eq("org_id", context.orgId).eq("id", envelope.id),
-  ])
-  if (sentResults.some((result) => result.error)) throw new Error("Signing delivery completed but document status could not be recorded; reconciliation is required")
-  return { documentId: document.id, envelopeId: envelope.id, reason: null }
+  const reserved = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract, fileId: file.id, recipients })
+  if (!reserved) throw new Error("Agreement signing document reservation is missing. Reconcile before retrying.")
+  return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: reserved })
 }
 
 export async function hasExecutedPurchaseAgreement(projectId: string, orgId?: string) {
@@ -2068,9 +2059,10 @@ async function lockSelectionsAtSigning(supabase: SupabaseClient, input: { orgId:
   if (error) throw new Error(`Purchase agreement execution failed: ${error.message}`)
 }
 
+
 export async function executePurchaseAgreementFromEnvelopeExecution(input: { orgId: string; contractId: string; envelopeId: string; executedFileId?: string | null }) {
   const supabase = createServiceSupabaseClient()
-  const checked = <T extends { error: any }>(result: T): T => {
+  const checked = <T extends { error: { message: string } | null }>(result: T): T => {
     if (result.error) throw new Error(`Purchase agreement execution failed: ${result.error.message}`)
     return result
   }
@@ -2079,7 +2071,11 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
   if (contract.status === "void") throw new Error("Purchase agreement was voided")
   if (contract.status === "active" && contract.signature_data?.execution_effects_completed === true) return
   const now = contract.signed_at ?? new Date().toISOString()
-  const signatureData = { ...(contract.signature_data ?? {}), envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null }
+  // The signature binds the packet the buyer was shown and the exact bytes they signed.
+  const { data: signingDocument } = checked(await supabase.from("documents").select("metadata").eq("org_id", input.orgId)
+    .eq("source_entity_type", "contract").eq("source_entity_id", contract.id).contains("metadata", { purchase_agreement: true }).maybeSingle())
+  const signatureData = { ...(contract.signature_data ?? {}), envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null,
+    packet_hash: contract.snapshot?.purchase_agreement?.packet?.hash ?? null, source_sha256: signingDocument?.metadata?.esign_source?.sha256 ?? null }
   checked(await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: signatureData }).eq("org_id", input.orgId).eq("id", contract.id))
   const { data: projectLot } = checked(await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle())
   if (projectLot) {
@@ -2105,64 +2101,329 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
     captureHomeProductRevisions({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" }),
   ])
   await Promise.all([
-    recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId } }),
-    recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now } }),
+    recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId, packet_hash: signatureData.packet_hash } }),
+    recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now, packet_hash: signatureData.packet_hash, source_sha256: signatureData.source_sha256 } }),
   ])
   checked(await supabase.from("contracts").update({ signature_data: { ...signatureData, execution_effects_completed: true } }).eq("org_id", input.orgId).eq("id", contract.id))
 }
 
+const cents = z.union([z.number(), z.string().regex(/^-?[0-9]+$/)]).transform(Number).pipe(z.number().int())
+const planLineSchema = z.object({ id: z.string().uuid(), title: z.string().nullable(), total_cents: cents.nullable(), status: z.string().optional() })
+
+export const agreementCancellationPlanSchema = z.object({
+  contract: z.object({ id: z.string().uuid(), status: z.enum(["draft", "active"]), number: z.string().nullable(), project_id: z.string().uuid() }),
+  blocked: z.string().nullable(),
+  closing: z.object({ id: z.string().uuid(), status: z.string() }).nullable(),
+  reservation: z.object({ id: z.string().uuid(), status: z.string(), deposit_invoice_id: z.string().uuid().nullable(), prospect_id: z.string().uuid().nullable() }).nullable(),
+  deposit: z.object({
+    collected_cents: cents, refunded_cents: cents, applied_cents: cents, available_cents: cents,
+    payments: z.array(z.object({ payment_id: z.string().uuid(), invoice_id: z.string().uuid(), amount_cents: cents, refunded_cents: cents, applied_cents: cents, available_cents: cents })),
+  }),
+  envelopes: z.array(z.object({ id: z.string().uuid(), status: z.string(), source_entity_type: z.string().nullable(), source_entity_id: z.string().uuid().nullable() })),
+  pending_change_orders: z.array(z.object({ id: z.string().uuid(), co_number: z.number().int().nullable(), title: z.string().nullable(), total_cents: cents.nullable() })),
+  amendments: z.object({ count: cents, total_cents: cents }),
+  variance_orders: z.object({ to_void: z.array(planLineSchema), kept: z.array(planLineSchema) }),
+  start_package: z.object({ id: z.string().uuid(), status: z.string(), action: z.enum(["returns_to_open", "keeps_building"]) }).nullable(),
+  selections: z.object({ unlock: cents, keep_locked: cents }),
+  incentives: cents,
+  portal_tokens: cents,
+})
+
+/** What cancelling a sale will do, reviewed before it is confirmed. `hash` is what the confirmation must name. */
+export type AgreementCancellationPlan = z.infer<typeof agreementCancellationPlanSchema> & { hash: string }
+
+const cancellationRowSchema = z.object({
+  id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  contract_id: z.string().uuid(),
+  reservation_id: z.string().uuid().nullable(),
+  reason: z.string(),
+  deposit_disposition: z.enum(["refund", "forfeit", "split", "none"]),
+  forfeit_cents: cents,
+  refund_cents: cents,
+  plan: agreementCancellationPlanSchema,
+  outcomes: z.record(z.unknown()),
+  settlement_status: z.enum(["pending", "settling", "completed", "failed"]),
+  settlement_error: z.string().nullable(),
+  completed_at: z.string().nullable(),
+  created_at: z.string(),
+})
+
+export type AgreementCancellation = {
+  id: string
+  contractId: string
+  projectId: string
+  reason: string
+  depositDisposition: "refund" | "forfeit" | "split" | "none"
+  forfeitCents: number
+  refundCents: number
+  settlementStatus: "pending" | "settling" | "completed" | "failed"
+  settlementError: string | null
+  completedAt: string | null
+  createdAt: string
+}
+
+function cancellationDto(row: z.infer<typeof cancellationRowSchema>): AgreementCancellation {
+  return {
+    id: row.id, contractId: row.contract_id, projectId: row.project_id, reason: row.reason,
+    depositDisposition: row.deposit_disposition, forfeitCents: row.forfeit_cents, refundCents: row.refund_cents,
+    settlementStatus: row.settlement_status, settlementError: row.settlement_error, completedAt: row.completed_at, createdAt: row.created_at,
+  }
+}
+
+/** A coded refusal the dialog answers by reloading the plan. */
+export class AgreementCancellationChangedError extends Error {
+  readonly code = "AGREEMENT_CANCELLATION_CHANGED"
+  constructor() { super("The sale changed since you reviewed the cancellation. Review it again.") }
+}
+
+async function readCancellationPlan(context: OrgServiceContext, contractId: string): Promise<AgreementCancellationPlan> {
+  const { data, error } = await createServiceSupabaseClient().rpc("preview_purchase_agreement_cancellation", { p_org_id: context.orgId, p_contract_id: contractId })
+  if (error) throw new Error(error.message)
+  const hash = z.object({ hash: z.string().regex(/^[0-9a-f]{64}$/) }).parse(data).hash
+  return { ...agreementCancellationPlanSchema.parse(data), hash }
+}
+
+async function loadCancellableAgreement(context: OrgServiceContext, contractId: string) {
+  const { data: contract, error } = await context.supabase.from("contracts").select("id, project_id, status")
+    .eq("org_id", context.orgId).eq("id", contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  if (error) throw new Error(`Failed to load purchase agreement: ${error.message}`)
+  if (!contract || !["draft", "active"].includes(contract.status)) throw new Error("Active purchase agreement not found")
+  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId, projectId: contract.project_id, supabase: context.supabase })
+  return contract
+}
+
 /**
- * Voiding unwinds a sale: the deposit is refunded or forfeited, the lot goes
- * back on the market, the lead is un-won, the closing is cancelled, selections
- * unlock and the buyer loses the project. Each of those is checked — a void that
- * silently left the buyer's portal open is not a void.
- *
- * The contract's status transition is the fence, and it runs before any money
- * moves: two voids racing on one agreement cannot both refund the deposit.
- * Revoking the buyer's portal access goes through `revokePortalToken`, the one
- * path that also ends the claimed-account grants behind the link, so the voider
- * must hold that permission too — checked before anything changes.
+ * Everything cancelling this sale would touch: the money (collected, already
+ * refunded or applied, available), open signing envelopes, unsigned change
+ * orders and the buyer variance orders behind them, executed amendments that
+ * stay on record, the start package, which selections unlock and which stay
+ * with the house, and the buyer's portal access.
+ */
+export async function previewAgreementCancellation(contractId: string, orgId?: string): Promise<AgreementCancellationPlan> {
+  z.string().uuid().parse(contractId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const contract = await loadCancellableAgreement(context, contractId)
+  return readCancellationPlan(context, contract.id)
+}
+
+/**
+ * Cancel a sale. The void and every reconciliation the seller reviewed commit
+ * in one transaction (`void_purchase_agreement_atomic`) against the plan's hash,
+ * so two cancellations racing on one agreement cannot both run and a plan that
+ * changed underneath is refused. A settled sale is refused: reverse its closing
+ * first. The money (refund, forfeiture or a split of the two, never more than
+ * is still available) and the buyer's portal access are then settled from the
+ * cancellation receipt, and a failed step is retried from there.
  */
 export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
   const parsed = voidPurchaseAgreementSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
   await requirePermission("project.manage", context)
-  const { data: contract, error: contractError } = await context.supabase.from("contracts").select("id, project_id, status, snapshot").eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
-  if (contractError) throw new Error(`Failed to load purchase agreement: ${contractError.message}`)
-  if (!contract || !["draft", "active"].includes(contract.status)) throw new Error("Active purchase agreement not found")
-  const { data: reservation, error: reservationError } = await context.supabase.from("lot_reservations").select("id, prospect_id, deposit_invoice_id").eq("org_id", context.orgId).eq("contract_id", contract.id).in("status", LIVE_RESERVATION_STATUSES).maybeSingle()
-  if (reservationError) throw new Error(`Failed to load the agreement's reservation: ${reservationError.message}`)
-  // Releasing the reservation refunds or forfeits its deposit; refuse before the fence, not after it.
-  if (reservation?.deposit_invoice_id) await requirePermission("payment.release", context)
+  const contract = await loadCancellableAgreement(context, parsed.contractId)
+  const plan = await readCancellationPlan(context, contract.id)
+  if (plan.blocked) throw new Error(plan.blocked)
+  if (plan.hash !== parsed.expectedPlanHash) throw new AgreementCancellationChangedError()
+  // Moving the deposit needs release authority; refuse before the fence, not after it.
+  if (plan.deposit.available_cents > 0) await requirePermission("payment.release", context)
 
-  const now = new Date().toISOString()
-  const snapshot = { ...(contract.snapshot ?? {}), cancellation_reason: parsed.reason, cancelled_at: now }
-  const { data: voided, error: voidError } = await context.supabase.from("contracts").update({ status: "void", snapshot }).eq("org_id", context.orgId).eq("id", contract.id).in("status", ["draft", "active"]).select("id").maybeSingle()
-  if (voidError) throw new Error(`Failed to void purchase agreement: ${voidError.message}`)
-  if (!voided) throw new Error("Active purchase agreement not found")
+  const { data, error } = await createServiceSupabaseClient().rpc("void_purchase_agreement_atomic", {
+    p_org_id: context.orgId, p_contract_id: contract.id, p_actor_id: context.userId, p_reason: parsed.reason,
+    p_deposit_disposition: parsed.depositDisposition, p_forfeit_cents: parsed.forfeitCents ?? null, p_expected_plan_hash: parsed.expectedPlanHash,
+  })
+  if (error?.details === "AGREEMENT_CANCELLATION_CHANGED") throw new AgreementCancellationChangedError()
+  if (error) throw new Error(error.message)
+  const cancellation = cancellationRowSchema.parse(z.object({ cancellation: z.unknown() }).parse(data).cancellation)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id,
+      payload: { reason: parsed.reason, cancellation_id: cancellation.id, deposit_disposition: cancellation.deposit_disposition, forfeit_cents: cancellation.forfeit_cents, refund_cents: cancellation.refund_cents } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "contract", entityId: contract.id,
+      before: { status: contract.status }, after: { status: "void", cancellation_id: cancellation.id, reason: parsed.reason, deposit_disposition: cancellation.deposit_disposition }, critical: true }),
+    ...(cancellation.reservation_id ? [
+      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reservation_released", entityType: "lot_reservation", entityId: cancellation.reservation_id,
+        payload: { reason: parsed.reason, deposit_disposition: cancellation.deposit_disposition, cancellation_id: cancellation.id } }),
+      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot_reservation", entityId: cancellation.reservation_id,
+        after: { status: "released", cancellation_id: cancellation.id } }),
+    ] : []),
+  ])
+  return settleAgreementCancellation(context, cancellation.id)
+}
 
-  if (reservation) await releaseReservation({ reservationId: reservation.id, reason: parsed.reason, depositDisposition: parsed.depositDisposition }, context.orgId)
+/** Retry the money and access steps of a cancellation that did not finish. Settling twice moves nothing twice. */
+export async function completeAgreementCancellation(input: unknown, orgId?: string) {
+  const { cancellationId } = agreementCancellationSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  await requirePermission("project.manage", context)
+  const { data, error } = await context.supabase.from("purchase_agreement_cancellations").select("*")
+    .eq("org_id", context.orgId).eq("id", cancellationId).maybeSingle()
+  if (error) throw new Error(`Failed to load the cancellation: ${error.message}`)
+  if (!data) throw new Error("Cancellation not found")
+  const row = cancellationRowSchema.parse(data)
+  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId, projectId: row.project_id, supabase: context.supabase })
+  if (row.settlement_status === "completed") return cancellationDto(row)
+  if (row.deposit_disposition !== "none") await requirePermission("payment.release", context)
+  return settleAgreementCancellation(context, row.id)
+}
 
-  const checked = (label: string) => ({ error }: { error: { message: string } | null }) => {
-    if (error) throw new Error(`Purchase agreement voided, but ${label} failed: ${error.message}`)
+/** The latest cancellation of an agreement, for the deal's record of the sale. */
+export async function getAgreementCancellation(contractId: string, orgId?: string): Promise<AgreementCancellation | null> {
+  z.string().uuid().parse(contractId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.read", context)
+  const { data, error } = await context.supabase.from("purchase_agreement_cancellations").select("*")
+    .eq("org_id", context.orgId).eq("contract_id", contractId).maybeSingle()
+  if (error) throw new Error(`Failed to load the cancellation: ${error.message}`)
+  return data ? cancellationDto(cancellationRowSchema.parse(data)) : null
+}
+
+type DepositPayment = { paymentId: string; availableCents: number }
+
+/**
+ * Each received deposit payment and what is still the buyer's: received, less
+ * what was refunded and less what was applied to another invoice. Refunding or
+ * forfeiting the full received amount after a partial refund would move money
+ * twice.
+ */
+async function availableDepositPayments(context: OrgServiceContext, depositInvoiceId: string): Promise<DepositPayment[]> {
+  const { data: received, error } = await context.supabase.from("payments").select("id, amount_cents, metadata")
+    .eq("org_id", context.orgId).eq("invoice_id", depositInvoiceId).in("status", ["succeeded", "completed"]).order("id")
+  if (error) throw new Error(`Failed to load deposit payments: ${error.message}`)
+  const collected = (received ?? []).filter((payment) => !(payment.metadata as Record<string, unknown> | null)?.customer_deposit_application)
+  const ids = collected.map((payment) => String(payment.id))
+  if (ids.length === 0) return []
+  const [refunds, applications] = await Promise.all([
+    context.supabase.from("payment_reversals").select("payment_id, amount_cents").eq("org_id", context.orgId).in("payment_id", ids).in("status", ["pending", "succeeded"]),
+    context.supabase.from("payments").select("amount_cents, metadata, payment_reversals(amount_cents, status)").eq("org_id", context.orgId)
+      .in("metadata->>deposit_payment_id", ids).in("status", ["succeeded", "completed", "paid"]),
+  ])
+  if (refunds.error || applications.error) throw new Error("Deposit refunds and applications could not be verified")
+  const used = new Map<string, number>()
+  for (const row of refunds.data ?? []) used.set(String(row.payment_id), (used.get(String(row.payment_id)) ?? 0) + Number(row.amount_cents))
+  for (const row of applications.data ?? []) {
+    const depositId = String((row.metadata as Record<string, unknown> | null)?.deposit_payment_id)
+    const reversed = ((row.payment_reversals ?? []) as Array<{ amount_cents: number; status: string }>)
+      .filter((reversal) => ["pending", "succeeded"].includes(reversal.status)).reduce((sum, reversal) => sum + Number(reversal.amount_cents), 0)
+    used.set(depositId, (used.get(depositId) ?? 0) + Number(row.amount_cents) - reversed)
   }
-  const { data: clientTokens, error: tokenError } = await context.supabase.from("portal_access_tokens").select("id").eq("org_id", context.orgId).eq("project_id", contract.project_id).eq("portal_type", "client").is("revoked_at", null)
-  if (tokenError) throw new Error(`Purchase agreement voided, but loading the buyer's portal access failed: ${tokenError.message}`)
-  await Promise.all([
-    // A voided agreement un-wins the lead: back to qualified so the funnel stays truthful.
-    reservation?.prospect_id
-      ? context.supabase.from("prospects").update({ status: "qualified", won_at: null, updated_at: now }).eq("org_id", context.orgId).eq("id", reservation.prospect_id).eq("status", "won").then(checked("re-opening the lead"))
-      : null,
-    context.supabase.from("closings").update({ status: "cancelled", cancel_reason: parsed.reason }).eq("org_id", context.orgId).eq("project_id", contract.project_id).neq("status", "closed").then(checked("cancelling the closing")),
-    context.supabase.from("project_selections").update({ locked_at: null }).eq("org_id", context.orgId).eq("project_id", contract.project_id).then(checked("unlocking selections")),
-    context.supabase.from("projects").update({ client_id: null }).eq("org_id", context.orgId).eq("id", contract.project_id).then(checked("detaching the buyer")),
-    ...(clientTokens ?? []).map((token) => revokePortalToken(token.id, context.orgId)),
-  ])
+  return collected.map((payment) => ({ paymentId: String(payment.id), availableCents: Math.max(Number(payment.amount_cents) - (used.get(String(payment.id)) ?? 0), 0) }))
+}
 
-  await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id, payload: { reason: parsed.reason, deposit_disposition: parsed.depositDisposition, revoked_portal_tokens: (clientTokens ?? []).length } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "contract", entityId: contract.id, before: { status: contract.status }, after: { status: "void", cancellation_reason: parsed.reason, deposit_disposition: parsed.depositDisposition } }),
-  ])
+/**
+ * A forfeited deposit stops being the buyer's money and becomes the builder's
+ * income: bill the forfeiture and apply the deposit to it, so the liability
+ * clears and the revenue posts. Keyed by `source`, so a retry finds its own
+ * invoice and applies only what is still owed to it.
+ */
+async function forfeitDeposit(context: OrgServiceContext, input: {
+  source: Record<string, string>; projectId: string; buyerContactId: string | null; reason: string; amountCents: number; payments: DepositPayment[]
+}) {
+  if (input.amountCents <= 0) return { forfeitedCents: 0, invoiceId: null }
+  const { data: existing, error } = await context.supabase.from("invoices").select("id").eq("org_id", context.orgId)
+    .eq("project_id", input.projectId).contains("metadata", { invoice_kind: "deposit_forfeiture", ...input.source }).maybeSingle()
+  if (error) throw new Error(`Failed to find the forfeiture invoice: ${error.message}`)
+  const today = new Date().toISOString().slice(0, 10)
+  const invoice = existing ?? await createInvoice({ input: {
+    project_id: input.projectId, invoice_number: `FORFEIT-${Date.now().toString().slice(-9)}`, title: "Forfeited earnest deposit",
+    issue: false, issue_date: today, due_date: today, tax_rate: 0, customer_id: input.buyerContactId,
+    lines: [{ description: `Forfeited earnest deposit — ${input.reason}`, quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(input.amountCents), taxable: false }],
+    metadata: { invoice_kind: "deposit_forfeiture", ...input.source },
+  }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
+  const { data: applied, error: appliedError } = await context.supabase.from("payments").select("amount_cents")
+    .eq("org_id", context.orgId).eq("invoice_id", invoice.id).in("status", ["succeeded", "completed", "paid"])
+  if (appliedError) throw new Error(`Failed to read the forfeiture's applications: ${appliedError.message}`)
+  let owed = input.amountCents - (applied ?? []).reduce((sum, row) => sum + Number(row.amount_cents), 0)
+  for (const payment of input.payments) {
+    if (owed <= 0) break
+    const amountCents = Math.min(owed, payment.availableCents)
+    if (amountCents <= 0) continue
+    await applyCustomerDepositWithContext(context, { depositPaymentId: payment.paymentId, targetInvoiceId: invoice.id, amountCents, appliedAt: new Date().toISOString() })
+    owed -= amountCents
+  }
+  if (owed > 0) throw new Error("Less deposit is available than the forfeiture needs; review the deposit's refunds")
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "deposit_forfeited", entityType: "invoice", entityId: invoice.id, payload: { amount_cents: input.amountCents, ...input.source } })
+  return { forfeitedCents: input.amountCents, invoiceId: invoice.id }
+}
+
+/** Refund up to `amountCents` across the payments that still hold the buyer's money. */
+async function refundDeposit(context: OrgServiceContext, input: { amountCents: number; payments: DepositPayment[]; reason: string; metadata: Record<string, string> }) {
+  let owed = input.amountCents
+  for (const payment of input.payments) {
+    if (owed <= 0) break
+    const amountCents = Math.min(owed, payment.availableCents)
+    if (amountCents <= 0) continue
+    await recordPaymentReversal({ paymentId: payment.paymentId, amountCents, reversalType: "refund", reason: input.reason, metadata: input.metadata, orgId: context.orgId })
+    owed -= amountCents
+  }
+  return input.amountCents - owed
+}
+
+const SETTLEMENT_LEASE_MS = 5 * 60_000
+
+/**
+ * The cancellation's money and access, claimed once (a stale claim can be
+ * taken over) and recorded step by step on the receipt. What a step already did
+ * is read back from the ledger, so a retry never refunds or forfeits twice.
+ */
+async function settleAgreementCancellation(context: OrgServiceContext, cancellationId: string): Promise<AgreementCancellation> {
+  const service = createServiceSupabaseClient()
+  const staleBefore = new Date(Date.now() - SETTLEMENT_LEASE_MS).toISOString()
+  const { data: claimed, error: claimError } = await service.from("purchase_agreement_cancellations")
+    .update({ settlement_status: "settling", settlement_claimed_at: new Date().toISOString() })
+    .eq("org_id", context.orgId).eq("id", cancellationId)
+    .or(`settlement_status.in.(pending,failed),and(settlement_status.eq.settling,settlement_claimed_at.lt.${staleBefore})`)
+    .select("*").maybeSingle()
+  if (claimError) throw new Error(`Failed to claim the cancellation's settlement: ${claimError.message}`)
+  if (!claimed) {
+    const { data: current } = await service.from("purchase_agreement_cancellations").select("*").eq("org_id", context.orgId).eq("id", cancellationId).maybeSingle()
+    if (current?.settlement_status === "completed") return cancellationDto(cancellationRowSchema.parse(current))
+    throw new Error("This cancellation is already being settled. Refresh in a moment.")
+  }
+  const row = cancellationRowSchema.parse(claimed)
+  const outcomes: Record<string, unknown> = { ...row.outcomes }
+  let step = "settling the deposit"
+  try {
+    const depositInvoiceId = row.plan.reservation?.deposit_invoice_id ?? null
+    if (depositInvoiceId && row.deposit_disposition !== "none") {
+      const { data: reservation, error } = await context.supabase.from("lot_reservations").select("buyer_contact_id").eq("org_id", context.orgId).eq("id", row.reservation_id ?? "").maybeSingle()
+      if (error) throw new Error(error.message)
+      const source = { source_agreement_cancellation_id: row.id }
+      if (row.forfeit_cents > 0) {
+        step = "forfeiting the deposit"
+        outcomes.forfeiture = await forfeitDeposit(context, { source, projectId: row.project_id, buyerContactId: reservation?.buyer_contact_id ?? null, reason: row.reason,
+          amountCents: row.forfeit_cents, payments: await availableDepositPayments(context, depositInvoiceId) })
+        await projectJournal(context.orgId, { full: false })
+      }
+      if (row.refund_cents > 0) {
+        step = "refunding the deposit"
+        const { data: prior, error: priorError } = await context.supabase.from("payment_reversals").select("amount_cents")
+          .eq("org_id", context.orgId).contains("metadata", { agreement_cancellation_id: row.id }).in("status", ["pending", "succeeded"])
+        if (priorError) throw new Error(priorError.message)
+        const alreadyRefunded = (prior ?? []).reduce((sum, reversal) => sum + Number(reversal.amount_cents), 0)
+        const refunded = await refundDeposit(context, { amountCents: row.refund_cents - alreadyRefunded, payments: await availableDepositPayments(context, depositInvoiceId),
+          reason: row.reason, metadata: { agreement_cancellation_id: row.id, ...(row.reservation_id ? { source_reservation_id: row.reservation_id } : {}) } })
+        outcomes.refunded_cents = alreadyRefunded + refunded
+      }
+    }
+    step = "ending the buyer's portal access"
+    const { data: tokens, error: tokenError } = await context.supabase.from("portal_access_tokens").select("id").eq("org_id", context.orgId)
+      .eq("project_id", row.project_id).eq("portal_type", "client").is("revoked_at", null)
+    if (tokenError) throw new Error(tokenError.message)
+    await Promise.all((tokens ?? []).map((token) => revokePortalToken(token.id, context.orgId)))
+    outcomes.portal_tokens_revoked = Number(outcomes.portal_tokens_revoked ?? 0) + (tokens ?? []).length
+    const { data: done, error: doneError } = await service.from("purchase_agreement_cancellations")
+      .update({ settlement_status: "completed", completed_at: new Date().toISOString(), settlement_error: null, outcomes })
+      .eq("org_id", context.orgId).eq("id", row.id).select("*").single()
+    if (doneError || !done) throw new Error(doneError?.message ?? "The settlement could not be recorded")
+    await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_cancellation_settled", entityType: "contract", entityId: row.contract_id, payload: { cancellation_id: row.id, outcomes } })
+    return cancellationDto(cancellationRowSchema.parse(done))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown failure"
+    await service.from("purchase_agreement_cancellations").update({ settlement_status: "failed", settlement_error: `${step}: ${message}`, outcomes })
+      .eq("org_id", context.orgId).eq("id", row.id)
+    throw new Error(`The sale was cancelled, but ${step} did not finish: ${message}. Retry it from the deal.`)
+  }
 }
 import { createHash, randomUUID } from "crypto"

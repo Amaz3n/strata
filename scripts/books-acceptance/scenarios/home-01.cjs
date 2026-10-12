@@ -111,8 +111,7 @@ async function settle(kit, org, home, date, closingId = scheduleSale(kit, org, h
   const status = () => kit.rows(`select status from public.closings where id=${kit.q(closingId)}`)[0].status
   if (status() === "projected") {
     await kit.as(org.owner, () => closings.scheduleClosing({ closingId, scheduledDate: date }))
-    for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
-      await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+    await require("../production-seed.cjs").prepareClosingGates(kit, org, closingId)
   }
   if (status() !== "cleared_to_close") await kit.as(org.owner, () => closings.markClearedToClose(closingId))
   // The acceptance stack has no file storage, so filing the signed statement PDF

@@ -27,6 +27,7 @@ import { checkLotFits } from "@/lib/services/lot-fit"
 import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review"
 import { isElevationKeptBySale } from "@/lib/services/product-change-impact"
 import { loadEntitlementBlockersForLot } from "@/lib/services/land-entitlements"
+import { readAgreementMilestoneBlockers } from "@/lib/services/agreement-milestones"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
   gateAttestSchema,
@@ -202,7 +203,7 @@ const DEFAULT_GATE_DEFINITIONS = [
   { key: "price_book", label: "Price book resolves", check_kind: "auto", auto_source: "po_exceptions_clear", applies_when: "purchasing_enabled", sort_order: 50 },
   { key: "budget", label: "Budget generated", check_kind: "auto", auto_source: "budget_generated", applies_when: "always", sort_order: 60 },
   { key: "po_set", label: "PO set generated", check_kind: "auto", auto_source: "pos_generated", applies_when: "purchasing_enabled", sort_order: 70 },
-  { key: "financing", label: "Financing/appraisal cleared", check_kind: "manual", auto_source: null, applies_when: "financed_only", sort_order: 80 },
+  { key: "financing", label: "Financing milestones clear", check_kind: "auto", auto_source: "agreement_milestones_clear", applies_when: "always", sort_order: 80 },
   { key: "final_approval", label: "Final start approval", check_kind: "manual", auto_source: null, applies_when: "always", sort_order: 90, requires_attestation_permission: "start.release" },
 ] as const
 
@@ -502,6 +503,12 @@ async function deriveAutoGate(
     return !fit?.refusal
   }
   if (!projectId) return false
+  if (source === "agreement_milestones_clear") {
+    // A spec home, or a sale whose agreement holds nothing before start, is
+    // clear; an open or failed milestone required before start holds it.
+    const blockers = await readAgreementMilestoneBlockers(supabase, orgId, projectId, "start")
+    return blockers.length === 0
+  }
   if (source === "plot_plan_file") {
     const { count, error } = await supabase.from("files").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("project_id", projectId).eq("metadata->>document_kind", "plot_plan").is("archived_at", null)

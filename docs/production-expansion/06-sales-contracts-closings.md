@@ -78,9 +78,41 @@ prospects would violate the duplicate-capability rule. **This workstream starts 
 the moment a buyer attaches to a LOT** (hold/reservation). The only bridge built
 here is `lot_reservations.prospect_id` (nullable) so a won prospect carries its
 history into the reservation. A production-grade OSC/marketing module is a future
-product decision, not a gap in this plan. Also out of scope: realtor/co-broker
-commission tracking (open question), escrow/title integrations, mortgage/lender
-status tracking.
+product decision, not a gap in this plan. Also out of scope: escrow/title
+partner integrations. Commissions are in scope (EP05-06): see open question 3.
+
+**Contingencies and lender/title milestones — in scope (EP05-04/05), one model.**
+`agreement_milestones` holds what an executed purchase agreement owes for one
+buyer and one home: the contingencies the buyer signed
+(`snapshot.purchase_agreement.contingencies`) and the lender/title milestones for
+its financing (`snapshot.purchase_agreement.financing`, `cash` | `financed`,
+financed by default), seeded once when the agreement becomes active. Each has an
+owner, due date, prerequisites, evidence rule and history; `required_before`
+(`start` | `closing` | null) decides what it holds — the automatic `financing`
+start gate and `assertClosingReadiness` plus a closings trigger. Updates come by
+hand on the closing workbench or from a lender/title feed posting signed to
+`/api/inbound/v1/agreement-milestones` (per-feed encrypted HMAC secret, delivery
+log at Settings → Lender and title feeds); a report must match the agreement
+number, buyer email and lot or it is refused and kept. An external "satisfied"
+on an evidence-required milestone stays "reported" until a coordinator attaches
+the evidence. No partner integration.
+
+**Lead intake — in scope (EP05-01), built on that pipeline, not beside it.**
+Website leads arrive at a signed server-to-server endpoint
+(`/api/leads/intake/<source>`, HMAC in `x-arc-timestamp`/`x-arc-signature`,
+`lib/inbound/signature.ts`; an Arc-hosted form is later). Each delivery is logged
+in `lead_intake_receipts`, then filed by `file_lead()` — the same core the
+consultant's walk-in registration uses — which merges a buyer into their OPEN
+deal by normalized email, then phone (never by name; won/lost buyers get a new
+deal flagged returning) and keeps every touch in `prospect_attributions`.
+Routing (`lib/sales/lead-routing.ts`): matching `lead_routing_rules` first, then
+round-robin among the community's sales consultants who can reach its division,
+then the division's fallback owner, then the source's default, else unrouted.
+Failed, retrying and unrouted deliveries show on the Sales desk (and the
+Pipeline for community-less leads); sources, secrets (shown once, 24h rotation
+grace) and rules live at `/settings/lead-intake` (`lead_intake.manage`).
+Dismissed payloads are purged after 90 days. Deal writes take `sales.manage` or
+`pipeline.write`. Campaign reporting is deferred.
 
 ## Current-state audit (code-verified 2026-07-17)
 
@@ -967,8 +999,19 @@ desk mutates nothing except sanctioned one-click calls into workbench actions.
 2. **Reservation agreements as e-signed docs** — some builders sign a reservation
    form before the purchase agreement. Deferred: `lot_reservations.metadata` can
    hold an envelope ref; a first-class flow only if customers ask.
-3. **Realtor/co-broker commissions** (% of price, paid at closing) — out of
-   scope; likely a payables artifact generated at settlement. Future.
+3. **Realtor/co-broker commissions** — built (EP05-06). Each purchase agreement
+   carries a commission plan (`sales_commission_plans` / `_lines`): co-op broker
+   and sales-consultant comp, % of the authorized price (agreement + buyer-signed
+   COs, never closing-table adjustments) or flat, proposed with
+   `sales.commission_manage` and approved by a second person holding
+   `sales.commission_approve` who is neither proposer nor payee. "No commissions"
+   is an explicit plan with no lines. Signing and closing hold until the plan is
+   approved. Settlement writes `sales_commission_obligations` once per closing and
+   plan line: brokers and 1099 consultants become pending AP bills coded 6100
+   (never inventory or job cost), W-2 consultants accrue Dr 6100 / Cr 2240 for
+   payroll. A closing reversal clears unpaid commissions (bill rejected) and claws
+   back paid ones (an open vendor credit, or a payroll deduction row).
+   `lib/services/sales-commissions.ts`, math in `lib/financials/sales-commissions.ts`.
 4. **Price-sheet effective-dating/versioning** — sheets are generated live;
    builders may want "as of" archives for regulatory reasons. Cheap to add
    (store the generated PDF), deliberately not speced.

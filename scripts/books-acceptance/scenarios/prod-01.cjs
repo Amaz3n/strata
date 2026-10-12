@@ -620,7 +620,8 @@ async function planChangeReachesSoldHomes(kit, expected, check) {
   observed.beforeExecution = { pin: pinOf(later["12"].id), adoptedAt: Boolean(homeOf(current, later["12"].id).adoptedAt),
     agreementUntouched: JSON.stringify(agreement()) === JSON.stringify(signed) }
   // The buyer signs the amendment on paper; the owner records the executed change order.
-  await kit.as(org.owner, () => changeOrders.approveChangeOrder({ changeOrderId, approval: { signerName: "Adopting Buyer", signerEmail: "adopting.buyer@acceptance.example.test", note: "Signed at the design center" } }))
+  const signedFileId = seed.signedCopyFile(kit, org, adopted.projectId, "plan-revision-signed.pdf")
+  await kit.as(org.owner, () => changeOrders.approveChangeOrder({ changeOrderId, approval: { signerName: "Adopting Buyer", signerEmail: "adopting.buyer@acceptance.example.test", note: "Signed at the design center", signedFileId } }))
   const executed = await kit.as(org.owner, () => proposals.getPlanChangeReview(heron.id))
   observed.afterExecution = { changeOrder: changeOrder().status, pin: pinOf(later["12"].id), adoptedAt: Boolean(homeOf(executed, later["12"].id).adoptedAt),
     agreementUntouched: JSON.stringify(agreement()) === JSON.stringify(signed) }

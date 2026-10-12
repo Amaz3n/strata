@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { CONTINGENCY_KINDS } from "@/lib/sales/agreement-milestones"
 import { MAX_RESERVATION_DEPOSIT_CENTS } from "@/lib/sales/reservation-deposit"
 
 export const createLotHoldSchema = z.object({
@@ -86,18 +87,59 @@ export const agreementConfigurationSchema = z.object({
   incentiveIds: z.array(z.string().uuid()).max(50).default([]),
 })
 
+/**
+ * A contingency the buyer signs, in the shape the agreement snapshot stores and
+ * `seed_agreement_milestones` reads when the agreement executes: its deadline is
+ * a date or a number of days after signing, and it holds the start or the closing.
+ */
+export const agreementContingencySchema = z.object({
+  key: z.string().trim().regex(/^[a-z0-9_-]{1,40}$/, "Use lowercase letters, digits, - or _").optional(),
+  kind: z.enum(CONTINGENCY_KINDS),
+  title: z.string().trim().min(1, "Name the contingency").max(200),
+  required_before: z.enum(["start", "closing"]).default("closing"),
+  due_in_days: z.number().int().min(0).max(365).optional(),
+  due_on: z.string().date().optional(),
+  evidence_required: z.boolean().default(true),
+}).strict().refine((term) => term.due_in_days === undefined || term.due_on === undefined, {
+  path: ["due_on"], message: "Give the deadline as a date or as days after signing, not both",
+})
+export type AgreementContingencyTerm = z.infer<typeof agreementContingencySchema>
+
 export const createPurchaseAgreementSchema = agreementConfigurationSchema.extend({
   reservationId: z.string().uuid(),
   expectedQuoteHash: z.string().regex(/^[a-f0-9]{64}$/, "Review a current quote before creating the agreement"),
+  /** The optional addenda the seller added; required ones are always in the packet. */
+  optionalAddendumTemplateIds: z.array(z.string().uuid()).max(50).default([]),
+  expectedPacketHash: z.string().regex(/^[a-f0-9]{64}$/, "Review the agreement documents before creating the agreement"),
+  /** Special stipulations, printed on Schedule A. */
   terms: z.string().max(20_000).optional().nullable(),
   effectiveDate: z.string().date().optional(),
+  /** Cash sales skip the lender milestones; financed ones get the lender and title set. */
+  financing: z.enum(["cash", "financed"]).default("financed"),
+  contingencies: z.array(agreementContingencySchema).max(20).default([]).refine((terms) => {
+    const keys = terms.flatMap((term) => (term.key ? [term.key] : []))
+    return new Set(keys).size === keys.length
+  }, "Each contingency key must be unique"),
+})
+
+export const refreshAgreementPacketSchema = z.object({
+  contractId: z.string().uuid(),
+  optionalAddendumTemplateIds: z.array(z.string().uuid()).max(50).default([]),
+  expectedPacketHash: z.string().regex(/^[a-f0-9]{64}$/, "Review the refreshed packet first"),
 })
 
 export const voidPurchaseAgreementSchema = z.object({
   contractId: z.string().uuid(),
-  reason: z.string().min(3).max(1000),
-  depositDisposition: z.enum(["refund", "forfeit"]),
+  reason: z.string().trim().min(3).max(1000),
+  depositDisposition: z.enum(["refund", "forfeit", "split"]),
+  /** For a split: what the buyer forfeits; the rest of the available deposit is refunded. */
+  forfeitCents: z.number().int().positive().max(100_000_000_00).optional(),
+  expectedPlanHash: z.string().regex(/^[a-f0-9]{64}$/, "Review the cancellation before confirming it"),
+}).refine((input) => input.depositDisposition !== "split" || input.forfeitCents !== undefined, {
+  path: ["forfeitCents"], message: "Enter how much of the deposit the buyer forfeits",
 })
+
+export const agreementCancellationSchema = z.object({ cancellationId: z.string().uuid() })
 
 export const communityPlanPriceSchema = z.object({
   availabilityId: z.string().uuid(),

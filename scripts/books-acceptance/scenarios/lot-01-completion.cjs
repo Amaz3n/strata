@@ -11,13 +11,6 @@ const refuse = (kit, actor, work) => lot().refusal(() => kit.as(actor, work))
 const equal = (check, label, expected, observed) => lot().equal(check, label, expected, observed)
 const msg = (text, pattern) => (pattern.test(text) ? "refused" : text)
 
-// The inspection lifecycle is the server-controlled cutover INSPECTION_LIFECYCLE_ENABLED. The stack
-// carries its migration; the flag is switched on for the case and restored.
-async function withInspectionLifecycle(work) {
-  const before = process.env.INSPECTION_LIFECYCLE_ENABLED
-  process.env.INSPECTION_LIFECYCLE_ENABLED = "true"
-  try { return await work() } finally { if (before === undefined) delete process.env.INSPECTION_LIFECYCLE_ENABLED; else process.env.INSPECTION_LIFECYCLE_ENABLED = before }
-}
 
 // A presold home on one of the developed lots: reserved, agreement executed, closing projected.
 const HOMES = new WeakMap()
@@ -56,7 +49,7 @@ const count = (kit, sql) => Number(kit.rows(`select count(*)::int n from (${sql}
 // EP09-04: inspection failure lifecycle
 
 async function failedInspectionBecomesOwnedCorrectiveWork(kit, expected, check) {
-  return withInspectionLifecycle(async () => {
+  {
     const { org, projectId, closingId } = await freshHome(kit, "inspection", 5, { name: "Elena Ortiz", email: "elena.ortiz@acceptance.example.test" })
     const inspections = app("inspections"), punch = app("punch-lists"), closings = app("closings")
     const sup = org.team.superintendent, owner = org.owner
@@ -113,8 +106,7 @@ async function failedInspectionBecomesOwnedCorrectiveWork(kit, expected, check) 
 
     // Closing is refused while the required inspection has no accepted attempt.
     await kit.as(owner, () => closings.scheduleClosing({ closingId, scheduledDate: seed.isoDay(30) }))
-    for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
-      await kit.as(owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+    await seed.prepareClosingGates(kit, org, closingId)
     const closeWhileFailed = await refuse(kit, owner, () => closings.markClearedToClose(closingId))
 
     // The corrective work is resolved; the inspector reinspects. The original attempt is kept.
@@ -168,14 +160,14 @@ async function failedInspectionBecomesOwnedCorrectiveWork(kit, expected, check) 
       correctivePunch: closedPunch.status, cleared: cleared.status, obligationsListed: readableObligations.rows.length, attemptsOnObligation: readableObligations.rows[0].attempt_count,
     })
     return { orgId: org.orgId, projectId, obligationId: required.obligationId }
-  })
+  }
 }
 
 // ---------------------------------------------------------------------------
 // EP09-05: punch responsibility, verification and close readiness
 
 async function punchTraceabilityAndCloseReadiness(kit, expected, check) {
-  return withInspectionLifecycle(async () => {
+  {
     const { org, projectId, closingId } = await freshHome(kit, "punch", 6, { name: "Marcus Bell", email: "marcus.bell.punch@acceptance.example.test" })
     const punch = app("punch-lists"), closings = app("closings"), readiness = app("project-close-readiness")
     const sup = org.team.superintendent, owner = org.owner
@@ -205,8 +197,7 @@ async function punchTraceabilityAndCloseReadiness(kit, expected, check) {
     const field = (report) => report.sections.find((section) => section.key === "field")
     const blockersBefore = field(before).issues.filter((issue) => issue.id.startsWith("punch-")).map((issue) => ({ id: issue.id === `punch-${verified.id}` ? "verified" : issue.id === `punch-${plain.id}` ? "plain" : "lead", detail: issue.detail }))
     await kit.as(owner, () => closings.scheduleClosing({ closingId, scheduledDate: seed.isoDay(30) }))
-    for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
-      await kit.as(owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+    await seed.prepareClosingGates(kit, org, closingId)
     const refusedOpen = await refuse(kit, owner, () => closings.markClearedToClose(closingId))
 
     // Closing a verification-required item takes evidence; dropping the requirement in the same save does not skip it.
@@ -246,7 +237,7 @@ async function punchTraceabilityAndCloseReadiness(kit, expected, check) {
       stillBlockedByOthers: msg(stillBlockedByOthers, /Open punch items must be cleared/), fieldBlockers: field(after).blockerCount, punchIssues: field(after).issues.filter((issue) => issue.id.startsWith("punch-")).length, cleared: cleared.status,
     })
     return { orgId: org.orgId, projectId }
-  })
+  }
 }
 
 // The owner assigns the house's superintendent; that scopes them to the house as the field project role.

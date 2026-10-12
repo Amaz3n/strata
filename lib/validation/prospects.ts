@@ -177,6 +177,8 @@ export const productionInquiryInputSchema = z.object({
   notes: z.string().trim().max(10000).optional().nullable(),
   /** Local calendar day of the visit, so the traffic tally lands on the right date. */
   loggedDate: z.string().date(),
+  /** A website delivery that could not be filed, which this registration files by hand. */
+  leadReceiptId: z.string().uuid().optional().nullable(),
 });
 export type ProductionInquiryInput = z.infer<
   typeof productionInquiryInputSchema

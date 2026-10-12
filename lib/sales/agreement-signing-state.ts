@@ -1,4 +1,4 @@
-export type AgreementSigningStage = "not_prepared" | "prepared" | "queued" | "awaiting_buyer" | "awaiting_builder" | "completed" | "delivery_failed" | "reconcile" | "unavailable"
+export type AgreementSigningStage = "not_prepared" | "packet_stale" | "prepared" | "queued" | "awaiting_buyer" | "awaiting_builder" | "completed" | "delivery_failed" | "reconcile" | "unavailable"
 export interface AgreementSigningState {
   stage: AgreementSigningStage
   title: string
@@ -12,6 +12,7 @@ export interface SigningRequestFact {
 }
 const labels: Record<AgreementSigningStage, [string, string]> = {
   not_prepared: ["Agreement saved; signing not prepared", "The saved agreement has no signing document yet."],
+  packet_stale: ["Agreement documents need a refresh", "A document in this agreement's packet was withdrawn or a new required addendum was published. Review the refreshed packet before signing."],
   prepared: ["Signing preparation incomplete", "A signing document exists, but buyer invitations have not been queued."],
   queued: ["Buyer invitations queued", "Email acceptance has not yet been confirmed for every pending buyer."],
   awaiting_buyer: ["Awaiting buyer signatures", "Buyer signatures are still pending. Review invitation delivery in the signing document."],
@@ -34,6 +35,10 @@ const reconciliationDetails: Record<AgreementReconciliationIssue, string> = {
 }
 export function agreementReconciliationState(issue: AgreementReconciliationIssue, documentId: string | null = null): AgreementSigningState {
   return { ...signingState("reconcile", documentId), detail: reconciliationDetails[issue] }
+}
+/** A draft whose packet cannot be signed: the database's reason, and whether this viewer can refresh it. */
+export function packetStaleState(reason: string, canRefresh: boolean): AgreementSigningState {
+  return { ...signingState("packet_stale", null, canRefresh), detail: reason }
 }
 /** Status is evidence, never inferred from a draft contract or a prepared link. */
 export function deriveAgreementSigningState(input: {

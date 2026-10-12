@@ -1,10 +1,6 @@
 import { z } from "zod"
 import type { InspectionDetail } from "@/lib/services/inspections"
 
-/** Server-controlled cutover. Staged SQL must pass the release gates first. */
-export function isInspectionLifecycleEnabled() {
-  return process.env.INSPECTION_LIFECYCLE_ENABLED === "true"
-}
 const uuid = z.string().uuid()
 const itemEvidence = z.object({
   id: uuid, inspection_id: uuid, section: z.string().nullable(), prompt: z.string(),

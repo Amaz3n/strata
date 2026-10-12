@@ -87,7 +87,7 @@ async function invalidAndExpiredReservationsCannotProduceAgreements(kit, expecte
   const sales = app("community-sales"), q = kit.q
   const asSales = (work) => kit.as(org.team.sales, work)
   const create = (actor, buyer, reservationId = buyer.reservation.id, lotId = buyer.lot.id) => refusal(() => kit.as(actor, () => sales.createPurchaseAgreement({
-    ...seed.configuration(org, { lotId, plan: org.plans[0], swing: "right" }), reservationId, expectedQuoteHash: NO_QUOTE })))
+    ...seed.configuration(org, { lotId, plan: org.plans[0], swing: "right" }), ...seed.agreementPacketFor(kit, org, lotId), reservationId, expectedQuoteHash: NO_QUOTE })))
   const reason = label
 
   // A hold that was never reserved has no home and no deposit: it cannot be signed.
@@ -128,7 +128,7 @@ async function invalidAndExpiredReservationsCannotProduceAgreements(kit, expecte
     const wrongLot = await create(org.team.sales, buyer, buyer.reservation.id, other.id)
     const sale = await fx.agreementFor(kit, org, buyer)
     const quote = await asSales(() => sales.priceAgreementDraft(seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" })))
-    const again = (actor) => refusal(() => kit.as(actor, () => sales.createPurchaseAgreement({ ...seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" }), reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })))
+    const again = (actor) => refusal(() => kit.as(actor, () => sales.createPurchaseAgreement({ ...seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" }), ...seed.agreementPacketFor(kit, org, buyer.lot.id), reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })))
     const afterExecution = await again(org.team.sales)
     return { wrongLot, afterExecution, agreements: Number(kit.rows(`select count(*) n from public.contracts where org_id=${q(org.orgId)} and project_id=${q(sale.projectId)} and contract_type='purchase_agreement'`)[0].n) }
   })()
@@ -138,10 +138,12 @@ async function invalidAndExpiredReservationsCannotProduceAgreements(kit, expecte
     const buyer = await fx.reservedBuyer(kit, org, { name: "Cancelled Sale", depositCents: 600000, receivedOn: null })
     const config = seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" })
     const quote = await asSales(() => sales.priceAgreementDraft(config))
-    const landManager = await refusal(() => kit.as(org.team.land, () => sales.createPurchaseAgreement({ ...config, reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })))
-    const created = await asSales(() => sales.createPurchaseAgreement({ ...config, reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })).catch((error) => { if (!/^Missing (R2 credentials|DOCUMENT_SIGNING_SECRET)/.test(error.message)) throw error })
+    const packet = seed.agreementPacketFor(kit, org, buyer.lot.id)
+    const landManager = await refusal(() => kit.as(org.team.land, () => sales.createPurchaseAgreement({ ...config, ...packet, reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })))
+    const created = await asSales(() => sales.createPurchaseAgreement({ ...config, ...packet, reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })).catch((error) => { if (!/^Missing (R2 credentials|DOCUMENT_SIGNING_SECRET)/.test(error.message)) throw error })
     const contractId = created?.id ?? kit.rows(`select contract_id from public.lot_reservations where id=${q(buyer.reservation.id)}`)[0].contract_id
-    await kit.as(org.owner, () => sales.voidPurchaseAgreement({ contractId, reason: "Buyer financing was declined", depositDisposition: "refund" }))
+    const plan = await kit.as(org.owner, () => sales.previewAgreementCancellation(contractId))
+    await kit.as(org.owner, () => sales.voidPurchaseAgreement({ contractId, reason: "Buyer financing was declined", depositDisposition: "refund", expectedPlanHash: plan.hash }))
     const execute = await refusal(() => kit.service(() => sales.executePurchaseAgreementFromEnvelopeExecution({ orgId: org.orgId, contractId, envelopeId: randomUUID() })))
     return { landManager, execute, contract: kit.rows(`select status from public.contracts where id=${q(contractId)}`)[0].status, reservation: kit.rows(`select status from public.lot_reservations where id=${q(buyer.reservation.id)}`)[0].status, closings: kit.rows(`select status from public.closings where project_id=${q(buyer.projectId)}`).map((row) => row.status) }
   })()
@@ -270,8 +272,10 @@ async function approvedChangeOrderCountsOnceInTheFinalPrice(kit, expected, check
   const buyer = await fx.reservedBuyer(kit, org, { name: "Imani Brooks", depositCents: input.depositCents })
   const sale = await fx.agreementFor(kit, org, buyer)
   const closingId = fx.closingOf(kit, sale.projectId)
-  const co = await kit.as(org.owner, () => changes.createChangeOrder({ input: { project_id: sale.projectId, title: "Add covered patio", summary: "Buyer added a covered patio after signing", tax_rate: 0, markup_percent: 0, markup_mode: "percent", requires_signature: false, lines: [{ description: "Covered patio", quantity: 1, unit_cost: input.changeOrderCents / 100, taxable: false }] } }))
-  await kit.as(org.owner, () => changes.approveChangeOrder({ changeOrderId: co.id, approval: { signerName: "Imani Brooks", note: "Signed at the model home" } }))
+  const co = await kit.as(org.owner, () => changes.createChangeOrder({ input: { project_id: sale.projectId, title: "Add covered patio", summary: "Buyer added a covered patio after signing", tax_rate: 0, markup_percent: 0, markup_mode: "percent", requires_signature: true, lines: [{ description: "Covered patio", quantity: 1, unit_cost: input.changeOrderCents / 100, taxable: false }] } }))
+  // The buyer signed the amendment at the model home; the approval carries that copy.
+  const signedFileId = seed.signedCopyFile(kit, org, sale.projectId, "covered-patio-signed.pdf")
+  await kit.as(org.owner, () => changes.approveChangeOrder({ changeOrderId: co.id, approval: { signerName: "Imani Brooks", note: "Signed at the model home", signedFileId } }))
   const preview = await kit.as(org.owner, () => closings.buildSettlement(closingId))
   await fx.clearToClose(kit, org, closingId, seed.isoDay(0))
   const settled = await refusal(() => fx.settleCall(kit, org.owner, closingId, seed.isoDay(0), "WIRE-CHANGE")).then((message) => /^Closing is recorded; retry completion after resolving the statement: Missing R2/.test(message) ? "closed" : message)

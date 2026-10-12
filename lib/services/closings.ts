@@ -23,6 +23,8 @@ import {
 import { SETTLEMENT_STATEMENT_LINK_ROLE } from "@/lib/invoices/attachment-roles"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
+import { authorizedAgreementTerms } from "@/lib/sales/agreement-versions"
+import { ensureSalesCommissionPayables, unwindSalesCommissionsForClosing } from "@/lib/services/sales-commissions"
 import { loadClosingBlockersForLot } from "@/lib/services/land-entitlements"
 import { hasPermission } from "@/lib/services/permissions"
 import { applyCustomerDepositWithContext } from "@/lib/services/books/customer-deposits"
@@ -45,16 +47,18 @@ import { requirePermission } from "@/lib/services/permissions"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { scheduleClosingSchema, settleClosingSchema, updateClosingChecklistItemSchema, upsertClosingAdjustmentSchema } from "@/lib/validation/closings"
 
+// The certificate of occupancy gate needs its evidence file and cannot be
+// waived; the checklist guard sets that from the key.
 const DEFAULT_CHECKLIST = [
-  { title: "Purchase agreement executed", gate: true },
-  { title: "Earnest money received", gate: true },
-  { title: "Final inspection / certificate of occupancy", gate: true },
-  { title: "Blue-tape walk complete", gate: true },
-  { title: "Open punch items cleared", gate: true },
-  { title: "Homeowner orientation complete", gate: true },
-  { title: "Final settlement statement reconciled", gate: true },
-  { title: "Warranty package delivered", gate: false },
-  { title: "HOA and closing documents delivered", gate: false },
+  { key: "agreement_executed", title: "Purchase agreement executed", gate: true },
+  { key: "earnest_money", title: "Earnest money received", gate: true },
+  { key: "final_inspection_co", title: "Final inspection / certificate of occupancy", gate: true },
+  { key: "blue_tape_walk", title: "Blue-tape walk complete", gate: true },
+  { key: "punch_cleared", title: "Open punch items cleared", gate: true },
+  { key: "homeowner_orientation", title: "Homeowner orientation complete", gate: true },
+  { key: "settlement_reconciled", title: "Final settlement statement reconciled", gate: true },
+  { key: "warranty_package", title: "Warranty package delivered", gate: false },
+  { key: "closing_documents", title: "HOA and closing documents delivered", gate: false },
 ]
 
 function relationOne<T>(value: T | T[] | null | undefined): T | null {
@@ -73,7 +77,7 @@ async function ensureClosingChecklist(closingId: string, orgId: string, seed = t
   const { data: existing, error } = await context.supabase.from("closing_checklist_items").select("*").eq("org_id", orgId).eq("closing_id", closingId).order("sort_order")
   if (error) throw new Error(`Failed to load closing checklist: ${error.message}`)
   if ((existing ?? []).length || !seed) return existing ?? []
-  const { data, error: insertError } = await context.supabase.from("closing_checklist_items").insert(DEFAULT_CHECKLIST.map((item, index) => ({ org_id: orgId, closing_id: closingId, title: item.title, is_gate: item.gate, status: "open", sort_order: index, created_by: context.userId }))).select("*")
+  const { data, error: insertError } = await context.supabase.from("closing_checklist_items").insert(DEFAULT_CHECKLIST.map((item, index) => ({ org_id: orgId, closing_id: closingId, key: item.key, title: item.title, is_gate: item.gate, evidence_required: item.key === "final_inspection_co", status: "open", sort_order: index, created_by: context.userId }))).select("*")
   if (insertError) throw new Error(`Failed to seed closing checklist: ${insertError.message}`)
   return data ?? []
 }
@@ -88,7 +92,10 @@ export async function buildSettlement(closingId: string, orgId?: string) {
   if (closing.status === "closed") return readClosedSettlementEvidence(closing.settlement)
   const [contractResult, changes, depositInvoices, closingInvoice] = await Promise.all([
     context.supabase.from("contracts").select("id,number,total_cents,snapshot,signed_at,buyer_contact_id").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("contract_type", "purchase_agreement").eq("status", "active").order("id").limit(2),
-    readAllRows((from, to) => context.supabase.from("change_orders").select("id,title,total_cents,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("status", "approved").order("id").range(from, to), { cap: 10001, label: "Unable to read approved closing changes" }),
+    // The price is the agreement's signed versions: the original and each change
+    // order the buyer signed after it. A prior buyer's changes, changes approved
+    // before the signature and internal ones are not this sale's price.
+    readAllRows((from, to) => context.supabase.from("purchase_agreement_versions").select("id,contract_id,version_number,kind,change_order_id,price_delta_cents,authorized_total_cents,executed_at,change_order:change_orders(id,title,metadata)").eq("org_id", context.orgId).eq("project_id", closing.project_id).order("contract_id").order("version_number").range(from, to), { cap: 10001, label: "Unable to read the agreement's signed versions" }),
     readAllRows((from, to) => context.supabase.from("invoices").select("id,title,status,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "earnest_deposit" }).order("id").range(from, to), { cap: 10001, label: "Unable to read earnest deposit invoices" }),
     context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "closing", source_closing_id: closing.id }).maybeSingle(),
   ])
@@ -97,7 +104,11 @@ export async function buildSettlement(closingId: string, orgId?: string) {
   if (contractResult.data?.length !== 1) throw new Error("Exactly one active purchase agreement is required for settlement")
   const contract = contractResult.data[0]
   if (changes.truncated || depositInvoices.truncated) throw new Error("Settlement source records exceed the supported limit; reconcile them before closing")
-  const changeOrders = changes.rows
+  const terms = authorizedAgreementTerms(changes.rows.filter(row => row.contract_id === contract.id).map(row => ({ ...row, kind: row.kind === "original" ? "original" as const : "amendment" as const })))
+  const changeOrders = terms.amendments.map(row => {
+    const changeOrder = relationOne(row.change_order)
+    return { id: String(row.change_order_id), title: changeOrder?.title ?? "Change order", total_cents: Number(row.price_delta_cents), metadata: changeOrder?.metadata ?? null }
+  })
   // A project can carry earnest deposits from more than one customer (a lost
   // buyer, a co-signer); only the agreement's own buyer's money settles here.
   const invoices = depositInvoices.rows.filter(invoice => {
@@ -138,17 +149,16 @@ export async function buildSettlement(closingId: string, orgId?: string) {
       deposits.push({ invoiceId: payment.invoice_id, paymentId: payment.id, label: labels.get(payment.invoice_id) ?? "Earnest deposit", amountCents, receivedAt: payment.created_at })
     }
   }
-  if (contract.total_cents === null || !Number.isSafeInteger(Number(contract.total_cents))) throw new Error("Settlement agreement amount is invalid")
-  if (changeOrders.some(row => row.total_cents === null || !Number.isSafeInteger(Number(row.total_cents)))) throw new Error("Approved closing change amount is invalid")
+  if (terms.originalTotalCents !== Number(contract.total_cents)) throw new Error("The agreement's original version does not match its signed price; reconcile it before closing")
   const settlement = buildPurchaseAgreementSettlement({
-    agreementTotalCents: Number(contract.total_cents ?? 0),
-    approvedChangeOrders: (changeOrders ?? []).map((row: any) => ({ id: row.id, totalCents: Number(row.total_cents ?? 0) })),
+    agreementTotalCents: terms.originalTotalCents,
+    approvedChangeOrders: changeOrders.map(row => ({ id: row.id, totalCents: row.total_cents })),
     adjustments: parseSettlementAdjustments((closing.metadata as Record<string, unknown> | null)?.adjustments),
     deposits,
   })
   // A preview is computed evidence. Persist it only through the settlement owner.
   return { ...settlement, contractId: contract.id, agreement: { id: contract.id, number: contract.number ?? null, signed_at: contract.signed_at ?? null },
-    agreementEvidenceDigest: booksDigest({ kind: "closing-agreement-v1", id: contract.id, totalCents: contract.total_cents, snapshot: contract.snapshot, signedAt: contract.signed_at }),
+    agreementEvidenceDigest: booksDigest({ kind: "closing-agreement-v1", id: contract.id, totalCents: contract.total_cents, snapshot: contract.snapshot, signedAt: contract.signed_at, versionId: terms.current.id }),
     pricing: (contract.snapshot as any)?.purchase_agreement?.pricing as PurchaseAgreementPricing | undefined, changeOrders }
 }
 
@@ -285,6 +295,8 @@ export async function updateClosingChecklistItem(input: unknown, orgId?: string)
     if (!file.data) throw new Error("Closing evidence file must belong to this home and remain available")
   }
   if (parsed.status === "waived" && !parsed.notes?.trim()) throw new Error("A reason is required to waive a closing gate")
+  if (before.evidence_required && parsed.status === "waived") throw new Error(`${before.title} cannot be waived; attach its evidence file`)
+  if (before.evidence_required && parsed.status === "complete" && !fileId) throw new Error(`Attach the evidence file from this home to complete ${before.title}`)
   const { data, error } = await context.supabase.from("closing_checklist_items").update({ status: parsed.status, file_id: fileId, notes: parsed.notes === undefined ? before.notes : parsed.notes, completed_at: parsed.status !== "open" ? new Date().toISOString() : null, completed_by: parsed.status !== "open" ? context.userId : null }).eq("org_id", context.orgId).eq("id", parsed.itemId).eq("closing_id", closing.id).select("*").single()
   if (error || !data) throw new Error(`Failed to update closing checklist: ${error?.message}`)
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "closing_checklist_item", entityId: data.id, before, after: data })
@@ -425,6 +437,7 @@ export async function recoverClosingCompletion(projectId: string, closingId: str
       !invoiceSettlement || typeof invoiceSettlement !== "object" || settlementEvidenceDigest(invoiceSettlement as Record<string, unknown>) !== settlementEvidenceDigest(settlement)) {
     throw new Error("Recorded closing invoice does not reconcile with the settlement")
   }
+  await ensureSalesCommissionPayables({ orgId: context.orgId, userId: context.userId, closingId: closing.id })
   if (closing.lot_id) {
     const lot = await context.supabase.from("lots").update({ status: "closed" }).eq("org_id", context.orgId).eq("project_id", projectId).eq("id", closing.lot_id).select("id").single()
     if (lot.error || !lot.data) throw new Error(`Closing is recorded; retry completion after resolving the lot: ${lot.error?.message ?? "Lot is missing or belongs to another home"}`)
@@ -605,18 +618,6 @@ export async function settleClosing(input: unknown, orgId?: string) {
   return getClosing(closing.project_id, context.orgId)
 }
 
-export async function cancelClosing(input: { closingId: string; reason: string }, orgId?: string) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("closing.manage", context)
-  if (!input.reason.trim() || input.reason.length > 2000) throw new Error("A cancellation reason is required (maximum 2000 characters)")
-  const before = await loadEditableClosing(context, input.closingId)
-  const { data, error } = await context.supabase.from("closings").update({ status: "cancelled", cancel_reason: input.reason.trim() }).eq("org_id", context.orgId)
-    .eq("id", before.id).eq("project_id", before.project_id).eq("status", before.status).select("*").single()
-  if (error || !data) throw new Error("Closing could not be cancelled")
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_cancelled", entityType: "closing", entityId: data.id, payload: { reason: input.reason } })
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "closing", entityId: data.id, before, after: data })
-}
-
 /**
  * Reverses a recorded closing (a sale that fell through after it was recorded).
  * The money comes off first, each through its own record: the balance payment is
@@ -637,6 +638,9 @@ export async function reverseClosing(input: { closingId: string; reason: string;
   if (error || !closing) throw new Error("Closing not found")
   await authorizeClosingProject({ ...context, projectId: closing.project_id, closingId: closing.id })
   if (closing.status !== "closed" || !closing.closing_invoice_id) throw new Error("Only a recorded closing can be reversed")
+  // Commissions come back first: a commission bill in a payment run refuses the
+  // reversal before any money moves.
+  await unwindSalesCommissionsForClosing({ orgId: context.orgId, userId: context.userId, closingId: closing.id, reason, date: input.date })
   const service = createServiceSupabaseClient()
   const { data: invoice, error: invoiceError } = await service.from("invoices").select("id, total_cents").eq("org_id", context.orgId).eq("id", closing.closing_invoice_id).single()
   if (invoiceError || !invoice) throw new Error("Closing invoice not found")

@@ -34,6 +34,12 @@ export interface PromotePersonInput {
   companyName?: string | null
   /** What they do at that company. */
   title?: string | null
+  /**
+   * Whether an exact name may stand in for a missing email match. True for a
+   * person a consultant typed at the desk; false for unauthenticated web input,
+   * where two buyers sharing a name must never become one contact.
+   */
+  matchByName?: boolean
 }
 
 export interface PromotedPerson {
@@ -166,7 +172,7 @@ export async function promotePersonToDirectoryWithClient(
     contactId = await findContactIdByEmail(supabase, orgId, email)
   }
 
-  if (!contactId) {
+  if (!contactId && input.matchByName !== false) {
     const { data, error } = await supabase
       .from("contacts")
       .select("id, full_name")

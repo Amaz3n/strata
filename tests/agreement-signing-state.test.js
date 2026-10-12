@@ -1,6 +1,6 @@
 require('../scripts/register-ts-node-test')
 const assert=require('node:assert/strict'),test=require('node:test')
-const {deriveAgreementSigningState:derive,signingState}=require('../lib/sales/agreement-signing-state')
+const {deriveAgreementSigningState:derive,signingState,packetStaleState}=require('../lib/sales/agreement-signing-state')
 const buyer={id:'buyer-request',status:'sent',sequence:1,required:true,signerRole:'buyer',contactId:'buyer',deliveryStatus:null,providerId:null}
 const builder={id:'builder-request',status:'draft',sequence:2,required:true,signerRole:'builder',contactId:null,deliveryStatus:null,providerId:null}
 const base={documentId:'document',documentStatus:'sent',envelopeStatus:'sent',owned:true,buyerId:'buyer',coBuyerId:null,canManage:true,requests:[buyer,builder]}
@@ -53,4 +53,9 @@ test('board next action and deal header do not invent delivery from a draft',()=
  const state=signingState('not_prepared')
  assert.equal(resolveDealPrimaryAction(deal,state).hint,state.detail)
  assert.equal(nextActionFor(deal).label,'Review agreement signing')
+})
+test('a draft whose packet went stale says why and offers a refresh only to a seller who can make one',()=>{
+ const stale=packetStaleState('This agreement\'s packet is missing the required addendum HOA disclosure.',true)
+ assert.equal(stale.stage,'packet_stale');assert.match(stale.detail,/HOA disclosure/);assert.equal(stale.canResume,true)
+ assert.equal(packetStaleState('Withdrawn',false).canResume,false)
 })

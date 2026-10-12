@@ -68,6 +68,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   land_contract: "land_contract",
   house_plan: "house_plan",
   budget_template: "budget_template",
+  agreement_template: "agreement_template",
   selection_option: "selection_option",
   design_studio_appointment: "design_studio_appointment",
   price_agreement: "price_agreement",

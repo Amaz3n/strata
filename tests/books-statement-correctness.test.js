@@ -107,6 +107,13 @@ test("owned inventory policy keeps contract costs and pre-adoption history intac
   assert.equal(isClosedHomeCost(policy, "2026-06-01"), true);
   assert.equal(isClosedHomeCost({ ...policy, soldOn: null }, "2026-06-10"), false);
 });
+test("a sales commission on an owned home is a period expense at every stage, never inventory", () => {
+  const policy = { enabled: true, effectiveOn: "2026-03-01", completedOn: "2026-05-01", soldOn: "2026-06-01" };
+  for (const date of ["2026-04-01", "2026-05-10", "2026-06-10"]) {
+    assert.equal(inventoryCostAccount(policy, date, "6100", "expense"), "6100");
+    assert.equal(isClosedHomeCost(policy, date, "expense"), false);
+  }
+});
 const { preserveLegacyDimensionPayload } = require('../lib/services/books/fact-drafts');
 test('dimension rollout preserves unchanged historical facts and enriches the next economic revision',()=>{
  const old={total_cents:10000,tax_cents:0,retainage_cents:0,project_id:'project',revenue_basis:'cost_to_cost'};

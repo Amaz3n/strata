@@ -177,7 +177,6 @@ export function DealActionsMenu({
       {canManageSale && agreement ? (
         <VoidAgreementDialog
           contractId={agreement.contractId}
-          hasDeposit={agreement.hasDeposit}
           open={voidOpen}
           onOpenChange={setVoidOpen}
         />

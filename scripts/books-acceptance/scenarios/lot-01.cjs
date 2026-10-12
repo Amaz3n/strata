@@ -91,7 +91,7 @@ const STEPS = {
     const other = await seed.registerBuyer(kit, org, { name: "Priya Nair", email: "priya.nair@acceptance.example.test" })
     const { reservation: otherReservation } = await seed.reserveLot(kit, org, { prospect: other, lotId: org.lots[3].id, depositCents: 1000000 })
     const otherConfig = seed.configuration(org, { lotId: org.lots[3].id, plan: org.plans[1], swing: "left", skus: ["ST-GAR"] })
-    const staleQuote = await refusal(() => kit.as(org.team.sales, () => app("community-sales").createPurchaseAgreement({ ...otherConfig, reservationId: otherReservation.id, expectedQuoteHash: "0".repeat(64) })))
+    const staleQuote = await refusal(() => kit.as(org.team.sales, () => app("community-sales").createPurchaseAgreement({ ...otherConfig, ...seed.agreementPacketFor(kit, org, otherConfig.lotId), reservationId: otherReservation.id, expectedQuoteHash: "0".repeat(64) })))
     const sale = await seed.signAgreement(kit, org, { reservationId: reservation.id, config })
     org.contractId = sale.contractId
     org.projectId = sale.projectId

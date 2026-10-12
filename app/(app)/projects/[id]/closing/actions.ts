@@ -6,6 +6,7 @@ import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { recoverClosingCompletion, markClearedToClose, removeClosingAdjustment, reverseClosing, scheduleClosing, settleClosing, updateClosingChecklistItem, upsertClosingAdjustment } from "@/lib/services/closings"
 import { generateSettlementStatementPdf } from "@/lib/services/reports/settlement-statement"
+import { addAgreementMilestone, resolveAgreementMilestone, updateAgreementMilestone } from "@/lib/services/agreement-milestones"
 
 async function run<T>(projectId: string, operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -37,3 +38,8 @@ export async function reverseClosingAction(projectId: string, input: { closingId
   return run(projectId, () => reverseClosing(z.object({ closingId: z.string().uuid(), reason: z.string().trim().min(10).max(2000), date: z.string().date() }).parse(input)))
 }
 export async function recoverClosingCompletionAction(projectId: string, closingId: string) { return run(projectId, () => recoverClosingCompletion(z.string().uuid().parse(projectId), z.string().uuid().parse(closingId))) }
+
+// What the sale owes before closing. Inputs are Zod-validated by the service.
+export async function addAgreementMilestoneAction(projectId: string, input: unknown) { return run(projectId, async () => { await addAgreementMilestone(input) }) }
+export async function updateAgreementMilestoneAction(projectId: string, input: unknown) { return run(projectId, async () => { await updateAgreementMilestone(input) }) }
+export async function resolveAgreementMilestoneAction(projectId: string, input: unknown) { return run(projectId, async () => { await resolveAgreementMilestone(input) }) }

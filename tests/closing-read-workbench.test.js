@@ -14,6 +14,8 @@ function harness({ manage = false, payment = false, deniedRead = false, failure 
     closings: [{ id: PACKAGE, org_id: ORG, project_id: PROJECT, status: 'projected', scheduled_date: '2026-10-06', metadata: { adjustments: [{ id: ACTOR, label: 'Lender credit', kind: 'seller_credit', amountCents: -1000 }] }, settlement: { sentinel: 'Original persisted record' }, project: { name: 'Lot 42' }, lot: { lot_number: '42', plan: { name: 'Plan A' } }, community: { name: 'Oak' } }],
     closing_checklist_items: [], contracts: [{ id: ACTOR, org_id: ORG, project_id: PROJECT, contract_type: 'purchase_agreement', status: 'active', total_cents: 110000, snapshot: { purchase_agreement: { pricing } }, number: 'PA-42', signed_at: '2026-10-01T00:00:00Z' }],
     change_orders: [], invoices: [], payments: [],
+    // The signed agreement's original version, as the database writes it on signing.
+    purchase_agreement_versions: [{ id: '00000000-0000-4000-8000-0000000000aa', org_id: ORG, project_id: PROJECT, contract_id: ACTOR, version_number: 1, kind: 'original', change_order_id: null, price_delta_cents: 110000, authorized_total_cents: 110000, executed_at: '2026-10-01T00:00:00Z', change_order: null }],
   })
   const calls = [], gates = []
   const from = db.from.bind(db)
@@ -127,38 +129,40 @@ function component() {
     return require('../components/sales/closing-workbench').ClosingWorkbench
   } finally { Module._load = original }
 }
+// A home with no executed agreement has no milestones to show.
+const NO_AGREEMENT = { ok: true, data: { agreement: null, milestones: [], truncated: false, history: [], deliveries: [], evidenceFiles: [], evidenceFilesTruncated: false, canManage: false, members: [], companyNames: {} } }
 test('actual read-only workbench renders history and statement without management/payment actions', async () => {
   const h = harness(), detail = await h.getClosing(PROJECT)
   detail.closing.status = 'cleared_to_close'
   detail.checklist = [{ id: PACKAGE, title: 'Occupancy evidence', is_gate: true, status: 'open' }]
-  const html = renderToStaticMarkup(React.createElement(component(), { projectId: PROJECT, detail }))
+  const html = renderToStaticMarkup(React.createElement(component(), { projectId: PROJECT, detail, milestones: NO_AGREEMENT }))
   assert.match(html, /Occupancy evidence/); assert.match(html, /Lender credit/)
-  assert.doesNotMatch(html, />Schedule<|>Clear to close<|>Complete<|>Remove<|>Add<|>Settle closing<|closing-scheduled-date/)
+  assert.doesNotMatch(html, />Schedule<|>Clear to close<|>Resolve<|>Remove<|>Add<|>Settle closing<|closing-scheduled-date/)
   assert.match(html, /Scheduled:/)
 })
 test('actual manager workbench can manage checklist/adjustments but needs payment authority to settle', async () => {
   const h = harness({ manage: true }), detail = await h.getClosing(PROJECT)
   detail.closing.status = 'cleared_to_close'
   detail.checklist = [{ id: PACKAGE, title: 'Occupancy evidence', is_gate: true, status: 'open' }]
-  const html = renderToStaticMarkup(React.createElement(component(), { projectId: PROJECT, detail }))
-  assert.match(html, /closing-scheduled-date/); assert.match(html, />Complete</); assert.match(html, />Remove</); assert.match(html, />Add</)
+  const html = renderToStaticMarkup(React.createElement(component(), { projectId: PROJECT, detail, milestones: NO_AGREEMENT }))
+  assert.match(html, /closing-scheduled-date/); assert.match(html, />Resolve</); assert.match(html, />Remove</); assert.match(html, />Add</)
   assert.doesNotMatch(html, /id="settlement-reference"|>Settle closing</)
 })
 test('actual authorized settlement and closed recovery expose only applicable controls', async () => {
   const h = harness({ manage: true, payment: true }), detail = await h.getClosing(PROJECT)
   detail.closing.status = 'cleared_to_close'
   const C = component()
-  let html = renderToStaticMarkup(React.createElement(C, { projectId: PROJECT, detail }))
+  let html = renderToStaticMarkup(React.createElement(C, { projectId: PROJECT, detail, milestones: NO_AGREEMENT }))
   assert.match(html, /id="settlement-reference"/); assert.match(html, />Settle closing</)
   detail.closing.status = 'closed'
-  html = renderToStaticMarkup(React.createElement(C, { projectId: PROJECT, detail }))
+  html = renderToStaticMarkup(React.createElement(C, { projectId: PROJECT, detail, milestones: NO_AGREEMENT }))
   assert.match(html, />Retry completion</)
-  assert.doesNotMatch(html, /closing-scheduled-date|id="settlement-reference"|>Complete<|>Add<|>Remove</)
+  assert.doesNotMatch(html, /closing-scheduled-date|id="settlement-reference"|>Resolve<|>Add<|>Remove</)
 })
 test('empty checklist states identify the authorized next step without generating records', async () => {
   for (const manage of [false, true]) {
     const h = harness({ manage }), detail = await h.getClosing(PROJECT)
-    const html = renderToStaticMarkup(React.createElement(component(), { projectId: PROJECT, detail }))
+    const html = renderToStaticMarkup(React.createElement(component(), { projectId: PROJECT, detail, milestones: NO_AGREEMENT }))
     assert.match(html, manage ? /Schedule this closing to prepare its checklist/ : /checklist has not been prepared/)
     assert.deepEqual(writes(h), [])
   }

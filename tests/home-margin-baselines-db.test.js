@@ -71,16 +71,13 @@ test("a signed agreement still moves through signing and void", async (t) => {
   await sign(db, agreement.id)
 
   await db.query("update contracts set signature_data = signature_data || '{\"execution_effects_completed\":true}' where id = $1", [agreement.id])
-  await db.query(
-    "update contracts set status = 'void', snapshot = snapshot || '{\"cancellation_reason\":\"financing\",\"cancelled_at\":\"2026-10-11\"}' where id = $1",
-    [agreement.id],
-  )
+  // A cancellation is recorded on its own receipt; the signed snapshot is never written again.
+  await db.query("update contracts set status = 'void' where id = $1", [agreement.id])
 
   const { rows } = await db.query("select status, total_cents, snapshot from contracts where id = $1", [agreement.id])
   assert.equal(rows[0].status, "void")
   assert.equal(rows[0].total_cents, 465_000_00)
   assert.deepEqual(rows[0].snapshot.purchase_agreement, SNAPSHOT.purchase_agreement)
-  // The void record is as fixed as the price.
   await assert.rejects(
     db.query("update contracts set snapshot = snapshot || '{\"cancellation_reason\":\"other\"}' where id = $1", [agreement.id]),
     /Amend it with a change order/,

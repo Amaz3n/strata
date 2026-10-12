@@ -7,6 +7,7 @@
  */
 
 const assert = require("node:assert/strict")
+const { createHash } = require("node:crypto")
 const { describe, test } = require("node:test")
 
 const { createServiceHarness, replies, id, ORG, ACTOR } = require("./support/service")
@@ -14,16 +15,40 @@ const { freshRequire, stubModule } = require("./support/modules")
 const { withIlike } = require("./support/postgrest-extras")
 const { specPricingRpc } = require("./support/spec-pricing")
 
-// Building a home, issuing an invoice and reversing a payment have their own suites;
-// here a refund is recorded so a test can prove how many a release made.
+// Building a home, issuing an invoice, reversing a payment and applying a
+// deposit have their own suites; here each is recorded (and lands in the fake
+// ledger) so a test can prove how much money a cancellation moved, and how often.
 const refunds = []
+const applications = []
+const invoices = []
+const ledger = { store: null, failNextRefund: false }
 stubModule("@/lib/services/projects", {})
-stubModule("@/lib/services/invoices", { createInvoice: async () => ({ id: id(77) }) })
-stubModule("@/lib/services/payments", {
-  recordPaymentReversal: async (request) => {
-    refunds.push(request)
+stubModule("@/lib/services/invoices", {
+  createInvoice: async ({ input }) => {
+    const invoice = { id: id(77), org_id: ORG, ...input }
+    invoices.push(invoice)
+    ledger.store?.invoices?.push(invoice)
+    return invoice
   },
 })
+stubModule("@/lib/services/payments", {
+  recordPaymentReversal: async (request) => {
+    if (ledger.failNextRefund) {
+      ledger.failNextRefund = false
+      throw new Error("Processor timed out")
+    }
+    refunds.push(request)
+    ledger.store?.payment_reversals?.push({ id: id(700 + refunds.length), org_id: ORG, payment_id: request.paymentId, amount_cents: request.amountCents, status: "succeeded", metadata: request.metadata })
+  },
+})
+stubModule("@/lib/services/books/customer-deposits", {
+  applyCustomerDepositWithContext: async (_context, application) => {
+    applications.push(application)
+    ledger.store?.payments?.push({ id: id(800 + applications.length), org_id: ORG, invoice_id: application.targetInvoiceId, amount_cents: application.amountCents, status: "succeeded",
+      metadata: { deposit_payment_id: application.depositPaymentId, customer_deposit_application: true } })
+  },
+})
+stubModule("@/lib/services/books/projector", { projectJournal: async () => ({ failures: [] }) })
 // Preparing the signing packet has its own suite; with no signing storage it reports why and stops.
 stubModule("@/lib/storage/files-storage", { getFilesStorageProvider: () => "unconfigured" })
 
@@ -39,7 +64,7 @@ function releaseLotReservation({ p_reservation_id, p_reason, p_deposit_dispositi
   return { data: { before, after: { ...row } }, error: null }
 }
 
-const { bulkRepriceCommunityPlans, createLotHold, createPurchaseAgreement, createLotHoldFromProspect, priceAgreementDraft, registerReservationConversion, releaseReservation, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, proposeSpecPriceChange, decideSpecPriceChange, voidPurchaseAgreement } =
+const { bulkRepriceCommunityPlans, completeAgreementCancellation, createLotHold, createPurchaseAgreement, createLotHoldFromProspect, previewAgreementCancellation, priceAgreementDraft, refreshPurchaseAgreementPacket, registerReservationConversion, releaseReservation, executePurchaseAgreementFromEnvelopeExecution, searchOfferablePlans, listSellableLots, listSpecInventoryPage, proposeSpecPriceChange, decideSpecPriceChange, voidPurchaseAgreement } =
   freshRequire("lib/services/community-sales.ts")
 
 const COMMUNITY = id(1)
@@ -131,21 +156,100 @@ describe("a reprice run that stops part-way", () => {
   })
 })
 
-describe("voidPurchaseAgreement", () => {
-  function harness({ permissions = ["sales.manage", "project.manage"] } = {}) {
-    return createServiceHarness({
+/**
+ * `preview_purchase_agreement_cancellation` as the service sees it, for the rows
+ * a test seeds. The SQL plan itself is proved in purchase-agreements-db.
+ */
+function cancellationPlan(contractId, store) {
+  const contract = store.contracts.find((row) => row.id === contractId)
+  if (!contract || !["draft", "active"].includes(contract.status)) return { error: { message: "Active purchase agreement not found" } }
+  const reservation = store.lot_reservations.find((row) => row.contract_id === contract.id && ["hold", "reserved", "converted"].includes(row.status))
+  const closing = store.closings.find((row) => row.project_id === contract.project_id && row.status !== "cancelled")
+  const payments = (store.payments ?? [])
+    .filter((row) => reservation?.deposit_invoice_id && row.invoice_id === reservation.deposit_invoice_id && row.status === "succeeded" && !row.metadata?.customer_deposit_application)
+    .map((row) => {
+      const refunded = (store.payment_reversals ?? []).filter((reversal) => reversal.payment_id === row.id).reduce((sum, reversal) => sum + reversal.amount_cents, 0)
+      return { payment_id: row.id, invoice_id: row.invoice_id, amount_cents: row.amount_cents, refunded_cents: refunded, applied_cents: 0, available_cents: row.amount_cents - refunded }
+    })
+  const sum = (key) => payments.reduce((total, row) => total + row[key], 0)
+  const plan = {
+    contract: { id: contract.id, status: contract.status, number: null, project_id: contract.project_id },
+    blocked: closing?.status === "closed" ? "This sale has closed. Reverse the closing first, then cancel the agreement." : null,
+    closing: closing ? { id: closing.id, status: closing.status } : null,
+    reservation: reservation ? { id: reservation.id, status: reservation.status, deposit_invoice_id: reservation.deposit_invoice_id, prospect_id: reservation.prospect_id } : null,
+    deposit: { collected_cents: sum("amount_cents"), refunded_cents: sum("refunded_cents"), applied_cents: 0, available_cents: sum("available_cents"), payments },
+    envelopes: [],
+    pending_change_orders: [],
+    amendments: { count: 0, total_cents: 0 },
+    variance_orders: { to_void: [], kept: [] },
+    start_package: null,
+    selections: {
+      unlock: store.project_selections.filter((row) => row.locked_at && ["pending", "selected", "confirmed"].includes(row.status)).length,
+      keep_locked: store.project_selections.filter((row) => row.locked_at && ["ordered", "received"].includes(row.status)).length,
+    },
+    incentives: 0,
+    portal_tokens: store.portal_access_tokens.filter((row) => row.project_id === contract.project_id && !row.revoked_at).length,
+  }
+  return { plan: { ...plan, hash: createHash("sha256").update(JSON.stringify(plan)).digest("hex") } }
+}
+
+/** `void_purchase_agreement_atomic`: one transaction against the reviewed plan, or nothing. */
+function voidAgreementAtomically(args, store) {
+  const { plan, error } = cancellationPlan(args.p_contract_id, store)
+  if (error) return { data: null, error }
+  if (plan.blocked) return { data: null, error: { message: plan.blocked } }
+  if (plan.hash !== args.p_expected_plan_hash) return { data: null, error: { message: "The sale changed", details: "AGREEMENT_CANCELLATION_CHANGED" } }
+  const available = plan.deposit.available_cents
+  const forfeit = available === 0 ? 0 : args.p_deposit_disposition === "forfeit" ? available : args.p_deposit_disposition === "split" ? args.p_forfeit_cents : 0
+  const contract = store.contracts.find((row) => row.id === args.p_contract_id)
+  contract.status = "void"
+  const reservation = store.lot_reservations.find((row) => row.id === plan.reservation?.id)
+  if (reservation) reservation.status = "released"
+  for (const prospect of store.prospects) if (prospect.id === plan.reservation?.prospect_id && prospect.status === "won") Object.assign(prospect, { status: "qualified", won_at: null })
+  for (const closing of store.closings) if (closing.project_id === contract.project_id && closing.status !== "closed") closing.status = "cancelled"
+  for (const selection of store.project_selections) if (["pending", "selected", "confirmed"].includes(selection.status)) selection.locked_at = null
+  for (const project of store.projects) if (project.id === contract.project_id) project.client_id = null
+  const { hash, ...decided } = plan
+  const cancellation = {
+    id: id(600), org_id: ORG, project_id: contract.project_id, contract_id: contract.id, reservation_id: reservation?.id ?? null, reason: args.p_reason,
+    deposit_disposition: available === 0 ? "none" : args.p_deposit_disposition, forfeit_cents: forfeit, refund_cents: available - forfeit,
+    plan: decided, plan_hash: hash, outcomes: { voided: true }, settlement_status: "pending", settlement_error: null, settlement_claimed_at: null,
+    completed_at: null, created_at: "2026-10-12T00:00:00Z",
+  }
+  store.purchase_agreement_cancellations.push(cancellation)
+  return { data: { cancellation: { ...cancellation } }, error: null }
+}
+
+describe("cancelling a sale", () => {
+  const DEPOSIT_INVOICE = id(20)
+  const DEPOSIT_PAYMENT = id(21)
+
+  function harness({ permissions = ["sales.manage", "project.manage", "payment.release"], deposit = false, closing = "projected" } = {}) {
+    refunds.length = 0
+    applications.length = 0
+    invoices.length = 0
+    const service = createServiceHarness({
       permissions,
-      rpc: { release_lot_reservation: releaseLotReservation },
+      rpc: {
+        preview_purchase_agreement_cancellation: ({ p_contract_id }, store) => {
+          const { plan, error } = cancellationPlan(p_contract_id, store)
+          return error ? { data: null, error } : { data: plan, error: null }
+        },
+        void_purchase_agreement_atomic: voidAgreementAtomically,
+      },
       tables: {
         contracts: [
           { id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "active", snapshot: {} },
         ],
         lot_reservations: [
-          { id: RESERVATION, org_id: ORG, contract_id: CONTRACT, prospect_id: LEAD, status: "converted", deposit_invoice_id: null, metadata: {} },
+          { id: RESERVATION, org_id: ORG, contract_id: CONTRACT, prospect_id: LEAD, status: "converted", deposit_invoice_id: deposit ? DEPOSIT_INVOICE : null, buyer_contact_id: id(9), metadata: {} },
         ],
         prospects: [{ id: LEAD, org_id: ORG, status: "won", won_at: "2026-09-01T00:00:00Z" }],
-        closings: [{ id: id(7), org_id: ORG, project_id: HOME, status: "projected" }],
-        project_selections: [{ id: id(8), org_id: ORG, project_id: HOME, locked_at: "2026-09-01T00:00:00Z" }],
+        closings: [{ id: id(7), org_id: ORG, project_id: HOME, status: closing }],
+        project_selections: [
+          { id: id(8), org_id: ORG, project_id: HOME, status: "confirmed", locked_at: "2026-09-01T00:00:00Z" },
+          { id: id(11), org_id: ORG, project_id: HOME, status: "ordered", locked_at: "2026-09-01T00:00:00Z" },
+        ],
         projects: [{ id: HOME, org_id: ORG, client_id: id(9) }],
         portal_access_tokens: [
           { id: TOKEN, org_id: ORG, project_id: HOME, portal_type: "client", purpose: null, revoked_at: null },
@@ -153,52 +257,107 @@ describe("voidPurchaseAgreement", () => {
         external_identity_grants: [
           { id: id(10), org_id: ORG, portal_access_token_id: TOKEN, status: "active", revoked_at: null },
         ],
+        invoices: [],
+        payments: deposit ? [{ id: DEPOSIT_PAYMENT, org_id: ORG, invoice_id: DEPOSIT_INVOICE, amount_cents: 10_000_00, status: "succeeded", metadata: {} }] : [],
+        payment_reversals: [],
+        purchase_agreement_cancellations: [],
       },
     })
+    ledger.store = service.db
+    return service
   }
-  const voidIt = (service) =>
-    service.run(() =>
-      voidPurchaseAgreement({ contractId: CONTRACT, reason: "Buyer financing fell through", depositDisposition: "refund" }),
-    )
+  const review = (service) => service.run(() => previewAgreementCancellation(CONTRACT))
+  const cancel = async (service, input = {}) => {
+    const plan = await review(service)
+    return service.run(() => voidPurchaseAgreement({ contractId: CONTRACT, reason: "Buyer financing fell through", depositDisposition: "refund", expectedPlanHash: plan.hash, ...input }))
+  }
 
-  test("voiding unwinds the sale and ends the buyer's account access, not just the link", async () => {
+  test("cancelling unwinds the sale against the reviewed plan and ends the buyer's account access, not just the link", async () => {
     const service = harness()
-    await voidIt(service)
+    const cancellation = await cancel(service)
 
     assert.equal(service.db.contracts[0].status, "void")
     assert.equal(service.db.lot_reservations[0].status, "released")
     assert.equal(service.db.prospects[0].status, "qualified")
-    assert.equal(service.db.prospects[0].won_at, null)
     assert.equal(service.db.closings[0].status, "cancelled")
-    assert.equal(service.db.project_selections[0].locked_at, null)
     assert.equal(service.db.projects[0].client_id, null)
     assert.notEqual(service.db.portal_access_tokens[0].revoked_at, null)
     assert.equal(service.db.external_identity_grants[0].status, "revoked")
-    assert.deepEqual(
-      service.audits.map((entry) => [entry.entityType, entry.after.status]),
-      [["lot_reservation", "released"], ["contract", "void"]],
-    )
+    assert.equal(cancellation.settlementStatus, "completed")
+    assert.equal(service.db.purchase_agreement_cancellations[0].outcomes.portal_tokens_revoked, 1)
     assert.ok(service.events.some((event) => event.eventType === "purchase_agreement_voided"))
   })
 
+  test("ordered and received selections stay locked with the house; only undecided ones unlock", async () => {
+    const service = harness()
+    await cancel(service)
+    assert.deepEqual(service.db.project_selections.map((row) => [row.status, row.locked_at === null]), [["confirmed", true], ["ordered", false]])
+  })
+
   test("a voider who cannot revoke the buyer's access changes nothing", async () => {
-    const service = harness({ permissions: ["sales.manage"] })
-    await assert.rejects(voidIt(service))
+    const service = harness({ permissions: ["sales.manage", "payment.release"] })
+    await assert.rejects(cancel(service), /Missing permission/)
     assert.deepEqual(service.writes(), [])
   })
 
-  test("a second void racing the first finds nothing left to void", async () => {
+  test("a sale that changed since it was reviewed is not cancelled", async () => {
     const service = harness()
-    const outcomes = await Promise.allSettled([voidIt(service), voidIt(service)])
-    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1)
-    assert.equal(service.events.filter((event) => event.eventType === "lot_reservation_released").length, 1)
+    const plan = await review(service)
+    service.db.project_selections[1].status = "confirmed"
+    await assert.rejects(
+      service.run(() => voidPurchaseAgreement({ contractId: CONTRACT, reason: "Buyer financing fell through", depositDisposition: "refund", expectedPlanHash: plan.hash })),
+      (error) => error.code === "AGREEMENT_CANCELLATION_CHANGED",
+    )
+    assert.equal(service.db.contracts[0].status, "active")
   })
 
-  test("a failed unwind step is reported, not swallowed", async () => {
-    const service = harness()
-    service.tamper("closings", replies.error("closings unavailable"), { on: "update" })
-    await assert.rejects(voidIt(service), /cancelling the closing failed/)
-    assert.equal(service.events.some((event) => event.eventType === "purchase_agreement_voided"), false)
+  test("a settled sale is refused: its closing is reversed first", async () => {
+    const service = harness({ closing: "closed" })
+    await assert.rejects(cancel(service), /Reverse the closing first/)
+    assert.equal(service.db.contracts[0].status, "active")
+    assert.deepEqual(refunds, [])
+  })
+
+  test("a second cancellation racing the first finds nothing left to cancel", async () => {
+    const service = harness({ deposit: true })
+    const outcomes = await Promise.allSettled([cancel(service), cancel(service)])
+    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1)
+    assert.deepEqual(refunds.map((refund) => refund.amountCents), [10_000_00])
+  })
+
+  test("a refund returns only what the buyer still has, after an earlier partial refund", async () => {
+    const service = harness({ deposit: true })
+    service.db.payment_reversals.push({ id: id(30), org_id: ORG, payment_id: DEPOSIT_PAYMENT, amount_cents: 2_500_00, status: "succeeded" })
+    await cancel(service)
+    assert.deepEqual(refunds.map((refund) => [refund.paymentId, refund.amountCents]), [[DEPOSIT_PAYMENT, 7_500_00]])
+  })
+
+  test("moving the deposit needs payment authority before anything changes", async () => {
+    const service = harness({ permissions: ["sales.manage", "project.manage"], deposit: true })
+    await assert.rejects(cancel(service), /Missing permission/)
+    assert.equal(service.db.contracts[0].status, "active")
+  })
+
+  test("a split keeps part of the deposit as the builder's and refunds the rest", async () => {
+    const service = harness({ deposit: true })
+    await cancel(service, { depositDisposition: "split", forfeitCents: 2_500_00 })
+    assert.deepEqual(invoices.map((invoice) => [invoice.metadata.invoice_kind, invoice.lines[0].unit_cost]), [["deposit_forfeiture", 2_500]])
+    assert.deepEqual(applications.map((application) => application.amountCents), [2_500_00])
+    assert.deepEqual(refunds.map((refund) => refund.amountCents), [7_500_00])
+  })
+
+  test("an interrupted settlement is retried from the receipt and moves the money once", async () => {
+    const service = harness({ deposit: true })
+    ledger.failNextRefund = true
+    await assert.rejects(cancel(service), /The sale was cancelled, but refunding the deposit did not finish: Processor timed out/)
+    const receipt = service.db.purchase_agreement_cancellations[0]
+    assert.equal(receipt.settlement_status, "failed")
+    assert.equal(service.db.contracts[0].status, "void")
+
+    const settled = await service.run(() => completeAgreementCancellation({ cancellationId: receipt.id }))
+    assert.equal(settled.settlementStatus, "completed")
+    await service.run(() => completeAgreementCancellation({ cancellationId: receipt.id }))
+    assert.deepEqual(refunds.map((refund) => refund.amountCents), [10_000_00])
   })
 })
 
@@ -466,7 +625,8 @@ describe("executePurchaseAgreementFromEnvelopeExecution", () => {
     }
     return createServiceHarness({
       tables: {
-        contracts: [{ id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "draft", signed_at: null, signature_data: {}, buyer_contact_id: null, snapshot: { purchase_agreement: { pricing } }, project: { end_date: null } }],
+        contracts: [{ id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "draft", signed_at: null, signature_data: {}, buyer_contact_id: null, snapshot: { purchase_agreement: { pricing, packet: { hash: "b".repeat(64) } } }, project: { end_date: null } }],
+        documents: [{ id: id(71), org_id: ORG, source_entity_type: "contract", source_entity_id: CONTRACT, metadata: { purchase_agreement: true, esign_source: { sha256: "c".repeat(64) } } }],
         lots: [{ id: LOT, org_id: ORG, project_id: HOME, community_id: COMMUNITY, house_plan_version_id: PLAN_VERSION, status: "assigned" }],
         lot_reservations: [], prospects: [], closings: [], selection_groups: [], selection_catalog_prices: [],
         selection_categories: [{ id: STRUCTURE, org_id: ORG, parent_category_id: null, community_id: null, is_archived: false }],
@@ -490,6 +650,14 @@ describe("executePurchaseAgreementFromEnvelopeExecution", () => {
     assert.ok(garage.locked_at)
     assert.equal(garage.price_cents_snapshot, 18_500_00)
     assert.equal(garage.cost_cents_snapshot, 11_000_00)
+  })
+
+  test("the signed agreement records the packet and the exact bytes the buyer signed", async () => {
+    const service = harness()
+    await execute(service)
+    assert.equal(service.db.contracts[0].status, "active")
+    assert.equal(service.db.contracts[0].signature_data.packet_hash, "b".repeat(64))
+    assert.equal(service.db.contracts[0].signature_data.source_sha256, "c".repeat(64))
   })
 
   test("signing leaves design choices open until their cutoff and locks only what is already decided", async () => {
@@ -677,6 +845,13 @@ describe("releaseReservation", () => {
     assert.deepEqual(service.audits.map((audit) => [audit.entityType, audit.before.status, audit.after.status]), [["lot_reservation", "reserved", "released"]])
   })
 
+  test("a refund after an earlier partial refund returns only what is left", async () => {
+    const service = harness()
+    service.db.payment_reversals = [{ id: id(55), org_id: ORG, payment_id: id(54), amount_cents: 200_000, status: "succeeded" }]
+    await release(service)
+    assert.deepEqual(refunds.map((refund) => [refund.paymentId, refund.amountCents]), [[id(54), 300_000]])
+  })
+
   test("a release that would move the deposit needs payment authority before the reservation is touched", async () => {
     const service = harness({ permissions: ["sales.manage"] })
     await assert.rejects(release(service), /Missing permission/)
@@ -849,6 +1024,7 @@ describe("a home under an approved sell-off belongs to the disposition's buyer",
         community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, effective_start: null, effective_end: null, base_price_cents: 320_000_00 }],
         lot_reservations: reservations,
         contracts: [],
+        agreement_catalog_revisions: [{ org_id: ORG, revision: "1" }],
         spec_price_proposals: proposals,
         spec_dispositions: dispositions ?? [{ id: DISPOSITION, org_id: ORG, lot_id: LOT, project_id: HOME, community_id: COMMUNITY, kind: "investor_sale", status: "approved", counterparty_contact_id: INVESTOR, price_cents: 300_000_00, carrying_cents: 0, impairment_id: null, ...disposition }],
       },
@@ -902,61 +1078,137 @@ describe("createPurchaseAgreement", () => {
   const PLAN = id(82)
   const VERSION = id(83)
   const BUYER = id(84)
+  const AGREEMENT_FORM = id(85)
+  const HOA_ADDENDUM = id(86)
+  const WATERFRONT_ADDENDUM = id(87)
 
-  /** `attach_purchase_agreement_draft`: the draft takes its reservation and configures the home, or nothing changes. */
-  function attachDraft({ p_contract_id, p_reservation_id, p_house_plan_id, p_house_plan_version_id, p_elevation_id, p_swing }, store) {
-    const contract = store.contracts.find((row) => row.id === p_contract_id && row.status === "draft")
-    const reservation = store.lot_reservations.find((row) => row.id === p_reservation_id && row.status === "reserved" && !row.contract_id)
-    if (!contract || !reservation) return { data: null, error: { message: "The reservation is no longer reserved without an agreement" } }
-    reservation.contract_id = p_contract_id
-    const lot = store.lots.find((row) => row.id === reservation.lot_id && row.project_id === contract.project_id)
-    Object.assign(lot, { house_plan_id: p_house_plan_id, house_plan_version_id: p_house_plan_version_id, house_plan_elevation_id: p_elevation_id, swing: p_swing })
-    return { data: null, error: null }
+  const document = (kind, templateId, title, required) => ({
+    kind, template_id: templateId, version_id: id(Number(templateId.slice(-3)) + 100), version_number: 1, title, required,
+    content_sha256: createHash("sha256").update(title).digest("hex"), page_count: 4,
+  })
+
+  /** `resolve_agreement_packet`: the org's published documents for the home, and the optional ones the seller picked. */
+  function resolvePacket({ p_community_id, p_optional_template_ids }) {
+    const offered = [{ template_id: WATERFRONT_ADDENDUM, version_id: id(187), title: "Waterfront addendum" }]
+    if (p_optional_template_ids.some((templateId) => templateId !== WATERFRONT_ADDENDUM)) {
+      return { data: null, error: { message: "An optional addendum no longer applies to this home.", details: "AGREEMENT_PACKET_CHANGED" } }
+    }
+    const documents = [
+      document("agreement", AGREEMENT_FORM, "Florida purchase agreement", true),
+      document("addendum", HOA_ADDENDUM, "HOA disclosure", true),
+      ...(p_optional_template_ids.includes(WATERFRONT_ADDENDUM) ? [document("addendum", WATERFRONT_ADDENDUM, "Waterfront addendum", false)] : []),
+    ]
+    const hash = createHash("sha256").update(JSON.stringify(documents)).digest("hex")
+    return { data: { jurisdiction: "FL", community_id: p_community_id, documents, hash, optional_offered: offered }, error: null }
   }
 
-  function harness({ attach = attachDraft } = {}) {
+  /** `create_purchase_agreement_atomic`: a probe finds no receipt; a commit writes the draft and takes the reservation. */
+  function createAtomically({ p_request, p_snapshot }, store) {
+    if (!p_snapshot) return { data: null, error: null }
+    const contract = {
+      id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status: "draft",
+      total_cents: p_snapshot.purchase_agreement.pricing.totalCents, snapshot: p_snapshot, terms: p_request.terms,
+      buyer_contact_id: BUYER, co_buyer_contact_id: null,
+    }
+    store.contracts.push(contract)
+    store.lot_reservations[0].contract_id = CONTRACT
+    return { data: { receipt_id: id(88), created: true, contract }, error: null }
+  }
+
+  function harness({ resolve = resolvePacket } = {}) {
+    const lot = { id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 0, asking_price_override_cents: null, project_id: HOME, house_plan_id: PLAN, house_plan_version_id: VERSION, house_plan_elevation_id: null, swing: "left", lot_number: "81" }
     return createServiceHarness({
       permissions: ["sales.manage", "sales.read"],
       projects: [HOME],
-      rpc: { attach_purchase_agreement_draft: attach },
+      rpc: { resolve_agreement_packet: resolve, create_purchase_agreement_atomic: createAtomically },
       tables: {
-        lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, status: "started", premium_cents: 0, asking_price_override_cents: null, project_id: HOME, house_plan_id: PLAN, house_plan_version_id: VERSION, house_plan_elevation_id: null, swing: "left", lot_number: "81" }],
+        lots: [lot],
         communities: [{ id: COMMUNITY, org_id: ORG, division_id: null }],
         projects: [{ id: HOME, org_id: ORG, division_id: null }],
         house_plan_versions: [{ id: VERSION, org_id: ORG, house_plan_id: PLAN, status: "released", label: "v1", plan: { name: "Oak", org_id: ORG } }],
         community_plan_availability: [{ org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, elevation_id: null, is_available: true, effective_start: null, effective_end: null, base_price_cents: 320_000_00 }],
-        lot_reservations: [{ id: RESERVATION, org_id: ORG, community_id: COMMUNITY, lot_id: LOT, status: "reserved", buyer_contact_id: BUYER, co_buyer_contact_id: null, contract_id: null, deposit_invoice_id: null, expires_at: null, lot: { project_id: HOME, lot_number: "81" } }],
+        lot_reservations: [{ id: RESERVATION, org_id: ORG, community_id: COMMUNITY, lot_id: LOT, status: "reserved", buyer_contact_id: BUYER, co_buyer_contact_id: null, contract_id: null, deposit_invoice_id: null, expires_at: null, lot }],
         contracts: [],
+        agreement_catalog_revisions: [{ org_id: ORG, revision: "1" }],
         spec_price_proposals: [],
         spec_dispositions: [],
       },
     })
   }
-  async function create(service) {
+  async function create(service, { optionalAddendumTemplateIds = [], packetHash, terms = {} } = {}) {
     const quote = await service.run(() => priceAgreementDraft({ lotId: LOT, optionItems: [], incentiveIds: [] }))
-    return service.run(() => createPurchaseAgreement({ reservationId: RESERVATION, lotId: LOT, optionItems: [], incentiveIds: [], expectedQuoteHash: quote.quoteHash }))
+    const packet = resolvePacket({ p_community_id: COMMUNITY, p_optional_template_ids: optionalAddendumTemplateIds }).data
+    return service.run(() => createPurchaseAgreement({
+      reservationId: RESERVATION, lotId: LOT, optionItems: [], incentiveIds: [], expectedQuoteHash: quote.quoteHash,
+      optionalAddendumTemplateIds, expectedPacketHash: packetHash ?? packet.hash, terms: "Closing contingent on the sale of 12 Elm St",
+      ...terms,
+    }))
   }
 
-  test("a sales manager's new agreement owns its reservation and fixes the home's configuration", async () => {
+  test("how the buyer pays and each contingency they sign are written into the agreement as reviewed", async () => {
     const service = harness()
-    const agreement = await create(service)
+    const homeSale = { kind: "home_sale", title: "Sale of 12 Elm St", required_before: "closing", due_in_days: 45, evidence_required: true }
+    const inspection = { key: "buyer-inspection", kind: "inspection", title: "Buyer inspection", required_before: "start", due_on: "2026-11-01", evidence_required: false }
+    await create(service, { terms: { financing: "cash", contingencies: [homeSale, inspection] } })
 
-    assert.equal(service.db.contracts.length, 1)
-    assert.equal(service.db.contracts[0].status, "draft")
-    assert.equal(service.db.lot_reservations[0].contract_id, agreement.id)
-    assert.deepEqual([service.db.lots[0].house_plan_id, service.db.lots[0].house_plan_version_id, service.db.lots[0].swing], [PLAN, VERSION, "left"])
-    // The member's client never writes the reservation or the lot: the database refuses those writes.
-    assert.deepEqual(service.writes("lot_reservations"), [])
-    assert.deepEqual(service.writes("lots"), [])
-    assert.ok(service.events.some((event) => event.eventType === "purchase_agreement_created"))
+    const signed = service.db.contracts[0].snapshot.purchase_agreement
+    assert.equal(signed.financing, "cash")
+    assert.deepEqual(signed.contingencies, [homeSale, inspection])
+    const commit = service.queries.find((query) => query.table === "rpc:create_purchase_agreement_atomic" && query.payload.p_snapshot)
+    assert.deepEqual(commit.payload.p_request.contingencies, signed.contingencies, "the database compares the snapshot with the reviewed request")
   })
 
-  test("an agreement that cannot take its reservation is removed, so the home is free to sell again", async () => {
-    const refused = () => ({ data: null, error: { message: "The reservation is no longer reserved without an agreement" } })
-    const service = harness({ attach: refused })
-    await assert.rejects(create(service), /could not take its reservation, so nothing was saved/)
+  test("a contingency needs one deadline, and a sale written without terms is financed with none", async () => {
+    const both = { kind: "appraisal", title: "Appraisal", due_in_days: 10, due_on: "2026-11-01" }
+    await assert.rejects(create(harness(), { terms: { contingencies: [both] } }), /as a date or as days after signing, not both/)
+    const service = harness()
+    await create(service)
+    const signed = service.db.contracts[0].snapshot.purchase_agreement
+    assert.deepEqual([signed.financing, signed.contingencies], ["financed", []])
+  })
+
+  test("a new agreement carries the packet the seller reviewed: the agreement, every required addendum and the optional ones picked", async () => {
+    const service = harness()
+    const agreement = await create(service, { optionalAddendumTemplateIds: [WATERFRONT_ADDENDUM] })
+
+    const packet = service.db.contracts[0].snapshot.purchase_agreement.packet
+    assert.deepEqual(packet.documents.map((row) => row.title), ["Florida purchase agreement", "HOA disclosure", "Waterfront addendum"])
+    assert.equal(Object.hasOwn(packet, "optional_offered"), false, "the offer list is not part of what is signed")
+    assert.equal(service.db.lot_reservations[0].contract_id, agreement.id)
+    // Special stipulations are buyer data on Schedule A, bound with the snapshot.
+    assert.equal(service.db.contracts[0].terms, "Closing contingent on the sale of 12 Elm St")
+    assert.equal(agreement.signing.reason, "Document signing storage is not configured")
+  })
+
+  test("documents that changed since the seller reviewed them are refused before anything is written", async () => {
+    const service = harness()
+    await assert.rejects(create(service, { packetHash: "f".repeat(64) }), (error) => error.code === "AGREEMENT_PACKET_CHANGED")
+    assert.deepEqual(service.db.contracts, [])
+    assert.equal(service.queries.filter((query) => query.table === "rpc:create_purchase_agreement_atomic").length, 1, "only the read-only receipt probe ran")
+  })
+
+  test("a home no published agreement covers cannot be put under contract", async () => {
+    const unavailable = () => ({ data: null, error: { message: "No published purchase agreement covers this home's community and state.", details: "AGREEMENT_PACKET_UNAVAILABLE" } })
+    const service = harness({ resolve: unavailable })
+    await assert.rejects(create(service), (error) => error.code === "AGREEMENT_PACKET_UNAVAILABLE")
     assert.deepEqual(service.db.contracts, [])
     assert.equal(service.db.lot_reservations[0].contract_id, null)
-    assert.equal(service.events.some((event) => event.eventType === "purchase_agreement_created"), false)
+  })
+})
+
+describe("refreshPurchaseAgreementPacket", () => {
+  test("a signed or voided agreement's documents cannot change", async () => {
+    for (const status of ["active", "void"]) {
+      const service = createServiceHarness({
+        permissions: ["sales.manage"],
+        rpc: { refresh_purchase_agreement_packet: () => ({ data: null, error: { message: "must not be called" } }) },
+        tables: { contracts: [{ id: CONTRACT, org_id: ORG, project_id: HOME, contract_type: "purchase_agreement", status, snapshot: {} }] },
+      })
+      await assert.rejects(
+        service.run(() => refreshPurchaseAgreementPacket({ contractId: CONTRACT, expectedPacketHash: "a".repeat(64) })),
+        /cannot change/,
+      )
+      assert.equal(service.queries.some((query) => query.table === "rpc:refresh_purchase_agreement_packet"), false)
+    }
   })
 })
