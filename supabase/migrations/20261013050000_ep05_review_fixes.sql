@@ -257,10 +257,12 @@ begin
       raise exception 'Approving or rejecting a commission payable needs bill.approve' using errcode = '42501';
     end if;
   end if;
-  if new.approved_by is distinct from old.approved_by and new.approved_by is distinct from (select auth.uid()) then
+  -- A decision is recorded in the decider's own name; reopening clears it (the
+  -- status move above already needed bill.approve or payment.release).
+  if new.approved_by is not null and new.approved_by is distinct from old.approved_by and new.approved_by is distinct from (select auth.uid()) then
     raise exception 'An approval is recorded in the approver''s own name' using errcode = '42501';
   end if;
-  if new.rejected_by is distinct from old.rejected_by and new.rejected_by is distinct from (select auth.uid()) then
+  if new.rejected_by is not null and new.rejected_by is distinct from old.rejected_by and new.rejected_by is distinct from (select auth.uid()) then
     raise exception 'A rejection is recorded in the rejecter''s own name' using errcode = '42501';
   end if;
   return new;
@@ -512,6 +514,129 @@ grant execute on function public.propose_sales_commission_plan(uuid, uuid, text,
 -- ---------------------------------------------------------------------------
 -- 6. The closing reversal unwinds commissions in its own transaction.
 -- ---------------------------------------------------------------------------
+
+-- 20261013040000's unwind, clearing an unpaid commission whose bill AP already
+-- rejected (a dispute before the sale fell through) instead of refusing it.
+create or replace function public.unwind_sales_commission(
+  p_org_id uuid,
+  p_obligation_id uuid,
+  p_actor_id uuid,
+  p_reason text,
+  p_date date
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_obligation public.sales_commission_obligations%rowtype;
+  v_bill public.vendor_bills%rowtype;
+  v_run text;
+  v_credit_id uuid;
+  v_adjustment_id uuid;
+  v_open bigint;
+  v_reason text := 'Closing reversed: ' || btrim(coalesce(p_reason, ''));
+begin
+  if length(btrim(coalesce(p_reason, ''))) < 8 or p_date is null then
+    raise exception 'Say why the commission is unwound, and when' using errcode = '22023';
+  end if;
+  select * into v_obligation from public.sales_commission_obligations
+  where org_id = p_org_id and id = p_obligation_id for update;
+  if v_obligation.id is null then raise exception 'Commission not found' using errcode = '23503'; end if;
+  if v_obligation.adjusts_obligation_id is not null then
+    raise exception 'A clawback adjustment is settled through payroll' using errcode = '42501';
+  end if;
+  if v_obligation.status <> 'open' then
+    return jsonb_build_object('action', 'none', 'status', v_obligation.status);
+  end if;
+
+  if v_obligation.payout_channel = 'payroll' then
+    if v_obligation.paid_on is null then
+      update public.sales_commission_obligations
+      set status = 'cleared', ended_at = now(), end_reason = v_reason where id = v_obligation.id;
+      return jsonb_build_object('action', 'cleared', 'payout_channel', 'payroll');
+    end if;
+    insert into public.sales_commission_obligations (
+      org_id, project_id, closing_id, contract_id, plan_id, plan_line_id, line_no, kind, payout_channel,
+      payee_company_id, payee_user_id, basis_price_cents, rate_bps, flat_cents, amount_cents, evidence_digest,
+      adjusts_obligation_id, created_by
+    ) values (
+      v_obligation.org_id, v_obligation.project_id, v_obligation.closing_id, v_obligation.contract_id, v_obligation.plan_id,
+      v_obligation.plan_line_id, v_obligation.line_no, v_obligation.kind, 'payroll', null, v_obligation.payee_user_id,
+      v_obligation.basis_price_cents, v_obligation.rate_bps, v_obligation.flat_cents, -v_obligation.amount_cents,
+      v_obligation.evidence_digest, v_obligation.id, p_actor_id
+    ) returning id into v_adjustment_id;
+    update public.sales_commission_obligations
+    set status = 'reversed', ended_at = now(), end_reason = v_reason where id = v_obligation.id;
+    return jsonb_build_object('action', 'reversed', 'payout_channel', 'payroll', 'adjustment_id', v_adjustment_id);
+  end if;
+
+  select * into v_bill from public.vendor_bills
+  where org_id = p_org_id and id = v_obligation.vendor_bill_id for update;
+  select r.id::text into v_run
+  from public.payment_run_items item
+  join public.payment_runs r on r.id = item.run_id and r.org_id = item.org_id
+  where item.org_id = p_org_id and item.bill_id = v_bill.id
+    and item.status in ('draft', 'pending_approval', 'approved', 'processing', 'partially_paid')
+  limit 1;
+  if v_run is not null then
+    raise exception 'Commission payable % is in payment run %; remove it from the run first', v_bill.bill_number, v_run using errcode = '42501';
+  end if;
+
+  perform set_config('arc.commission_write', 'on', true);
+  -- Nothing paid: the bill is rejected with the reason (one AP already rejected stays as AP left it).
+  if coalesce(v_bill.paid_cents, 0) = 0 and v_bill.status in ('pending', 'approved', 'rejected') then
+    if v_bill.status <> 'rejected' then
+      update public.vendor_bills
+      set status = 'rejected', rejected_at = now(), rejected_by = p_actor_id, rejection_reason = left(v_reason, 2000)
+      where id = v_bill.id;
+    end if;
+    update public.sales_commission_obligations
+    set status = 'cleared', ended_at = now(), end_reason = v_reason where id = v_obligation.id;
+    perform set_config('arc.commission_write', '', true);
+    return jsonb_build_object('action', 'cleared', 'payout_channel', 'accounts_payable', 'bill_id', v_bill.id);
+  end if;
+  if v_bill.status not in ('partial', 'paid') then
+    raise exception 'Commission payable % is %; reconcile it before reversing', v_bill.bill_number, v_bill.status using errcode = '42501';
+  end if;
+
+  insert into public.vendor_bills (
+    org_id, project_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency,
+    approved_at, approved_by, metadata
+  ) values (
+    p_org_id, v_bill.project_id, v_bill.company_id, v_bill.bill_number || '-R', 'approved', p_date, p_date,
+    -v_bill.total_cents, v_bill.currency, now(), p_actor_id,
+    jsonb_build_object(
+      'source', 'vendor_credit',
+      'sales_commission_obligation_id', v_obligation.id,
+      'closing_id', v_obligation.closing_id,
+      'description', 'Commission clawback: ' || left(v_reason, 400)
+    )
+  ) returning id into v_credit_id;
+  insert into public.bill_lines (org_id, bill_id, project_id, description, quantity, unit, unit_cost_cents, sort_order, metadata)
+  values (
+    p_org_id, v_credit_id, v_bill.project_id, 'Commission clawback', 1, 'LS', -v_bill.total_cents, 0,
+    jsonb_build_object('source', 'vendor_credit', 'sales_commission_obligation_id', v_obligation.id)
+  );
+  v_open := greatest(coalesce(v_bill.total_cents, 0) - coalesce(v_bill.retainage_cents, 0) - coalesce(v_bill.paid_cents, 0), 0);
+  if v_open > 0 then
+    perform public.apply_vendor_credit_atomic(
+      p_org_id, v_credit_id, v_bill.id, p_actor_id, v_open, 'commission-reversal:' || v_obligation.id::text,
+      jsonb_build_object('source', 'sales_commission_reversal', 'obligation_id', v_obligation.id, 'recorded_by', p_actor_id)
+    );
+  end if;
+  update public.sales_commission_obligations
+  set status = 'reversed', ended_at = now(), end_reason = v_reason, reversal_credit_bill_id = v_credit_id
+  where id = v_obligation.id;
+  perform set_config('arc.commission_write', '', true);
+  return jsonb_build_object('action', 'reversed', 'payout_channel', 'accounts_payable', 'bill_id', v_bill.id,
+    'credit_bill_id', v_credit_id, 'applied_cents', v_open, 'open_credit_cents', v_bill.total_cents - v_open);
+end;
+$$;
+
+revoke all on function public.unwind_sales_commission(uuid, uuid, uuid, text, date) from public, anon, authenticated;
+grant execute on function public.unwind_sales_commission(uuid, uuid, uuid, text, date) to service_role;
 
 -- 20261007235500's reversal, with the closing's open commissions unwound
 -- (unwind_sales_commission) after the money checks and before the home goes

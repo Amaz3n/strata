@@ -2266,7 +2266,7 @@ export async function updateVendorBillStatus({
       await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
     }
   } catch (error) {
-    await supabase
+    const { error: rollbackError } = await supabase
       .from("vendor_bills")
       .update({
         status: existing.status,
@@ -2279,6 +2279,9 @@ export async function updateVendorBillStatus({
       .eq("id", billId)
 
     const message = error instanceof Error ? error.message : String(error ?? "Unknown error")
+    if (rollbackError) {
+      throw new Error(`The project cost ledger could not be updated (${message}), and the payable could not be returned to ${existing.status}: ${rollbackError.message}. Reconcile its status before retrying.`)
+    }
     throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
   }
 

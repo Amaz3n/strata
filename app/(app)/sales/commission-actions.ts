@@ -7,7 +7,6 @@ import { actionError, runAction, type ActionResult } from "@/lib/action-result"
 import {
   approveCommissionPlan,
   getAgreementCommissionPlan,
-  getClosingCommissions,
   markPayrollCommissionPaid,
   proposeCommissionPlan,
   searchCommissionConsultants,
@@ -29,10 +28,6 @@ async function mutate(projectId: string, work: () => Promise<AgreementCommission
 
 export async function getAgreementCommissionPlanAction(contractId: string) {
   return runAction(() => getAgreementCommissionPlan(z.string().uuid().parse(contractId)))
-}
-
-export async function getClosingCommissionsAction(projectId: string) {
-  return runAction(() => getClosingCommissions(z.string().uuid().parse(projectId)))
 }
 
 export async function proposeCommissionPlanAction(projectId: string, input: unknown) {

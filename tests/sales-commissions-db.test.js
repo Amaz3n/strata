@@ -271,6 +271,28 @@ test("AP's authority moves a commission bill; nobody else writes its status, and
   await assert.rejects(asRole(db, home.as(home.owner), (tx) => tx.query("update vendor_bills set status = 'paid' where id = $1", [outcome.credit_bill_id])), /clawback credit/)
 })
 
+test("AP rejects a commission bill and reopens it; a rejected, unpaid bill is cleared when the closing is reversed", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const planId = await home.propose(home.consultant)
+  await home.approve(home.owner, planId)
+  const closing = await home.close()
+  const [broker] = await home.record(closing, planId)
+  const write = (sql) => asRole(db, home.as(home.owner), (tx) => tx.query(sql, [broker.vendor_bill_id, home.owner.userId]))
+  const reject = () => write("update vendor_bills set status = 'rejected', rejected_at = now(), rejected_by = $2, rejection_reason = 'Disputed split' where id = $1")
+  await reject()
+  await write("update vendor_bills set status = 'pending', rejected_at = null, rejected_by = null, rejection_reason = null where id = $1 and $2::uuid is not null")
+  // An approval undone by the ledger rollback clears the approver as well.
+  await write("update vendor_bills set status = 'approved', approved_at = now(), approved_by = $2 where id = $1")
+  await write("update vendor_bills set status = 'pending', approved_at = null, approved_by = null where id = $1 and $2::uuid is not null")
+  await reject()
+
+  const outcome = await rpc(db, "unwind_sales_commission", { p_org_id: home.orgId, p_obligation_id: broker.id, p_actor_id: home.owner.userId, p_reason: "Buyer financing fell through", p_date: "2026-10-12" })
+  assert.equal(outcome.action, "cleared")
+  const { rows: [bill] } = await db.query("select status, rejection_reason from vendor_bills where id = $1", [broker.vendor_bill_id])
+  assert.deepEqual([bill.status, bill.rejection_reason], ["rejected", "Disputed split"], "AP's rejection stands as AP left it")
+})
+
 test("a 1099 consultant's commission bill is read by the payee, AP and approvers, not by everyone on the home", async (t) => {
   const db = await createDatabase(t)
   const home = await sale(db)
