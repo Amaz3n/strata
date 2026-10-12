@@ -217,7 +217,7 @@ async function reservationAndDeposit(kit, expected, check) {
     deposit: seen.deposit,
     depositHeldCents: seen.depositHeldCents,
     landManagerCannotHold: /Missing permission/.test(seen.landManagerHold) ? "refused" : seen.landManagerHold,
-    secondBuyerCannotHold: /already has a live reservation/.test(seen.secondHold) ? "refused: live reservation" : seen.secondHold,
+    secondBuyerCannotHold: /home belongs to another buyer/.test(seen.secondHold) ? "refused: the lot's home is another buyer's" : /already has a live reservation/.test(seen.secondHold) ? "refused: live reservation" : seen.secondHold,
   })
   return { orgId: seen.org.orgId, reservationId: seen.reservation.id }
 }

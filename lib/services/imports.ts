@@ -953,7 +953,7 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
     const budgetSum = budgetRows.reduce((sum, item) => sum + Number(item.parsed?.budget_cents ?? 0), 0)
     if (budgetSum !== Number(row.parsed.budget_total_cents)) throw new Error(`Lot ${row.parsed.lot_number}: budget lines total does not match the house total`)
     const { data: community, error: communityError } = await context.supabase.from("communities").select("id,name,division_id").eq("org_id", context.orgId).eq("id", row.parsed.community_id).single()
-    let lotQuery = context.supabase.from("lots").select("id,project_id,status,metadata,dimensions,swing,house_plan_id,house_plan_version_id,house_plan_elevation_id").eq("org_id", context.orgId).eq("community_id", row.parsed.community_id).eq("lot_number", row.parsed.lot_number)
+    let lotQuery = context.supabase.from("lots").select("id,project_id,status,delivered_at,metadata,dimensions,swing,house_plan_id,house_plan_version_id,house_plan_elevation_id").eq("org_id", context.orgId).eq("community_id", row.parsed.community_id).eq("lot_number", row.parsed.lot_number)
     lotQuery = row.parsed.block ? lotQuery.eq("block", row.parsed.block) : lotQuery.is("block", null)
     const { data: lot, error: lotError } = await lotQuery.single()
     if (communityError || !community) throw new Error(`Unable to resolve the Open-WIP community: ${communityError?.message}`)
@@ -1019,6 +1019,13 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
         if (buyerError) throw new Error(`Failed to associate imported buyer: ${buyerError.message}`)
         const { error: contractError } = await context.supabase.from("contracts").insert({ org_id: context.orgId, project_id: projectId, number: `WIP-${String(row.parsed.community).slice(0, 3).toUpperCase()}-${row.parsed.lot_number}`, title: `Imported purchase agreement — Lot ${row.parsed.lot_number}`, status: "active", signed_at: row.parsed.sale_date ? `${row.parsed.sale_date}T00:00:00Z` : null, contract_type: "purchase_agreement", total_cents: row.parsed.sale_price_cents, currency: "usd", effective_date: row.parsed.sale_date ?? asOfDate, snapshot: { imported_open_wip: true, as_of_date: asOfDate, agreement_total_only: true } })
         if (contractError) throw new Error(`Failed to create imported purchase agreement: ${contractError.message}`)
+      }
+      // A house already under construction proves its land was delivered; record
+      // that first, since a lot only starts on delivered land. It stays recorded
+      // if the import later rolls back, because it is still true.
+      if (!lot.delivered_at) {
+        const { error: deliveryError } = await context.supabase.from("lots").update({ status: "developed" }).eq("org_id", context.orgId).eq("id", lot.id).is("project_id", null)
+        if (deliveryError) throw new Error(`Unable to record lot ${row.parsed.lot_number} as delivered: ${deliveryError.message}`)
       }
       // Publish the completed home only if this lot is still unassigned.
       const { data: linked, error: linkError } = await context.supabase.from("lots").update({ project_id: projectId, status: "started", house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id }).eq("org_id", context.orgId).eq("id", lot.id).is("project_id", null).select("id").maybeSingle()

@@ -667,9 +667,10 @@ async function lotStatesNeedTheHomeAndReversalsAreControlled(kit, expected, chec
   observed.afterRefusedCorrections = lotRow(kit, z.id).status
   observed.backTwoStepsForcedByLand = await verdict(() => kit.as(org.team.land, () => lots.setLotStatus(z.id, "controlled", { force: true })))
   observed.afterForcedCorrection = lotRow(kit, z.id).status
-  // A settled lot (closed by a closing; recorded here directly) cannot be quietly reopened or given a second home.
+  // A settled lot cannot be quietly reopened or given a second home. Planted the way
+  // legacy closed lots without a home exist (the guard refuses making one now).
   const w = nextLot(org)
-  kit.sql(`update public.lots set status='closed' where id=${q(kit, w.id)}`)
+  kit.sql(`begin; set local session_replication_role = replica; update public.lots set status='closed' where id=${q(kit, w.id)}; commit;`)
   observed.closedLot = { moveBackWithoutForce: await verdict(() => kit.as(org.team.land, () => lots.setLotStatus(w.id, "assigned"))), attachHomeWithoutForce: await verdict(() => kit.as(org.team.starts, () => lots.attachProjectToLot(w.id, home))), status: lotRow(kit, w.id).status, homeStillFree: lotRow(kit, w.id).project_id === null }
   // Only unbuilt lots are deleted.
   observed.deleteAssigned = await verdict(() => kit.as(org.team.land, () => lots.deleteLot(y.id)))
