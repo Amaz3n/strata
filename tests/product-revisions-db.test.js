@@ -58,6 +58,18 @@ test("only a change to what is built or sold moves the revision", async (t) => {
   assert.deepEqual(elevationHistory.map((row) => [row.revision, row.snapshot.heated_sqft_delta]), [[1, 0], [2, 120]])
 })
 
+test("a member's own edit moves the revision, not only the database owner's", async (t) => {
+  const { db, userId, elevation, patio } = await catalog(t)
+
+  const edited = await asRole(db, { role: "authenticated", userId }, async (tx) => [
+    (await tx.query("update selection_options set price_cents = 1400000 where id = $1", [patio.id])).affectedRows,
+    (await tx.query("update house_plan_elevations set heated_sqft_delta = 80 where id = $1", [elevation.id])).affectedRows,
+  ])
+  assert.deepEqual(edited, [1, 1])
+  assert.equal(await revisionOf(db, "selection_options", patio.id), 2)
+  assert.equal(await revisionOf(db, "house_plan_elevations", elevation.id), 2)
+})
+
 test("a client cannot set a revision number", async (t) => {
   const { db, elevation, patio } = await catalog(t)
 

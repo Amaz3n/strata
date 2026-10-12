@@ -106,6 +106,7 @@ revoke all on function public.product_definition_of(jsonb, text[]) from public, 
 create or replace function public.tg_product_definition_revision_bump()
 returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 declare
