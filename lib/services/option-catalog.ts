@@ -597,27 +597,6 @@ export async function publishCatalogPrices(raw: unknown) {
   return publishCatalogPriceBatch(context, input)
 }
 
-export type HomePricingScope = {
-  housePlanVersionId?: string
-  communityId?: string
-  requirePlanVersion: boolean
-}
-
-/**
- * How a home prices its options — the one place that decides it. A production
- * home, and any home in a community, prices against its pinned plan version, so
- * it must have one; a plan row then outranks the option's own price, which
- * stands for every plan the option has no row for. Anything else prices at the
- * option's own price.
- */
-export function homePricingScope(home: { lot: { community_id: string | null; house_plan_version_id: string | null } | null; production: boolean }): HomePricingScope {
-  return {
-    housePlanVersionId: home.lot?.house_plan_version_id ?? undefined,
-    communityId: home.lot?.community_id ?? undefined,
-    requirePlanVersion: home.production || Boolean(home.lot?.community_id),
-  }
-}
-
 export async function resolveOptionPricing(opts: {
   orgId: string
   items: Array<{ optionId?: string; packageId?: string }>
@@ -625,7 +604,6 @@ export async function resolveOptionPricing(opts: {
   communityId?: string
   /** Set for a home that sells from a plan price sheet: pricing without its plan version would silently quote base prices. */
   requirePlanVersion?: boolean
-  /** Set for a production home: an item with no price for the plan version is refused, never priced at its base. */
 }): Promise<ResolvedOptionPricing[]> {
   const supabase = createServiceSupabaseClient()
   if (opts.items.some((item) => Boolean(item.optionId) === Boolean(item.packageId))) throw new Error("Choose exactly one option or package for each pricing item")
@@ -731,7 +709,7 @@ export async function resolveOptionPricing(opts: {
     const chosen = chooseResolvedPrice({
       basePriceCents: Number(option?.price_cents ?? selectionPackage?.price_cents ?? 0),
       baseCostCents: option?.cost_cents ?? selectionPackage?.cost_cents ?? null,
-      baseAvailable: option?.is_available ?? selectionPackage?.is_available ?? false,
+      subjects: item.optionId ? [baseOption, override].filter((row): row is CatalogRow => Boolean(row)) : selectionPackage ? [selectionPackage] : [],
       communityPrice: opts.communityId ? pickPrice(opts.communityId) ?? null : null,
       planPrice: pickPrice(null) ?? null,
       isCommunityOption: Boolean(option?.community_id ?? selectionPackage?.community_id),
@@ -750,7 +728,7 @@ export async function resolveOptionPricing(opts: {
       leadTimeDays: option?.lead_time_days == null ? null : Number(option.lead_time_days),
       categoryId: option?.category_id ?? null,
       categoryIds: acceptedCategoryIds,
-      available: chosen.is_available && (!option || Boolean(effectiveCategory && !effectiveCategory.is_archived && (!effectiveCategory.community_id || effectiveCategory.community_id === opts.communityId))) && !(option?.is_archived ?? selectionPackage?.is_archived ?? false)
+      available: chosen.is_available && (!option || Boolean(effectiveCategory && !effectiveCategory.is_archived && (!effectiveCategory.community_id || effectiveCategory.community_id === opts.communityId)))
         && (!(option?.community_id ?? selectionPackage?.community_id) || (option?.community_id ?? selectionPackage?.community_id) === opts.communityId),
       source: chosen.source,
       baseReason: opts.housePlanVersionId ? null : "no_plan_version",

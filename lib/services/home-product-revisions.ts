@@ -95,19 +95,19 @@ async function currentRevisions(supabase: SupabaseClient, orgId: string, table: 
   return revisions
 }
 
-/** Each id's revision as it stood at `asOf`, from the append-only history. */
-async function revisionsAsOf(supabase: SupabaseClient, orgId: string, ids: readonly string[], asOf: string) {
+/** The append-only revision history of each id, up to `upTo`. */
+async function readRevisionHistory(supabase: SupabaseClient, orgId: string, ids: readonly string[], upTo: string) {
   const history: Array<{ entityId: string; revision: number; createdAt: string }> = []
   for (const chunk of chunks(ids)) {
     const rows = await readAllRowsById<{ id: string; entity_id: string; revision: number; created_at: string }>((afterId, limit) => {
       let query = supabase.from("product_definition_revisions").select("id,entity_id,revision,created_at")
-        .eq("org_id", orgId).in("entity_id", chunk).lte("created_at", asOf)
+        .eq("org_id", orgId).in("entity_id", chunk).lte("created_at", upTo)
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<Array<{ id: string; entity_id: string; revision: number; created_at: string }>>()
     }, { cap: 50_000, label: "Failed to read product revision history", pageSize: 1000 })
     history.push(...rows.map((row) => ({ entityId: row.entity_id, revision: Number(row.revision), createdAt: row.created_at })))
   }
-  return (id: string) => revisionAsOf(history, id, asOf)
+  return history
 }
 
 /**
@@ -121,8 +121,10 @@ async function revisionsAsOf(supabase: SupabaseClient, orgId: string, ids: reado
  * A sale is recorded as it was priced: the agreement's own configuration, at
  * the revisions current when the agreement was created (the quote was fenced
  * against the catalog until then). A release is recorded as it is built: the
- * lot's pinned version and elevation and the home's live selections, at
- * today's revisions.
+ * lot's pinned version and elevation and the home's live selections, each at
+ * the revision it was chosen at — the option revision the selection recorded,
+ * the package's revision when it was picked. A selection older than that record
+ * falls back to today's revision and the ref says so (`inferred`).
  */
 export async function captureHomeProductRevisions(input: {
   orgId: string
@@ -155,9 +157,10 @@ export async function captureHomeProductRevisions(input: {
 
   let versionId: string | null
   let elevationId: string | null
-  let optionIds: string[]
-  let packageIds: string[]
+  let options: RevisionRef[]
+  let packages: RevisionRef[]
   let asOf: string
+  let soldElevationRevision: number | null = null
   if (stage === "agreement" && contract) {
     const configuration = agreementConfigurationSchema.safeParse(contract.snapshot)
     // An agreement made before Arc recorded configurations (an imported or older
@@ -166,21 +169,42 @@ export async function captureHomeProductRevisions(input: {
     const signed = configuration.data.purchase_agreement.configuration
     versionId = signed.house_plan_version_id ?? null
     elevationId = signed.elevation_id ?? null
-    optionIds = signed.option_items.flatMap((item) => (item.optionId ? [item.optionId] : []))
-    packageIds = signed.option_items.flatMap((item) => (item.packageId ? [item.packageId] : []))
     asOf = contract.created_at
+    const optionIds = signed.option_items.flatMap((item) => (item.optionId ? [item.optionId] : []))
+    const packageIds = signed.option_items.flatMap((item) => (item.packageId ? [item.packageId] : []))
+    const history = await readRevisionHistory(supabase, orgId, [...(elevationId ? [elevationId] : []), ...optionIds, ...packageIds], asOf)
+    options = optionIds.map((id) => ({ id, revision: revisionAsOf(history, id, asOf) }))
+    packages = packageIds.map((id) => ({ id, revision: revisionAsOf(history, id, asOf) }))
+    soldElevationRevision = elevationId ? revisionAsOf(history, elevationId, asOf) : null
   } else {
-    const selections = await readAllRowsById<{ id: string; selected_option_id: string | null; package_id: string | null }>((afterId, limit) => {
-      let query = supabase.from("project_selections").select("id,selected_option_id,package_id")
+    type SelectionRow = { id: string; selected_option_id: string | null; selected_option_revision: number | null; package_id: string | null; selected_at: string | null }
+    const selections = await readAllRowsById<SelectionRow>((afterId, limit) => {
+      let query = supabase.from("project_selections").select("id,selected_option_id,selected_option_revision,package_id,selected_at")
         .eq("org_id", orgId).eq("project_id", projectId).in("status", LIVE_SELECTION_STATUSES)
       if (afterId) query = query.gt("id", afterId)
-      return query.order("id").limit(limit).returns<Array<{ id: string; selected_option_id: string | null; package_id: string | null }>>()
+      return query.order("id").limit(limit).returns<SelectionRow[]>()
     }, { cap: SELECTION_ROW_CAP, label: "Failed to read the home's selections", pageSize: 1000 })
     versionId = lotResult.data?.house_plan_version_id ?? null
     elevationId = lotResult.data?.house_plan_elevation_id ?? null
-    optionIds = selections.flatMap((row) => (row.selected_option_id ? [row.selected_option_id] : []))
-    packageIds = selections.flatMap((row) => (row.package_id ? [row.package_id] : []))
     asOf = new Date().toISOString()
+    // Options carry the revision the selection recorded; a package has no such
+    // column, so its revision is read from the history as of the pick.
+    const unrecordedOptionIds = selections.flatMap((row) => (row.selected_option_id && row.selected_option_revision == null ? [row.selected_option_id] : []))
+    const pickedPackages = selections.flatMap((row) => (row.package_id ? [{ id: row.package_id, at: row.selected_at ?? asOf }] : []))
+    const [currentOptions, currentPackages, packageHistory] = await Promise.all([
+      currentRevisions(supabase, orgId, "selection_options", unrecordedOptionIds),
+      currentRevisions(supabase, orgId, "selection_packages", pickedPackages.map((pick) => pick.id)),
+      readRevisionHistory(supabase, orgId, pickedPackages.map((pick) => pick.id), asOf),
+    ])
+    options = selections.flatMap((row): RevisionRef[] => {
+      if (!row.selected_option_id) return []
+      if (row.selected_option_revision != null) return [{ id: row.selected_option_id, revision: Number(row.selected_option_revision) }]
+      return [{ id: row.selected_option_id, revision: currentOptions.get(row.selected_option_id)?.revision ?? null, inferred: true }]
+    })
+    packages = pickedPackages.map((pick): RevisionRef => {
+      const picked = revisionAsOf(packageHistory, pick.id, pick.at)
+      return picked != null ? { id: pick.id, revision: picked } : { id: pick.id, revision: currentPackages.get(pick.id)?.revision ?? null, inferred: true }
+    })
   }
 
   const [versionResult, elevations] = await Promise.all([
@@ -191,24 +215,13 @@ export async function captureHomeProductRevisions(input: {
   ])
   if (versionResult.error) throw fail(versionResult.error.message)
 
-  let revisionOf: (table: RevisionTable, id: string) => number | null
-  if (stage === "agreement") {
-    const asOfLookup = await revisionsAsOf(supabase, orgId, [...(elevationId ? [elevationId] : []), ...optionIds, ...packageIds], asOf)
-    revisionOf = (_table, id) => asOfLookup(id)
-  } else {
-    const [options, packages] = await Promise.all([
-      currentRevisions(supabase, orgId, "selection_options", optionIds),
-      currentRevisions(supabase, orgId, "selection_packages", packageIds),
-    ])
-    const byTable = { house_plan_elevations: elevations, selection_options: options, selection_packages: packages }
-    revisionOf = (table, id) => byTable[table].get(id)?.revision ?? null
-  }
-
   const set = buildRevisionSet({
     planVersion: versionId ? { id: versionId, number: versionResult.data?.version_number == null ? null : Number(versionResult.data.version_number) } : null,
-    elevation: elevationId ? { id: elevationId, code: elevations.get(elevationId)?.code ?? null, revision: revisionOf("house_plan_elevations", elevationId) } : null,
-    options: optionIds.map((id): RevisionRef => ({ id, revision: revisionOf("selection_options", id) })),
-    packages: packageIds.map((id): RevisionRef => ({ id, revision: revisionOf("selection_packages", id) })),
+    elevation: elevationId
+      ? { id: elevationId, code: elevations.get(elevationId)?.code ?? null, revision: stage === "agreement" ? soldElevationRevision : elevations.get(elevationId)?.revision ?? null }
+      : null,
+    options,
+    packages,
   })
 
   const row = {

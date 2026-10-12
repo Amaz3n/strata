@@ -25,14 +25,12 @@ const CHANGE_ORDER = id(7)
 const PACKAGE = id(8)
 const COMMUNITY_UPGRADE = id(9)
 
-// How a home prices is decided by the real catalog module; only the price
-// lookup itself is replaced.
-const { homePricingScope } = freshRequire("lib/services/option-catalog.ts")
+// How a home prices is decided by the real pricing-scope module; only the
+// catalog's price lookup is replaced.
 let catalog = {}
 const pricingScopes = []
 stubModule("@/lib/services/option-catalog", {
   allocatePackageTotal: require("@/lib/selections/catalog-math").allocatePackageTotal,
-  homePricingScope,
   resolveOptionPricing: async ({ items, orgId: _orgId, ...scope }) => {
     pricingScopes.push(scope)
     return items.map((item) => catalog[item.optionId ?? item.packageId] ?? { available: false, categoryIds: [] })
@@ -53,7 +51,7 @@ stubModule("@/lib/services/selection-change-orders", {
   createVarianceOrdersForSelectionChange: async () => ({ created: 0, unrouted: 0 }),
 })
 
-const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, createProjectSelection, selectProjectOption, selectProjectPackage } = freshRequire("lib/services/selections.ts")
+const { applySelectionChangeFromChangeOrder, confirmSelection, confirmSelectionGroup, createProjectSelection, selectProjectOption, selectProjectOptions, selectProjectPackage } = freshRequire("lib/services/selections.ts")
 
 const priced = (optionId, priceCents) => ({ available: true, optionId, priceCents, costCents: priceCents / 2, categoryIds: [CATEGORY] })
 
@@ -208,6 +206,37 @@ describe("applySelectionChangeFromChangeOrder", () => {
       ]),
     })
     await assert.rejects(service.run(() => applySelectionChangeFromChangeOrder(CHANGE_ORDER, ORG)), /not available/)
+    assert.deepEqual(applied, [])
+    assert.equal(stored(service).selected_option_id, OPTION)
+    assert.deepEqual(service.events, [])
+  })
+})
+
+describe("selectProjectOptions", () => {
+  const two = () => [
+    { id: SELECTION, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: null, package_id: null, price_cents_snapshot: 1_200_00, cost_cents_snapshot: 600_00, locked_at: null, metadata: {} },
+    { id: SECOND, org_id: ORG, project_id: HOME, category_id: CATEGORY, selected_option_id: OPTION, status: "selected", group_id: null, package_id: null, price_cents_snapshot: 800_00, cost_cents_snapshot: 400_00, locked_at: null, metadata: {} },
+  ]
+
+  test("several choices on a home land in one fenced write", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00), [OPTION]: priced(OPTION, 1_500_00) }
+    const { service, applied, fence } = harness({ selections: two() })
+    await service.run(() => selectProjectOptions({ orgId: ORG, projectId: HOME, changes: [{ selectionId: SELECTION, optionId: UPGRADE }, { selectionId: SECOND, optionId: OPTION }] }))
+    assert.equal(applied.length, 1)
+    assert.equal(applied[0].p_expected_catalog_revision, fence.catalogRevision)
+    assert.deepEqual(applied[0].p_writes.map((write) => [write.id, write.selected_option_id, write.price_cents_snapshot]), [
+      [SELECTION, UPGRADE, 2_000_00],
+      [SECOND, OPTION, 1_500_00],
+    ])
+  })
+
+  test("a choice that cannot be made stops every other choice in the set", async () => {
+    catalog = { [UPGRADE]: priced(UPGRADE, 2_000_00) }
+    const { service, applied } = harness({ selections: two() })
+    await assert.rejects(
+      service.run(() => selectProjectOptions({ orgId: ORG, projectId: HOME, changes: [{ selectionId: SELECTION, optionId: UPGRADE }, { selectionId: SECOND, optionId: id(99) }] })),
+      /not available/,
+    )
     assert.deepEqual(applied, [])
     assert.equal(stored(service).selected_option_id, OPTION)
     assert.deepEqual(service.events, [])

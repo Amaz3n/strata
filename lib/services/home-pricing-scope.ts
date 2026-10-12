@@ -2,8 +2,28 @@ import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { homePricingScope, type HomePricingScope } from "@/lib/services/option-catalog"
 import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+
+export type HomePricingScope = {
+  housePlanVersionId?: string
+  communityId?: string
+  requirePlanVersion: boolean
+}
+
+/**
+ * How a home prices its options — the one place that decides it. A production
+ * home, and any home in a community, prices against its pinned plan version, so
+ * it must have one; a plan row then outranks the option's own price, which
+ * stands for every plan the option has no row for. Anything else prices at the
+ * option's own price.
+ */
+export function homePricingScope(home: { lot: { community_id: string | null; house_plan_version_id: string | null } | null; production: boolean }): HomePricingScope {
+  return {
+    housePlanVersionId: home.lot?.house_plan_version_id ?? undefined,
+    communityId: home.lot?.community_id ?? undefined,
+    requirePlanVersion: home.production || Boolean(home.lot?.community_id),
+  }
+}
 
 /**
  * A home's posture and the price sheet its options sell from. Every path that
@@ -19,7 +39,7 @@ export async function readHomePricingScope(supabase: SupabaseClient, orgId: stri
     supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
   ])
   for (const failure of [lotError, projectError, orgError]) {
-    if (failure) throw new Error(`Failed to load the home: ${failure.message}`)
+    if (failure) throw new Error(`Unable to load the home's configuration scope: ${failure.message}`)
   }
   const production = isProductionProjectPosture(getProjectPosture(project?.property_type, normalizeProductTier(org?.product_tier)))
   return { production, pricing: homePricingScope({ lot: lot ?? null, production }) }

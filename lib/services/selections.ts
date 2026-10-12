@@ -308,14 +308,6 @@ async function applySelectionWrites(orgId: string, projectId: string, fence: Sel
   if (error) throw new Error(`Failed to apply selections: ${error.message}`)
 }
 
-async function updateSingleSelection(input: SingleSelectionInput) {
-  const fence = await readSelectionFence(input.orgId, input.projectId)
-  const { payload } = await prepareSingleSelection(input)
-  await applySelectionWrites(input.orgId, input.projectId, fence, [{ id: input.selectionId, ...payload }])
-  await recordSelectionWrite(input, payload)
-  return { id: input.selectionId, selected_option_id: payload.selected_option_id, status: payload.status, price_cents_snapshot: payload.price_cents_snapshot }
-}
-
 export async function selectProjectOption(input: {
   orgId: string
   projectId: string
@@ -324,11 +316,46 @@ export async function selectProjectOption(input: {
   selectedByContactId?: string | null
   portalAccess?: boolean
 }) {
+  const [written] = await selectProjectOptions({ ...input, changes: [{ selectionId: input.selectionId, optionId: input.optionId }] })
+  return written
+}
+
+/**
+ * Several choices on one home as ONE fenced write: each is gated, priced and
+ * checked against the configuration rules together with the others, then they
+ * land whole or not at all. A correction and the choice it clears (the buyer
+ * portal's fix) go through here, so neither can stick without the other.
+ */
+export async function selectProjectOptions(input: {
+  orgId: string
+  projectId: string
+  changes: Array<{ selectionId: string; optionId: string }>
+  selectedByContactId?: string | null
+  portalAccess?: boolean
+}) {
   if (!input.portalAccess) {
     const context = await requireOrgContext(input.orgId)
     await requirePermission("selections.write", context)
   }
-  return updateSingleSelection({ ...input, portal: Boolean(input.portalAccess) })
+  if (!input.changes.length) throw new Error("Choose at least one option")
+  if (new Set(input.changes.map((change) => change.selectionId)).size !== input.changes.length) throw new Error("Choose one option per selection")
+  const fence = await readSelectionFence(input.orgId, input.projectId)
+  const prepared = await Promise.all(input.changes.map(async (change) => {
+    const single: SingleSelectionInput = {
+      orgId: input.orgId,
+      projectId: input.projectId,
+      selectionId: change.selectionId,
+      optionId: change.optionId,
+      selectedByContactId: input.selectedByContactId,
+      portal: Boolean(input.portalAccess),
+      configurationPrevalidated: true,
+    }
+    return { single, ...(await prepareSingleSelection(single)) }
+  }))
+  await assertProjectConfiguration(input.orgId, input.projectId, prepared.map(({ single, payload }) => ({ selectionId: single.selectionId, optionId: payload.selected_option_id })))
+  await applySelectionWrites(input.orgId, input.projectId, fence, prepared.map(({ single, payload }) => ({ id: single.selectionId, ...payload })))
+  await Promise.all(prepared.map(({ single, payload }) => recordSelectionWrite(single, payload)))
+  return prepared.map(({ single, payload }) => ({ id: single.selectionId, selected_option_id: payload.selected_option_id, status: payload.status, price_cents_snapshot: payload.price_cents_snapshot }))
 }
 
 export async function selectProjectPackage(input: {

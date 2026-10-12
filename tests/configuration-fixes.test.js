@@ -31,10 +31,7 @@ const CATEGORY_OF = { [GRANITE]: COUNTERS, [LAMINATE]: COUNTERS, [STANDARD_BASE]
 const PRICE_OF = { [GRANITE]: 450000, [LAMINATE]: 0, [STANDARD_BASE]: 0, [UPGRADED_BASE]: 120000, [TILE_BACKSPLASH]: 80000 }
 
 // Catalog pricing has its own suite; here every option is available at a fixed price in its category.
-// How a home prices is decided by the real catalog module.
-const { homePricingScope } = freshRequire("lib/services/option-catalog.ts")
 stubModule("@/lib/services/option-catalog", {
-  homePricingScope,
   resolveOptionPricing: async ({ items }) => items.map((item) => item.optionId
     ? { optionId: item.optionId, available: true, priceCents: PRICE_OF[item.optionId] ?? 0, categoryIds: [CATEGORY_OF[item.optionId]] }
     : { packageId: item.packageId, available: true, priceCents: 0, categoryIds: [] }),
@@ -42,14 +39,19 @@ stubModule("@/lib/services/option-catalog", {
 let portalAccess = null
 stubModule("@/lib/services/portal-access", { assertPortalActionAccess: async () => portalAccess })
 // The selection mutation and its locks have their own suite. Here it records
-// what the portal asked it to write and judges the configuration for real.
+// each write the portal asked for — one entry per write, holding every choice
+// in it — and judges the configuration for real.
 let selectionWrites = []
+async function writeChoices(orgId, projectId, changes) {
+  await assertProjectConfiguration(orgId, projectId, changes)
+  for (const change of changes) {
+    await createServiceSupabaseClient().from("project_selections").update({ selected_option_id: change.optionId }).eq("org_id", orgId).eq("id", change.selectionId)
+  }
+  selectionWrites.push(changes.map((change) => ({ selectionId: change.selectionId, optionId: change.optionId })))
+}
 stubModule("@/lib/services/selections", {
-  selectProjectOption: async (input) => {
-    await assertProjectConfiguration(input.orgId, input.projectId, [{ selectionId: input.selectionId, optionId: input.optionId }])
-    await createServiceSupabaseClient().from("project_selections").update({ selected_option_id: input.optionId }).eq("org_id", input.orgId).eq("id", input.selectionId)
-    selectionWrites.push({ selectionId: input.selectionId, optionId: input.optionId })
-  },
+  selectProjectOption: (input) => writeChoices(input.orgId, input.projectId, [input]),
+  selectProjectOptions: (input) => writeChoices(input.orgId, input.projectId, input.changes),
 })
 
 const { createServiceSupabaseClient } = require("@/lib/supabase/server")
@@ -267,12 +269,12 @@ describe("a draft agreement's fixes edit its lines", () => {
 })
 
 describe("a correction cannot cross a lock", () => {
-  test("an applicable correction is applied through the selection mutation, then the refused choice", async () => {
+  test("an applicable correction lands in one write with the choice it clears", async () => {
     const service = homeHarness()
     const { fixes } = await service.run(() => getHomeConfigurationFixes(ORG, PROJECT, { portalAccess: true, changes: [CHOOSE_GRANITE] }))
     const result = await service.run(() => applyConfigurationFixAction({ token: "token", fixId: upgradeFix(fixes).id, proposal: CHOOSE_GRANITE }))
     assert.equal(result.success, true, result.error)
-    assert.deepEqual(selectionWrites, [{ selectionId: CABINETS_SELECTION, optionId: UPGRADED_BASE }, CHOOSE_GRANITE])
+    assert.deepEqual(selectionWrites, [[{ selectionId: CABINETS_SELECTION, optionId: UPGRADED_BASE }, CHOOSE_GRANITE]])
   })
 
   for (const [lock, setup] of [

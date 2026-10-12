@@ -12,7 +12,8 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { homePricingScope, listAppointments, resolveOptionPricing, upsertAppointment } = freshRequire("lib/services/option-catalog.ts")
+const { listAppointments, resolveOptionPricing, upsertAppointment } = freshRequire("lib/services/option-catalog.ts")
+const { homePricingScope } = freshRequire("lib/services/home-pricing-scope.ts")
 
 const MINE = id(1)
 const THEIRS = id(2)
@@ -150,6 +151,30 @@ describe("resolveOptionPricing context and money", () => {
     const planPrice = { id: id(34), org_id: ORG, option_id: OPTION, package_id: null, house_plan_version_id: VERSION, community_id: null, price_cents: 7200, cost_cents: 4000, is_available: true }
     const [row] = await pricing([option()], [planPrice]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned }))
     assert.deepEqual([row.priceCents, row.source], [7200, "plan"])
+  })
+
+  test("a published plan price never puts a withdrawn or archived option back on sale", async () => {
+    const pinned = homePricingScope({ lot: { community_id: null, house_plan_version_id: VERSION }, production: true })
+    const planPrice = { id: id(34), org_id: ORG, option_id: OPTION, package_id: null, house_plan_version_id: VERSION, community_id: null, price_cents: 7200, cost_cents: 4000, is_available: true }
+    for (const withdrawn of [{ is_available: false }, { is_archived: true }]) {
+      const [row] = await pricing([option(withdrawn)], [planPrice]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...pinned }))
+      assert.deepEqual([row.source, row.available], ["plan", false], JSON.stringify(withdrawn))
+    }
+  })
+
+  test("a withdrawn community override takes the option off sale in that community, whatever the plan prices say", async () => {
+    const OVERRIDE = id(35)
+    const scope = homePricingScope({ lot: { community_id: COMMUNITY, house_plan_version_id: VERSION }, production: true })
+    const override = option({ id: OVERRIDE, parent_option_id: OPTION, community_id: COMMUNITY, is_available: false })
+    const prices = [
+      { id: id(36), org_id: ORG, option_id: OPTION, package_id: null, house_plan_version_id: VERSION, community_id: null, price_cents: 7200, cost_cents: 4000, is_available: true },
+      { id: id(37), org_id: ORG, option_id: OVERRIDE, package_id: null, house_plan_version_id: VERSION, community_id: COMMUNITY, price_cents: 7600, cost_cents: 4200, is_available: true },
+    ]
+    const [row] = await pricing([option(), override], prices).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...scope }))
+    assert.deepEqual([row.optionId, row.source, row.available], [OVERRIDE, "plan_community", false])
+
+    const [onSale] = await pricing([option(), { ...override, is_available: true }], prices).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...scope }))
+    assert.deepEqual([onSale.priceCents, onSale.available], [7600, true])
   })
 
   test("a custom home outside a community still prices at the option's base price", async () => {

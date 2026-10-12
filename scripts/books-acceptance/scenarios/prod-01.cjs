@@ -346,7 +346,7 @@ async function lotFitRefusesAndOverridesWithEvidence(kit, expected, check) {
 
 async function productionPricingNeverGuesses(kit, expected, check) {
   const { org } = await world(kit)
-  const lots = app("lots"), projects = app("projects"), selections = app("selections"), catalog = app("option-catalog")
+  const lots = app("lots"), projects = app("projects"), selections = app("selections"), catalog = app("option-catalog"), pricingScope = app("home-pricing-scope")
   const plan = org.plans[0]
   const planPriced = await dedicatedOption(kit, org, { sku: "KT-PLN", name: "Plan-priced countertops", categoryId: org.categoryIds.Kitchen, scope: "design_studio", priceCents: 100000, costCents: 60000, costCode: "06-100", vendor: "Palmetto Framing" })
   await kit.as(org.team.design, () => catalog.setCatalogPrice({ optionId: planPriced.id, housePlanVersionId: plan.versionId, priceCents: 90000, costCents: 55000, isAvailable: true }))
@@ -365,7 +365,7 @@ async function productionPricingNeverGuesses(kit, expected, check) {
   const pinned = await home("Cypress Landing lot 62", ids["62"])
   const choose = (h, optionId) => kit.as(org.team.design, () => selections.selectProjectOption({ orgId: org.orgId, projectId: h.projectId, selectionId: h.selectionId, optionId }))
   const row = (h) => one(kit, `select selected_option_id, status, price_cents_snapshot from public.project_selections where id=${kit.q(h.selectionId)}`)
-  const sources = (optionIds) => catalog.resolveOptionPricing({ orgId: org.orgId, items: optionIds.map((optionId) => ({ optionId })), ...catalog.homePricingScope({ lot: { community_id: org.communityId, house_plan_version_id: null }, production: true }) })
+  const sources = (optionIds) => catalog.resolveOptionPricing({ orgId: org.orgId, items: optionIds.map((optionId) => ({ optionId })), ...pricingScope.homePricingScope({ lot: { community_id: org.communityId, house_plan_version_id: null }, production: true }) })
   const observed = {
     unpinnedHome: await attempt(() => choose(unpinned, planPriced.id)),
     unpinnedHomeSelection: { chosen: Boolean(row(unpinned).selected_option_id), status: row(unpinned).status },
@@ -375,7 +375,7 @@ async function productionPricingNeverGuesses(kit, expected, check) {
   observed.planRowOutranksTheOptionsOwnPrice = { priceCents: row(pinned).price_cents_snapshot }
   await choose(pinned, ownPriced.id)
   observed.ownPriceWhereThePlanHasNoRow = { priceCents: row(pinned).price_cents_snapshot }
-  const resolved = await kit.service(() => catalog.resolveOptionPricing({ orgId: org.orgId, items: [{ optionId: planPriced.id }, { optionId: ownPriced.id }], ...catalog.homePricingScope({ lot: { community_id: org.communityId, house_plan_version_id: plan.versionId }, production: true }) }))
+  const resolved = await kit.service(() => catalog.resolveOptionPricing({ orgId: org.orgId, items: [{ optionId: planPriced.id }, { optionId: ownPriced.id }], ...pricingScope.homePricingScope({ lot: { community_id: org.communityId, house_plan_version_id: plan.versionId }, production: true }) }))
   observed.sources = resolved.map((item) => `${item.priceCents}:${item.source}`)
   check.equal("a production home with no pinned plan version is refused rather than priced; with one, the plan row outranks the option's own price and the own price stands where the plan has no row", expected.expected, observed)
   return { orgId: org.orgId, unpinned: unpinned.projectId, pinned: pinned.projectId }

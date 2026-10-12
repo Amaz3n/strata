@@ -9,7 +9,12 @@ import { z } from "zod"
  * changed since.
  */
 
-const revisionRefSchema = z.object({ id: z.string(), revision: z.number().int().positive().nullable() })
+const revisionRefSchema = z.object({
+  id: z.string(),
+  revision: z.number().int().positive().nullable(),
+  /** The revision was not recorded when the item was chosen (a selection older than that record); this is its revision when the set was captured. */
+  inferred: z.literal(true).optional(),
+})
 
 export const productRevisionSetSchema = z.object({
   planVersion: z.object({ id: z.string(), number: z.number().int().positive().nullable() }).nullable(),
@@ -29,7 +34,7 @@ function normalizeRefs(refs: readonly RevisionRef[]): RevisionRef[] {
   for (const ref of refs) {
     const seen = byId.get(ref.id)
     // One home cannot hold two revisions of one option; the newer is the one it holds.
-    if (!seen || (ref.revision ?? 0) > (seen.revision ?? 0)) byId.set(ref.id, { id: ref.id, revision: ref.revision })
+    if (!seen || (ref.revision ?? 0) > (seen.revision ?? 0)) byId.set(ref.id, ref.inferred ? { id: ref.id, revision: ref.revision, inferred: true } : { id: ref.id, revision: ref.revision })
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
 }
