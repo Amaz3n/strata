@@ -23,6 +23,7 @@ stubModule("@/lib/services/platform-access", {
 })
 
 const { suspendMember, reactivateMember, removeMember, inviteTeamMember, resetMemberMfa } = freshRequire("lib/services/team.ts")
+const { resolveOrgEnrollmentGate, resolveStepUpGate } = freshRequire("lib/auth/session-mfa-gates.ts")
 const { getOrgSecurityPolicy, setOrgRequireMfa } = freshRequire("lib/services/org-security.ts")
 
 const ADMIN_ROLE = id(1)
@@ -513,4 +514,54 @@ test("the policy proof is bound to its session and cannot stand in for the facto
 
   if (previousSecret === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY
   else process.env.SUPABASE_SERVICE_ROLE_KEY = previousSecret
+})
+
+// The proxy's two-factor gates (lib/auth/session-mfa-gates.ts).
+// The "no" proofs are signed with the service-role secret.
+function withSigningSecret(t) {
+  const previous = process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-signing-secret"
+  t.after(() => {
+    if (previous === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = previous
+  })
+}
+
+const gateClaims = { sub: "user-1", session_id: "session-1" }
+
+function auth({ factors = [], error = null } = {}) {
+  return { auth: { getUser: async () => ({ data: { user: error ? null : { id: "user-1", factors } }, error }) } }
+}
+
+function policies({ rows = [], error = null } = {}) {
+  const query = { select: () => query, eq: () => query, limit: async () => ({ data: error ? null : rows, error }) }
+  return { from: () => query }
+}
+
+test("a member with a verified factor owes a code; one without passes and gets a proof that skips the next lookup", async (t) => {
+  withSigningSecret(t)
+  assert.deepEqual(await resolveStepUpGate(auth({ factors: [{ status: "verified" }] }), gateClaims, undefined), { kind: "required" })
+
+  const first = await resolveStepUpGate(auth({ factors: [{ status: "unverified" }] }), gateClaims, undefined)
+  assert.equal(first.kind, "pass")
+  assert.ok(first.proof)
+  // With the proof, the Auth server is not asked again for this session.
+  assert.deepEqual(await resolveStepUpGate(auth({ error: { message: "down" } }), gateClaims, first.proof), { kind: "pass" })
+  // A proof for another session is worthless.
+  assert.equal((await resolveStepUpGate(auth({ factors: [{ status: "verified" }] }), { ...gateClaims, session_id: "session-2" }, first.proof)).kind, "required")
+})
+
+test("an organization requiring two-factor sends a member without a factor to enrollment, and that answer is never cached", async (t) => {
+  withSigningSecret(t)
+  assert.deepEqual(await resolveOrgEnrollmentGate(policies({ rows: [{ org_id: "org-1" }] }), gateClaims, undefined), { kind: "required" })
+
+  const none = await resolveOrgEnrollmentGate(policies(), gateClaims, undefined)
+  assert.equal(none.kind, "pass")
+  assert.ok(none.proof)
+  assert.deepEqual(await resolveOrgEnrollmentGate(policies({ rows: [{ org_id: "org-1" }] }), gateClaims, none.proof), { kind: "pass" })
+})
+
+test("a lookup that fails refuses the request instead of letting the session through", async () => {
+  assert.deepEqual(await resolveStepUpGate(auth({ error: { message: "auth server unavailable" } }), gateClaims, undefined), { kind: "unavailable" })
+  assert.deepEqual(await resolveOrgEnrollmentGate(policies({ error: { message: "connection reset" } }), gateClaims, undefined), { kind: "unavailable" })
 })

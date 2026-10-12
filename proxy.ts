@@ -1,17 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
-import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
-import {
-  MFA_GATE_COOKIE,
-  MFA_GATE_TTL_SECONDS,
-  ORG_MFA_POLICY_COOKIE,
-  signMfaGateCookie,
-  signOrgMfaPolicyCookie,
-  verifyMfaGateCookie,
-  verifyOrgMfaPolicyCookie,
-} from "@/lib/auth/mfa-gate-cookie"
+import { MFA_GATE_COOKIE, MFA_GATE_TTL_SECONDS, ORG_MFA_POLICY_COOKIE } from "@/lib/auth/mfa-gate-cookie"
+import { resolveOrgEnrollmentGate, resolveStepUpGate } from "@/lib/auth/session-mfa-gates"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
 const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/r/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
@@ -216,14 +208,16 @@ export async function proxy(request: NextRequest) {
   }
 
   if (claims && !isAuthRoute && !isPublicRoute && claims.aal !== "aal2") {
-    const gate = await resolveMfaGate(request, supabase, claims)
-    if (gate.stepUp) {
+    const gate = await resolveStepUpGate(supabase, claims, request.cookies.get(MFA_GATE_COOKIE)?.value)
+    if (gate.kind === "unavailable") return withSupabaseCookies(response, securityCheckUnavailable(pathname))
+    if (gate.kind === "required") {
       return withSupabaseCookies(response, NextResponse.redirect(new URL("/auth/mfa", request.url)))
     }
     // No verified factor on this session. If one of the user's organizations
     // requires two-factor, they enroll before using the app.
-    const policy = await resolveOrgMfaPolicy(request, supabase, claims)
-    if (policy.enrollmentRequired) {
+    const policy = await resolveOrgEnrollmentGate(supabase, claims, request.cookies.get(ORG_MFA_POLICY_COOKIE)?.value)
+    if (policy.kind === "unavailable") return withSupabaseCookies(response, securityCheckUnavailable(pathname))
+    if (policy.kind === "required") {
       if (pathname.startsWith("/api/")) {
         return withSupabaseCookies(
           response,
@@ -273,79 +267,16 @@ export async function proxy(request: NextRequest) {
 
 
 /**
- * Decide whether this aal1 session must step up to aal2.
- *
- * Supabase's assurance-level helper reads `getSession().user.factors`, which is
- * client-controlled cookie storage — trusting it would let anyone strip their
- * factors and skip the challenge. The Auth server is the only authority, so the
- * first request in a window pays that round-trip and returns `proof`: a signed
- * "this user has no verified factor" the caller stores. Later navigations verify
- * that signature locally instead of asking again, which is what stops a non-MFA
- * user — permanently aal1, so permanently taking this branch — from paying a
- * GoTrue call on every single request.
- *
- * Returns the proof rather than writing it, because the caller's response object
- * can be rebound by a token refresh while this runs.
+ * Two-factor could not be checked (the Auth server or the policy read failed).
+ * The request is refused rather than let through unchallenged; a retry usually
+ * succeeds within seconds.
  */
-async function resolveMfaGate(
-  request: NextRequest,
-  supabase: SupabaseClient,
-  claims: { sub?: unknown; session_id?: unknown },
-): Promise<{ stepUp: boolean; proof?: string }> {
-  const sub = typeof claims.sub === "string" ? claims.sub : null
-  const sessionId = typeof claims.session_id === "string" ? claims.session_id : null
-  const identity = sub && sessionId ? { sub, sessionId } : null
-
-  if (identity && (await verifyMfaGateCookie(request.cookies.get(MFA_GATE_COOKIE)?.value, identity))) {
-    return { stepUp: false }
+function securityCheckUnavailable(pathname: string) {
+  const message = "We couldn't confirm your sign-in security just now. Try again in a moment."
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: message, code: "mfa_check_unavailable" }, { status: 503, headers: { "Retry-After": "5" } })
   }
-
-  const {
-    data: { user: verifiedUser },
-    error: verifiedUserError,
-  } = await supabase.auth.getUser()
-
-  // A failed lookup is not proof of absence — leave the session alone rather
-  // than either challenging or exempting it on a network error.
-  if (verifiedUserError) return { stepUp: false }
-
-  if ((verifiedUser?.factors ?? []).some((factor) => factor.status === "verified")) {
-    return { stepUp: true }
-  }
-
-  return { stepUp: false, proof: identity ? (await signMfaGateCookie(identity)) ?? undefined : undefined }
-}
-
-/**
- * Whether the session's user must enroll two-factor because an organization
- * they belong to requires it. A member can read their own org's policy under
- * RLS (writes are service-role only), so the lookup uses the user's own
- * session. "No org requires it" is signed and cached like the factor gate; a
- * policy that is on is never cached, so it applies on the very next request.
- * A failed lookup leaves the session alone rather than locking anyone out.
- */
-async function resolveOrgMfaPolicy(
-  request: NextRequest,
-  supabase: SupabaseClient,
-  claims: { sub?: unknown; session_id?: unknown },
-): Promise<{ enrollmentRequired: boolean; proof?: string }> {
-  const sub = typeof claims.sub === "string" ? claims.sub : null
-  const sessionId = typeof claims.session_id === "string" ? claims.session_id : null
-  const identity = sub && sessionId ? { sub, sessionId } : null
-
-  if (identity && (await verifyOrgMfaPolicyCookie(request.cookies.get(ORG_MFA_POLICY_COOKIE)?.value, identity))) {
-    return { enrollmentRequired: false }
-  }
-
-  const { data, error } = await supabase
-    .from("org_security_policies")
-    .select("org_id")
-    .eq("require_mfa", true)
-    .limit(1)
-  if (error) return { enrollmentRequired: false }
-  if ((data ?? []).length > 0) return { enrollmentRequired: true }
-
-  return { enrollmentRequired: false, proof: identity ? (await signOrgMfaPolicyCookie(identity)) ?? undefined : undefined }
+  return new NextResponse(message, { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Retry-After": "5" } })
 }
 
 function requireEnv(value: string | undefined, name: string) {

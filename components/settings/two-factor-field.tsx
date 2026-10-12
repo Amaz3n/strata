@@ -105,6 +105,10 @@ export function TwoFactorField() {
   const [secretCopied, setSecretCopied] = useState(false)
   const [isPending, startTransition] = useTransition()
 
+  // Whether an organization this person belongs to requires two-factor (the same
+  // question the proxy asks). Turning it off then only loops them back to setup,
+  // so the switch says why instead of offering it.
+  const [requiredByOrg, setRequiredByOrg] = useState(false)
   const [confirmDisable, setConfirmDisable] = useState(false)
   const [disabling, setDisabling] = useState(false)
   // Set when the dialog is dismissed while the initial enroll round-trip is still in flight,
@@ -114,12 +118,16 @@ export function TwoFactorField() {
   const refresh = useCallback(() => {
     setLoading(true)
     setLoadError(null)
-    supabase.auth.mfa
-      .listFactors()
-      .then(({ data, error }) => {
+    Promise.all([
+      supabase.auth.mfa.listFactors(),
+      supabase.from("org_security_policies").select("org_id").eq("require_mfa", true).limit(1),
+    ])
+      .then(([{ data, error }, policies]) => {
         if (error) throw error
+        if (policies.error) throw new Error(policies.error.message)
         const verified = data.totp.find((existing) => existing.status === "verified")
         setFactor(verified ? { id: verified.id, friendlyName: verified.friendly_name ?? "Authenticator app" } : null)
+        setRequiredByOrg((policies.data ?? []).length > 0)
       })
       .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Unable to check 2FA status."))
       .finally(() => setLoading(false))
@@ -256,7 +264,9 @@ export function TwoFactorField() {
             ) : (
               <span className="text-sm text-muted-foreground">Not enabled</span>
             )}
-            {factor ? (
+            {factor && requiredByOrg ? (
+              <span className="text-xs text-muted-foreground">Required by your organization</span>
+            ) : factor ? (
               <Button size="sm" variant="outline" onClick={() => setConfirmDisable(true)} disabled={isPending}>
                 Turn off
               </Button>
@@ -267,6 +277,12 @@ export function TwoFactorField() {
             )}
           </div>
 
+          {factor && requiredByOrg ? (
+            <p className="text-xs text-muted-foreground">
+              Lost your phone? An organization admin can reset your two-factor from the team list, and you set it up
+              again at your next sign-in.
+            </p>
+          ) : null}
           {loadError ? <SettingsError>{loadError}</SettingsError> : null}
         </div>
       )}

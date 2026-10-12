@@ -444,3 +444,26 @@ the same rule against that member's role. Refusals land in
   (`MFA_GATE_TTL_SECONDS`), which carry no authority.
 - A member's MFA reset revokes all of their sessions, in every org, because the
   factor is theirs and not the org's.
+
+## Required two-factor
+
+An owner or admin can require two-factor for the organization (Settings →
+Organization → Security). Arc signs everyone in itself; there is no SSO.
+
+- **Who it applies to.** Every member, the moment any organization they belong
+  to requires it: the factor belongs to the person, so one organization's rule
+  applies to their whole account.
+- **What happens.** A member with no factor is sent to set one up before any
+  page opens, and API calls answer 403 `mfa_enrollment_required`. A member with
+  a factor enters a code at every sign-in. Members already signed in fall under
+  a newly enabled policy within 10 minutes (the cached "no policy" proof).
+- **Failure.** A wrong code is refused and the code page stays. If Arc cannot
+  read the factor or the policy, the request is refused with a retry message;
+  it never passes unchallenged.
+- **Recovery.** A member who loses their phone asks an admin to reset their
+  two-factor from the team list. The reset signs them out everywhere and they
+  set it up again at their next sign-in. Only someone holding at least the
+  member's authority can reset it, and every reset is recorded. A sole admin
+  who loses their phone is reset by Arc support, which first opens the
+  organization through a stated, time-limited grant the owner can see.
+- While the policy is on, a member cannot turn their own two-factor off.
