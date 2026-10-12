@@ -1,0 +1,587 @@
+{
+  "scenario": "PROD-01",
+  "reviewedFrom": "EP03-01, EP03-04, EP03-05, EP03-06, EP03-07, EP03-08 and EP03-10 (docs/enterprise-production/completion-checklist.json); EP03-09 is open (owner EP03-09). Code read: commits 7bb31046 (agreement price guard, home_margin_baselines), faa8a0b1 (imports offering), bd0a5ffa (configuration fixes), 9feb1fa8 (selection fence, group confirm in one write, atomic catalog publication only), 71a03ba0 (an option's own price stands for plans without a row), 57957f32 (product revisions, lot fit), 58f30173 (member edits move revisions). Migrations 20261012010000_selection_writes_revision_fence (read_project_selection_fence, apply_project_selection_writes under the home advisory lock), 20261012020000_home_margin_baselines (guard_binding_purchase_agreement_pricing, write-once baselines), 20261012030000_product_definition_revisions (revision bump/record triggers, append-only history), 20261012040000_lot_fit; lib/services/{home-product-revisions,selections,option-catalog,lots,plan-instantiation,imports,lot-fit,home-margin-baselines,production-reporting,configuration-rules}.ts; lib/selections/configuration-fixes.ts; lib/land/lot-fit.ts; lib/sales/plan-offering.ts; lib/financials/home-margin-baseline.ts. Fixture: one production builder from production-seed (productionBuilder, seedCommunity, seedProduct, takeDownTranche): Cypress Landing, lots 1-10 owned and developed (lots 1 and 6 carry a $15,000 premium and are not sold here), lots 11-20 controlled; The Mangrove (MG1650, version 1, elevations A Coastal / B Craftsman, base $385,000, trade cost $251,600) and The Palmetto offered; options ST-GAR $18,500 (cost $11,000), KT-QTZ $4,800 ($2,900), FL-LVP $7,200 ($4,300), EL-LGT $2,600 ($1,500), each priced per plan at its own price; group 'Interior selections' (Kitchen, Flooring, Electrical). Every sale here is The Mangrove elevation A, $20,000 deposit received.",
+  "subcases": {
+    "version-history-pins-the-sold-home": {
+      "derivation": "A buyer signs for ST-GAR and a dedicated structural option ST-LAN (Screened lanai, $12,000, its own category so editing it moves nothing another home sold). Execution captures the 'agreement' home_product_revisions row from the agreement's own configuration at the revisions current when it was created: plan version 1, elevation A r1, ST-GAR r1, ST-LAN r1 (each definition's INSERT is revision 1; setCatalogPrice writes selection_catalog_prices, not the option, so ST-GAR is still r1). The owner renames elevation A (name is a definition column of house_plan_elevations) -> r2; the design coordinator reprices ST-LAN to $12,500 (price_cents is a definition column) -> r2; a second save that changes only sort_order (not a definition column) leaves it at r2. listProductDefinitionHistory returns newest first: elevation r2 'Coastal (revised roofline)', r1 'Coastal'; option r2 1250000, r1 1200000. product_definition_revisions is append-only: an UPDATE even as postgres is refused by its guard trigger. The agreement record is written once and never rewritten, so it still reads r1/r1. readHomeProductRevisionStatus (no release record yet) compares the agreement record with today: summary 'plan v1 · elevation A r1 · 2 options'; changes elevation 1->2 and ST-LAN 1->2 (elevation first, then options by id). The design picks are chosen and confirmed (chooseDesign), gates cleared and the start released; the release capture reads the lot's pinned version and elevation and the live (confirmed/ordered/received) selections at today's revisions: elevation r2, ST-GAR r1, ST-LAN r2, KT-QTZ/FL-LVP/EL-LGT r1 — five options. The agreement record is unchanged by release. Status now reads the release record: 'plan v1 · elevation A r2 · 5 options', no changes. A later reprice of ST-LAN ($13,000) moves it to r3, and status reports exactly that: option ST-LAN 2->3. One record per stage.",
+      "inputs": {
+        "sold": [
+          "ST-GAR",
+          "ST-LAN"
+        ],
+        "edits": [
+          "elevation A renamed (owner)",
+          "ST-LAN $12,000 -> $12,500 (design)",
+          "ST-LAN sort order only (design)",
+          "after release: ST-LAN -> $13,000 (design)"
+        ]
+      },
+      "expected": {
+        "soldRecord": {
+          "planVersion": 1,
+          "elevationIsTheSoldOne": true,
+          "elevationRevision": 1,
+          "options": {
+            "ST-GAR": 1,
+            "ST-LAN": 1
+          }
+        },
+        "revisionsWhenSold": {
+          "elevation": 1,
+          "lanai": 1
+        },
+        "revisionsAfterEdits": {
+          "elevation": 2,
+          "lanai": 2
+        },
+        "history": {
+          "elevation": [
+            {
+              "revision": 2,
+              "name": "Coastal (revised roofline)"
+            },
+            {
+              "revision": 1,
+              "name": "Coastal"
+            }
+          ],
+          "option": [
+            {
+              "revision": 2,
+              "priceCents": 1250000
+            },
+            {
+              "revision": 1,
+              "priceCents": 1200000
+            }
+          ]
+        },
+        "historyIsAppendOnly": "refused",
+        "soldRecordAfterEdits": {
+          "planVersion": 1,
+          "elevationIsTheSoldOne": true,
+          "elevationRevision": 1,
+          "options": {
+            "ST-GAR": 1,
+            "ST-LAN": 1
+          }
+        },
+        "statusBeforeRelease": {
+          "stage": "agreement",
+          "summary": "plan v1 · elevation A r1 · 2 options",
+          "changes": [
+            {
+              "kind": "elevation",
+              "subject": "sold elevation",
+              "change": "changed",
+              "from": 1,
+              "to": 2
+            },
+            {
+              "kind": "option",
+              "subject": "ST-LAN",
+              "change": "changed",
+              "from": 1,
+              "to": 2
+            }
+          ]
+        },
+        "released": "released",
+        "releaseRecord": {
+          "planVersion": 1,
+          "elevationIsTheSoldOne": true,
+          "elevationRevision": 2,
+          "options": {
+            "EL-LGT": 1,
+            "FL-LVP": 1,
+            "KT-QTZ": 1,
+            "ST-GAR": 1,
+            "ST-LAN": 2
+          }
+        },
+        "soldRecordAfterRelease": {
+          "planVersion": 1,
+          "elevationIsTheSoldOne": true,
+          "elevationRevision": 1,
+          "options": {
+            "ST-GAR": 1,
+            "ST-LAN": 1
+          }
+        },
+        "statusAfterRelease": {
+          "stage": "release",
+          "summary": "plan v1 · elevation A r2 · 5 options",
+          "changes": []
+        },
+        "statusAfterLaterEdit": {
+          "stage": "release",
+          "summary": "plan v1 · elevation A r2 · 5 options",
+          "changes": [
+            {
+              "kind": "option",
+              "subject": "ST-LAN",
+              "change": "changed",
+              "from": 2,
+              "to": 3
+            }
+          ]
+        },
+        "recordsPerStage": {
+          "agreement": 1,
+          "release": 1
+        }
+      }
+    },
+    "group-confirmation-is-all-or-nothing": {
+      "derivation": "A home sold for ST-GAR; the design coordinator chooses EL-LGT, FL-LVP and a dedicated kitchen option KT-BUT (Butcher block, $3,500) — all three 'selected', none confirmed. KT-BUT is then made unavailable (upsertOption is_available=false). confirmSelectionGroup prepares every member before writing anything (Promise.all over prepareConfirmation, then ONE apply_project_selection_writes call); the Kitchen member (last by name) resolves unavailable and throws 'This option is no longer available for this home. Choose an available option before confirming.', so the single write never runs and all three stay 'selected' with no confirmed_at. With KT-BUT available again the group confirms: { confirmed: 3 }, all three 'confirmed' and every confirmed_at is the one instant the write stamped (1 distinct value).",
+      "inputs": {
+        "chosen": {
+          "Electrical": "EL-LGT",
+          "Flooring": "FL-LVP",
+          "Kitchen": "KT-BUT"
+        },
+        "madeUnavailable": "KT-BUT"
+      },
+      "expected": {
+        "chosen": [
+          {
+            "category": "Electrical",
+            "status": "selected",
+            "confirmed": false
+          },
+          {
+            "category": "Flooring",
+            "status": "selected",
+            "confirmed": false
+          },
+          {
+            "category": "Kitchen",
+            "status": "selected",
+            "confirmed": false
+          }
+        ],
+        "confirmWithOneUnavailable": "This option is no longer available for this home. Choose an available option before confirming.",
+        "afterRefusal": [
+          {
+            "category": "Electrical",
+            "status": "selected",
+            "confirmed": false
+          },
+          {
+            "category": "Flooring",
+            "status": "selected",
+            "confirmed": false
+          },
+          {
+            "category": "Kitchen",
+            "status": "selected",
+            "confirmed": false
+          }
+        ],
+        "confirmed": 3,
+        "afterConfirmation": [
+          {
+            "category": "Electrical",
+            "status": "confirmed",
+            "confirmed": true
+          },
+          {
+            "category": "Flooring",
+            "status": "confirmed",
+            "confirmed": true
+          },
+          {
+            "category": "Kitchen",
+            "status": "confirmed",
+            "confirmed": true
+          }
+        ],
+        "confirmationInstants": 1
+      }
+    },
+    "stale-catalog-refuses-the-selection-write": {
+      "derivation": "updateSingleSelection reads the fence (org catalog revision + home-state md5) BEFORE validating, then apply_project_selection_writes takes pg_advisory_xact_lock(hashtextextended('project-selections:<org>:<project>',0)) and only then compares the revision. A separate superuser session (harness) holds that same advisory key, so the design coordinator's write of KT-QTZ into the Kitchen selection reads its fence, validates, and waits on the lock (seen as an ungranted advisory lock on that key). While it waits the owner publishes a plan price for an unrelated option (setCatalogPrice, atomic publication); selection_catalog_prices is an agreement_catalog_revisions source, so the org revision advances. The holder is released; the waiting write finds the revision moved and raises detail SELECTION_CATALOG_CHANGED, which the service maps to 'The catalog changed while you were choosing; review and try again.' The UPDATE never ran: the Kitchen row still has no option and is 'pending'. A retry reads the new fence, validates against the new catalog and lands: KT-QTZ, 'selected', priced at its Mangrove plan row $4,800 (480000).",
+      "inputs": {
+        "write": "Kitchen -> KT-QTZ (design coordinator)",
+        "concurrent": "owner publishes KT-PRB on The Mangrove v1 at $3,100"
+      },
+      "expected": {
+        "writeWaitedOnTheHomeLock": true,
+        "publication": "allowed",
+        "catalogRevisionMoved": true,
+        "staleWrite": "The catalog changed while you were choosing; review and try again.",
+        "kitchenAfterRefusal": {
+          "optionChosen": false,
+          "status": "pending"
+        },
+        "retry": "allowed",
+        "kitchenAfterRetry": {
+          "isQuartz": true,
+          "status": "selected",
+          "priceCents": 480000
+        }
+      }
+    },
+    "offering-holds-everywhere": {
+      "derivation": "A third plan, The Oak (OK1800), is released and active but offered in no community. assignPlanToLot (starts coordinator: lot.write + plan.instantiate) on lot 11 (no home, no reservation) finds no community_plan_availability row and no offering override in the lot's metadata and refuses with PLAN_OFFERING_REFUSAL; the lot stays unpinned. recordPlanOfferingOverride needs plan.release: the starts coordinator is refused 'Missing permission: plan.release'; the purchasing manager (holds plan.release) records it, audited as an update of the lot whose after_data.offering_override names The Oak (1 row). The same pin is then allowed and lot 11 carries The Oak. The communities_lots import, staged by the land manager, applies the same rule (validateLotPlanPins -> planOfferingRefusal): new lot 41 with OK1800 is an error 'plan_not_offered'; new lot 42 with MG1650 (offered, no elevation restriction) is valid; lot 11 with OK1800 is valid because its metadata carries the override for that plan. No plan has a footprint, so no fit issue arises.",
+      "inputs": {
+        "plan": "OK1800 (released, active, not offered)",
+        "lot": "11",
+        "importRows": [
+          "41 OK1800 A",
+          "42 MG1650 A",
+          "11 OK1800 A"
+        ]
+      },
+      "expected": {
+        "pinUnoffered": "This plan or elevation is not offered in the lot's community. Offer it there, or record an offering override with a reason.",
+        "pinnedAfterRefusal": false,
+        "overrideWithoutPlanRelease": "Missing permission: plan.release",
+        "overrideByPurchasing": "allowed",
+        "overrideAudited": 1,
+        "pinWithOverride": "allowed",
+        "pinnedAfterOverride": true,
+        "lotsImport": [
+          {
+            "lot": "41",
+            "status": "error",
+            "issues": [
+              "plan_not_offered"
+            ]
+          },
+          {
+            "lot": "42",
+            "status": "valid",
+            "issues": []
+          },
+          {
+            "lot": "overridden lot",
+            "status": "valid",
+            "issues": []
+          }
+        ]
+      }
+    },
+    "lot-fit-refuses-and-overrides-with-evidence": {
+      "derivation": "The Wideleaf (WD2600) has a 50 x 70 ft footprint and is offered in Cypress Landing. Lot 51 is 40 x 120 ft with its own setbacks front 20, rear 15, side 5 (no community setbacks): buildable width 40-5-5 = 30, depth 120-20-15 = 85. 50 > 30 is footprint_too_wide; 70 <= 85 fits. assignPlanToLot refuses with lotFitRefusal: 'This home does not fit the lot: The plan is 50 ft wide; the lot builds 30 ft between its side setbacks. Change the configuration, or record a fit override with evidence.' getLotFit reports status 'violations', [footprint_too_wide], buildable {30, 85}. The plot plan's files row is a fixture (no storage). recordLotFitOverride needs lot.fit_override: the starts coordinator is refused 'Missing permission: lot.fit_override'; the purchasing manager (holds it with plan.release) citing a file id that is not on record is refused 'The evidence file was not found'; a two-character reason fails the schema (min 10) — none of these writes a row (0). With a reason and the plot plan the override is recorded for exactly [footprint_too_wide], by the purchasing manager, audited (audit_log entity_type lot_fit_override, insert, actor purchasing manager: 1) and evented (lot.fit_overridden: 1). The same pin is then allowed: the override covers this plan, elevation, handing (null) and every violation found. Lot 52 has no dimensions: the evaluation is 'unknown' (lot width/depth missing) and never blocks, so the pin is allowed. Both lots carry The Wideleaf.",
+      "inputs": {
+        "plan": {
+          "code": "WD2600",
+          "footprintFt": [
+            50,
+            70
+          ]
+        },
+        "lot51": {
+          "widthFt": 40,
+          "depthFt": 120,
+          "setbacksFt": {
+            "front": 20,
+            "rear": 15,
+            "side": 5
+          }
+        },
+        "lot52": "unmeasured"
+      },
+      "expected": {
+        "narrowLot": "This home does not fit the lot: The plan is 50 ft wide; the lot builds 30 ft between its side setbacks. Change the configuration, or record a fit override with evidence.",
+        "verdict": {
+          "status": "violations",
+          "violations": [
+            "footprint_too_wide"
+          ],
+          "buildable": {
+            "widthFt": 30,
+            "depthFt": 85
+          }
+        },
+        "overrideWithoutLotFitOverride": "Missing permission: lot.fit_override",
+        "overrideWithoutEvidenceOnFile": "The evidence file was not found",
+        "overrideWithoutAReason": "refused",
+        "overridesRecordedBeforeEvidence": 0,
+        "overrideWithReasonAndEvidence": "allowed",
+        "override": {
+          "by": "purchasing manager",
+          "violations": [
+            "footprint_too_wide"
+          ],
+          "evidenceIsThePlotPlan": true
+        },
+        "overrideAudited": 1,
+        "overrideEvented": 1,
+        "narrowLotWithOverride": "allowed",
+        "unmeasuredLot": "allowed",
+        "unmeasuredVerdict": "unknown",
+        "pinned": {
+          "51": true,
+          "52": true
+        }
+      }
+    },
+    "production-pricing-never-guesses": {
+      "derivation": "Two production homes made by the owner and attached to new developed lots: lot 61 with no plan pinned, lot 62 pinned to The Mangrove v1 beforehand (assignPlanToLot). Each gets a Kitchen selection. KT-PLN has its own price $1,000 and a Mangrove v1 plan row $900; KT-OWN has only its own price $550. readHomePricingScope makes a production home requirePlanVersion; on lot 61 there is no version, so resolveOptionPricing refuses 'This home has no pinned plan version; pin the plan version before pricing its options' and the selection stays unchosen and 'pending'; the resolver itself refuses the same way with a production scope and no version. On lot 62, chooseResolvedPrice ranks community row > plan row > the option's own price: KT-PLN snapshots 90000 (source 'plan'), KT-OWN 55000 (source 'option_base', the own price standing for a plan with no row).",
+      "inputs": {
+        "KT-PLN": {
+          "ownCents": 100000,
+          "mangroveV1Cents": 90000
+        },
+        "KT-OWN": {
+          "ownCents": 55000
+        }
+      },
+      "expected": {
+        "unpinnedHome": "This home has no pinned plan version; pin the plan version before pricing its options",
+        "unpinnedHomeSelection": {
+          "chosen": false,
+          "status": "pending"
+        },
+        "resolverWithoutAVersion": "This home has no pinned plan version; pin the plan version before pricing its options",
+        "planRowOutranksTheOptionsOwnPrice": {
+          "priceCents": 90000
+        },
+        "ownPriceWhereThePlanHasNoRow": {
+          "priceCents": 55000
+        },
+        "sources": [
+          "90000:plan",
+          "55000:option_base"
+        ]
+      }
+    },
+    "sold-price-and-margin-are-locked": {
+      "derivation": "A buyer signs for ST-GAR ($18,500, cost $11,000) and a dedicated structural option ST-MRG (Tray ceilings, $9,000, cost $5,000, no plan row) on a premium-free lot: total = 38,500,000 + 0 + 1,850,000 + 900,000 = 41,250,000; structural 2,750,000, design 0, incentives 0. Execution captures the 'agreement' baseline: sale 41,250,000, premium 0, options price 2,750,000, incentives 0; no budget exists yet so base cost, cost, margin and bps are unknown (null); options cost = the structural selections' cost snapshots 1,100,000 + 500,000 = 1,600,000. guard_binding_purchase_agreement_pricing (a plain trigger, fires for every role) refuses changing total_cents or the snapshot of an active agreement: the owner through PostgREST, the service role and postgres in SQL all get 'A signed purchase agreement's price and configuration cannot be changed...'. The catalog then moves (ST-MRG Mangrove row $9,750/$5,600 and own price $9,900/$5,700): the contract total, its snapshot and the agreement baseline are byte-identical. Design picks are chosen and confirmed (KT-QTZ, FL-LVP, EL-LGT at cost 290,000 + 430,000 + 150,000), the start released. The release baseline: budget from PO generation (source po_generation, so it covers the options) = trade cost 25,160,000 (34,000 + 58,000 + 44 x 1,650 + 41,000 + 46,000 dollars) + options 2,470,000 (1,100,000 + 500,000 [ST-MRG's snapshot, not the repriced 560,000] + 870,000) = 27,630,000; base cost = 27,630,000 - 2,470,000 = 25,160,000; margin = 41,250,000 - 27,630,000 = 13,620,000; bps = round(13,620,000 x 10,000 / 41,250,000 = 3301.8) = 3302. The agreement baseline is untouched by release. A retried capture finds the release row (same id) and the home still has 2 baselines (one per stage). The write-once trigger refuses an UPDATE even as postgres. getProductionPortfolioReport shows the release baseline as original margin: stage 'release', 13,620,000, 33.02%, revenue the agreement total 41,250,000.",
+      "inputs": {
+        "sold": [
+          "ST-GAR",
+          "ST-MRG"
+        ],
+        "catalogChangeAfterSale": {
+          "ST-MRG mangroveV1": {
+            "priceCents": 975000,
+            "costCents": 560000
+          },
+          "ST-MRG own": {
+            "priceCents": 990000,
+            "costCents": 570000
+          }
+        }
+      },
+      "expected": {
+        "soldTotalCents": 41250000,
+        "soldPricing": {
+          "basePriceCents": 38500000,
+          "lotPremiumCents": 0,
+          "structuralOptionsCents": 2750000,
+          "designSelectionsCents": 0,
+          "incentivesCents": 0,
+          "totalCents": 41250000
+        },
+        "agreementBaseline": [
+          {
+            "stage": "agreement",
+            "sale_price_cents": 41250000,
+            "lot_premium_cents": 0,
+            "options_price_cents": 2750000,
+            "incentives_cents": 0,
+            "base_cost_cents": null,
+            "options_cost_cents": 1600000,
+            "cost_cents": null,
+            "margin_cents": null,
+            "margin_bps": null
+          }
+        ],
+        "rewrite": {
+          "ownerTotal": "refused: price and configuration are locked",
+          "serviceRoleTotal": "refused: price and configuration are locked",
+          "postgresTotal": "refused: price and configuration are locked",
+          "postgresSnapshot": "refused: price and configuration are locked"
+        },
+        "afterCatalogChange": {
+          "totalUnchanged": true,
+          "snapshotUnchanged": true,
+          "agreementBaselineUnchanged": true
+        },
+        "released": "released",
+        "releaseBaseline": {
+          "stage": "release",
+          "sale_price_cents": 41250000,
+          "lot_premium_cents": 0,
+          "options_price_cents": 2750000,
+          "incentives_cents": 0,
+          "base_cost_cents": 25160000,
+          "options_cost_cents": 2470000,
+          "cost_cents": 27630000,
+          "margin_cents": 13620000,
+          "margin_bps": 3302
+        },
+        "agreementBaselineUnchangedByRelease": true,
+        "retriedCapture": {
+          "sameBaseline": true,
+          "rows": 2
+        },
+        "baselineRewrite": "refused: a baseline cannot be changed",
+        "report": {
+          "originalMarginStage": "release",
+          "originalMarginCents": 13620000,
+          "originalMarginPercent": 33.02,
+          "revenueCents": 41250000
+        }
+      }
+    },
+    "invalid-configuration-explains-and-fixes": {
+      "derivation": "The production_configuration_rules flag is switched on (fixture row). The design coordinator adds options (KT-LAM laminate $1,200; EL-ALT alternate lighting $1,500; FL-TIL tile $6,400; a new 'Exterior lighting' category with EX-STD $0 and EX-LUX $3,800), an org group 'Exterior selections' for that category, and two rules: KT-QTZ requires EL-LGT; FL-TIL requires EX-LUX. SALES: a draft for ST-GAR + KT-QTZ + EL-ALT is refused by priceAgreementDraft with a ConfigurationViolationError carrying the structured violation (message 'Quartz countertops requires Recessed lighting package.'); getSalesConfigurationFixes returns it with proven fixes: 'Add Recessed lighting package' (+$2,600 = 260000, a draft has no locks so applicable), and swaps of KT-QTZ for other kitchen options (which siblings depends on the catalog, so only their presence and applicability are checked); every fix clears the rule and introduces nothing new. The draft with the added line prices. BUYER (portal access): a sold home with EL-ALT, FL-LVP, KT-LAM, EX-STD; choosing KT-QTZ is refused with the same structured violation and the kitchen stays KT-LAM. getHomeConfigurationFixes with that proposal offers 'Switch Alternate lighting to Recessed lighting package' in the Electrical selection (+260000 - 150000 = 110000, open, applicable) and kitchen swaps away from quartz. resolveHomeConfigurationFix accepts the suggested fix id and names Electrical -> EL-LGT; written through selectProjectOption, then the quartz choice lands; the home is EL-LGT / EX-STD / FL-LVP / KT-QTZ with no violations. LOCKED: a second sold home (EL-LGT, FL-LVP, KT-LAM, EX-STD); the Exterior group's cutoff is overridden to yesterday (locked). Choosing FL-TIL is refused (structured violation 'Porcelain tile flooring requires Landscape lighting package.'). The only add-fix, 'Switch Standard exterior lighting to Landscape lighting package' (+380000), touches the Exterior selection whose group is past cutoff, so it is offered blockedBy 'cutoff', not applicable; the swap of FL-TIL back to FL-LVP is applicable. The server refuses the blocked fix: 'This correction needs a change order because the selection deadline has passed. Contact your builder to request it.'; writing EX-LUX into that selection directly is refused by assertSelectionMutable ('The selection deadline for Exterior selections was <yesterday>. Changes now require a change order — contact your builder.'). The locked home is unchanged.",
+      "inputs": {
+        "rules": [
+          "KT-QTZ requires EL-LGT",
+          "FL-TIL requires EX-LUX"
+        ],
+        "lockedGroup": "Exterior selections (cutoff yesterday)"
+      },
+      "expected": {
+        "salesQuote": {
+          "message": "Quartz countertops requires Recessed lighting package.",
+          "violations": [
+            {
+              "kind": "requires",
+              "source": "KT-QTZ",
+              "target": "EL-LGT",
+              "message": "Quartz countertops requires Recessed lighting package."
+            }
+          ]
+        },
+        "salesIssues": {
+          "violations": [
+            {
+              "kind": "requires",
+              "source": "KT-QTZ",
+              "target": "EL-LGT",
+              "message": "Quartz countertops requires Recessed lighting package."
+            }
+          ],
+          "addsTheRequiredOption": {
+            "kind": "add_option",
+            "label": "Add Recessed lighting package",
+            "add": "EL-LGT",
+            "remove": null,
+            "priceDeltaCents": 260000,
+            "blockedBy": null,
+            "applicable": true
+          },
+          "replacesTheSource": {
+            "offered": true,
+            "allApplicable": true,
+            "keepTheSourceCategory": true
+          },
+          "everyFixClearsTheRuleAndAddsNoConflict": true,
+          "otherFixes": []
+        },
+        "salesQuoteWithTheFix": "allowed",
+        "buyerChoosesQuartz": {
+          "message": "Quartz countertops requires Recessed lighting package.",
+          "violations": [
+            {
+              "kind": "requires",
+              "source": "KT-QTZ",
+              "target": "EL-LGT",
+              "message": "Quartz countertops requires Recessed lighting package."
+            }
+          ]
+        },
+        "kitchenAfterRefusal": "KT-LAM",
+        "buyerIssues": {
+          "violations": [
+            {
+              "kind": "requires",
+              "source": "KT-QTZ",
+              "target": "EL-LGT",
+              "message": "Quartz countertops requires Recessed lighting package."
+            }
+          ],
+          "addsTheRequiredOption": {
+            "kind": "swap_option",
+            "label": "Switch Alternate lighting to Recessed lighting package",
+            "add": "EL-LGT",
+            "remove": "EL-ALT",
+            "priceDeltaCents": 110000,
+            "blockedBy": null,
+            "applicable": true
+          },
+          "replacesTheSource": {
+            "offered": true,
+            "allApplicable": true,
+            "keepTheSourceCategory": true
+          },
+          "everyFixClearsTheRuleAndAddsNoConflict": true,
+          "otherFixes": []
+        },
+        "resolvedFix": {
+          "selection": "Electrical",
+          "option": "EL-LGT"
+        },
+        "afterFix": {
+          "Electrical": "EL-LGT",
+          "Exterior lighting": "EX-STD",
+          "Flooring": "FL-LVP",
+          "Kitchen": "KT-QTZ"
+        },
+        "issuesAfterFix": 0,
+        "buyerChoosesTile": {
+          "message": "Porcelain tile flooring requires Landscape lighting package.",
+          "violations": [
+            {
+              "kind": "requires",
+              "source": "FL-TIL",
+              "target": "EX-LUX",
+              "message": "Porcelain tile flooring requires Landscape lighting package."
+            }
+          ]
+        },
+        "lockedIssues": {
+          "violations": [
+            {
+              "kind": "requires",
+              "source": "FL-TIL",
+              "target": "EX-LUX",
+              "message": "Porcelain tile flooring requires Landscape lighting package."
+            }
+          ],
+          "addsTheRequiredOption": {
+            "kind": "swap_option",
+            "label": "Switch Standard exterior lighting to Landscape lighting package",
+            "add": "EX-LUX",
+            "remove": "EX-STD",
+            "priceDeltaCents": 380000,
+            "blockedBy": "cutoff",
+            "applicable": false
+          },
+          "replacesTheSource": {
+            "offered": true,
+            "allApplicable": true,
+            "keepTheSourceCategory": true
+          },
+          "everyFixClearsTheRuleAndAddsNoConflict": true,
+          "otherFixes": []
+        },
+        "applyBlockedFix": {
+          "message": "This correction needs a change order because the selection deadline has passed. Contact your builder to request it.",
+          "violations": null
+        },
+        "writeIntoTheLockedSelection": {
+          "message": "The selection deadline for Exterior selections was <yesterday>. Changes now require a change order — contact your builder.",
+          "violations": null
+        },
+        "lockedHomeUnchanged": {
+          "Electrical": "EL-LGT",
+          "Exterior lighting": "EX-STD",
+          "Flooring": "FL-LVP",
+          "Kitchen": "KT-LAM"
+        }
+      }
+    },
+    "plan-change-reaches-sold-homes": {
+      "status": "NOT_IMPLEMENTED",
+      "owner": "EP03-09",
+      "reason": "EP03-09 (plan change proposals reaching sold homes) is being built in product code by another workstream; this subcase is written against it once it lands."
+    }
+  }
+}

@@ -31,6 +31,7 @@ const IMPLEMENTED = {
   "LOT-01": "./scenarios/lot-01.cjs",
   "RACE-02": "./scenarios/race-02.cjs",
   "SEC-01": "./scenarios/sec-01.cjs",
+  "PROD-01": "./scenarios/prod-01.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -53,7 +54,7 @@ const NOT_IMPLEMENTED = {
  * as open with its reason, so the scenario is INCOMPLETE rather than FAILED. An
  * incomplete production scenario does not fail an all-scenarios run; a failed one does.
  */
-const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" } }
+const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" } }
 
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {
@@ -68,6 +69,9 @@ const OPEN_SUBCASES = {
     "purchasing-manager-requests-a-variance-order-on-a-house": "EP08-06",
     "division-scoped-variance-report-matches-the-organisation-report": "EP08-12",
     "variance-report-labels-the-superintendent": "EP08-12",
+  },
+  "PROD-01": {
+    "plan-change-reaches-sold-homes": "EP03-09",
   },
 }
 
