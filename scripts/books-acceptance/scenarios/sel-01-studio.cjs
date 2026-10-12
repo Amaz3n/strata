@@ -321,7 +321,7 @@ async function esignApprovalBindsSentTerms(kit, expected, check) {
   const second = await sendForSignature(kit, org, home)
   // The catalog reprices the kitchen after sending; the signature binds the sent price.
   const sold = org.plans[0]
-  await kit.as(org.team.design, () => app("option-catalog").setCatalogPrice({ optionId: org.optionIds[seed.DESIGN_PICKS.Kitchen], housePlanVersionId: sold.versionId, priceCents: 530000, costCents: 290000, isAvailable: true }))
+  await kit.as(org.team.design, () => app("option-catalog").setCatalogPrice({ optionId: org.optionIds[seed.DESIGN_PICKS.Kitchen], housePlanVersionId: sold.versionId, priceCents: 530000, isAvailable: true }))
   buyerSigns(kit, second.envelopeId)
   const outcome = await executeSigned(kit, org, home, second)
   const lines = kit.rows(`select l.price_cents line, s.price_cents_snapshot confirmed, s.status from public.selection_approval_lines l join public.project_selections s on s.id=l.selection_id where l.approval_id=${kit.q(second.approvalId)}`)

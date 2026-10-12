@@ -170,7 +170,7 @@
       }
     },
     "fees-reconcile-to-payments": {
-      "derivation": "Lot 6's application carries plan review $450 (before submission), permit $2,180 (before issuance) and impact $6,500 (before certificate of occupancy): $9,130 obligated. The coordinator cannot pay by bill (no bill.write). The office records the $450 counter payment as an expense to the county with its receipt; it counts as paid once the owner approves it, and the county becomes a vendor (it had no role). The approval is refused naming the unpaid permit fee. The office enters the county's $2,180 invoice as a bill on lot 6's home (its line on the home); the owner approves it and pays $1,000 then $1,180: paid $1,450, still refused, then $2,630 with the $6,500 impact fee owed. The paid bill's total cannot be edited or the bill deleted; it stays $2,180, paid. A $300 re-inspection bill entered on lot 1's home cannot pay lot 6's re-inspection fee; that fee is voided with its reason and re-assessed at $250, both rows kept. Final: $9,380 obligated, $2,630 paid, $6,750 owed, not reconciled; the approval is now recorded because the impact and re-inspection fees do not hold issuance.",
+      "derivation": "Lot 6's application carries plan review $450 (before submission), permit $2,180 (before issuance) and impact $6,500 (before certificate of occupancy): $9,130 obligated. The home's costs are coded, so a fee assessed without a cost code is refused before it exists. The coordinator cannot pay by bill (no bill.write). The office records the $450 counter payment as an expense to the county with its receipt; it counts as paid once the owner approves it, and the county becomes a vendor (it had no role). The approval is refused naming the unpaid permit fee. The office enters the county's $2,180 invoice as a bill on lot 6's home (its line on the home); the owner approves it and the office pays $1,000 then $1,180 (the approver does not also record the payment): paid $1,450, still refused, then $2,630 with the $6,500 impact fee owed. The paid bill's total cannot be edited or the bill deleted; it stays $2,180, paid. A $300 re-inspection bill entered on lot 1's home cannot pay lot 6's re-inspection fee; that fee is voided with its reason and re-assessed at $250, both rows kept. Final: $9,380 obligated, $2,630 paid, $6,750 owed, not reconciled; the approval is now recorded because the impact and re-inspection fees do not hold issuance.",
       "inputs": {
         "fees": {
           "plan_review": 45000,
@@ -189,6 +189,7 @@
           "owed": 913000,
           "reconciled": false
         },
+        "uncodedFee": "This home's costs are coded: choose the cost code the fee is paid to",
         "authorityRolesBefore": [],
         "coordinatorPaysByBill": "refused",
         "counterPaymentRecorded": {

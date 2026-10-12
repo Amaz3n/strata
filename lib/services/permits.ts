@@ -3,6 +3,7 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
+import { loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { readAllRows } from "@/lib/land/paging"
 import {
   PERMIT_FEE_DUE,
@@ -234,6 +235,10 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
   const ids = shown.map((row) => row.id)
 
   const jurisdictionIds = [...new Set(shown.map((row) => row.jurisdiction_company_id))]
+  // A fee's payables are read service-role on this authorized home: whoever
+  // reconciles permit fees (the starts coordinator) is rarely a member of the
+  // project, and row security would hide the bill and read the fee as unpaid.
+  const payables = createServiceSupabaseClient()
   const [documents, submissions, rounds, history, fees, payments, companyNames, bills, expenses] = await Promise.all([
     ids.length ? context.supabase.from("permit_application_documents")
       .select("id,application_id,document_kind,label,required_for,source,file_id,attached_at,sort_order")
@@ -250,14 +255,14 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
     ids.length ? context.supabase.from("permit_fees")
       .select("id,application_id,kind,description,amount_cents,assessed_on,due_before,cost_code_id,status,void_reason,replaces_fee_id")
       .eq("org_id", context.orgId).in("application_id", ids).order("assessed_on").order("created_at").limit(1000) : Promise.resolve({ data: [], error: null }),
-    ids.length ? context.supabase.from("permit_fee_payments")
+    ids.length ? payables.from("permit_fee_payments")
       .select("id,fee_id,vendor_bill_id,project_expense_id,bill:vendor_bills(bill_number,status,total_cents,paid_cents),expense:project_expenses(status,amount_cents,tax_cents,expense_date)")
       .eq("org_id", context.orgId).eq("project_id", projectId).limit(1000) : Promise.resolve({ data: [], error: null }),
     readCompanyNames(context.supabase, context.orgId, jurisdictionIds),
-    jurisdictionIds.length ? context.supabase.from("vendor_bills").select("id,company_id,bill_number,status,total_cents,bill_date")
+    jurisdictionIds.length ? payables.from("vendor_bills").select("id,company_id,bill_number,status,total_cents,bill_date")
       .eq("org_id", context.orgId).eq("project_id", projectId).in("company_id", jurisdictionIds).neq("status", "rejected")
       .order("bill_date", { ascending: false }).limit(LINKABLE_CAP) : Promise.resolve({ data: [], error: null }),
-    jurisdictionIds.length ? context.supabase.from("project_expenses").select("id,vendor_company_id,status,amount_cents,tax_cents,expense_date")
+    jurisdictionIds.length ? payables.from("project_expenses").select("id,vendor_company_id,status,amount_cents,tax_cents,expense_date")
       .eq("org_id", context.orgId).eq("project_id", projectId).in("vendor_company_id", jurisdictionIds).neq("status", "rejected")
       .order("expense_date", { ascending: false }).limit(LINKABLE_CAP) : Promise.resolve({ data: [], error: null }),
   ])
@@ -519,7 +524,14 @@ export async function recordPermitDecision(input: unknown, orgId?: string) {
 export async function assessPermitFee(input: unknown, orgId?: string) {
   const parsed = assessPermitFeeSchema.parse(input)
   const context = await writeContext(orgId)
-  await authorizeHome(context, await applicationProject(context, parsed.applicationId))
+  const projectId = await applicationProject(context, parsed.applicationId)
+  await authorizeHome(context, projectId)
+  // A fee is paid to the home's job cost; where its costs are coded, an
+  // uncoded fee would become a bill or expense nobody can approve.
+  if (!parsed.costCodeId) {
+    const gates = await loadApprovalGateSettings({ supabase: createServiceSupabaseClient(), orgId: context.orgId, projectId })
+    if (gates.cost_codes_enabled) throw new Error("This home's costs are coded: choose the cost code the fee is paid to")
+  }
   const { data, error } = await context.supabase.rpc("assess_permit_fee", {
     p_org_id: context.orgId, p_application_id: parsed.applicationId, p_kind: parsed.kind, p_description: parsed.description ?? null,
     p_amount_cents: parsed.amountCents, p_assessed_on: parsed.assessedOn, p_due_before: parsed.dueBefore ?? null,

@@ -2097,8 +2097,10 @@ async function applyScheduleImpact(orgId: string, impactId: string) {
  * critical path on its own).
  */
 export async function applyScheduleChangeOrderImpact(impactId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
-  const { data: impact, error } = await supabase
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  // Read service-role and authorized on the home below: the superintendent runs
+  // the community's homes without being a member of each project.
+  const { data: impact, error } = await createServiceSupabaseClient()
     .from("schedule_item_change_orders")
     .select("id, schedule_item_id, change_order_id, schedule_item:schedule_items(project_id)")
     .eq("org_id", resolvedOrgId)

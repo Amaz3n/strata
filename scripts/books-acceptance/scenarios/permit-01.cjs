@@ -16,7 +16,8 @@
 // 6 to subcase 4; subcase 5 opens lot 7 itself.
 //
 // SQL is used only for what a subcase is not about and says so where it happens: evidence
-// file records (the stack has no file storage), the authority's company record, a pin moved
+// file records (the stack has no file storage), the authority's company record and the
+// permit-fee cost code, a pin moved
 // by hand in subcase 5 (the plan-change review that moves pins is PROD-01's subject), and
 // the direct writes the database guards must refuse. Reads that check the outcome are SQL as
 // the stack superuser.
@@ -69,6 +70,9 @@ async function build(kit) {
   org.treasureStarts = treasure
   // The authority is a directory company (fixture row); the coordinator records its review time and checklist.
   const authorityId = seed.permitAuthority(kit, org)
+  // The job-cost code permit fees are assessed to (fixture row: the seed's codes are the trades').
+  org.permitCostCodeId = randomUUID()
+  kit.sql(`insert into public.cost_codes(id,org_id,code,name) values(${kit.q(org.permitCostCodeId)},${kit.q(org.orgId)},'01-410','Permits and fees')`)
   await kit.as(org.team.starts, () => permits.setPermitJurisdictionProfile({ companyId: authorityId, reviewDays: 21, requirements: [
     { permitType: "building", documentKind: "construction_plans", label: "Construction plans", requiredFor: "submission" },
     { permitType: "building", documentKind: "energy_calcs", label: "Energy calculations", requiredFor: "decision" },
@@ -96,7 +100,7 @@ function desk(kit, org, actor = org.team.starts) {
     round: (applicationId, input) => as(() => permits.recordCorrectionRound({ applicationId, ...input })).then((row) => row.roundId),
     updateRound: (roundId, input) => as(() => permits.updateCorrectionRound({ roundId, ...input })),
     decide: (applicationId, input) => as(() => permits.recordPermitDecision({ applicationId, decision: "approved", decidedOn: day(-1), ...input })),
-    fee: (applicationId, input) => as(() => permits.assessPermitFee({ applicationId, assessedOn: day(-20), ...input })).then((row) => row.feeId),
+    fee: (applicationId, input) => as(() => permits.assessPermitFee({ applicationId, assessedOn: day(-20), costCodeId: org.permitCostCodeId, ...input })).then((row) => row.feeId),
     view: (projectId) => as(() => permits.getProjectPermits(projectId)),
   }
 }
@@ -241,6 +245,8 @@ async function feesReconcileToPayments(kit, expected, check) {
     return { obligated: totals.obligatedCents, paid: totals.paidCents, owed: totals.varianceCents, reconciled: totals.reconciled }
   }
   const observed = { assessed: await position() }
+  // The home's costs are coded, so a fee with no cost code would become a payable nobody could approve.
+  observed.uncodedFee = await attempt(() => d.fee(applicationId, { kind: "other", amountCents: 10000, description: "Uncoded", costCodeId: undefined }))
   const roles = () => kit.rows(`select t.key from public.party_roles r join public.directory_relationship_types t on t.id=r.relationship_type_id where r.company_id=${kit.q(authorityId)} and r.status='active' order by t.key`).map((row) => row.key)
   observed.authorityRolesBefore = roles()
 
@@ -258,7 +264,8 @@ async function feesReconcileToPayments(kit, expected, check) {
   const { vendorBillId } = await kit.as(org.bookkeeper, () => permits.payPermitFee({ via: "bill", feeId: permit, billNumber: "CC-2026-0412", billDate: day(-10) }))
   observed.billOnTheHome = one(kit, `select b.project_id=${kit.q(home.projectId)} and b.company_id=${kit.q(authorityId)} and b.total_cents=218000 and bool_and(l.project_id=${kit.q(home.projectId)}) ok from public.vendor_bills b join public.bill_lines l on l.bill_id=b.id where b.id=${kit.q(vendorBillId)} group by b.id`).ok
   await kit.as(org.owner, () => bills.approveVendorBillsAtomic([{ id: vendorBillId }]))
-  const pay = (status, cents, check) => kit.as(org.owner, () => bills.updateVendorBillStatus({ billId: vendorBillId, input: { status, payment_amount_cents: cents, payment_method: "check",
+  // The owner approved it, so the office records the payments (two people release money).
+  const pay = (status, cents, check) => kit.as(org.bookkeeper, () => bills.updateVendorBillStatus({ billId: vendorBillId, input: { status, payment_amount_cents: cents, payment_method: "check",
     check_number: check, payment_date: day(-5), books_payment_account_id: seed.glId(kit, org, "1000"), payment_idempotency_key: `permit-01-${check}-${org.orgId}` } }))
   await pay("partial", 100000, "5101")
   observed.billPaidInPart = await position()

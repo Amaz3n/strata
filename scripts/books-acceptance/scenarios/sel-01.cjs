@@ -7,7 +7,8 @@
 //                       selections and prices sent (one org: "SEL-01 design studio", a home per subcase)
 //   sel-01-supply.cjs   EP06-03 cutoffs held by the database in the community's day; EP06-04 lead
 //                       times and released procurement; EP06-05 an approved selection change lands
-//                       everywhere at once (one org: "SEL-01 supply", a home per subcase)
+//                       everywhere at once ("SEL-01 supply" for open homes and "SEL-01 supply
+//                       (released)" for homes whose purchase orders are out, a home per subcase)
 //
 // Expected values are in expected/SEL-01.json, each subcase's derived from the inputs its module names.
 const studio = require("./sel-01-studio.cjs")

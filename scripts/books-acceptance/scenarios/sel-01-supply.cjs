@@ -49,9 +49,15 @@ const COUNTERTOPS = [
   { sku: "KT-GRN", name: "Granite countertops", priceCents: 390000, costCents: 240000 },
 ]
 
-function supplyOrg(kit) {
-  if (!ORGS.has(kit)) ORGS.set(kit, (async () => {
-    const org = await seed.productionBuilder(kit, { name: "SEL-01 supply" })
+/**
+ * The supply org for a pool of subcases. A tranche develops ten lots, so the homes whose purchase
+ * orders are released get an org of their own ("released") beside the one for open homes.
+ */
+function supplyOrg(kit, pool = "open") {
+  if (!ORGS.has(kit)) ORGS.set(kit, new Map())
+  const pools = ORGS.get(kit)
+  if (!pools.has(pool)) pools.set(pool, (async () => {
+    const org = await seed.productionBuilder(kit, { name: pool === "open" ? "SEL-01 supply" : `SEL-01 supply (${pool})` })
     await seed.seedCommunity(kit, org)
     await seed.seedProduct(kit, org)
     await seed.takeDownTranche(kit, org)
@@ -69,10 +75,10 @@ function supplyOrg(kit) {
       update public.memberships set division_scope='assigned' where org_id=${kit.q(org.orgId)} and user_id=${kit.q(org.outsideCoordinator.userId)};
       insert into public.membership_divisions(membership_id, division_id) select id, ${kit.q(elsewhere.id)} from public.memberships where org_id=${kit.q(org.orgId)} and user_id=${kit.q(org.outsideCoordinator.userId)};
       commit;`)
-    org.uses = { next: 0 }
+    org.uses = { next: 0, released: 0 }
     return org
   })())
-  return ORGS.get(kit)
+  return pools.get(pool)
 }
 
 function nextLot(org) {
@@ -112,7 +118,8 @@ async function builtHome(kit, org, name) {
   const home = await soldHome(kit, org, name)
   await seed.chooseDesign(kit, org, { projectId: home.projectId })
   const gates = await seed.clearStartGates(kit, org, { lotId: home.lotId, projectId: home.projectId })
-  await seed.releaseHome(kit, org, { packageId: gates.packageId, projectId: home.projectId })
+  // One start a week, so no release asks to go over the community's weekly start slot.
+  await seed.releaseHome(kit, org, { packageId: gates.packageId, projectId: home.projectId, startInDays: 7 * org.uses.released++ })
   const orders = kit.rows(`select id from public.commitments where project_id=${kit.q(home.projectId)} and commitment_type='purchase_order' and status='draft' order by contract_number`)
   for (const order of orders) await kit.as(org.owner, () => app("commitments").updateCommitment({ commitmentId: order.id, input: { status: "approved", prequal_override_note: "Acceptance trade: no prequalification on file for this vendor." } }))
   home.owningPurchaseOrderId = one(kit, `select c.id from public.commitments c join public.commitment_lines l on l.commitment_id=c.id where c.project_id=${kit.q(home.projectId)} and l.metadata->>'source_ref'=${kit.q(home.kitchenId)} limit 1`).id
@@ -160,10 +167,10 @@ async function dataApiCannotMoveACutoff(kit, expected, check) {
   const asCoordinator = (statement) => sqlAttempt(kit, `${asMember(org.owner)} ${statement}`)
   const observed = {
     cutoffDate: asCoordinator(`update public.project_selection_groups set cutoff_date='2099-01-01' where id=${kit.q(group.id)}`),
-    status: asCoordinator(`update public.project_selection_groups set status='open', locked_at=null where id=${kit.q(group.id)}`),
+    status: asCoordinator(`update public.project_selection_groups set status='locked', locked_at=now() where id=${kit.q(group.id)}`),
     override: asCoordinator(`update public.project_selection_groups set cutoff_source='manual_override', override_reason='because' where id=${kit.q(group.id)}`),
-    choiceLock: asCoordinator(`update public.project_selections set locked_at=null where id=${kit.q(home.kitchenId)}`),
-    choiceMetadata: asCoordinator(`update public.project_selections set metadata='{}'::jsonb where id=${kit.q(home.kitchenId)}`),
+    choiceLock: asCoordinator(`update public.project_selections set locked_at=now() where id=${kit.q(home.kitchenId)}`),
+    choiceMetadata: asCoordinator(`update public.project_selections set metadata=metadata || '{"approval_id":"forged"}'::jsonb where id=${kit.q(home.kitchenId)}`),
     unchanged: groupOf(kit, org, home.projectId).cutoff === group.cutoff && groupOf(kit, org, home.projectId).source === group.source,
   }
   for (const key of ["cutoffDate", "status", "override"]) observed[key] = /override with a reason/.test(observed[key]) ? "refused" : observed[key]
@@ -265,7 +272,7 @@ async function unavailableOptionOpensAnException(kit, expected, check) {
 }
 
 async function releasedPoRoutesTheChange(kit, expected, check) {
-  const org = await supplyOrg(kit)
+  const org = await supplyOrg(kit, "released")
   const home = await builtHome(kit, org, "Released Buyer")
   // Reopen the deadline: the purchase order, not the cutoff, is what stops the direct change here.
   await kit.as(org.team.design, () => app("selection-cutoffs").overrideGroupCutoff({ projectId: home.projectId, groupId: org.selectionGroupId, cutoffDate: seed.isoDay(10), reason: "Buyer asked to revisit the kitchen" }))
@@ -293,8 +300,10 @@ async function releasedPoRoutesTheChange(kit, expected, check) {
 // EP06-05
 
 async function approvedChangeMovesEverythingOnce(kit, expected, check) {
-  const org = await supplyOrg(kit)
+  const org = await supplyOrg(kit, "released")
   const home = await builtHome(kit, org, "Propagation Buyer")
+  // The home's superintendent, as the starts desk assigns one: the person a pending schedule impact waits on.
+  await kit.as(org.owner, () => app("starts").setProjectSuperintendent(home.projectId, org.team.superintendent.userId))
   // Granite takes 90 days and the interior finishes start in 70: ordered today it lands 20 days late.
   const finishes = one(kit, `select id, start_date::text start from public.schedule_items where project_id=${kit.q(home.projectId)} and name='Interior finishes'`)
   kit.sql(`update public.schedule_items set start_date=${kit.q(seed.isoDay(70))}, end_date=${kit.q(seed.isoDay(98))} where id=${kit.q(finishes.id)}`)
@@ -355,7 +364,7 @@ async function signedChangeIsFrozen(kit, expected, check) {
 }
 
 async function failedApplyLeavesNothing(kit, expected, check) {
-  const org = await supplyOrg(kit)
+  const org = await supplyOrg(kit, "released")
   const home = await builtHome(kit, org, "Stale Buyer")
   const changeOrder = await raiseChange(kit, org, home, "KT-GRN")
   const original = kitchenOf(kit, home)
@@ -385,7 +394,7 @@ async function failedApplyLeavesNothing(kit, expected, check) {
 }
 
 async function concurrentChangesCannotDoubleCount(kit, expected, check) {
-  const org = await supplyOrg(kit)
+  const org = await supplyOrg(kit, "released")
   const home = await builtHome(kit, org, "Concurrent Buyer")
   const first = await raiseChange(kit, org, home, "KT-GRN")
   const second = await attempt(() => raiseChange(kit, org, home, "KT-LAM"))

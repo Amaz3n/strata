@@ -284,7 +284,7 @@
       }
     },
     "released-po-routes-the-change": {
-      "derivation": "EP06-04. After the purchase order is released a direct change is refused; the change order revises the owning PO. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "derivation": "EP06-04. After the purchase order is released a direct change is refused; the change order revises the owning PO. Fixture: the SEL-01 supply (released) org, built as the SEL-01 supply org (a tranche develops ten lots, and its released homes start a week apart so none goes over the weekly start slot; Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
       "expected": {
         "direct": "SELECTION_PROCUREMENT_RELEASED",
         "fee": 0,
@@ -299,7 +299,7 @@
       }
     },
     "approved-change-moves-everything-once": {
-      "derivation": "EP06-05. One buyer signature: agreement version, confirmed selection, VPO, budget revision, pending schedule impact. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "derivation": "EP06-05. One buyer signature: agreement version, confirmed selection, VPO, budget revision, pending schedule impact. Fixture: the SEL-01 supply (released) org, built as the SEL-01 supply org (a tranche develops ten lots, and its released homes start a week apart so none goes over the weekly start slot; Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. The home's superintendent is assigned on the starts desk. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
       "expected": {
         "changeOrder": {
           "daysImpact": 20,
@@ -363,7 +363,7 @@
       }
     },
     "failed-apply-leaves-nothing": {
-      "derivation": "EP06-05. A selection that moved since pricing fails the approval; nothing lands; the change order says so. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "derivation": "EP06-05. A selection that moved since pricing fails the approval; nothing lands; the change order says so. Fixture: the SEL-01 supply (released) org, built as the SEL-01 supply org (a tranche develops ten lots, and its released homes start a week apart so none goes over the weekly start slot; Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
       "expected": {
         "signed": "refused: the selection moved",
         "afterRefusal": {
@@ -388,7 +388,7 @@
       }
     },
     "concurrent-changes-cannot-double-count": {
-      "derivation": "EP06-05. A second open change order on a selection is refused; two approvals of one land once. Fixture: the SEL-01 supply org (Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
+      "derivation": "EP06-05. A second open change order on a selection is refused; two approvals of one land once. Fixture: the SEL-01 supply (released) org, built as the SEL-01 supply org (a tranche develops ten lots, and its released homes start a week apart so none goes over the weekly start slot; Cypress Landing with laminate $1,500/$800 and granite $3,900/$2,400 beside the seed's quartz $4,800/$2,900; the community's post-cutoff fee is the schema default $250) and a second division. Values are derived from the inputs sel-01-supply.cjs names and are confirmed by the first run on the acceptance stack.",
       "expected": {
         "secondChangeOrder": "refused: already open",
         "selectionChangeOrders": 1,

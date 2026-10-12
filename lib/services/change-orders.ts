@@ -664,7 +664,12 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     },
   }
 
-  const { data, error } = await supabase
+  // Authorized on the home above (permission, division and project scope), so
+  // the rows are written service-role: a production desk role such as the
+  // design studio coordinator holds change_order.write without being a project
+  // member, which row security alone would refuse.
+  const writer = createServiceSupabaseClient()
+  const { data, error } = await writer
     .from("change_orders")
     .insert(payload)
     .select(CHANGE_ORDER_SELECT)
@@ -702,7 +707,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
   }))
 
   if (linePayload.length > 0) {
-    const { error: lineError } = await supabase.from("change_order_lines").insert(linePayload)
+    const { error: lineError } = await writer.from("change_order_lines").insert(linePayload)
     if (lineError) {
       throw new Error(`Failed to create change order lines: ${lineError.message}`)
     }
