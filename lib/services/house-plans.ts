@@ -18,6 +18,7 @@ import { authorize, getDivisionAccessForUser } from "@/lib/services/authorizatio
 import { getBudgetTemplate } from "@/lib/services/budget-templates"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { reevaluatePinnedLotFits } from "@/lib/services/lot-fit"
 import { requirePermission } from "@/lib/services/permissions"
 import {
   availabilityInputSchema,
@@ -454,7 +455,30 @@ export async function createHousePlan(input: HousePlanInput, orgId?: string): Pr
   return getHousePlan(data.id, context.orgId)
 }
 
-export async function updateHousePlan(id: string, input: Partial<HousePlanInput>, orgId?: string): Promise<HousePlanDto> {
+/** A plan or elevation edit re-judges this many pinned lots at most; past it the edit refuses rather than leave some unjudged. */
+const PINNED_LOT_RECHECK_CAP = 5_000
+
+/**
+ * Re-judge every lot pinned to a plan (or to one of its elevations) after its
+ * footprint, drawn garage or an elevation's handing changed — the same re-check
+ * a lot edit runs. A home that no longer fits stays pinned and is recorded
+ * (`lot.fit_violated`); the count is returned so the editor can say so.
+ */
+async function recheckPinnedLots(context: Awaited<ReturnType<typeof requireOrgContext>>, pinned: { planId: string } | { elevationId: string }) {
+  const { rows, truncated } = await readAllRows<{ id: string }>((from, to) => {
+    const query = context.supabase.from("lots").select("id").eq("org_id", context.orgId)
+    const scoped = "planId" in pinned ? query.eq("house_plan_id", pinned.planId) : query.eq("house_plan_elevation_id", pinned.elevationId)
+    return scoped.order("id").range(from, to)
+  }, { cap: PINNED_LOT_RECHECK_CAP, label: "Failed to load lots pinned to this plan" })
+  if (truncated) throw new Error(`More than ${PINNED_LOT_RECHECK_CAP.toLocaleString()} lots carry this plan; their fit could not be re-checked`)
+  if (rows.length === 0) return 0
+  const refused = await reevaluatePinnedLotFits(context, rows.map((row) => row.id))
+  return refused.size
+}
+
+const FIT_FIELDS = ["footprint_width_ft", "footprint_depth_ft", "drawn_swing"] as const
+
+export async function updateHousePlan(id: string, input: Partial<HousePlanInput>, orgId?: string): Promise<HousePlanDto & { lotsNoLongerFitting: number }> {
   const parsed = housePlanUpdateSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.write", context)
@@ -465,14 +489,20 @@ export async function updateHousePlan(id: string, input: Partial<HousePlanInput>
   const { data, error } = await context.supabase.from("house_plans").update(planPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(planSelect).single()
   if (error || !data) throw new Error(`Failed to update house plan: ${error?.message ?? "not found"}`)
   await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: id, action: "update", before: { ...before }, after: data })
-  return getHousePlan(id, context.orgId)
+  const fitChanged = FIT_FIELDS.some((field) => (before[field] == null ? null : String(before[field])) !== (data[field] == null ? null : String(data[field])))
+  const [plan, lotsNoLongerFitting] = await Promise.all([
+    getHousePlan(id, context.orgId),
+    fitChanged ? recheckPinnedLots(context, { planId: id }) : Promise.resolve(0),
+  ])
+  return { ...plan, lotsNoLongerFitting }
 }
 
-export async function upsertElevation(planId: string, input: ElevationInput, orgId?: string): Promise<HousePlanElevationDto> {
+export async function upsertElevation(planId: string, input: ElevationInput, orgId?: string): Promise<HousePlanElevationDto & { lotsNoLongerFitting: number }> {
   const parsed = elevationInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.write", context)
-  await getHousePlan(planId, context.orgId)
+  const plan = await getHousePlan(planId, context.orgId)
+  const before = parsed.id ? plan.elevations?.find((elevation) => elevation.id === parsed.id) : undefined
   const payload = {
     org_id: context.orgId,
     house_plan_id: planId,
@@ -491,7 +521,11 @@ export async function upsertElevation(planId: string, input: ElevationInput, org
   const { data, error } = await query.select("id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order, revision").single()
   if (error || !data) throw new Error(`Failed to save elevation: ${error?.message ?? "unknown error"}`)
   await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: planId, action: "update", after: { elevation_id: data.id, code: data.code, revision: data.revision } })
-  return { ...data, heated_sqft_delta: Number(data.heated_sqft_delta), sort_order: Number(data.sort_order), revision: Number(data.revision) }
+  // Whether an elevation can be flipped decides which lots it fits.
+  const lotsNoLongerFitting = before && before.swing_applicable !== data.swing_applicable
+    ? await recheckPinnedLots(context, { elevationId: data.id })
+    : 0
+  return { ...data, heated_sqft_delta: Number(data.heated_sqft_delta), sort_order: Number(data.sort_order), revision: Number(data.revision), lotsNoLongerFitting }
 }
 
 export async function listPlanVersions(planId: string, orgId?: string): Promise<HousePlanVersionDto[]> {

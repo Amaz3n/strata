@@ -14,6 +14,7 @@ import {
   upsertElevation,
 } from "@/lib/services/house-plans"
 import { listProductDefinitionHistory } from "@/lib/services/home-product-revisions"
+import { getProductChangeImpact } from "@/lib/services/product-change-impact"
 import {
   createPlanChangeProposal,
   decidePlanChangeHome,
@@ -49,6 +50,11 @@ export async function updateHousePlanAction(planId: string, input: unknown) {
 
 export async function upsertElevationAction(planId: string, input: unknown) {
   return run(() => upsertElevation(z.string().uuid().parse(planId), elevationInputSchema.parse(input)), [`/plans/${planId}`])
+}
+
+/** Which homes an edit to this elevation reaches, read before it is saved. */
+export async function getElevationChangeImpactAction(elevationId: string) {
+  return run(() => getProductChangeImpact({ entity: "elevation", id: z.string().uuid().parse(elevationId) }), [])
 }
 
 export async function listElevationRevisionsAction(elevationId: string) {

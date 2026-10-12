@@ -174,6 +174,25 @@ test("a home on a superseded edition clears the plan gate only once a plan chang
   }
 })
 
+test("a home sold on an elevation retired since still clears the plan gate; a home not sold on it does not", async () => {
+  const soldOn = (elevationId, contractStatus = "active") => ({
+    id: `hpr-${elevationId}`, org_id: ORG, project_id: PROJECT, stage: "agreement", elevation_id: elevationId, contract: { status: contractStatus },
+  })
+  const cases = [
+    ["sold on it before it was retired", [soldOn("elev-1")], "passed"],
+    ["a spec home, never sold", [], "pending"],
+    ["sold on another elevation", [soldOn("elev-2")], "pending"],
+    ["its sale on it was cancelled", [soldOn("elev-1", "cancelled")], "pending"],
+  ]
+  for (const [label, records, expected] of cases) {
+    const tables = gateFixture()
+    tables.lots[0].elevation = { is_active: false }
+    tables.home_product_revisions = records
+    buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+    assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "plan_pinned"), expected, label)
+  }
+})
+
 test("a house cannot be started on a lot a buyer is holding, or on land that was never delivered", async () => {
   const cases = [
     { lot: { project_id: null, delivered_at: "2026-01-01T00:00:00.000Z", metadata: {} }, reservations: [{ id: "res-1", org_id: ORG, lot_id: "lot-open", status: "hold", expires_at: "2999-01-01T00:00:00.000Z" }], expected: /live hold or reservation/ },

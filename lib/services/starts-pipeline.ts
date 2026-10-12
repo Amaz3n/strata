@@ -20,6 +20,7 @@ import { ensureReleaseSlotsForActiveCommunities } from "@/lib/services/even-flow
 import { assertReleaseGateCompletion, assertStartCommunityAccess, syncReleaseProducedGates } from "@/lib/services/starts"
 import { requirePermission } from "@/lib/services/permissions"
 import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review"
+import { isElevationKeptBySale } from "@/lib/services/product-change-impact"
 import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createServiceSupabaseClient, createStartsWorkerSupabaseClient } from "@/lib/supabase/server"
 import { runWithServiceSupabaseClient } from "@/lib/supabase/service-client-context"
@@ -251,11 +252,21 @@ async function executeRelease(supabase: SupabaseClient, service: SupabaseClient,
   if (access.assignedOnly && (!lot.division_id || !access.divisionIds.includes(lot.division_id))) throw new Error("Release lot is outside your division access")
   if (!await transitionPackageLease(supabase, job, "acquire")) return "deferred"
 
-  const { data: version } = await supabase.from("house_plan_versions").select("status")
-    .eq("org_id", job.org_id).eq("id", lot.house_plan_version_id).maybeSingle()
+  const [{ data: version }, { data: elevation }] = await Promise.all([
+    supabase.from("house_plan_versions").select("status")
+      .eq("org_id", job.org_id).eq("id", lot.house_plan_version_id).maybeSingle(),
+    lot.house_plan_elevation_id
+      ? supabase.from("house_plan_elevations").select("is_active").eq("org_id", job.org_id).eq("id", lot.house_plan_elevation_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
   if (version?.status !== "released"
     && !(version?.status === "superseded" && await isPlanPinKeptByReview(supabase, job.org_id, pkg.lot_id, lot.house_plan_version_id))) {
     throw new Error("Pinned plan version is no longer released")
+  }
+  // The plan gate's rule: a retired elevation builds only for the home sold on it.
+  if (lot.house_plan_elevation_id && elevation?.is_active === false
+    && !await isElevationKeptBySale(supabase, job.org_id, pkg.project_id, lot.house_plan_elevation_id)) {
+    throw new Error("Pinned elevation is inactive and this home was not sold on it")
   }
   const usePurchasing = await purchasingEnabled(supabase, job.org_id, pkg.community_id)
   const input = {

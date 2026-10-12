@@ -34,6 +34,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { listBookableHomes } from "@/lib/services/design-studio"
 import { requirePermission } from "@/lib/services/permissions"
+import { getProductChangeImpact, type ProductChangeImpactDto } from "@/lib/services/product-change-impact"
 import { discoverCatalogPackageMembers } from "@/lib/services/catalog-package-members"
 import { listArchivedCatalogPackages, listPendingCatalogPublications, listCatalogPublicationHistory, recoverCatalogPublicationRequest } from "@/lib/services/catalog-publication-history"
 import { acknowledgeCatalogPublication, cancelCatalogPublication, inspectCatalogPublication } from "@/lib/services/catalog-publication-reconciliation"
@@ -55,6 +56,15 @@ export async function upsertCategoryAction(input: unknown) {
 
 export async function upsertOptionAction(input: unknown) {
   return run(() => upsertOption(input as Parameters<typeof upsertOption>[0]), ["/design-studio/catalog"])
+}
+
+/** Which homes an edit to this option reaches, read before it is saved. Read-only, so nothing is revalidated. */
+export async function getOptionChangeImpactAction(optionId: string): Promise<ActionResult<ProductChangeImpactDto>> {
+  try {
+    return { success: true, data: await getProductChangeImpact({ entity: "option", id: z.string().uuid().parse(optionId) }) }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 /** Catalogue options the project's 3D model can apply, for the drawings workspace. Read-only, so nothing is revalidated. */

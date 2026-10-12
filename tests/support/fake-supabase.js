@@ -38,6 +38,17 @@ function looseEqual(actual, expected) {
   return String(actual) === String(expected)
 }
 
+function jsonContains(actual, expected) {
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual) && expected.every((entry) => actual.some((candidate) => jsonContains(candidate, entry)))
+  }
+  if (expected && typeof expected === "object") {
+    if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false
+    return Object.entries(expected).every(([key, entry]) => jsonContains(actual[key], entry))
+  }
+  return looseEqual(actual, expected)
+}
+
 function applyOperator(actual, operator, value) {
   switch (operator) {
     case "eq": return looseEqual(actual, value)
@@ -157,12 +168,9 @@ class Query {
   or(expression) {
     return this.addFilter((row) => splitTopLevel(expression).some((term) => matchesExpression(row, term)))
   }
+  /** Postgres `@>`: every key of an object, and every element of an array, is contained in the column. */
   contains(column, value) {
-    return this.addFilter((row) => {
-      const actual = readPath(row, column)
-      if (!actual || typeof actual !== "object") return false
-      return Object.entries(value).every(([key, entry]) => looseEqual(actual[key], entry))
-    })
+    return this.addFilter((row) => jsonContains(readPath(row, column), value))
   }
 
   order(column, options = {}) { this.orderings.push({ column, ascending: options.ascending !== false }); return this }

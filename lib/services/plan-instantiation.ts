@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review";
+import { isElevationKeptBySale } from "@/lib/services/product-change-impact";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { planDrawingCopyTransactionsEnabled, publishPlanDrawingCopy } from "@/lib/services/plan-drawing-copy";
 import { z } from "zod";
@@ -489,7 +490,7 @@ async function loadInstantiationContext(
       .maybeSingle();
     if (error || !data)
       throw new Error("Elevation does not belong to this plan");
-    if (!data.is_active && !input.dryRun)
+    if (!data.is_active && !input.dryRun && !(await isElevationKeptBySale(context.supabase, context.orgId, input.projectId, input.elevationId)))
       throw new Error("This elevation is inactive and cannot be built.");
   }
   const [takeoffResult, availabilityResult] = await Promise.all([
