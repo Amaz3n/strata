@@ -96,7 +96,7 @@ export const settingsSections: SettingsSection[] = [
         title: "Lender and title feeds",
         url: "/settings/milestone-feeds",
         icon: Link2,
-        requiredAny: ["org.settings.update"],
+        requiredAny: ["org.admin"],
       },
       {
         title: "Data imports",

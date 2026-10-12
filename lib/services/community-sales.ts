@@ -60,6 +60,7 @@ import { AgreementPacketError, agreementPacketRefusal, agreementPacketSchema, bu
 import { buildOrgScopedPath, getFilesStorageProvider, uploadFilesObject } from "@/lib/storage/files-storage"
 import { publishOwnedAgreementDocument, reserveAgreementSigningDocument } from "@/lib/services/agreement-signing-ownership"
 import { commissionSigningRefusal } from "@/lib/services/sales-commissions"
+import { ensureWarrantyDefaults } from "@/lib/services/warranty-operations"
 import {
   agreementConfigurationSchema,
   agreementContingencySchema,
@@ -1818,7 +1819,8 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
   if (!receipt) {
     const { data: reservation, error } = await context.supabase.from("lot_reservations").select("*, lot:lots(*)")
       .eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
-    if (error || !reservation || reservation.status !== "reserved" || reservation.contract_id || reservation.lot_id !== parsed.lotId || !reservation.lot?.project_id) throw new Error("Unowned reserved lot with an actual home is required")
+    if (error || !reservation || reservation.status !== "reserved" || reservation.contract_id || !reservation.lot?.project_id) throw new Error("Unowned reserved lot with an actual home is required")
+    if (reservation.lot_id !== parsed.lotId) throw new Error("Reservation and lot do not match")
     await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
       projectId: reservation.lot.project_id, supabase: context.supabase })
     const expectedFacts = agreementCreationExpected(reservation, reservation.lot)
@@ -2076,6 +2078,8 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
     .eq("source_entity_type", "contract").eq("source_entity_id", contract.id).contains("metadata", { purchase_agreement: true }).maybeSingle())
   const signatureData = { ...(contract.signature_data ?? {}), envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null,
     packet_hash: contract.snapshot?.purchase_agreement?.packet?.hash ?? null, source_sha256: signingDocument?.metadata?.esign_source?.sha256 ?? null }
+  // Execution binds the org's default warranty program, so an org that has never opened the warranty desk has one to bind.
+  await ensureWarrantyDefaults(input.orgId)
   checked(await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: signatureData }).eq("org_id", input.orgId).eq("id", contract.id))
   const { data: projectLot } = checked(await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle())
   if (projectLot) {
@@ -2327,7 +2331,8 @@ async function forfeitDeposit(context: OrgServiceContext, input: {
   const today = new Date().toISOString().slice(0, 10)
   const invoice = existing ?? await createInvoice({ input: {
     project_id: input.projectId, invoice_number: `FORFEIT-${Date.now().toString().slice(-9)}`, title: "Forfeited earnest deposit",
-    issue: false, issue_date: today, due_date: today, tax_rate: 0, customer_id: input.buyerContactId,
+    // Issued (to no one) so it is open for the deposit to be applied against it.
+    issue: true, issue_date: today, due_date: today, tax_rate: 0, customer_id: input.buyerContactId,
     lines: [{ description: `Forfeited earnest deposit — ${input.reason}`, quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(input.amountCents), taxable: false }],
     metadata: { invoice_kind: "deposit_forfeiture", ...input.source },
   }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })

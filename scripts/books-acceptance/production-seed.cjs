@@ -7,7 +7,7 @@
 // defects the chain runs into are named `DEFECT` where they are worked around.
 //
 // Used by browser-seed.cjs (journey "production") and scenarios/lot-01.cjs.
-const { randomUUID } = require("node:crypto")
+const { createHash, randomUUID } = require("node:crypto")
 const { app, greenfieldOrg, project } = require("./scenarios/shared.cjs")
 
 const EVIDENCE = "https://evidence.acceptance.example.test/production"
@@ -222,9 +222,15 @@ async function takeDownTranche(kit, org, { date = "2026-06-02" } = {}) {
   await kit.as(org.team.land, () => lotsService.bulkUpdateLots(org.communityId, { lotIds: org.trancheLotIds, patch: { status: "developed" } }))
 }
 
+/** A phone of the buyer's own, derived from their email: leads are matched on phone too, so buyers never share one. */
+function buyerPhone(email) {
+  const n = createHash("sha256").update(email).digest().readUInt32BE(0)
+  return `239-${200 + (n % 800)}-${String(Math.floor(n / 800) % 10000).padStart(4, "0")}`
+}
+
 /** A buyer registered at the model home; the consultant owns the deal. */
 function registerBuyer(kit, org, { name, email, date = "2026-06-04" }) {
-  return kit.as(org.team.sales, () => app("sales-inquiries").registerProductionInquiry({ buyerName: name, email, phone: "239-555-0142", communityId: org.communityId, ownerUserId: org.team.sales.userId, channel: "walk_in", planInterest: "Mangrove", loggedDate: date }))
+  return kit.as(org.team.sales, () => app("sales-inquiries").registerProductionInquiry({ buyerName: name, email, phone: buyerPhone(email), communityId: org.communityId, ownerUserId: org.team.sales.userId, channel: "walk_in", planInterest: "Mangrove", loggedDate: date }))
 }
 
 /**
@@ -406,7 +412,8 @@ async function prepareClosingGates(kit, org, closingId) {
   for (const item of kit.rows(`select id, evidence_required from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate and status='open'`)) {
     if (item.evidence_required) {
       // File storage is not on the stack; the file record stands in for the uploaded certificate.
-      const fileId = kit.rows(`insert into public.files(org_id,project_id,file_name,storage_path,metadata) values(${kit.q(org.orgId)},${kit.q(projectId)},'certificate-of-occupancy.pdf',${kit.q(`acceptance/co-${closingId}.pdf`)},'{}') returning id`)[0].id
+      const fileId = randomUUID()
+      kit.sql(`insert into public.files(id,org_id,project_id,file_name,storage_path,metadata) values(${kit.q(fileId)},${kit.q(org.orgId)},${kit.q(projectId)},'certificate-of-occupancy.pdf',${kit.q(`acceptance/co-${closingId}.pdf`)},'{}')`)
       await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "complete", fileId }))
     } else {
       await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))

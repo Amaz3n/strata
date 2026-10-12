@@ -43,9 +43,11 @@ function createKit(stack) {
     process.env.FILES_STORAGE = "r2"
     storage = { bucket: settings.R2_BUCKET }
   }
-  // Plaid likewise: only Plaid's sandbox, only from the file `--plaid-env` names,
-  // with a throwaway token-encryption key so no production key is ever involved.
-  for (const name of ["PLAID_CLIENT_ID", "PLAID_SECRET", "PLAID_ENV", "TOKEN_ENCRYPTION_KEY"]) delete process.env[name]
+  // Integration secrets (Plaid tokens, lead-source signing secrets) are sealed with
+  // a throwaway token-encryption key so no production key is ever involved.
+  process.env.TOKEN_ENCRYPTION_KEY = randomBytes(32).toString("hex")
+  // Plaid likewise: only Plaid's sandbox, only from the file `--plaid-env` names.
+  for (const name of ["PLAID_CLIENT_ID", "PLAID_SECRET", "PLAID_ENV"]) delete process.env[name]
   let plaid = null
   if (stack.plaidEnv) {
     const settings = Object.fromEntries(fs.readFileSync(stack.plaidEnv, "utf8").split("\n").filter((line) => line.includes("="))
@@ -53,7 +55,7 @@ function createKit(stack) {
     if (settings.PLAID_ENV !== "sandbox") throw Error("Scenarios only use Plaid's sandbox")
     for (const name of ["PLAID_CLIENT_ID", "PLAID_SECRET"]) if (!settings[name]) throw Error(`${stack.plaidEnv} is missing ${name}`)
     Object.assign(process.env, { PLAID_ENV: "sandbox", PLAID_CLIENT_ID: settings.PLAID_CLIENT_ID, PLAID_SECRET: settings.PLAID_SECRET,
-      TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("hex"), NEXT_PUBLIC_APP_URL: "https://acceptance.example.test" })
+      NEXT_PUBLIC_APP_URL: "https://acceptance.example.test" })
     plaid = { env: "sandbox" }
   }
   // TaxBandits likewise: only its sandbox, which never reaches the IRS.

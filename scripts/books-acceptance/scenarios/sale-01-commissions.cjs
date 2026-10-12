@@ -1,7 +1,7 @@
 // SALE-01 subcases for EP05-06 commission controls. Composed by sale-01.cjs; every case builds its
 // own HOME-01 org, so nothing here depends on another case's state.
-//   terms (proposer)  : org.reviewer, granted sales.commission_manage as a member override, and the
-//                       consultant payee paid through payroll
+//   terms (proposer)  : a sales consultant (org_sales_agent, which holds sales.commission_manage),
+//                       also the consultant payee paid through payroll
 //   terms (approver)  : org.owner
 // Expected values (expected/SALE-01.json, under each subcase's `expected`) are the observed objects
 // below; the amounts follow from the inputs: 2.5% of the authorized price (price + signed change
@@ -20,16 +20,15 @@ const CHANGE_ORDER_CENTS = 1250000
 const SELLER_CREDIT_CENTS = -400000
 const CONSULTANT_FLAT_CENTS = 250000
 
-/** A home under an executed agreement, with a brokerage on file and the proposer able to set terms. */
+/** A home under an executed agreement, with a brokerage on file and the consultant who sold it. */
 async function sale(kit, name) {
-  const q = kit.q
   const org = await home().builder(kit, name, [{ name: "Lot 1 — Aspen plan", priceCents: PRICE_CENTS }])
   const [house] = org.homes
   const brokerageId = randomUUID()
-  kit.sql(`insert into public.companies(id,org_id,name) values(${q(brokerageId)},${q(org.orgId)},'Gulf Realty');
-insert into public.membership_permission_overrides(membership_id,permission_key,effect)
-  select id,'sales.commission_manage','grant' from public.memberships where org_id=${q(org.orgId)} and user_id=${q(org.reviewer.userId)}
-  on conflict do nothing;`)
+  kit.sql(`insert into public.companies(id,org_id,name) values(${kit.q(brokerageId)},${kit.q(org.orgId)},'Gulf Realty');`)
+  // The home is started on its lot, as in HOME-01, so settlement has a lot to close.
+  await home().landAndStart(kit, org, house, { date: "2026-06-02", startDate: "2026-06-03", cents: 9000000 })
+  org.consultant = kit.addMember(org, "org_sales_agent")
   return { org, house, brokerageId }
 }
 
@@ -46,7 +45,7 @@ function terms(brokerageId, consultantId) {
 /** Proposed by the consultant, approved by the owner; returns the plan id. */
 async function approvedTerms(kit, org, house, brokerageId) {
   const commissions = app("sales-commissions")
-  const proposed = await kit.as(org.reviewer, () => commissions.proposeCommissionPlan({ contractId: house.contractId, plan: terms(brokerageId, org.reviewer.userId) }))
+  const proposed = await kit.as(org.consultant, () => commissions.proposeCommissionPlan({ contractId: house.contractId, plan: terms(brokerageId, org.consultant.userId) }))
   await kit.as(org.owner, () => commissions.approveCommissionPlan({ planId: proposed.plan.id }))
   return proposed.plan.id
 }
@@ -83,8 +82,8 @@ const obligations = (kit, closingId) => kit.rows(`select o.line_no, o.payout_cha
 async function termsApprovedWithTheAgreement(kit, expected, check) {
   const { org, house, brokerageId } = await sale(kit, "SALE-01 commission terms")
   const commissions = app("sales-commissions")
-  const proposed = await kit.as(org.reviewer, () => commissions.proposeCommissionPlan({ contractId: house.contractId, plan: terms(brokerageId, org.reviewer.userId) }))
-  const selfApproval = await refuse(kit, org.reviewer, () => commissions.approveCommissionPlan({ planId: proposed.plan.id }))
+  const proposed = await kit.as(org.consultant, () => commissions.proposeCommissionPlan({ contractId: house.contractId, plan: terms(brokerageId, org.consultant.userId) }))
+  const selfApproval = await refuse(kit, org.consultant, () => commissions.approveCommissionPlan({ planId: proposed.plan.id }))
   const holdBefore = (await kit.as(org.owner, () => commissions.getAgreementCommissionPlan(house.contractId))).signingRefusal
   const approved = await kit.as(org.owner, () => commissions.approveCommissionPlan({ planId: proposed.plan.id }))
   const holdAfter = (await kit.as(org.owner, () => commissions.getAgreementCommissionPlan(house.contractId))).signingRefusal

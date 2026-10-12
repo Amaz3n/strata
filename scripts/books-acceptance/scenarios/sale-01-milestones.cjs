@@ -53,15 +53,20 @@ async function soldHome(kit, key, buyer, terms = {}) {
   const target = org.lots[SALE_LOTS[key]]
   const prospect = await seed.registerBuyer(kit, org, buyer)
   const { reservation } = await seed.reserveLot(kit, org, { prospect, lotId: target.id, depositCents: 1000000, receivedOn: "2026-06-06" })
-  const sale = await seed.signAgreement(kit, org, { reservationId: reservation.id, config: { ...seed.configuration(org, { lotId: target.id, plan: org.plans[0], swing: "right", skus: [] }), ...terms } })
+  // The garage goes on the side the lot takes, as the agreement sheet offers it.
+  const swing = kit.rows(`select swing from public.lots where id=${kit.q(target.id)}`)[0].swing === "left" ? "left" : "right"
+  const sale = await seed.signAgreement(kit, org, { reservationId: reservation.id, config: { ...seed.configuration(org, { lotId: target.id, plan: org.plans[0], swing, skus: [] }), ...terms } })
   const closingId = kit.rows(`select id from public.closings where project_id=${kit.q(sale.projectId)} and status<>'cancelled'`)[0].id
   return { org, lot: target, buyer, ...sale, closingId }
 }
 
 const milestonesOf = (kit, contractId) =>
   kit.rows(`select id, template_key, kind, status, required_before, evidence_required, is_contingency, version, due_on::text due_on from public.agreement_milestones where contract_id=${kit.q(contractId)} order by sort_order`)
-const homeFile = (kit, org, projectId, name) =>
-  kit.rows(`insert into public.files(org_id,project_id,file_name,storage_path,metadata) values(${kit.q(org.orgId)},${kit.q(projectId)},${kit.q(name)},${kit.q(`acceptance/${randomUUID()}`)},'{}') returning id`)[0].id
+function homeFile(kit, org, projectId, name) {
+  const id = randomUUID()
+  kit.sql(`insert into public.files(id,org_id,project_id,file_name,storage_path,metadata) values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(projectId)},${kit.q(name)},${kit.q(`acceptance/${id}`)},'{}')`)
+  return id
+}
 
 async function contingenciesComeFromTheSignedAgreement(kit, expected, check) {
   // Written on the agreement sheet: the sale of the buyer's current home, due 45 days after signing, holds closing.
@@ -206,14 +211,15 @@ async function settlementEnrollsOnceAndReversalReenrolls(kit, expected, check) {
   // A sale that resumes is a new closing on the home; the desk's row for it is written directly.
   const closingId = randomUUID()
   kit.sql(`insert into public.closings(id,org_id,project_id,lot_id,community_id,status,created_by) select ${kit.q(closingId)},org_id,project_id,lot_id,community_id,'projected',${kit.q(org.owner.userId)} from public.closings where id=${kit.q(sale.closingId)}`)
-  await seed.closeHome(kit, org, { projectId: sale.projectId, date: seed.isoDay(1) })
+  // The home was completed on day 14 and first closed on day 21 (presoldThroughClosing); it re-closes the day after.
+  await seed.closeHome(kit, org, { projectId: sale.projectId, date: seed.isoDay(22) })
   await kit.drainOutbox(org.orgId)
   const events = Number(kit.rows(`select count(*)::int n from public.events where event_type='warranty_coverage_enrolled' and payload->>'project_id'=${kit.q(sale.projectId)}`)[0].n)
   equal(check, "settlement enrolls the program the agreement sold exactly once; a reversal voids it and the re-closing enrolls one new live coverage", expected.expected.warranty, {
     first: first.map((row) => ({ voided: row.voided, soldProgram: row.sold_program })), afterRetry,
     termsEdit: /fixed at enrollment/.test(termsEdit) ? "refused" : termsEdit,
     afterReversal: afterReversal.map((row) => row.voided),
-    final: coverage().map((row) => ({ voided: row.voided, newDate: row.effective_date === seed.isoDay(1) })), events,
+    final: coverage().map((row) => ({ voided: row.voided, newDate: row.effective_date === seed.isoDay(22) })), events,
   })
   return { orgId: org.orgId, projectId: sale.projectId }
 }

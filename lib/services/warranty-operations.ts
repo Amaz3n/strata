@@ -359,10 +359,11 @@ async function resolveOrgProductTier(supabase: SupabaseClient, orgId: string): P
 /**
  * Seeds the org's first warranty program on first use. Seeding is a system
  * write — the caller has already been authorized for whatever brought them
- * here (logging a request, opening the desk) — and program writes need
- * `warranty.manage` under RLS, so it runs on the service client.
+ * here (logging a request, opening the desk, executing an agreement, which
+ * binds the default program) — and program writes need `warranty.manage`
+ * under RLS, so it runs on the service client.
  */
-async function ensureWarrantyDefaults(orgId: string) {
+export async function ensureWarrantyDefaults(orgId: string) {
   const supabase = createServiceSupabaseClient()
   const { data: existing, error } = await supabase.from("warranty_programs").select("id").eq("org_id", orgId).limit(1)
   if (error) throw new Error(`Failed to load warranty programs: ${error.message}`)

@@ -3520,7 +3520,7 @@
       }
     },
     "invalid-and-expired-reservations-cannot-produce-agreements": {
-      "derivation": "Proves EP05-02 #1. An agreement may only be created from a reservation that is reserved, owns a home and matches the lot, and only the sales desk may create one. A hold that was never reserved has no home; a hold past its expiry cannot be reserved or signed and the scheduled sweep releases it (status expired, reason Hold expired, expiry event) which frees the lot for the next buyer without winning the prospect; a released reservation is over; once an agreement exists on a reservation (draft or executed) a second is refused and the home keeps exactly one; a reservation presented with a different lot is refused; a voided agreement can never be executed and its reservation is released. Nothing in these paths may leave an agreement behind except the one legitimate sale.",
+      "derivation": "Proves EP05-02 #1. An agreement may only be created from a reservation that is reserved, owns a home and matches the lot, and only the sales desk may create one. A hold that was never reserved has no home; a hold past its expiry cannot be reserved or signed and the scheduled sweep releases it (status expired, reason Hold expired, expiry event) which frees the lot for the next buyer without winning the prospect; a released reservation is over; once an agreement exists on a reservation (draft or executed) a second is refused by its creation receipt (a retry of the same reviewed request recovers the existing agreement instead) and the home keeps exactly one; a reservation presented with a different lot is refused; a voided agreement can never be executed and its reservation is released. Nothing in these paths may leave an agreement behind except the one legitimate sale.",
       "inputs": {},
       "expected": {
         "holdOnly": {
@@ -3546,7 +3546,7 @@
         },
         "duplicate": {
           "wrongLot": "refused: reservation and lot do not match",
-          "afterExecution": "refused: reservation is no longer reserved",
+          "afterExecution": "refused: the reservation already has its agreement",
           "agreementsOnTheHome": 1
         },
         "voided": {
@@ -3671,13 +3671,13 @@
       }
     },
     "closing-refuses-an-invoice-that-differs-from-the-authorized-price": {
-      "derivation": "Proves EP05-08 #1. The closing invoice is built from the priced snapshot of the agreement; the authorized final price is the agreement total plus approved changes. If they differ the closing desk must be stopped before anything is billed or collected, because a home must never be invoiced an amount nobody authorized. With a $385,000.00 Mangrove agreement (38,500,000) a one-cent drift on the agreement total (38,500,001) is refused with the invoice-lines message; no invoice, payment or deposit application exists and the closing is still cleared to close; once the agreement is true again the same settlement closes at exactly 38,500,000 with invoice lines of 38,500,000.",
+      "derivation": "Proves EP05-08 #1. The closing invoice is built from the priced snapshot of the agreement; the authorized final price is the agreement total plus approved changes. If they differ the closing desk must be stopped before anything is billed or collected, because a home must never be invoiced an amount nobody authorized. With a $385,000.00 Mangrove agreement (38,500,000) a one-cent drift on the agreement total (38,500,001) is refused before any invoice line is built, because the total no longer matches the agreement's signed original version (EP05-07); no invoice, payment or deposit application exists and the closing is still cleared to close; once the agreement is true again the same settlement closes at exactly 38,500,000 with invoice lines of 38,500,000.",
       "inputs": {
         "depositCents": 1000000,
         "driftCents": 1
       },
       "expected": {
-        "refused": "refused: invoice lines differ from the final price",
+        "refused": "refused: the agreement total differs from its signed version",
         "nothingCreated": {
           "invoices": 0,
           "payments": 0,

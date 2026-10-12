@@ -128,7 +128,8 @@ async function invalidAndExpiredReservationsCannotProduceAgreements(kit, expecte
     const wrongLot = await create(org.team.sales, buyer, buyer.reservation.id, other.id)
     const sale = await fx.agreementFor(kit, org, buyer)
     const quote = await asSales(() => sales.priceAgreementDraft(seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" })))
-    const again = (actor) => refusal(() => kit.as(actor, () => sales.createPurchaseAgreement({ ...seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" }), ...seed.agreementPacketFor(kit, org, buyer.lot.id), reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash })))
+    // A second agreement, not a retry of the first: a retry of the same reviewed request recovers the executed one.
+    const again = (actor) => refusal(() => kit.as(actor, () => sales.createPurchaseAgreement({ ...seed.configuration(org, { lotId: buyer.lot.id, plan: org.plans[0], swing: "right" }), ...seed.agreementPacketFor(kit, org, buyer.lot.id), reservationId: buyer.reservation.id, expectedQuoteHash: quote.quoteHash, terms: "Second agreement for the same reservation" })))
     const afterExecution = await again(org.team.sales)
     return { wrongLot, afterExecution, agreements: Number(kit.rows(`select count(*) n from public.contracts where org_id=${q(org.orgId)} and project_id=${q(sale.projectId)} and contract_type='purchase_agreement'`)[0].n) }
   })()
@@ -149,17 +150,17 @@ async function invalidAndExpiredReservationsCannotProduceAgreements(kit, expecte
   })()
 
   equal(check, "a hold that is not reserved, expired, released, already signed, mismatched, voided or created by the wrong role cannot produce or execute an agreement", expected.expected, {
-    holdOnly: { refused: reason(holdOnly.agreement, [[/Reserved lot with a project is required/, "refused: reserved lot with a home required"]]), agreementsCreated: holdOnly.agreements },
+    holdOnly: { refused: reason(holdOnly.agreement, [[/[Rr]eserved lot with an actual home is required/, "refused: reserved lot with a home required"]]), agreementsCreated: holdOnly.agreements },
     expiredHold: {
       reserve: reason(expired.reserve, [[/hold has expired/, "refused: hold expired"]]),
-      sign: reason(expired.sign, [[/Reserved lot with a project is required/, "refused: reserved lot with a home required"]]),
-      afterSweep: { status: expired.row.status, released: expired.row.released, reason: expired.row.release_reason, sign: reason(expired.signAfterSweep, [[/Reserved lot with a project is required/, "refused: reserved lot with a home required"]]) },
+      sign: reason(expired.sign, [[/[Rr]eserved lot with an actual home is required/, "refused: reserved lot with a home required"]]),
+      afterSweep: { status: expired.row.status, released: expired.row.released, reason: expired.row.release_reason, sign: reason(expired.signAfterSweep, [[/[Rr]eserved lot with an actual home is required/, "refused: reserved lot with a home required"]]) },
       lotFreeForAnotherBuyer: expired.retakenByAnotherBuyer === "allowed", expiryRecorded: expired.events.includes("lot_hold_expired"), prospectStillOpen: expired.prospectStatus !== "won",
     },
-    released: { status: released.status, agreement: reason(released.agreement, [[/Reserved lot with a project is required/, "refused: reserved lot with a home required"]]) },
+    released: { status: released.status, agreement: reason(released.agreement, [[/[Rr]eserved lot with an actual home is required/, "refused: reserved lot with a home required"]]) },
     duplicate: {
       wrongLot: reason(duplicate.wrongLot, [[/Reservation and lot do not match/, "refused: reservation and lot do not match"]]),
-      afterExecution: reason(duplicate.afterExecution, [[/Reserved lot with a project is required/, "refused: reservation is no longer reserved"]]),
+      afterExecution: reason(duplicate.afterExecution, [[/already has a creation receipt for different reviewed inputs/, "refused: the reservation already has its agreement"]]),
       agreementsOnTheHome: duplicate.agreements,
     },
     voided: {
@@ -252,7 +253,9 @@ update public.contracts set total_cents = total_cents ${sign} ${input.driftCents
   await fx.settleCall(kit, org.owner, closingId, seed.isoDay(0), "WIRE-DRIFT").catch((error) => { if (!/^Closing is recorded; retry completion after resolving the statement: Missing R2/.test(error.message)) throw error })
   const settled = fx.closingEvidence(kit, org, closingId)
   equal(check, "settlement refuses while the invoice would not equal the authorized final price, creates nothing, and settles exactly the agreed price once the agreement is true again", expected.expected, {
-    refused: label(refused, [[/Closing invoice lines total \d+ but the settlement final price is \d+/, "refused: invoice lines differ from the final price"]]),
+    // The drifted total no longer matches the agreement's signed original version (EP05-07), which the
+    // settlement checks before it builds any invoice line.
+    refused: label(refused, [[/The agreement's original version does not match its signed price/, "refused: the agreement total differs from its signed version"]]),
     nothingCreated: { invoices: afterRefusal.invoices.length, payments: afterRefusal.payments.length, status: afterRefusal.closing.status },
     depositStillUnapplied: applicationsAfterRefusal === 0,
     afterCure: { status: settled.closing.status, invoiceTotalCents: Number(settled.invoices[0].total), linesTotalCents: settled.lines.reduce((sum, row) => sum + Number(row.amount), 0), finalPriceCents: settled.closing.settlement.finalPriceCents },
@@ -743,7 +746,9 @@ async function voidingASignedAgreementUnwindsTheSale(kit, expected, check) {
   const sales = app("community-sales"), q = kit.q
   const buyer = await fx.reservedBuyer(kit, org, { name: "Rhea Kapoor", depositCents: input.depositCents })
   const sale = await fx.agreementFor(kit, org, buyer)
-  const voided = await refusal(() => kit.as(org.owner, () => sales.voidPurchaseAgreement({ contractId: sale.contractId, reason: "Buyer financing was declined", depositDisposition: "refund" })))
+  // The owner reviews what cancelling will do, then confirms that reviewed plan.
+  const plan = await kit.as(org.owner, () => sales.previewAgreementCancellation(sale.contractId))
+  const voided = await refusal(() => kit.as(org.owner, () => sales.voidPurchaseAgreement({ contractId: sale.contractId, reason: "Buyer financing was declined", depositDisposition: "refund", expectedPlanHash: plan.hash })))
   await fx.postToBooks(kit, org)
   const reversals = kit.rows(`select r.amount_cents::bigint cents from public.payment_reversals r join public.payments p on p.id=r.payment_id where p.invoice_id=${q(buyer.reservation.depositInvoiceId)} and r.status='succeeded'`)
   equal(check, "voiding a signed agreement with a refund voids it, releases the reservation, re-opens the lead, cancels the closing and refunds the buyer's own deposit", expected.expected, {

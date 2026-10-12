@@ -75,7 +75,8 @@ async function landAndStart(kit, org, home, { date, startDate, cents }) {
   const inventory = app("books/inventory")
   await kit.as(org.owner, () => inventory.enableProjectInventory({ projectId: home.projectId, effectiveOn: "2026-06-01", evidenceUrl: `${EVIDENCE}/ownership` }))
   await kit.as(org.owner, () => inventory.acquireLandInventory({ date, allocations: [{ lotId: home.lotId, amountCents: cents }], cashAccountId: glId(kit, org, "1000"), cashCents: cents, debtInstrumentId: null, debtCents: 0, reference: `Lot ${home.lotNumber} settlement`, evidenceUrl: `${EVIDENCE}/land-${home.lotNumber}` }))
-  kit.sql(`update public.lots set project_id=${kit.q(home.projectId)} where id=${kit.q(home.lotId)}`)
+  // A house starts on land development has delivered; delivery is LAND-01's subject, so it is recorded directly.
+  kit.sql(`update public.lots set project_id=${kit.q(home.projectId)}, delivered_at=coalesce(delivered_at, now()) where id=${kit.q(home.lotId)}`)
   await kit.service(() => inventory.transferLandAtStartForService(org.orgId, home.lotId, startDate, org.owner.userId))
   await project(kit, org)
 }

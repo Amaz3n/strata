@@ -2126,7 +2126,9 @@ export async function updateVendorBillStatus({
   // paying it settles the payable and codes no new cost.
   const billMetadata = existing.metadata
   const openingDocument = Boolean(billMetadata) && typeof billMetadata === "object" && !Array.isArray(billMetadata) && typeof billMetadata.opening_batch_id === "string"
-  if (!isVendorCredit && isApprovedOrReleased && existing.project_id && !openingDocument) {
+  // A sales commission is a selling expense coded to 6100, never construction cost.
+  const commissionBill = Boolean(billMetadata) && typeof billMetadata === "object" && !Array.isArray(billMetadata) && billMetadata.source === "sales_commission"
+  if (!isVendorCredit && isApprovedOrReleased && existing.project_id && !openingDocument && !commissionBill) {
     const approvalSettings = await loadApprovalGateSettings({ supabase, orgId: resolvedOrgId, projectId: existing.project_id })
 
     if (approvalSettings.cost_codes_enabled) {

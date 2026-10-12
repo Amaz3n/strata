@@ -29,6 +29,8 @@ export async function saveAgreementCreation(input: {
   if (error?.details === "AGREEMENT_QUOTE_CHANGED") throw new AgreementQuoteChangedError()
   const packetRefusal = agreementPacketRefusal(error)
   if (packetRefusal) throw packetRefusal
+  // A refusal raised by the function rolled the whole creation back: nothing was saved to review.
+  if (error?.code === "P0001") throw new Error(error.message)
   if (error) throw new Error(`Agreement creation could not be confirmed. Review the saved agreement before retrying: ${error.message}`)
   if (data === null && !input.snapshot) return null
   const parsed = receiptSchema.safeParse(data)

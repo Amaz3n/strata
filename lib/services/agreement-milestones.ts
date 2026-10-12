@@ -198,7 +198,7 @@ export async function getHomeAgreementMilestones(projectId: string, orgId?: stri
       ? context.supabase.from("agreement_milestone_history").select("id,milestone_id,source,from_status,to_status,from_due_on,to_due_on,reported_status,actor_id,note,created_at")
         .eq("org_id", context.orgId).eq("project_id", projectId).in("milestone_id", ids).order("created_at", { ascending: false }).limit(HOME_HISTORY_CAP)
       : Promise.resolve({ data: [], error: null }),
-    context.supabase.from("memberships").select("user_id,user:app_users(full_name,email)").eq("org_id", context.orgId).eq("status", "active").limit(MEMBER_CAP),
+    context.supabase.from("memberships").select("user_id,user:app_users!memberships_user_id_fkey(full_name,email)").eq("org_id", context.orgId).eq("status", "active").limit(MEMBER_CAP),
     companyIds.length
       ? context.supabase.from("companies").select("id,name").eq("org_id", context.orgId).in("id", companyIds)
       : Promise.resolve({ data: [], error: null }),
@@ -455,7 +455,7 @@ const ORG_DELIVERY_CAP = 100
 /** Lender and title feeds and the deliveries they sent, for whoever runs the integration. */
 export async function listMilestoneSources(orgId?: string) {
   const context = await requireOrgContext(orgId)
-  await requirePermission("org.settings.update", context)
+  await requirePermission("org.admin", context)
   const [sources, deliveries] = await Promise.all([
     context.supabase.from("agreement_milestone_sources").select(SOURCE_SELECT).eq("org_id", context.orgId).order("created_at").limit(SOURCE_CAP + 1),
     context.supabase.from("agreement_milestone_deliveries").select("id,source_id,delivery_id,received_at,outcome,reason_code,project_id,milestone_id,payload")
@@ -480,7 +480,7 @@ function newSecret() {
 export async function createMilestoneSource(input: unknown, orgId?: string) {
   const parsed = createMilestoneSourceSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("org.settings.update", context)
+  await requirePermission("org.admin", context)
   const { secret, encrypted, hint } = newSecret()
   // Members never read the secret columns, so the write goes through the service client.
   const { data, error } = await createServiceSupabaseClient().from("agreement_milestone_sources").insert({
@@ -499,7 +499,7 @@ export async function createMilestoneSource(input: unknown, orgId?: string) {
 export async function rotateMilestoneSourceSecret(sourceId: string, orgId?: string) {
   const id = z.string().uuid().parse(sourceId)
   const context = await requireOrgContext(orgId)
-  await requirePermission("org.settings.update", context)
+  await requirePermission("org.admin", context)
   const service = createServiceSupabaseClient()
   const { data: current, error: readError } = await service.from("agreement_milestone_sources").select("id,status,signing_secret_encrypted")
     .eq("org_id", context.orgId).eq("id", id).maybeSingle()
@@ -523,7 +523,7 @@ export async function rotateMilestoneSourceSecret(sourceId: string, orgId?: stri
 export async function disableMilestoneSource(sourceId: string, orgId?: string) {
   const id = z.string().uuid().parse(sourceId)
   const context = await requireOrgContext(orgId)
-  await requirePermission("org.settings.update", context)
+  await requirePermission("org.admin", context)
   const { data, error } = await createServiceSupabaseClient().from("agreement_milestone_sources")
     .update({ status: "disabled", previous_secret_encrypted: null, previous_secret_expires_at: null })
     .eq("org_id", context.orgId).eq("id", id).eq("status", "active").select(SOURCE_SELECT).maybeSingle()

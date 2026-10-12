@@ -533,7 +533,7 @@ create policy agreement_milestone_history_read on public.agreement_milestone_his
 drop policy if exists agreement_milestone_sources_read on public.agreement_milestone_sources;
 create policy agreement_milestone_sources_read on public.agreement_milestone_sources
   for select to authenticated
-  using (public.has_org_permission(org_id, 'org.settings.update'));
+  using (public.has_org_permission(org_id, 'org.admin'));
 
 -- A delivery that reached a home is that home's closing record; one that never
 -- matched a home is an integration fault for whoever runs the integration.
@@ -541,7 +541,7 @@ drop policy if exists agreement_milestone_deliveries_read on public.agreement_mi
 create policy agreement_milestone_deliveries_read on public.agreement_milestone_deliveries
   for select to authenticated
   using (
-    public.has_org_permission(org_id, 'org.settings.update')
+    public.has_org_permission(org_id, 'org.admin')
     or (project_id is not null and public.has_org_permission(org_id, 'closing.manage'))
   );
 

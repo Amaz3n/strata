@@ -188,7 +188,7 @@
       }
     },
     "settlement-enrolls-once-and-reversal-reenrolls": {
-      "derivation": "A home sold, built and closed enrolls the program its agreement sold once; a completion retry adds nothing; coverage terms cannot be edited; reversing the closing voids the coverage; the re-closing a day later enrolls one new live coverage. Two enrollment events in all.",
+      "derivation": "A home sold, built and closed enrolls the program its agreement sold once; a completion retry adds nothing; coverage terms cannot be edited; reversing the closing voids the coverage; the re-closing the day after the first closing (and after the home's completion) enrolls one new live coverage. Two enrollment events in all.",
       "expected": {
         "warranty": {
           "first": [{ "voided": false, "soldProgram": true }],
@@ -201,7 +201,7 @@
       }
     },
     "commission-terms-approved-with-the-agreement": {
-      "derivation": "On a $450,000 agreement the reviewer (granted sales.commission_manage) proposes a co-op broker at 2.5% ($11,250) and their own flat $2,500 consultant comp: $13,750 estimated. The reviewer cannot approve (no sales.commission_approve). Signing is held until the owner approves; then nothing holds it. Both lines are recorded.",
+      "derivation": "On a $450,000 agreement the sales consultant (org_sales_agent holds sales.commission_manage) proposes a co-op broker at 2.5% ($11,250) and their own flat $2,500 consultant comp: $13,750 estimated. The consultant cannot approve (no sales.commission_approve). Signing is held until the owner approves; then nothing holds it. Both lines are recorded.",
       "expected": {
         "proposedStatus": "proposed",
         "estimateTotalCents": 1375000,

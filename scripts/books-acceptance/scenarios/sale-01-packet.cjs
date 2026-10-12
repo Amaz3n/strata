@@ -124,7 +124,7 @@ async function publishedAgreementVersionsAreImmutable(kit, expected, check) {
   equal(check, "a published version cannot be edited; publishing v2 supersedes v1; a draft written before keeps v1 and a new one gets v2", expected.expected, {
     editPublished: /Only a draft version/.test(editPublished) ? "refused: only drafts are edited" : editPublished,
     sqlEdit,
-    consultantPublishes: /agreement_template\.manage|Missing permission/.test(consultantPublishes) ? "refused: needs agreement template management" : consultantPublishes,
+    consultantPublishes: /agreement_template\.manage|Missing permission|^AUTH_FORBIDDEN$/.test(consultantPublishes) ? "refused: needs agreement template management" : consultantPublishes,
     statuses: statuses.map((row) => `v${row.version_number} ${row.status}`),
     pinnedDraft: versionIn(pinned.contractId),
     newDraft: versionIn(later.contractId),
