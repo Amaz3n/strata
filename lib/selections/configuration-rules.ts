@@ -19,3 +19,16 @@ export function evaluateConfigurationRules(selectedIds: Iterable<string>, rules:
     return []
   })
 }
+
+/**
+ * A configuration that breaks its rules. The message stays the joined sentence
+ * every caller already shows; `violations` lets an action return the rules
+ * themselves, since a thrown error reaches the browser only as a digest.
+ */
+export class ConfigurationViolationError extends Error {
+  readonly code = "CONFIGURATION_VIOLATION"
+  constructor(readonly violations: ConfigurationViolation[]) {
+    super(violations.slice(0, 50).map((violation) => violation.message).join(" ") + (violations.length > 50 ? " Additional configuration conflicts require review." : ""))
+    this.name = "ConfigurationViolationError"
+  }
+}

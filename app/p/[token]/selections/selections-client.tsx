@@ -4,7 +4,11 @@ import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 
 import type { Selection, SelectionCategory, SelectionOption } from "@/lib/types"
-import { confirmGroupAction, selectOptionAction, selectPackageAction } from "./actions"
+import { applyConfigurationFixAction, confirmGroupAction, loadConfigurationIssuesAction, selectOptionAction, selectPackageAction } from "./actions"
+import { ConfigurationIssues } from "@/components/selections/configuration-issues"
+import type { ActionResult } from "@/lib/action-result"
+import type { ConfigurationFix } from "@/lib/selections/configuration-fixes"
+import type { ConfigurationViolation } from "@/lib/selections/configuration-rules"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
@@ -26,7 +30,19 @@ interface SelectionsData {
   categories: SelectionCategory[]
   optionsByCategory: Record<string, Array<Omit<SelectionOption, "cost_cents" | "cost_code_id" | "vendor">>>
   packages: Array<{ id: string; name: string; description: string | null; image_url: string | null; price_cents: number; option_ids: string[] }>
+  configuration: ActionResult<{ violations: ConfigurationViolation[]; fixes: ConfigurationFix[] }>
 }
+
+/** A choice the rules refused, held so its corrections can be applied together with it. */
+type RefusedChoice = {
+  groupId: string
+  selectionId: string
+  optionId: string
+  violations: ConfigurationViolation[]
+  fixes: ConfigurationFix[]
+}
+
+const CHANGE_ORDER_HINT = "Contact your builder to request a change order."
 
 interface Props {
   token: string
@@ -60,11 +76,20 @@ function SelectionsPortalWorkspace({ token, data }: Props) {
   const [selectionSource, setSelectionSource] = useState(data.selections)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [pendingId, setPendingId] = useState<string | null>(null)
+  const [refused, setRefused] = useState<RefusedChoice | null>(null)
+  const [fixError, setFixError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   if (selectionSource !== data.selections) {
     setSelectionSource(data.selections)
     setSelections(data.selections)
   }
+  const [configuration, setConfiguration] = useState(data.configuration)
+  const [configurationSource, setConfigurationSource] = useState(data.configuration)
+  if (configurationSource !== data.configuration) {
+    setConfigurationSource(data.configuration)
+    setConfiguration(data.configuration)
+  }
+  const homeIssues = configuration.success ? configuration.data : { violations: [], fixes: [] }
   const categoriesById = useMemo(() => new Map(data.categories.map((category) => [category.id, category])), [data.categories])
   const grouped = useMemo(() => {
     const groups = new Map<string, { id: string; name: string; cutoff: string | null; locked: boolean; items: PortalSelection[] }>()
@@ -83,23 +108,54 @@ function SelectionsPortalWorkspace({ token, data }: Props) {
     return Array.from(groups.values())
   }, [selections])
 
+  function showChoices(writes: Array<{ selectionId: string; optionId: string }>) {
+    setSelections((current) => current.map((selection) => {
+      const write = writes.find((candidate) => candidate.selectionId === selection.id)
+      return write ? {
+        ...selection,
+        selected_option_id: write.optionId,
+        selected_option: data.optionsByCategory[selection.category_id]?.find((option) => option.id === write.optionId) ?? null,
+        status: "selected",
+      } : selection
+    }))
+  }
+
   function handleSelect(selectionId: string, optionId: string, groupId: string) {
     setPendingId(selectionId)
     setErrors((current) => ({ ...current, [groupId]: "" }))
+    setRefused(null)
+    setFixError(null)
     startTransition(async () => {
       const result = await selectOptionAction({ token, selectionId, optionId })
       if (!result.success) {
-        setErrors((current) => ({ ...current, [groupId]: result.error }))
+        if (result.violations?.length) setRefused({ groupId, selectionId, optionId, violations: result.violations, fixes: result.fixes ?? [] })
+        else setErrors((current) => ({ ...current, [groupId]: result.error }))
         setPendingId(null)
         return
       }
-      setSelections((current) => current.map((selection) => selection.id === selectionId ? {
-        ...selection,
-        selected_option_id: optionId,
-        selected_option: data.optionsByCategory[selection.category_id]?.find((option) => option.id === optionId) ?? null,
-        status: "selected",
-      } : selection))
+      showChoices([{ selectionId, optionId }])
+      if (homeIssues.violations.length > 0) setConfiguration(await loadConfigurationIssuesAction(token))
       setPendingId(null)
+    })
+  }
+
+  function handleFix(fix: ConfigurationFix, proposal: RefusedChoice | null) {
+    setPendingId(fix.id)
+    setFixError(null)
+    startTransition(async () => {
+      const result = await applyConfigurationFixAction({
+        token,
+        fixId: fix.id,
+        proposal: proposal ? { selectionId: proposal.selectionId, optionId: proposal.optionId } : null,
+      })
+      setPendingId(null)
+      if (!result.success) {
+        setFixError(result.error)
+        return
+      }
+      showChoices(result.data.writes)
+      setRefused(null)
+      setConfiguration({ success: true, data: result.data.configuration })
     })
   }
 
@@ -142,6 +198,24 @@ function SelectionsPortalWorkspace({ token, data }: Props) {
   return (
     <div>
       <div className="space-y-6">
+        {!configuration.success || homeIssues.violations.length > 0 ? (
+          <div className="border">
+            <div className="border-b bg-muted/30 px-4 py-3">
+              <h2 className="font-semibold">{configuration.success ? "Some choices don't work together" : "Your choices could not be checked"}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">{configuration.success ? "Pick one of the corrections below, or contact your builder." : "Refresh the page to try again, or contact your builder."}</p>
+            </div>
+            <ConfigurationIssues
+              violations={homeIssues.violations}
+              fixes={homeIssues.fixes}
+              error={configuration.success ? null : configuration.error}
+              pendingFixId={pendingId}
+              disabled={isPending}
+              changeOrderHint={CHANGE_ORDER_HINT}
+              onApply={(fix) => handleFix(fix, null)}
+            />
+            {fixError && !refused && <p role="alert" className="border-t border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{fixError}</p>}
+          </div>
+        ) : null}
         {grouped.length === 0 && <div className="border border-border p-8 text-center text-sm text-muted-foreground">No selections have been assigned yet.</div>}
 
         {grouped.map((group) => {
@@ -186,6 +260,23 @@ function SelectionsPortalWorkspace({ token, data }: Props) {
                       </div>
                     )
                   })}
+                </div>
+              )}
+
+              {refused?.groupId === group.id && (
+                <div className="border-t">
+                  <p className="px-4 pt-3 text-sm font-medium">That choice needs a change first</p>
+                  <div className="p-4 pt-2">
+                    <ConfigurationIssues
+                      violations={refused.violations}
+                      fixes={refused.fixes}
+                      pendingFixId={pendingId}
+                      disabled={isPending}
+                      changeOrderHint={CHANGE_ORDER_HINT}
+                      onApply={(fix) => handleFix(fix, refused)}
+                    />
+                    {fixError && <p role="alert" className="mt-2 text-sm text-destructive">{fixError}</p>}
+                  </div>
                 </div>
               )}
 

@@ -10,6 +10,7 @@ import {
 } from "@/app/(app)/sales/actions"
 import { AlertTriangle, Check } from "@/components/icons"
 import { Field, Picker, Section } from "@/components/sales/registration-fields"
+import { ConfigurationIssues } from "@/components/selections/configuration-issues"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -24,7 +25,11 @@ import type {
   AgreementDraftPricing,
 } from "@/lib/services/community-sales"
 import { agreementChoiceKey, indexAgreementCatalog, pageAgreementCatalog } from "@/lib/sales/agreement-catalog"
+import type { ConfigurationFix } from "@/lib/selections/configuration-fixes"
+import type { ConfigurationViolation } from "@/lib/selections/configuration-rules"
 import { cn, formatMoneyCents } from "@/lib/utils"
+
+type ConfigurationIssueSet = { violations: ConfigurationViolation[]; fixes: ConfigurationFix[] }
 
 /** A selected catalog line, keyed the way `optionItems` wants it. */
 type Pick = { optionId?: string; packageId?: string }
@@ -85,7 +90,7 @@ export function PurchaseAgreementSheet({
   const [effectiveDate, setEffectiveDate] = useState(localDay())
 
   const [pricing, setPricing] = useState<AgreementDraftPricing | null>(null)
-  const [priceError, setPriceError] = useState<{ view: typeof viewToken; key: string; generation: number; message: string } | null>(null)
+  const [priceError, setPriceError] = useState<{ view: typeof viewToken; key: string; generation: number; message: string; issues: ConfigurationIssueSet | null } | null>(null)
   const [pricingBusy, setPricingBusy] = useState(false)
   const [quoteRefresh, setQuoteRefresh] = useState(0)
 
@@ -158,11 +163,15 @@ export function PurchaseAgreementSheet({
       try {
         const result = await priceAgreementDraftAction(configuration)
         if (pricingGeneration.current !== generation) return
+        if (!result.success && result.violations?.length) {
+          setPriceError({ view: viewToken, key, generation, message: result.error, issues: { violations: result.violations, fixes: result.fixes ?? [] } })
+          return
+        }
         setPricing(unwrapAction(result))
         setPricedConfigurationKey(key)
         setPricedView(viewToken)
       } catch (error) {
-        if (pricingGeneration.current === generation) setPriceError({ view: viewToken, key, generation, message: (error as Error).message })
+        if (pricingGeneration.current === generation) setPriceError({ view: viewToken, key, generation, message: (error as Error).message, issues: null })
       } finally {
         if (pricingGeneration.current === generation) setPricingBusy(false)
       }
@@ -178,6 +187,16 @@ export function PurchaseAgreementSheet({
     )
   }
 
+  /** A correction edits the draft lines; the re-quote it triggers re-checks every rule on the server. */
+  const applyFix = (fix: ConfigurationFix) => {
+    const removed = fix.remove ? keyOf(fix.remove) : null
+    const added = fix.add ? { optionId: fix.add.optionId } : null
+    setPicks((previous) => {
+      const kept = previous.filter((entry) => keyOf(entry) !== removed)
+      return added && !kept.some((entry) => keyOf(entry) === keyOf(added)) ? [...kept, added] : kept
+    })
+  }
+
   const toggleIncentive = (id: string) => {
     setIncentiveIds((previous) =>
       previous.includes(id) ? previous.filter((entry) => entry !== id) : [...previous, id],
@@ -188,6 +207,7 @@ export function PurchaseAgreementSheet({
   const currentPricing = configurationKey !== null && pricedView === viewToken && pricedConfigurationKey === configurationKey && !pricingBusy ? pricing : null
   const currentChoicePrices = currentPricing?.choicePrices ?? null
   const currentPriceError = priceError?.view === viewToken && priceError.key === configurationKey ? priceError.message : null
+  const currentIssues = currentPriceError ? priceError?.issues ?? null : null
   const missingEmail = context !== null && !context.buyerEmail
   const canSubmit = Boolean(open && context?.reservationId === reservationId && configuration && currentPricing?.quoteHash && !missingEmail)
 
@@ -368,7 +388,17 @@ export function PurchaseAgreementSheet({
         </ScrollArea>
 
         <div className="border-t px-5 py-3">
-          {currentPriceError ? (
+          {currentIssues ? (
+            <div className="-mx-5 -my-3">
+              <ConfigurationIssues
+                violations={currentIssues.violations}
+                fixes={currentIssues.fixes}
+                disabled={pending || pricingBusy}
+                changeOrderHint="Change the draft lines above instead."
+                onApply={applyFix}
+              />
+            </div>
+          ) : currentPriceError ? (
             <div className="space-y-2">
               <p className="flex items-start gap-2 text-[11px] text-destructive" role="alert">
                 <AlertTriangle className="mt-px size-3.5 shrink-0" />

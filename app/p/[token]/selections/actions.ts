@@ -3,6 +3,7 @@
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { confirmSelectionGroup, listProjectSelections, listSelectionCategories, listSelectionOptions, selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
 import { actionError, type ActionResult } from "@/lib/action-result"
+import { getHomeConfigurationFixes, resolveHomeConfigurationFix } from "@/lib/services/configuration-rules"
 import { resolveOptionPricing } from "@/lib/services/option-catalog"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -21,9 +22,10 @@ export async function loadSelectionsAction(token: string) {
     permission: "can_submit_selections",
   })
 
-  const [selections, categories] = await Promise.all([
+  const [selections, categories, configuration] = await Promise.all([
     listProjectSelections(access.org_id, access.project_id, { portalAccess: true }),
     listSelectionCategories(access.org_id),
+    run(() => getHomeConfigurationFixes(access.org_id, access.project_id, { portalAccess: true })),
   ])
 
   const optionsByCategory = Object.fromEntries(
@@ -92,6 +94,7 @@ export async function loadSelectionsAction(token: string) {
       return { ...selection, selected_option: buyerOption }
     }),
     categories,
+    configuration,
     optionsByCategory: Object.fromEntries(
       Object.entries(effectiveOptionsByCategory).map(([categoryId, options]) => [
         categoryId,
@@ -110,22 +113,67 @@ export async function loadSelectionsAction(token: string) {
   }
 }
 
+/** A choice that breaks an option rule comes back with the rules it broke and the corrections that would make it valid. */
 export async function selectOptionAction(input: { token: string; selectionId: string; optionId: string }) {
+  const access = await run(() => assertPortalActionAccess(input.token, {
+    portalType: "client",
+    requireProject: true,
+    permission: "can_submit_selections",
+  }))
+  if (!access.success) return access
+  const { org_id: orgId, project_id: projectId } = access.data
+  const result = await run(() => selectProjectOption({
+    orgId,
+    projectId,
+    selectionId: input.selectionId,
+    optionId: input.optionId,
+    selectedByContactId: access.data.contact_id ?? null,
+    portalAccess: true,
+  }))
+  if (result.success || !result.violations) return result
+  const issues = await run(() => getHomeConfigurationFixes(orgId, projectId, { portalAccess: true, changes: [{ selectionId: input.selectionId, optionId: input.optionId }] }))
+  return issues.success ? { ...result, fixes: issues.data.fixes } : result
+}
+
+/** The home's configuration issues as they stand now, for re-checking after a change. */
+export async function loadConfigurationIssuesAction(token: string) {
+  return run(async () => {
+    const access = await assertPortalActionAccess(token, {
+      portalType: "client",
+      requireProject: true,
+      permission: "can_submit_selections",
+    })
+    return getHomeConfigurationFixes(access.org_id, access.project_id, { portalAccess: true })
+  })
+}
+
+/**
+ * Applies a correction the home's configuration check suggested. The fix is
+ * looked up again on the server — a blocked or stale one is refused — and lands
+ * through the same selection mutation a buyer's own choice does, followed by the
+ * choice it was correcting when it was a different selection.
+ */
+export async function applyConfigurationFixAction(input: { token: string; fixId: string; proposal?: { selectionId: string; optionId: string } | null }) {
   return run(async () => {
     const access = await assertPortalActionAccess(input.token, {
       portalType: "client",
       requireProject: true,
       permission: "can_submit_selections",
     })
-
-    return selectProjectOption({
-      orgId: access.org_id,
-      projectId: access.project_id,
-      selectionId: input.selectionId,
-      optionId: input.optionId,
-      selectedByContactId: access.contact_id ?? null,
-      portalAccess: true,
-    })
+    const changes = input.proposal ? [input.proposal] : []
+    const fix = await resolveHomeConfigurationFix(access.org_id, access.project_id, { fixId: input.fixId, changes }, { portalAccess: true })
+    const writes = [fix, ...changes.filter((change) => change.selectionId !== fix.selectionId)]
+    for (const write of writes) {
+      await selectProjectOption({
+        orgId: access.org_id,
+        projectId: access.project_id,
+        selectionId: write.selectionId,
+        optionId: write.optionId,
+        selectedByContactId: access.contact_id ?? null,
+        portalAccess: true,
+      })
+    }
+    return { writes, configuration: await getHomeConfigurationFixes(access.org_id, access.project_id, { portalAccess: true }) }
   })
 }
 

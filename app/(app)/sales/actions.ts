@@ -28,6 +28,7 @@ import {
   type AgreementDraftContext,
   type AgreementDraftPricing,
 } from "@/lib/services/community-sales"
+import { getSalesConfigurationFixes } from "@/lib/services/configuration-rules"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import {
   completeProspectFollowUp,
@@ -100,7 +101,11 @@ export async function getAgreementDraftContextAction(
   }
 }
 
-/** Prices a configuration without writing anything, for the form's live total. */
+/**
+ * Prices a configuration without writing anything, for the form's live total.
+ * A configuration that breaks an option rule comes back with the rules it
+ * broke and the draft changes that would make it valid.
+ */
 export async function priceAgreementDraftAction(
   input: unknown,
 ): Promise<ActionResult<AgreementDraftPricing>> {
@@ -110,7 +115,10 @@ export async function priceAgreementDraftAction(
       data: await priceAgreementDraft(input as Parameters<typeof priceAgreementDraft>[0]),
     }
   } catch (error) {
-    return actionError(error)
+    const failure = actionError(error)
+    if (!failure.violations) return failure
+    const issues = await run(() => getSalesConfigurationFixes(input), [])
+    return issues.success ? { ...failure, fixes: issues.data.fixes } : failure
   }
 }
 

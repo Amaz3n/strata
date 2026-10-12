@@ -12,6 +12,7 @@ const selectionData = {
   categories: [{ id: "finishes", name: "Finishes" }],
   optionsByCategory: { finishes: [selectionOption] },
   packages: [],
+  configuration: { success: true, data: { violations: [], fixes: [] } },
 }
 const original = {
   selectionData,
