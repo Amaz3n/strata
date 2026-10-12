@@ -177,9 +177,9 @@ export async function captureHomeProductRevisions(input: {
     packages = packageIds.map((id) => ({ id, revision: revisionAsOf(history, id, asOf) }))
     soldElevationRevision = elevationId ? revisionAsOf(history, elevationId, asOf) : null
   } else {
-    type SelectionRow = { id: string; selected_option_id: string | null; selected_option_revision: number | null; package_id: string | null; selected_at: string | null }
+    type SelectionRow = { id: string; selected_option_id: string | null; selected_option_revision: number | null; package_id: string | null; selected_package_revision: number | null; selected_at: string | null }
     const selections = await readAllRowsById<SelectionRow>((afterId, limit) => {
-      let query = supabase.from("project_selections").select("id,selected_option_id,selected_option_revision,package_id,selected_at")
+      let query = supabase.from("project_selections").select("id,selected_option_id,selected_option_revision,package_id,selected_package_revision,selected_at")
         .eq("org_id", orgId).eq("project_id", projectId).in("status", LIVE_SELECTION_STATUSES)
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<SelectionRow[]>()
@@ -187,10 +187,10 @@ export async function captureHomeProductRevisions(input: {
     versionId = lotResult.data?.house_plan_version_id ?? null
     elevationId = lotResult.data?.house_plan_elevation_id ?? null
     asOf = new Date().toISOString()
-    // Options carry the revision the selection recorded; a package has no such
-    // column, so its revision is read from the history as of the pick.
+    // Options and packages carry the revision the selection recorded; a pick made
+    // before those columns existed reads it from the history as of the pick.
     const unrecordedOptionIds = selections.flatMap((row) => (row.selected_option_id && row.selected_option_revision == null ? [row.selected_option_id] : []))
-    const pickedPackages = selections.flatMap((row) => (row.package_id ? [{ id: row.package_id, at: row.selected_at ?? asOf }] : []))
+    const pickedPackages = selections.flatMap((row) => (row.package_id ? [{ id: row.package_id, at: row.selected_at ?? asOf, recorded: row.selected_package_revision }] : []))
     const [currentOptions, currentPackages, packageHistory] = await Promise.all([
       currentRevisions(supabase, orgId, "selection_options", unrecordedOptionIds),
       currentRevisions(supabase, orgId, "selection_packages", pickedPackages.map((pick) => pick.id)),
@@ -202,6 +202,7 @@ export async function captureHomeProductRevisions(input: {
       return [{ id: row.selected_option_id, revision: currentOptions.get(row.selected_option_id)?.revision ?? null, inferred: true }]
     })
     packages = pickedPackages.map((pick): RevisionRef => {
+      if (pick.recorded != null) return { id: pick.id, revision: Number(pick.recorded) }
       const picked = revisionAsOf(packageHistory, pick.id, pick.at)
       return picked != null ? { id: pick.id, revision: picked } : { id: pick.id, revision: currentPackages.get(pick.id)?.revision ?? null, inferred: true }
     })

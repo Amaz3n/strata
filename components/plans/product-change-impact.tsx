@@ -86,6 +86,12 @@ export function ProductChangeImpactConfirm({
           </tbody>
         </table>
       </div>
+      {impact.homesElsewhere > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          It also reaches {impact.homesElsewhere.toLocaleString()}
+          {impact.homesElsewhereTruncated ? "+" : ""} {impact.homesElsewhere === 1 ? "home" : "homes"} in divisions you can&apos;t see.
+        </p>
+      ) : null}
       {impact.truncated ? (
         <p className="text-[11px] text-muted-foreground">
           Showing the first {impact.homes.length.toLocaleString()} homes; more carry this item.

@@ -112,13 +112,14 @@ describe("getProductChangeImpact", () => {
     ])
   })
 
-  test("a reader assigned to other divisions does not see these homes", async () => {
+  test("a reader assigned to other divisions does not see these homes, but is told how many the edit reaches", async () => {
     const tables = community()
     for (const row of tables.lots) row.division_id = id(70)
     const service = createServiceHarness({ permissions: ["plan.read"], divisions: [id(71)], tables })
     const impact = await service.run(() => getProductChangeImpact({ entity: "elevation", id: ELEVATION }))
     assert.deepEqual(impact.homes, [])
     assert.equal(impact.soldCount, 0)
+    assert.ok(impact.homesElsewhere > 0, "the edit reaches homes the reader cannot see, so the confirm still shows")
   })
 })
 

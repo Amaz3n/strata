@@ -177,6 +177,20 @@ describe("resolveOptionPricing context and money", () => {
     assert.deepEqual([onSale.priceCents, onSale.available], [7600, true])
   })
 
+  test("a community version named by its own id is off sale when its parent option is withdrawn", async () => {
+    const OVERRIDE = id(38)
+    const scope = homePricingScope({ lot: { community_id: COMMUNITY, house_plan_version_id: VERSION }, production: true })
+    const override = option({ id: OVERRIDE, parent_option_id: OPTION, community_id: COMMUNITY })
+    const prices = [{ id: id(39), org_id: ORG, option_id: OVERRIDE, package_id: null, house_plan_version_id: VERSION, community_id: COMMUNITY, price_cents: 7600, cost_cents: 4200, is_available: true }]
+    // The community catalog hands out the override's id, and selections store it.
+    const [withdrawn] = await pricing([option({ is_available: false }), override], prices).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OVERRIDE }], ...scope }))
+    assert.equal(withdrawn.available, false)
+    const [archived] = await pricing([option({ is_archived: true }), override], prices).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OVERRIDE }], ...scope }))
+    assert.equal(archived.available, false)
+    const [onSale] = await pricing([option(), override], prices).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OVERRIDE }], ...scope }))
+    assert.deepEqual([onSale.priceCents, onSale.available], [7600, true])
+  })
+
   test("a custom home outside a community still prices at the option's base price", async () => {
     const [row] = await pricing([option()]).run(() => resolveOptionPricing({ orgId: ORG, items: [{ optionId: OPTION }], ...homePricingScope({ lot: null, production: false }) }))
     assert.deepEqual([row.priceCents, row.source], [5000, "option_base"])

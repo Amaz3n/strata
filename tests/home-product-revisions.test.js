@@ -66,6 +66,15 @@ test("release records the home as built: pinned plan, elevation and each live se
   assert.equal(service.writes("home_product_revisions").length, 1)
 })
 
+test("a package pick that recorded its revision is released at that revision, not the history's", async () => {
+  const service = home()
+  service.db.project_selections[1].selected_package_revision = 3
+
+  const record = await service.run(() => captureHomeProductRevisions({ orgId: ORG, projectId: HOME, stage: "release", actorId: ACTOR }))
+
+  assert.deepEqual(record.revisions.packages, [{ id: OUTDOOR, revision: 3 }])
+})
+
 test("a sale records the configuration it priced at the revisions current when the agreement was written", async () => {
   const service = home()
 

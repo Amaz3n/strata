@@ -198,7 +198,7 @@ export function PlanProductEditor({
         })
         return
       }
-      if (impact.homes.length === 0 && !impact.truncated) persistElevation(elevation)
+      if (impact.homes.length === 0 && !impact.truncated && impact.homesElsewhere === 0) persistElevation(elevation)
       else setConfirming({ elevationId: elevation.id, impact })
     })
   }

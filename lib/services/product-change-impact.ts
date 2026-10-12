@@ -20,6 +20,7 @@ import { productRevisionSetSchema } from "@/lib/plans/product-revisions"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
  * Which homes an elevation or catalog option edit reaches, read before the edit
@@ -38,6 +39,9 @@ export type ProductChangeImpactDto = ProductChangeImpactSummary & {
   homes: ProductChangeHome[]
   /** True when there were more homes than the list carries. */
   truncated: boolean
+  /** Homes the edit also reaches in divisions this reader cannot see (a count only). */
+  homesElsewhere: number
+  homesElsewhereTruncated: boolean
 }
 
 const ID_CHUNK = 100
@@ -73,6 +77,37 @@ async function readCapped<Row>(read: (from: number, to: number) => PromiseLike<R
   return readAllRows(read, { cap: PRODUCT_CHANGE_HOME_CAP, label })
 }
 
+/**
+ * How many homes in the whole organization the edit reaches, counted with the
+ * service role: a division-limited reader sees only their divisions' homes, but
+ * a catalog edit reaches every division, so they are told how many they cannot
+ * see. Only the count leaves this function.
+ */
+async function countOrgWideHomes(orgId: string, entity: ProductChangeEntity, id: string) {
+  const service = createServiceSupabaseClient()
+  const [pinned, selected, records] = await Promise.all([
+    entity === "elevation"
+      ? readCapped<{ id: string; project_id: string | null }>((from, to) => service.from("lots").select("id, project_id")
+          .eq("org_id", orgId).eq("house_plan_elevation_id", id).order("id").range(from, to), "Unable to count lots on this elevation")
+      : Promise.resolve({ rows: [], truncated: false }),
+    entity === "option"
+      ? readCapped<{ id: string; project_id: string }>((from, to) => service.from("project_selections").select("id, project_id")
+          .eq("org_id", orgId).eq("selected_option_id", id).order("id").range(from, to), "Unable to count homes with this option")
+      : Promise.resolve({ rows: [], truncated: false }),
+    readCapped<{ project_id: string }>((from, to) => {
+      const query = service.from("home_product_revisions").select("project_id").eq("org_id", orgId)
+      const holding = entity === "elevation" ? query.eq("elevation_id", id) : query.contains("revisions", { options: [{ id }] })
+      return holding.order("id").range(from, to)
+    }, "Unable to count the homes' recorded product"),
+  ])
+  const keys = new Set<string>([
+    ...pinned.rows.map((lot) => lot.project_id ?? lot.id),
+    ...selected.rows.map((row) => row.project_id),
+    ...records.rows.map((row) => row.project_id),
+  ])
+  return { total: keys.size, truncated: pinned.truncated || selected.truncated || records.truncated }
+}
+
 async function readDefinition(supabase: SupabaseClient, orgId: string, entity: ProductChangeEntity, id: string) {
   if (entity === "elevation") {
     const { data, error } = await supabase.from("house_plan_elevations").select("id, code, name, revision, is_active")
@@ -95,7 +130,8 @@ export async function getProductChangeImpact(input: ProductChangeImpactInput, or
   const { supabase } = context
   const scope = context.orgId
 
-  const [definition, access, pinned, selected, records] = await Promise.all([
+  const [orgWide, definition, access, pinned, selected, records] = await Promise.all([
+    countOrgWideHomes(scope, entity, id),
     readDefinition(supabase, scope, entity, id),
     getDivisionAccessForUser({ orgId: scope, userId: context.userId }),
     entity === "elevation"
@@ -209,6 +245,9 @@ export async function getProductChangeImpact(input: ProductChangeImpactInput, or
     ...summarizeProductChangeImpact(ordered),
     homes: ordered.slice(0, PRODUCT_CHANGE_HOME_CAP),
     truncated: pinned.truncated || selected.truncated || records.truncated || ordered.length > PRODUCT_CHANGE_HOME_CAP,
+    // Homes the edit also reaches in divisions this reader cannot see.
+    homesElsewhere: Math.max(0, orgWide.total - ordered.length),
+    homesElsewhereTruncated: orgWide.truncated,
   }
 }
 

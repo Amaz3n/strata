@@ -138,7 +138,7 @@ export function OptionDialog({
         })
         return
       }
-      if (impact.homes.length === 0 && !impact.truncated) persist(payload)
+      if (impact.homes.length === 0 && !impact.truncated && impact.homesElsewhere === 0) persist(payload)
       else setConfirming({ payload, impact })
     })
   }

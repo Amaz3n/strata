@@ -632,6 +632,11 @@ export async function resolveOptionPricing(opts: {
     opts.communityId ? readCatalog("selection_options", optionIds, "parent_option_id", opts.communityId) : [],
     readCatalog("selection_packages", packageIds, "id"),
   ])
+  // An item may name a community version by its own id (that is what the community
+  // catalog hands out and selections store); its parent must be on sale too.
+  const parentIds = [...new Set(options.map((row) => row.parent_option_id).filter((id): id is string => Boolean(id)))]
+  const parents = parentIds.length ? await readCatalog("selection_options", parentIds, "id") : []
+  const parentsById = new Map(parents.map((row) => [row.id, row]))
   type CategoryRow = { id: string; parent_category_id: string | null; community_id: string | null; is_archived: boolean }
   const categoryIds = [...new Set([...options, ...overrides].map((row) => row.category_id).filter((id): id is string => Boolean(id)))]
   const categories: CategoryRow[] = []
@@ -709,7 +714,9 @@ export async function resolveOptionPricing(opts: {
     const chosen = chooseResolvedPrice({
       basePriceCents: Number(option?.price_cents ?? selectionPackage?.price_cents ?? 0),
       baseCostCents: option?.cost_cents ?? selectionPackage?.cost_cents ?? null,
-      subjects: item.optionId ? [baseOption, override].filter((row): row is CatalogRow => Boolean(row)) : selectionPackage ? [selectionPackage] : [],
+      subjects: item.optionId
+        ? [baseOption, override, baseOption?.parent_option_id ? parentsById.get(baseOption.parent_option_id) : undefined].filter((row): row is CatalogRow => Boolean(row))
+        : selectionPackage ? [selectionPackage] : [],
       communityPrice: opts.communityId ? pickPrice(opts.communityId) ?? null : null,
       planPrice: pickPrice(null) ?? null,
       isCommunityOption: Boolean(option?.community_id ?? selectionPackage?.community_id),
