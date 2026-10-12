@@ -349,6 +349,34 @@ test("a sale whose closing is recorded is not cancelled until the closing is rev
   }), /Reverse the closing first/)
 })
 
+test("a draft's communities are replaced in one step that keeps what a division-scoped manager cannot see", async (t) => {
+  const org = await salesOrg(t)
+  const { db, orgId, cypress, heron, peach } = org
+  const gulf = await insert(db, "divisions", { org_id: orgId, name: "Gulf" })
+  const georgia = await insert(db, "divisions", { org_id: orgId, name: "Georgia" })
+  await db.query("update communities set division_id = $2 where id = any($1::uuid[])", [[cypress.id, heron.id], gulf.id])
+  await db.query("update communities set division_id = $2 where id = $1", [peach.id, georgia.id])
+  const family = await org.template("addendum", "HOA disclosure")
+  const draft = await org.draft(family.id, { communities: [cypress.id, peach.id] })
+  // A Gulf division sales manager granted template management (admins are never division-scoped).
+  const manager = await seedMember(db, { orgId, role: "org_sales_agent" })
+  const { rows: [membership] } = await db.query("update memberships set division_scope = 'assigned' where org_id = $1 and user_id = $2 returning id", [orgId, manager.userId])
+  await insert(db, "membership_divisions", { membership_id: membership.id, division_id: gulf.id })
+  await insert(db, "membership_permission_overrides", { membership_id: membership.id, permission_key: "agreement_template.manage", effect: "grant" })
+  const replace = (member, ids, versionId = draft.id) =>
+    rpc(db, "replace_agreement_template_version_communities", { p_org_id: orgId, p_version_id: versionId, p_community_ids: `{${ids.join(",")}}` }, { role: "authenticated", userId: member.userId })
+  const linked = async (versionId = draft.id) => (await db.query("select community_id from agreement_template_version_communities where version_id = $1 order by community_id", [versionId])).rows.map((row) => row.community_id)
+
+  await replace(manager, [heron.id])
+  assert.deepEqual(await linked(), [heron.id, peach.id].sort(), "the Georgia community the manager cannot see is kept")
+  await assert.rejects(replace(manager, [heron.id, peach.id]), /in your organization and divisions/)
+  await org.publish(draft.id)
+  await assert.rejects(replace(org.owner, [cypress.id]), /Only a draft/)
+  const consultant = await seedMember(db, { orgId, role: "org_sales_agent" })
+  const next = await org.draft(family.id, {})
+  await assert.rejects(replace(consultant, [cypress.id], next.id), /agreement_template.manage/)
+})
+
 test("office admins manage agreement templates; sales consultants read them", async (t) => {
   const db = await createDatabase(t)
   const { rows } = await db.query(`

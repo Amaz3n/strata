@@ -291,6 +291,22 @@ test("AP rejects a commission bill and reopens it; a rejected, unpaid bill is cl
   assert.equal(outcome.action, "cleared")
   const { rows: [bill] } = await db.query("select status, rejection_reason from vendor_bills where id = $1", [broker.vendor_bill_id])
   assert.deepEqual([bill.status, bill.rejection_reason], ["rejected", "Disputed split"], "AP's rejection stands as AP left it")
+
+  // Taken back with the reversal, the commission is never paid: not by reopening, not by approving.
+  await assert.rejects(write("update vendor_bills set status = 'pending', rejected_at = null, rejected_by = null, rejection_reason = null where id = $1 and $2::uuid is not null"), /taken back when its closing was reversed/)
+  await assert.rejects(rpc(db, "approve_vendor_bills_atomic", { p_org_id: home.orgId, p_actor_id: home.owner.userId, p_items: JSON.stringify([{ id: broker.vendor_bill_id }]) }), /taken back when its closing was reversed|was rejected; reopen it/)
+  await assert.rejects(db.query("update vendor_bills set status = 'approved', approved_at = now(), approved_by = $2 where id = $1", [broker.vendor_bill_id, home.owner.userId]), /taken back when its closing was reversed/)
+})
+
+test("an approved commission bill keeps its approver until it leaves approved", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const planId = await home.propose(home.consultant)
+  await home.approve(home.owner, planId)
+  const [broker] = await home.record(await home.close(), planId)
+  const write = (sql) => asRole(db, home.as(home.owner), (tx) => tx.query(sql, [broker.vendor_bill_id, home.owner.userId]))
+  await write("update vendor_bills set status = 'approved', approved_at = now(), approved_by = $2 where id = $1")
+  await assert.rejects(write("update vendor_bills set approved_by = null where id = $1 and $2::uuid is not null"), /keeps its approver/)
 })
 
 test("a 1099 consultant's commission bill is read by the payee, AP and approvers, not by everyone on the home", async (t) => {

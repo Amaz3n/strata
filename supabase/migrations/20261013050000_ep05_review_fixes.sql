@@ -46,6 +46,8 @@
 --    signature requirement cannot change until the envelope executes or is
 --    voided, and the envelope records the total the buyer is signing, which the
 --    approval must match.
+-- 12. A draft agreement version's communities are replaced in one
+--    permission-checked step that keeps what a division-scoped manager cannot see.
 
 -- ---------------------------------------------------------------------------
 -- 1. Purchase agreements.
@@ -233,6 +235,14 @@ begin
      or new.metadata->>'source' is distinct from old.metadata->>'source' then
     raise exception 'A commission payable''s amount, payee and home come from the approved terms' using errcode = '42501';
   end if;
+  -- A commission the closing reversal cleared or reversed is never paid: its
+  -- bill does not leave 'rejected' or become payable again, by any writer.
+  if old.metadata->>'source' = 'sales_commission'
+     and new.status is distinct from old.status
+     and (old.status = 'rejected' or new.status in ('approved', 'partial', 'paid'))
+     and not public.sales_commission_obligation_open(old.metadata->>'sales_commission_obligation_id') then
+    raise exception 'This commission was taken back when its closing was reversed; it cannot be paid. A resale owes its own commission.' using errcode = '42501';
+  end if;
   -- Definer functions (approval, payment runs, credit application) and the
   -- service role carry their own checks.
   if current_user <> 'authenticated' then
@@ -262,6 +272,10 @@ begin
   if new.approved_by is not null and new.approved_by is distinct from old.approved_by and new.approved_by is distinct from (select auth.uid()) then
     raise exception 'An approval is recorded in the approver''s own name' using errcode = '42501';
   end if;
+  -- An approval is cleared only by the bill leaving 'approved' (a reopen or a rollback).
+  if new.approved_by is null and old.approved_by is not null and new.status = 'approved' and old.status = 'approved' then
+    raise exception 'An approved payable keeps its approver' using errcode = '42501';
+  end if;
   if new.rejected_by is not null and new.rejected_by is distinct from old.rejected_by and new.rejected_by is distinct from (select auth.uid()) then
     raise exception 'A rejection is recorded in the rejecter''s own name' using errcode = '42501';
   end if;
@@ -270,6 +284,24 @@ end;
 $$;
 
 revoke all on function public.guard_sales_commission_bill() from public, anon, authenticated;
+
+-- Whether a commission is still owed; definer, because AP may not read every
+-- consultant's commission row it approves the bill for.
+create or replace function public.sales_commission_obligation_open(p_obligation_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.sales_commission_obligations o
+    where o.id::text = p_obligation_id and o.status = 'open'
+  )
+$$;
+
+revoke all on function public.sales_commission_obligation_open(text) from public, anon;
+grant execute on function public.sales_commission_obligation_open(text) to authenticated, service_role;
 
 -- Whether the signed-in member may read the commission behind a payable: the
 -- commission's own read policy decides (the payee, sales.commission_approve,
@@ -1310,3 +1342,56 @@ drop trigger if exists change_order_lines_signature_freeze on public.change_orde
 create trigger change_order_lines_signature_freeze
   before insert or update or delete on public.change_order_lines
   for each row execute function public.tg_change_order_line_signature_freeze();
+
+-- ---------------------------------------------------------------------------
+-- 12. A draft version's communities are replaced in one step.
+-- ---------------------------------------------------------------------------
+
+-- Replaces the communities a draft version applies to with p_community_ids, in
+-- one transaction. A division-scoped manager names only communities they can
+-- reach; rows for communities outside their divisions are kept as they were.
+create or replace function public.replace_agreement_template_version_communities(
+  p_org_id uuid,
+  p_version_id uuid,
+  p_community_ids uuid[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_unscoped boolean;
+  v_reachable uuid[];
+  v_requested uuid[] := array(select distinct unnest(coalesce(p_community_ids, '{}'::uuid[])));
+begin
+  if (select auth.uid()) is null or not public.has_org_permission(p_org_id, 'agreement_template.manage') then
+    raise exception 'Managing agreement templates needs agreement_template.manage' using errcode = '42501';
+  end if;
+  perform 1 from public.agreement_template_versions v
+   where v.org_id = p_org_id and v.id = p_version_id and v.status = 'draft'
+   for update;
+  if not found then
+    raise exception 'Only a draft agreement template version''s communities can change' using errcode = '42501';
+  end if;
+  v_unscoped := p_org_id = any ((select public.member_division_unscoped_org_ids())::uuid[]);
+  v_reachable := array(select public.member_reachable_community_ids());
+  if exists (
+    select 1 from unnest(v_requested) r(id)
+    where not exists (select 1 from public.communities c where c.id = r.id and c.org_id = p_org_id)
+       or not (v_unscoped or r.id = any (v_reachable))
+  ) then
+    raise exception 'Choose communities in your organization and divisions' using errcode = '22023';
+  end if;
+  delete from public.agreement_template_version_communities l
+   where l.org_id = p_org_id and l.version_id = p_version_id
+     and (v_unscoped or l.community_id = any (v_reachable))
+     and not (l.community_id = any (v_requested));
+  insert into public.agreement_template_version_communities (org_id, version_id, community_id)
+  select p_org_id, p_version_id, r.id from unnest(v_requested) r(id)
+  on conflict (version_id, community_id) do nothing;
+end;
+$$;
+
+revoke all on function public.replace_agreement_template_version_communities(uuid, uuid, uuid[]) from public, anon;
+grant execute on function public.replace_agreement_template_version_communities(uuid, uuid, uuid[]) to authenticated, service_role;

@@ -238,13 +238,14 @@ async function assertCommunities(context: OrgServiceContext, communityIds: strin
   if (error || (data ?? []).length !== new Set(communityIds).size) throw new Error("Choose communities in your organization")
 }
 
+/**
+ * Where a draft version applies: replaced in one database step, which refuses a
+ * published version and keeps the communities a division-scoped manager cannot see.
+ */
 async function writeCommunities(context: OrgServiceContext, versionId: string, communityIds: string[]) {
-  const { error: removeError } = await context.supabase.from("agreement_template_version_communities")
-    .delete().eq("org_id", context.orgId).eq("version_id", versionId)
-  if (removeError) throw new Error(`Failed to update where the version applies: ${removeError.message}`)
-  if (communityIds.length === 0) return
-  const { error } = await context.supabase.from("agreement_template_version_communities")
-    .insert([...new Set(communityIds)].map((communityId) => ({ org_id: context.orgId, version_id: versionId, community_id: communityId })))
+  const { error } = await context.supabase.rpc("replace_agreement_template_version_communities", {
+    p_org_id: context.orgId, p_version_id: versionId, p_community_ids: [...new Set(communityIds)],
+  })
   if (error) throw new Error(`Failed to update where the version applies: ${error.message}`)
 }
 
