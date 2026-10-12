@@ -337,6 +337,9 @@ test("a home's asking price moves only by repricing: a member changes neither it
   await assert.rejects(as("update lots set house_plan_id = $2 where id = $1", [spec.id, small.id]), /would move its home's asking price/)
   // A plan change that leaves the price where it was is not a price move.
   await as("update lots set house_plan_id = $2 where id = $1", [spec.id, twin.id])
+  // Nor by moving the lot to a community whose sheet prices the plan lower.
+  const cheaper = await insert(db, "communities", { org_id: orgId, name: "Cheaper Run" })
+  await assert.rejects(as("update lots set community_id = $2 where id = $1", [spec.id, cheaper.id]), /has a home: it stays in its community/)
   // A lot without a home is still priced freely.
   await as("update lots set premium_cents = 0 where id = $1", [bare.id])
   const { rows } = await db.query("select id, premium_cents::int as premium, house_plan_id from lots where id in ($1, $2) order by lot_number", [spec.id, bare.id])

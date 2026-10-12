@@ -16,7 +16,8 @@
 -- 2. lots.asking_price_override_cents is written only by those functions, and
 --    a member never moves a home's derived asking price either: its lot premium
 --    is frozen once the lot carries a home, and its plan or elevation changes
---    only when that leaves the price on the sheet where it was.
+--    only when that leaves the price on the sheet where it was. A lot carrying a
+--    home stays in its community, whose sheet prices it.
 -- 3. spec_dispositions.carrying_cents is the database's: what Books carries for
 --    the home on the day the disposition is proposed (books_home_carrying_cents).
 -- 4. lot_reservations: the buyer and the lot never change; status moves only
@@ -51,7 +52,14 @@
 --    selection service (apply_project_selection_writes and the agreement
 --    execution, both service role): a member's direct write never sets the
 --    option, package, status or price snapshot, which feed the structural
---    total in a spec home's asking price.
+--    total in a spec home's asking price. A member never moves a selection to
+--    another home and never deletes one past pending.
+-- 12. The option catalog's priced rows (options, packages and their members,
+--    catalog prices) are written by selections.catalog.manage, as the catalog
+--    service and its publication functions already require: an option's scope
+--    decides whether it counts in a home's structural total.
+-- 13. Community incentives are the other half of community pricing: every
+--    member reads them, only sales.manage writes or approves them.
 
 set local lock_timeout = '3s';
 
@@ -250,6 +258,11 @@ begin
   if new.asking_price_override_cents is distinct from old.asking_price_override_cents then
     raise exception 'A spec home''s asking price is set by a price move' using errcode = '42501';
   end if;
+  -- The sheet that prices a home is its lot's community's.
+  if new.community_id is distinct from old.community_id and coalesce(old.project_id, new.project_id) is not null then
+    raise exception 'Lot % has a home: it stays in its community, whose price sheet prices the home', old.lot_number
+      using errcode = '42501';
+  end if;
   -- A home's asking price, unless it was repriced, is its plan's price on the
   -- sheet plus the lot premium (sellable_lot_inventory). A member moves it only
   -- through a price move, where the approval bands apply.
@@ -317,7 +330,7 @@ revoke all on function public.tg_lots_member_write_guard() from public, anon, au
 
 drop trigger if exists lots_member_write_guard on public.lots;
 create trigger lots_member_write_guard
-  before insert or update of asking_price_override_cents, status, premium_cents, house_plan_id, house_plan_elevation_id, project_id on public.lots
+  before insert or update of asking_price_override_cents, status, premium_cents, house_plan_id, house_plan_elevation_id, project_id, community_id on public.lots
   for each row execute function public.tg_lots_member_write_guard();
 
 -- ---------------------------------------------------------------------------
@@ -915,7 +928,13 @@ set search_path = ''
 as $$
 begin
   if current_user <> 'authenticated' then
-    return new;
+    return coalesce(new, old);
+  end if;
+  if tg_op = 'DELETE' then
+    if old.status <> 'pending' then
+      raise exception 'A % selection is kept; change it through the selection service', old.status using errcode = '42501';
+    end if;
+    return old;
   end if;
   if tg_op = 'INSERT' then
     if new.status <> 'pending'
@@ -926,6 +945,9 @@ begin
       raise exception 'A selection is chosen and priced through the selection service' using errcode = '42501';
     end if;
     return new;
+  end if;
+  if (new.org_id, new.project_id) is distinct from (old.org_id, old.project_id) then
+    raise exception 'A selection stays with its home' using errcode = '42501';
   end if;
   if (new.status, new.selected_option_id, new.package_id, new.price_cents_snapshot, new.cost_cents_snapshot)
      is distinct from (old.status, old.selected_option_id, old.package_id, old.price_cents_snapshot, old.cost_cents_snapshot) then
@@ -939,5 +961,62 @@ revoke all on function public.tg_project_selections_member_write_guard() from pu
 
 drop trigger if exists project_selections_member_write_guard on public.project_selections;
 create trigger project_selections_member_write_guard
-  before insert or update of status, selected_option_id, package_id, price_cents_snapshot, cost_cents_snapshot on public.project_selections
+  before insert or delete or update of org_id, project_id, status, selected_option_id, package_id, price_cents_snapshot, cost_cents_snapshot on public.project_selections
   for each row execute function public.tg_project_selections_member_write_guard();
+
+-- ---------------------------------------------------------------------------
+-- 12. The priced catalog is written by selections.catalog.manage.
+-- ---------------------------------------------------------------------------
+
+drop policy if exists selection_options_access on public.selection_options;
+drop policy if exists selection_packages_org_access on public.selection_packages;
+drop policy if exists selection_package_items_org_access on public.selection_package_items;
+drop policy if exists selection_catalog_prices_org_access on public.selection_catalog_prices;
+
+do $$
+declare
+  v_table text;
+begin
+  foreach v_table in array array['selection_options', 'selection_packages', 'selection_package_items', 'selection_catalog_prices'] loop
+    execute format('drop policy if exists %I on public.%I', v_table || '_select', v_table);
+    execute format('create policy %I on public.%I for select to authenticated using (public.is_org_member(org_id))', v_table || '_select', v_table);
+    execute format('drop policy if exists %I on public.%I', v_table || '_insert', v_table);
+    execute format('create policy %I on public.%I for insert to authenticated with check (public.has_org_permission(org_id, %L))', v_table || '_insert', v_table, 'selections.catalog.manage');
+    execute format('drop policy if exists %I on public.%I', v_table || '_update', v_table);
+    execute format('create policy %I on public.%I for update to authenticated using (public.has_org_permission(org_id, %L)) with check (public.has_org_permission(org_id, %L))', v_table || '_update', v_table, 'selections.catalog.manage', 'selections.catalog.manage');
+    execute format('drop policy if exists %I on public.%I', v_table || '_delete', v_table);
+    execute format('create policy %I on public.%I for delete to authenticated using (public.has_org_permission(org_id, %L))', v_table || '_delete', v_table, 'selections.catalog.manage');
+  end loop;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 13. Community incentives are written and approved by sales.manage.
+-- ---------------------------------------------------------------------------
+
+drop policy if exists incentives_org_access on public.incentives;
+
+drop policy if exists incentives_select on public.incentives;
+create policy incentives_select on public.incentives
+  for select
+  to authenticated
+  using (public.is_org_member(org_id));
+
+drop policy if exists incentives_insert on public.incentives;
+create policy incentives_insert on public.incentives
+  for insert
+  to authenticated
+  with check (public.has_org_permission(org_id, 'sales.manage'));
+
+drop policy if exists incentives_update on public.incentives;
+create policy incentives_update on public.incentives
+  for update
+  to authenticated
+  using (public.has_org_permission(org_id, 'sales.manage'))
+  with check (public.has_org_permission(org_id, 'sales.manage'));
+
+drop policy if exists incentives_delete on public.incentives;
+create policy incentives_delete on public.incentives
+  for delete
+  to authenticated
+  using (public.has_org_permission(org_id, 'sales.manage'));

@@ -104,6 +104,48 @@ test("the sheet is the sales manager's: a member without sales.manage reads it b
   assert.equal(Number(await askingPrice(db, owner, lot.id)), 405_000_00)
 })
 
+test("an option's scope and the catalog's prices are the catalog manager's: a member's direct write moves no home's price", async (t) => {
+  const { db, owner, lot, structural } = await specHome(t)
+  const { selected_option_id: optionId } = await structural("confirmed", 18_500_00)
+  const { userId: field } = await seedMember(db, { orgId: owner.orgId, role: "field" })
+  const { userId: coordinator } = await seedMember(db, { orgId: owner.orgId, role: "org_design_studio_coordinator" })
+  const pkg = await insert(db, "selection_packages", { org_id: owner.orgId, name: "Outdoor living", price_cents: 12_000_00 })
+  const as = (userId, sql, args) => asRole(db, { role: "authenticated", userId }, async (tx) => (await tx.query(sql, args)).rowCount)
+  assert.equal(Number(await askingPrice(db, owner, lot.id)), 413_500_00)
+
+  assert.equal(await as(field, "select 1 from selection_options where id = $1", [optionId]), 1)
+  assert.equal(await as(field, "update selection_options set option_scope = 'design_studio' where id = $1", [optionId]), 0)
+  assert.equal(await as(field, "update selection_packages set price_cents = 1 where id = $1", [pkg.id]), 0)
+  assert.equal(await as(field, "delete from selection_options where id = $1", [optionId]), 0)
+  await assert.rejects(
+    as(field, "insert into selection_options (org_id, category_id, name, option_scope) select org_id, category_id, 'Loft', 'structural' from selection_options where id = $1", [optionId]),
+    /row-level security/,
+  )
+  assert.equal(Number(await askingPrice(db, owner, lot.id)), 413_500_00)
+
+  assert.equal(await as(coordinator, "update selection_packages set price_cents = 13000000 where id = $1", [pkg.id]), 1)
+})
+
+test("a community's incentives are the sales manager's: a member neither raises nor approves one", async (t) => {
+  const { db, owner, consultant } = await specHome(t)
+  const { userId: field } = await seedMember(db, { orgId: owner.orgId, role: "field" })
+  const { rows: [{ id: communityId }] } = await db.query("select community_id as id from lots limit 1")
+  const incentive = await insert(db, "incentives", { org_id: owner.orgId, community_id: communityId, name: "Closing costs", incentive_type: "fixed_amount", amount_cents: 5_000_00, applies_to: "price", status: "active", requires_approval: true })
+  const as = (userId, sql, args) => asRole(db, { role: "authenticated", userId }, async (tx) => (await tx.query(sql, args)).rowCount)
+
+  assert.equal(await as(field, "select 1 from incentives where id = $1", [incentive.id]), 1)
+  assert.equal(await as(field, "update incentives set amount_cents = 50000000, metadata = jsonb_build_object('approved_at', now()::text) where id = $1", [incentive.id]), 0)
+  assert.equal(await as(field, "delete from incentives where id = $1", [incentive.id]), 0)
+  await assert.rejects(
+    as(field, "insert into incentives (org_id, community_id, name, incentive_type, amount_cents, applies_to, status, requires_approval) values ($1, $2, 'Rate buydown', 'fixed_amount', 9000000, 'price', 'active', false)", [owner.orgId, communityId]),
+    /row-level security/,
+  )
+
+  assert.equal(await as(consultant.userId, "update incentives set metadata = jsonb_build_object('approved_at', now()::text) where id = $1", [incentive.id]), 1)
+  const { rows } = await db.query("select amount_cents::int as amount, metadata ? 'approved_at' as approved from incentives")
+  assert.deepEqual(rows, [{ amount: 5_000_00, approved: true }])
+})
+
 test("a home ages from its Books completion, else from the completion sales recorded, and never from a future date", async (t) => {
   const { db, owner, lot, project } = await specHome(t)
   const agingDays = () =>

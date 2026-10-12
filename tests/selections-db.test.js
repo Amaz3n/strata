@@ -172,3 +172,19 @@ test("a signed-in member never chooses, confirms or prices a selection by a dire
   await as("update project_selections set notes = 'Buyer prefers oak', locked_at = now() where id = $1", [kitchen.id])
   assert.deepEqual(await statuses(db), ["pending", "pending", "pending"])
 })
+
+test("a member never moves a selection to another home and never deletes one past pending", async (t) => {
+  const { db, orgId, project, kitchen, bath } = await home(t)
+  const { userId } = await seedMember(db, { orgId })
+  const other = await insert(db, "projects", { org_id: orgId, name: "Lot 13" })
+  const as = (sql, args) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+  await apply(db, orgId, project, [write(kitchen, { status: "confirmed" })])
+
+  await assert.rejects(as("update project_selections set project_id = $2 where id = $1", [kitchen.id, other.id]), /stays with its home/)
+  await assert.rejects(as("update project_selections set project_id = $2 where id = $1", [bath.id, other.id]), /stays with its home/)
+  await assert.rejects(as("delete from project_selections where id = $1", [kitchen.id]), /confirmed selection is kept/)
+  // A pending choice is still the member's to withdraw.
+  await as("delete from project_selections where id = $1", [bath.id])
+  const { rows } = await db.query("select project_id, status from project_selections")
+  assert.deepEqual(rows, [{ project_id: project.id, status: "confirmed" }])
+})
