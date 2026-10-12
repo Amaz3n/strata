@@ -36,6 +36,16 @@
 --    and acts in their own name. Rejected feed deliveries count atomically.
 -- 9. Warranty: the program's terms are captured on the agreement when it is
 --    executed, so closing enrolls the buyer in what was sold.
+-- 10. Closings: a member never opens, deletes, settles or moves a closing's
+--    status, settlement, invoice or dates; those go through the closing desk's
+--    service paths after their readiness, permission and commission checks. A
+--    member writes the schedule date and metadata (settlement adjustments) only
+--    with closing.manage, and the checklist only with closing.manage, completing
+--    an item in their own name.
+-- 11. A change order out for e-signature is frozen: its price, lines and
+--    signature requirement cannot change until the envelope executes or is
+--    voided, and the envelope records the total the buyer is signing, which the
+--    approval must match.
 
 -- ---------------------------------------------------------------------------
 -- 1. Purchase agreements.
@@ -65,12 +75,12 @@ begin
   if (old.contract_type = 'purchase_agreement' or new.contract_type = 'purchase_agreement')
      and row(new.contract_type, new.org_id, new.project_id, new.status, new.total_cents, new.currency, new.snapshot,
              new.signed_at, new.signature_data, new.buyer_contact_id, new.co_buyer_contact_id, new.warranty_program_id,
-             new.warranty_terms_snapshot)
+             new.warranty_terms_snapshot, new.number, new.title, new.terms, new.effective_date)
          is distinct from
          row(old.contract_type, old.org_id, old.project_id, old.status, old.total_cents, old.currency, old.snapshot,
              old.signed_at, old.signature_data, old.buyer_contact_id, old.co_buyer_contact_id, old.warranty_program_id,
-             old.warranty_terms_snapshot) then
-    raise exception 'A purchase agreement''s buyer, terms and status change only through the sales desk: signing executes it, a change order amends it and cancelling the sale voids it'
+             old.warranty_terms_snapshot, old.number, old.title, old.terms, old.effective_date) then
+    raise exception 'A purchase agreement''s number, buyer, terms and status change only through the sales desk: signing executes it, a change order amends it and cancelling the sale voids it'
       using errcode = '42501';
   end if;
   return new;
@@ -131,7 +141,7 @@ begin
        or not exists (
          select 1 from public.files f
          where f.id = v_file::uuid and f.org_id = new.org_id and f.archived_at is null
-           and (f.project_id is null or f.project_id = new.project_id)
+           and f.project_id = new.project_id
        ) then
       raise exception 'Attach the copy the buyer signed: it must be a file on this home' using errcode = '42501';
     end if;
@@ -369,11 +379,12 @@ begin
   end if;
 
   if new.status in ('superseded', 'void') then
+    -- A member ends a plan only by proposing the next one (which checks every
+    -- line is visible to them) or by voiding the agreement.
     if v_member
        and coalesce(current_setting('arc.commission_plan_void', true), '') is distinct from old.contract_id::text
-       and not (public.has_org_permission(new.org_id, 'sales.commission_manage')
-                or public.has_org_permission(new.org_id, 'sales.commission_approve')) then
-      raise exception 'Revising commission terms needs sales.commission_manage' using errcode = '42501';
+       and coalesce(current_setting('arc.commission_plan_revise', true), '') is distinct from old.contract_id::text then
+      raise exception 'Commission terms are revised by proposing new terms' using errcode = '42501';
     end if;
     if exists (select 1 from public.sales_commission_obligations o where o.plan_id = old.id) then
       raise exception 'Commissions were already recorded for this agreement; reverse the closing to adjust them' using errcode = '42501';
@@ -454,9 +465,11 @@ begin
     if (select count(*) from public.sales_commission_plan_lines l where l.plan_id = v_live.id) <> v_live.line_count then
       raise exception 'This plan includes commission terms you cannot see; ask a sales manager to revise it' using errcode = '42501';
     end if;
+    perform set_config('arc.commission_plan_revise', p_contract_id::text, true);
     update public.sales_commission_plans
     set status = 'superseded', end_reason = coalesce(nullif(btrim(p_reason), ''), 'Commission terms revised')
     where id = v_live.id;
+    perform set_config('arc.commission_plan_revise', '', true);
   end if;
 
   select exists (
@@ -964,3 +977,211 @@ update public.contracts c
    set warranty_terms_snapshot = public.warranty_program_terms_snapshot(c.org_id, c.warranty_program_id)
  where c.contract_type = 'purchase_agreement' and c.status = 'active'
    and c.warranty_program_id is not null and c.warranty_terms_snapshot is null;
+
+-- ---------------------------------------------------------------------------
+-- 10. Closings move through the closing desk.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.tg_closing_member_write_guard()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user <> 'authenticated' then
+    return coalesce(new, old);
+  end if;
+  if tg_op = 'INSERT' then
+    raise exception 'A closing is opened when the purchase agreement is executed' using errcode = '42501';
+  end if;
+  if tg_op = 'DELETE' then
+    raise exception 'A closing is a record; cancel the sale or reverse the closing instead' using errcode = '42501';
+  end if;
+  if row(new.org_id, new.project_id, new.lot_id, new.community_id, new.status, new.actual_date, new.settlement,
+         new.closing_invoice_id, new.cancel_reason, new.buyer_contact_id)
+     is distinct from
+     row(old.org_id, old.project_id, old.lot_id, old.community_id, old.status, old.actual_date, old.settlement,
+         old.closing_invoice_id, old.cancel_reason, old.buyer_contact_id) then
+    raise exception 'A closing''s status, settlement and dates move only through the closing desk' using errcode = '42501';
+  end if;
+  if row(new.scheduled_date, new.metadata) is distinct from row(old.scheduled_date, old.metadata)
+     and not public.has_org_permission(new.org_id, 'closing.manage') then
+    raise exception 'Changing a closing needs closing.manage' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+-- Named to fire before the settlement-evidence and milestone guards, so a
+-- member hears why the write is theirs to make or not.
+drop trigger if exists closing_access_member_guard on public.closings;
+create trigger closing_access_member_guard
+  before insert or update or delete on public.closings
+  for each row execute function public.tg_closing_member_write_guard();
+
+create or replace function public.tg_closing_checklist_member_guard()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user <> 'authenticated' then
+    return coalesce(new, old);
+  end if;
+  if not public.has_org_permission(coalesce(new.org_id, old.org_id), 'closing.manage') then
+    raise exception 'Changing the closing checklist needs closing.manage' using errcode = '42501';
+  end if;
+  if tg_op <> 'DELETE' and new.status <> 'open'
+     and (tg_op = 'INSERT' or row(new.status, new.file_id, new.notes, new.completed_by, new.completed_at)
+                              is distinct from row(old.status, old.file_id, old.notes, old.completed_by, old.completed_at))
+     and new.completed_by is distinct from (select auth.uid()) then
+    raise exception 'A closing gate is completed in the completer''s own name' using errcode = '42501';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists closing_checklist_member_guard on public.closing_checklist_items;
+create trigger closing_checklist_member_guard
+  before insert or update or delete on public.closing_checklist_items
+  for each row execute function public.tg_closing_checklist_member_guard();
+
+-- ---------------------------------------------------------------------------
+-- 11. A change order out for e-signature is what the buyer is signing.
+-- ---------------------------------------------------------------------------
+
+-- The live (sent, partly signed) envelope a change order is out on, if any:
+-- linked by the envelope's source, or by its document's source or metadata.
+create or replace function public.change_order_signing_envelope(p_change_order_id uuid)
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select e.id
+  from public.envelopes e
+  left join public.documents d on d.id = e.document_id and d.org_id = e.org_id
+  where e.status in ('sent', 'partially_signed')
+    and ((e.source_entity_type = 'change_order' and e.source_entity_id = p_change_order_id)
+         or (d.source_entity_type = 'change_order' and d.source_entity_id = p_change_order_id)
+         or d.metadata->>'change_order_id' = p_change_order_id::text)
+  order by e.sent_at desc nulls last, e.id
+  limit 1
+$$;
+
+revoke all on function public.change_order_signing_envelope(uuid) from public, anon, authenticated;
+grant execute on function public.change_order_signing_envelope(uuid) to service_role;
+
+-- The change order an envelope carries, for the envelope's own trigger.
+create or replace function public.envelope_change_order_id(p_envelope public.envelopes)
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    case when p_envelope.source_entity_type = 'change_order' then p_envelope.source_entity_id end,
+    (select case when d.source_entity_type = 'change_order' then d.source_entity_id
+                 when d.metadata->>'change_order_id' ~ '^[0-9a-fA-F-]{36}$' then (d.metadata->>'change_order_id')::uuid end
+     from public.documents d where d.id = p_envelope.document_id and d.org_id = p_envelope.org_id))
+$$;
+
+revoke all on function public.envelope_change_order_id(public.envelopes) from public, anon, authenticated;
+
+-- Sending records the total on the document the buyer is asked to sign.
+create or replace function public.tg_envelope_change_order_terms()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_change_order uuid := public.envelope_change_order_id(new);
+  v_total bigint;
+begin
+  if v_change_order is null then
+    return new;
+  end if;
+  select total_cents into v_total from public.change_orders where id = v_change_order and org_id = new.org_id;
+  new.metadata := coalesce(new.metadata, '{}'::jsonb)
+    || jsonb_build_object('change_order_id', v_change_order, 'change_order_total_cents', coalesce(v_total, 0));
+  return new;
+end;
+$$;
+
+revoke all on function public.tg_envelope_change_order_terms() from public, anon, authenticated;
+
+drop trigger if exists envelopes_change_order_terms on public.envelopes;
+create trigger envelopes_change_order_terms
+  before update of status on public.envelopes
+  for each row
+  when (new.status = 'sent' and old.status is distinct from 'sent' and old.status = 'draft')
+  execute function public.tg_envelope_change_order_terms();
+
+create or replace function public.tg_change_order_signature_freeze()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_envelope uuid;
+  v_signed_total text;
+begin
+  if row(new.total_cents, new.requires_signature, new.project_id, new.title, new.summary, new.description, new.days_impact, new.currency)
+     is distinct from
+     row(old.total_cents, old.requires_signature, old.project_id, old.title, old.summary, old.description, old.days_impact, old.currency) then
+    v_envelope := public.change_order_signing_envelope(old.id);
+    if v_envelope is not null then
+      raise exception 'This change order is out for signature; void the envelope before changing what the buyer is signing' using errcode = '42501';
+    end if;
+  end if;
+  -- An e-signed approval is the amount on the signed document.
+  if new.status = 'approved' and old.status is distinct from 'approved'
+     and coalesce(new.metadata->>'approved_envelope_id', '') ~ '^[0-9a-fA-F-]{36}$' then
+    select e.metadata->>'change_order_total_cents' into v_signed_total
+    from public.envelopes e where e.id = (new.metadata->>'approved_envelope_id')::uuid and e.org_id = new.org_id;
+    if v_signed_total is not null and v_signed_total::bigint is distinct from new.total_cents then
+      raise exception 'The signed document shows %, not this change order''s %; void it and send the change order again', v_signed_total, new.total_cents
+        using errcode = '23514';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.tg_change_order_signature_freeze() from public, anon, authenticated;
+
+drop trigger if exists change_orders_signature_freeze on public.change_orders;
+create trigger change_orders_signature_freeze
+  before update on public.change_orders
+  for each row execute function public.tg_change_order_signature_freeze();
+
+create or replace function public.tg_change_order_line_signature_freeze()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_change_order uuid := coalesce(new.change_order_id, old.change_order_id);
+begin
+  -- The change order went away and took its lines with it.
+  if tg_op = 'DELETE' and pg_trigger_depth() > 1 and not exists (select 1 from public.change_orders c where c.id = v_change_order) then
+    return old;
+  end if;
+  if public.change_order_signing_envelope(v_change_order) is not null then
+    raise exception 'This change order is out for signature; void the envelope before changing what the buyer is signing' using errcode = '42501';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+revoke all on function public.tg_change_order_line_signature_freeze() from public, anon, authenticated;
+
+drop trigger if exists change_order_lines_signature_freeze on public.change_order_lines;
+create trigger change_order_lines_signature_freeze
+  before insert or update or delete on public.change_order_lines
+  for each row execute function public.tg_change_order_line_signature_freeze();

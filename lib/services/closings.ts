@@ -272,7 +272,8 @@ export async function scheduleClosing(input: unknown, orgId?: string) {
   if (!before || !["projected", "scheduled"].includes(before.status)) throw new Error("Projected closing not found")
   // Prepare through the existing authorized management action, never a page read.
   await ensureClosingChecklist(before.id, context.orgId)
-  const { data, error } = await context.supabase.from("closings").update({ status: "scheduled", scheduled_date: parsed.scheduledDate }).eq("org_id", context.orgId).eq("id", before.id).eq("project_id", before.project_id).eq("status", before.status).select("*").single()
+  // Status moves only through the service (the closings guard refuses a member's direct write).
+  const { data, error } = await createServiceSupabaseClient().from("closings").update({ status: "scheduled", scheduled_date: parsed.scheduledDate }).eq("org_id", context.orgId).eq("id", before.id).eq("project_id", before.project_id).eq("status", before.status).select("*").single()
   if (error || !data) throw new Error(`Failed to schedule closing: ${error?.message}`)
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_scheduled", entityType: "closing", entityId: data.id, payload: { scheduled_date: parsed.scheduledDate, project_id: data.project_id } }),
@@ -359,7 +360,7 @@ export async function markClearedToClose(closingId: string, orgId?: string) {
   await authorizeClosingProject({ ...context, closingId: closing.id, projectId: closing.project_id })
   await ensureClosingChecklist(closing.id, context.orgId)
   await assertClosingReadiness({ ...context, closingId: closing.id, projectId: closing.project_id })
-  const { data, error } = await context.supabase.from("closings").update({ status: "cleared_to_close" }).eq("org_id", context.orgId).eq("id", closing.id).eq("status", "scheduled").select("*").single()
+  const { data, error } = await createServiceSupabaseClient().from("closings").update({ status: "cleared_to_close" }).eq("org_id", context.orgId).eq("id", closing.id).eq("status", "scheduled").select("*").single()
   if (error || !data) throw new Error(`Failed to clear closing: ${error?.message}`)
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_cleared", entityType: "closing", entityId: data.id, payload: { project_id: data.project_id } })
   return data
@@ -566,7 +567,7 @@ export async function settleClosing(input: unknown, orgId?: string) {
   const sourceIds = [...(settlement.finalPriceCents !== 0 ? [invoice.id] : []), ...(closingPayments ?? []).map(row => row.id)]
   const sourceKeys = [`invoice:${invoice.id}`, ...(closingPayments ?? []).flatMap(row => [`invoice_payment:${row.id}`, `customer_deposit_application:${row.id}`])]
   const postingMetadata = { ...(closing.metadata ?? {}), books_posting_status: "pending", books_posting_error: null }
-  const { error: pendingError } = await context.supabase.from("closings").update({ closing_invoice_id: invoice.id, settlement, metadata: postingMetadata }).eq("org_id",context.orgId).eq("id",closing.id)
+  const { error: pendingError } = await createServiceSupabaseClient().from("closings").update({ closing_invoice_id: invoice.id, settlement, metadata: postingMetadata }).eq("org_id",context.orgId).eq("id",closing.id)
   if (pendingError) throw new Error(`Failed to save pending settlement: ${pendingError.message}`)
   let projection: Awaited<ReturnType<typeof projectJournal>>
   try { projection = await projectJournal(context.orgId, { sourceKeys }) } catch (postingError) {
@@ -609,7 +610,7 @@ export async function settleClosing(input: unknown, orgId?: string) {
     if (settlementEvidenceDigest(currentSettlement) !== settlementEvidenceDigest(settlement)) throw new Error("Settlement terms or deposit evidence changed; reconcile the recorded funds before closing")
   }
   catch (readinessError) { throw new Error(`Closing funds are recorded; resolve readiness and retry settlement: ${readinessError instanceof Error ? readinessError.message : "Readiness unavailable"}`) }
-  const { data: updated, error } = await context.supabase.from("closings").update({ status: "closed", actual_date: parsed.actualDate, settlement, metadata: { ...postingMetadata, books_posting_status: booksSettings?.workspace_enabled && booksSettings.arc_ledger_mode !== "disabled" ? "posted" : "not_enabled" }, closing_invoice_id: invoice.id, updated_at: now }).eq("org_id", context.orgId).eq("id", closing.id).eq("status", "cleared_to_close").select("*").single()
+  const { data: updated, error } = await createServiceSupabaseClient().from("closings").update({ status: "closed", actual_date: parsed.actualDate, settlement, metadata: { ...postingMetadata, books_posting_status: booksSettings?.workspace_enabled && booksSettings.arc_ledger_mode !== "disabled" ? "posted" : "not_enabled" }, closing_invoice_id: invoice.id, updated_at: now }).eq("org_id", context.orgId).eq("id", closing.id).eq("status", "cleared_to_close").select("*").single()
   if (error || !updated) throw new Error(`Failed to settle closing: ${error?.message}`)
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_settled", entityType: "closing", entityId: closing.id, payload: { final_price_cents: settlement.finalPriceCents, community_id: closing.community_id, closing_invoice_id: invoice.id } }),

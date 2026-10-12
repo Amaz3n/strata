@@ -28,15 +28,6 @@ export const LEAD_ROUTING_OUTCOMES = [
 
 export type LeadRoutingOutcome = (typeof LEAD_ROUTING_OUTCOMES)[number]
 
-export const LEAD_ROUTING_OUTCOME_LABELS: Record<LeadRoutingOutcome, string> = {
-  rule: "Routing rule",
-  community_assignee: "Community rotation",
-  division_default: "Division fallback",
-  source_default: "Source default",
-  existing_owner: "Existing owner",
-  unrouted: "Unrouted",
-}
-
 export function isLeadRoutingOutcome(value: unknown): value is LeadRoutingOutcome {
   return LEAD_ROUTING_OUTCOMES.some((outcome) => outcome === value)
 }

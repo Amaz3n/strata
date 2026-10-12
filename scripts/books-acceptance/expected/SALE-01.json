@@ -184,7 +184,7 @@
       }
     },
     "co-gate-needs-evidence": {
-      "derivation": "The certificate of occupancy gate refuses completion without a file, refuses a waiver through the service and SQL, refuses another home's file, and completes with a file on this home. EP05 review: the gate cannot be un-gated or deleted, even by SQL.",
+      "derivation": "The certificate of occupancy gate refuses completion without a file, refuses a waiver through the service and SQL, refuses another home's file, and completes with a file on this home. EP05 review: the gate cannot be un-gated or deleted, even by SQL. EP05 second review: a superintendent's direct write of a settlement credit or a gate completion is refused (closing.manage), and the owner cannot record the closing by writing its status; it is recorded only by settlement.",
       "expected": {
         "coGate": {
           "withoutFile": "refused",
@@ -193,7 +193,10 @@
           "otherHomesFile": "refused",
           "ownFile": "allowed",
           "ungate": "refused",
-          "deleteGate": "refused"
+          "deleteGate": "refused",
+          "superintendentCredit": "refused",
+          "ownerRecordsClosing": "refused",
+          "superintendentCompletesGate": "refused"
         }
       }
     },

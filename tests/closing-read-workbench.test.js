@@ -44,6 +44,8 @@ function harness({ manage = false, payment = false, deniedRead = false, failure 
   })
   stubModule('@/lib/services/events', { recordEvent: async input => calls.push({ event: input }) })
   stubModule('@/lib/services/audit', { recordAudit: async input => calls.push({ audit: input }) })
+  // Status moves are written by the service client after the service's own checks.
+  stubModule('@/lib/supabase/server', { createServiceSupabaseClient: () => db })
   stubModule('@/lib/services/closing-readiness', { authorizeClosingProject: async input => { gates.push({ ...input, permission: 'closing.manage' }); if (!manage) throw new Error('Home manage denied') } })
   delete require.cache[require.resolve('../lib/services/closings')]
   return { ...require('../lib/services/closings'), db, calls, gates }

@@ -928,6 +928,17 @@ export async function recomputeChangeOrderCost(changeOrderId: string, orgId?: st
   return costTotalCents
 }
 
+/**
+ * A change order out for e-signature is the document the buyer is signing: its
+ * price and lines stay as sent until the envelope executes or is voided. The
+ * database refuses the same edits (change_orders_signature_freeze).
+ */
+async function assertNotOutForSignature(changeOrderId: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("change_order_signing_envelope", { p_change_order_id: changeOrderId })
+  if (error) throw new Error(`Unable to check the change order's signature status: ${error.message}`)
+  if (data) throw new Error("This change order is out for signature. Void the envelope before changing what the buyer is signing.")
+}
+
 export async function deriveOwnerPriceFromCost(
   changeOrderId: string,
   markupPercent: number,
@@ -951,6 +962,7 @@ export async function deriveOwnerPriceFromCost(
   if (["approved", "void"].includes(existing.lifecycle ?? "draft")) {
     throw new Error("Approved or voided change orders cannot be repriced.")
   }
+  await assertNotOutForSignature(changeOrderId)
   const pricedLines = (existing.lines ?? []).map((line) => {
     if (line.internal_cost_cents == null) return line
     return {
@@ -1651,8 +1663,8 @@ export async function approveChangeOrder({
       throw new Error("Signed approval file was not found.")
     }
 
-    if (file.project_id && file.project_id !== existing.project_id) {
-      throw new Error("Signed approval file belongs to a different project.")
+    if (file.project_id !== existing.project_id) {
+      throw new Error("Signed approval file must be a file on this home.")
     }
 
     await attachFileWithServiceRole({
@@ -2341,6 +2353,7 @@ export async function updateChangeOrder({
   if (["approved", "rejected", "void"].includes(existing.lifecycle ?? "draft")) {
     throw new Error("Approved, rejected, or voided change orders cannot be edited.")
   }
+  await assertNotOutForSignature(changeOrderId)
 
   const normalizedLines = normalizeLines(input.lines)
   for (const line of normalizedLines) {

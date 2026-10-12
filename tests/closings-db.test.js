@@ -2,13 +2,13 @@
 
 /**
  * The database contract behind `lib/services/closings.ts`: a closing bills the
- * home once.
+ * home once, and moves only through the closing desk.
  */
 
 const test = require("node:test")
 const assert = require("node:assert/strict")
 
-const { createDatabase, insert, rpc, seedMember, uuid } = require("./support/pglite")
+const { asRole, createDatabase, insert, rpc, seedMember, uuid } = require("./support/pglite")
 
 test("a closing has at most one closing invoice", async (t) => {
   const db = await createDatabase(t)
@@ -149,3 +149,31 @@ test("reversing a closing voids the home's warranty coverage, so the next closin
   const { rows } = await db.query("select effective_date::text from project_warranty_coverage where project_id = $1 and voided_at is null", [project.id])
   assert.deepEqual(rows, [{ effective_date: "2026-10-15" }])
 })
+
+test("a member never settles, opens or re-dates a closing directly; adjustments and the checklist need closing.manage", async (t) => {
+  const db = await createDatabase(t)
+  const owner = await seedMember(db)
+  const { orgId } = owner
+  const superintendent = await seedMember(db, { orgId, role: "org_superintendent" })
+  const project = await insert(db, "projects", { org_id: orgId, name: "Lot 12" })
+  const closing = await insert(db, "closings", { org_id: orgId, project_id: project.id, status: "scheduled", scheduled_date: "2026-11-01" })
+  const gate = await insert(db, "closing_checklist_items", { org_id: orgId, closing_id: closing.id, key: "blue_tape_walk", title: "Blue-tape walk complete", is_gate: true, status: "open", sort_order: 1 })
+  const as = (member, sql, params) => asRole(db, { role: "authenticated", userId: member.userId }, (tx) => tx.query(sql, params))
+  const credit = JSON.stringify({ adjustments: [{ id: uuid(), label: "Credit", kind: "seller_credit", amountCents: -500000 }] })
+
+  await assert.rejects(as(superintendent, "update closings set metadata = $2 where id = $1", [closing.id, credit]), /needs closing.manage/)
+  await assert.rejects(as(owner, "update closings set status = 'closed', actual_date = current_date where id = $1", [closing.id]), /only through the closing desk/)
+  await assert.rejects(as(owner, "update closings set settlement = '{\"finalPriceCents\":1}' where id = $1", [closing.id]), /only through the closing desk/)
+  await assert.rejects(as(owner, "update closings set status = 'cleared_to_close' where id = $1", [closing.id]), /only through the closing desk/)
+  await assert.rejects(as(owner, "insert into closings (org_id, project_id, status) values ($1, $2, 'closed')", [orgId, project.id]), /opened when the purchase agreement is executed/)
+  await assert.rejects(as(owner, "delete from closings where id = $1", [closing.id]), /is a record/)
+  // A closing.manage holder records adjustments and the schedule date.
+  await as(owner, "update closings set metadata = $2, scheduled_date = '2026-11-02' where id = $1", [closing.id, credit])
+
+  await assert.rejects(as(superintendent, "update closing_checklist_items set status = 'complete', completed_at = now(), completed_by = $2 where id = $1", [gate.id, superintendent.userId]), /needs closing.manage/)
+  await assert.rejects(as(owner, "update closing_checklist_items set status = 'complete', completed_at = now(), completed_by = $2 where id = $1", [gate.id, superintendent.userId]), /own name/)
+  await as(owner, "update closing_checklist_items set status = 'complete', completed_at = now(), completed_by = $2 where id = $1", [gate.id, owner.userId])
+  const { rows: [row] } = await db.query("select status, completed_by from closing_checklist_items where id = $1", [gate.id])
+  assert.deepEqual([row.status, row.completed_by], ["complete", owner.userId])
+})
+

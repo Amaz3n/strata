@@ -207,6 +207,20 @@ async function coGateNeedsEvidence(kit, expected, check) {
     ungate: /identity and evidence rule are fixed/.test(sqlAttempt(kit, `update public.closing_checklist_items set is_gate=false where id=${kit.q(gate.id)}`)) ? "refused" : "allowed",
     deleteGate: /part of the closing's record/.test(sqlAttempt(kit, `delete from public.closing_checklist_items where id=${kit.q(gate.id)}`)) ? "refused" : "allowed",
   }
+  // The closing itself moves only through the closing desk: a superintendent cannot credit the
+  // buyer or complete a gate, and even the owner cannot record the closing by writing its status.
+  const superintendent = kit.addMember(home.org, "org_superintendent")
+  const direct = (actor, table, id, patch) => attempt(() => kit.as(actor, async () => {
+    const { supabase } = await require("../../../lib/services/context").requireOrgContext()
+    const { data, error } = await supabase.from(table).update(patch).eq("id", id).select("id")
+    if (error) throw new Error(error.message)
+    if (!data?.length) throw new Error("no row updated")
+  }))
+  const credit = { adjustments: [{ id: randomUUID(), label: "Buyer credit", kind: "seller_credit", amountCents: -500000 }] }
+  observed.superintendentCredit = /needs closing.manage|no row updated/.test(await direct(superintendent, "closings", home.closingId, { metadata: credit })) ? "refused" : "allowed"
+  observed.ownerRecordsClosing = /only through the closing desk/.test(await direct(owner, "closings", home.closingId, { status: "closed", actual_date: seed.isoDay(0) })) ? "refused" : "allowed"
+  const walk = kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(home.closingId)} and key='blue_tape_walk'`)[0]
+  observed.superintendentCompletesGate = /needs closing.manage|no row updated/.test(await direct(superintendent, "closing_checklist_items", walk.id, { status: "complete", completed_at: new Date().toISOString(), completed_by: superintendent.userId })) ? "refused" : "allowed"
   equal(check, "the certificate of occupancy gate completes only with a file on this home and cannot be waived", expected.expected.coGate, observed)
   return { orgId: home.org.orgId, projectId: home.projectId }
 }

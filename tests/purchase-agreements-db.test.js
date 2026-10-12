@@ -232,6 +232,8 @@ test("a member's own approval of an amendment needs change_order.approve and the
   const elsewhere = await insert(db, "projects", { org_id: orgId, name: "Lot 48" })
   const foreign = await insert(db, "files", { org_id: orgId, project_id: elsewhere.id, file_name: "other.pdf", storage_path: `${orgId}/other.pdf`, mime_type: "application/pdf" })
   await assert.rejects(asMember(owner, patio.id, { approval_method: "manual_offline", approved_signed_file_id: foreign.id }), /file on this home/)
+  const orgLevel = await insert(db, "files", { org_id: orgId, file_name: "org.pdf", storage_path: `${orgId}/org.pdf`, mime_type: "application/pdf" })
+  await assert.rejects(asMember(owner, patio.id, { approval_method: "manual_offline", approved_signed_file_id: orgLevel.id }), /file on this home/)
   const signed = await insert(db, "files", { org_id: orgId, project_id: project.id, file_name: "signed.pdf", storage_path: `${orgId}/signed.pdf`, mime_type: "application/pdf" })
   await assert.rejects(asMember(superintendent, patio.id, { approval_method: "manual_offline", approved_signed_file_id: signed.id }), /needs change_order.approve/)
   await asMember(owner, patio.id, { approval_method: "manual_offline", approved_signed_file_id: signed.id })
@@ -240,6 +242,40 @@ test("a member's own approval of an amendment needs change_order.approve and the
   await assert.rejects(asRole(db, { role: "authenticated", userId: owner.userId }, (tx) =>
     tx.query("insert into change_orders (org_id, project_id, contract_id, title, status, total_cents) values ($1, $2, $3, 'Pool', 'approved', 100)", [orgId, project.id, sale.contract.id])),
   /set when the buyer's signed approval is recorded/)
+})
+
+test("a change order out for e-signature is frozen, and its approval is the amount on the signed document", async (t) => {
+  const sale = await signedAgreement(t)
+  const { db, orgId, project, owner } = sale
+  const patio = await sale.changeOrder()
+  await insert(db, "change_order_lines", { org_id: orgId, change_order_id: patio.id, description: "Covered patio", quantity: 1, unit_cost_cents: 12_500_00 })
+  const file = await insert(db, "files", { org_id: orgId, project_id: project.id, file_name: "co.pdf", storage_path: `${orgId}/co.pdf`, mime_type: "application/pdf" })
+  const document = await insert(db, "documents", { org_id: orgId, project_id: project.id, document_type: "change_order", title: "CO 1", source_file_id: file.id, source_entity_type: "change_order", source_entity_id: patio.id })
+  const envelope = await insert(db, "envelopes", { org_id: orgId, project_id: project.id, document_id: document.id, status: "draft" })
+  await db.query("update envelopes set status = 'sent', sent_at = now() where id = $1", [envelope.id])
+  const { rows: [sent] } = await db.query("select metadata from envelopes where id = $1", [envelope.id])
+  assert.equal(Number(sent.metadata.change_order_total_cents), 12_500_00, "sending records the total the buyer signs")
+
+  const member = { role: "authenticated", userId: owner.userId }
+  await assert.rejects(asRole(db, member, (tx) => tx.query("update change_orders set total_cents = -2000000 where id = $1", [patio.id])), /out for signature/)
+  await assert.rejects(db.query("update change_orders set requires_signature = false where id = $1", [patio.id]), /out for signature/)
+  await assert.rejects(db.query("insert into change_order_lines (org_id, change_order_id, description, quantity, unit_cost_cents) values ($1, $2, 'Extra', 1, 100)", [orgId, patio.id]), /out for signature/)
+  await assert.rejects(db.query("update change_order_lines set unit_cost_cents = 1 where change_order_id = $1", [patio.id]), /out for signature/)
+
+  // An envelope that recorded another amount cannot approve this one.
+  await db.query("update envelopes set status = 'executed', metadata = metadata || '{\"change_order_total_cents\": 500000}' where id = $1", [envelope.id])
+  await assert.rejects(sale.approve(patio.id, { approved_via_envelope: true, approved_envelope_id: envelope.id }), /signed document shows 500000/)
+  await db.query("update envelopes set metadata = metadata || '{\"change_order_total_cents\": 1250000}' where id = $1", [envelope.id])
+  await sale.approve(patio.id, { approved_via_envelope: true, approved_envelope_id: envelope.id })
+  assert.deepEqual((await sale.versions()).map((row) => row.delta), [385_000_00, 12_500_00])
+
+  // Voided, a change order is editable again.
+  const deck = await sale.changeOrder({ title: "Deck" })
+  const voided = await insert(db, "envelopes", { org_id: orgId, project_id: project.id, document_id: document.id, status: "draft", source_entity_type: "change_order", source_entity_id: deck.id })
+  await db.query("update envelopes set status = 'sent' where id = $1", [voided.id])
+  await assert.rejects(db.query("update change_orders set total_cents = 1 where id = $1", [deck.id]), /out for signature/)
+  await db.query("update envelopes set status = 'voided', voided_at = now() where id = $1", [voided.id])
+  await db.query("update change_orders set total_cents = 1 where id = $1", [deck.id])
 })
 
 test("a member never creates, executes, re-terms or voids a purchase agreement through the data API", async (t) => {
@@ -252,6 +288,7 @@ test("a member never creates, executes, re-terms or voids a purchase agreement t
   await assert.rejects(asOwner("update contracts set status = 'active', signed_at = now() where id = $1", [draft.id]), /only through the sales desk/)
   await assert.rejects(asOwner("update contracts set snapshot = '{}'::jsonb, buyer_contact_id = null, total_cents = 1 where id = $1", [draft.id]), /only through the sales desk/)
   await assert.rejects(asOwner("update contracts set status = 'void' where id = $1", [sale.contract.id]), /only through the sales desk/)
+  await assert.rejects(asOwner("update contracts set number = 'PA-9999', terms = 'Edited', effective_date = '2027-01-01', title = 'Edited' where id = $1", [sale.contract.id]), /only through the sales desk/)
   await assert.rejects(asOwner("delete from contracts where id = $1", [draft.id]), /a record; cancel the sale/)
   // A member still edits an ordinary contract.
   const fixedPrice = await insert(db, "contracts", { org_id: orgId, project_id: project.id, title: "Prime", status: "draft", contract_type: "fixed", total_cents: 100 })

@@ -773,7 +773,8 @@ async function childOrg(t) {
       row: (s, p, n) => ({ bid_package_id: p.parentId, company_id: companies[n - 1].id, invite_email: `${s.name.toLowerCase()}${n}@trades.test` }),
     },
     meeting_attendees: { label: "display_name", row: (s, p, n) => ({ meeting_id: p.parentId, display_name: `${s.name} ${n}` }) },
-    closing_checklist_items: { label: "title", row: (s, p, n) => ({ closing_id: p.parentId, title: `${s.name} ${n}` }) },
+    // Written only by closing.manage holders (the closing desk), which a project lead is not.
+    closing_checklist_items: { label: "title", readOnly: true, row: (s, p, n) => ({ closing_id: p.parentId, title: `${s.name} ${n}` }) },
     proposal_lines: { label: "description", row: (s, p, n) => ({ proposal_id: p.parentId, description: `${s.name} ${n}` }) },
     // Written only by the service role: the wall is on what members read.
     invoice_lines: { label: "description", readOnly: true, row: (s, p, n) => ({ invoice_id: p.parentId, description: `${s.name} ${n}` }) },

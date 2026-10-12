@@ -240,6 +240,19 @@ test("a revision is refused when it would drop terms the proposer cannot see", a
   assert.equal((await home.plan(planId)).status, "proposed")
 })
 
+test("a member ends a plan only by proposing the next one, never by writing its status", async (t) => {
+  const db = await createDatabase(t)
+  const home = await sale(db)
+  const planId = await home.propose(home.consultant)
+  await home.approve(home.owner, planId)
+  for (const status of ["superseded", "void"]) {
+    await assert.rejects(asRole(db, home.as(home.colleague), (tx) =>
+      tx.query("update sales_commission_plans set status = $2, end_reason = 'Dropping a line unseen' where id = $1", [planId, status])),
+    /revised by proposing new terms/)
+  }
+  assert.equal((await home.plan(planId)).status, "approved")
+})
+
 test("AP's authority moves a commission bill; nobody else writes its status, and a clawback credit is never touched", async (t) => {
   const db = await createDatabase(t)
   const home = await sale(db)
