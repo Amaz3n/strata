@@ -14,7 +14,7 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
 
-const { createDatabase, insert, rpc, seedMember, uuid } = require("./support/pglite")
+const { asRole, createDatabase, insert, rpc, seedMember, uuid } = require("./support/pglite")
 
 async function home(t) {
   const db = await createDatabase(t)
@@ -151,4 +151,24 @@ test("signed-in users cannot read the fence or call the set write directly", asy
     }, caller),
     /permission denied/,
   )
+})
+
+test("a signed-in member never chooses, confirms or prices a selection by a direct write", async (t) => {
+  const { db, orgId, project, kitchen } = await home(t)
+  const { userId } = await seedMember(db, { orgId })
+  const option = await insert(db, "selection_options", { org_id: orgId, category_id: kitchen.category_id, name: "Island" })
+  const as = (sql, args) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+
+  for (const set of ["price_cents_snapshot = 1", "cost_cents_snapshot = 1", "status = 'confirmed'", "selected_option_id = $2"]) {
+    await assert.rejects(as(`update project_selections set ${set} where id = $1 and $2::uuid is not null`, [kitchen.id, option.id]), /through the selection service/)
+  }
+  const category = await insert(db, "selection_categories", { org_id: orgId, name: "Flooring" })
+  await assert.rejects(
+    as("insert into project_selections (org_id, project_id, category_id, status, price_cents_snapshot) values ($1, $2, $3, 'confirmed', 1)", [orgId, project.id, category.id]),
+    /through the selection service/,
+  )
+  // Opening a pending choice, its notes and its cutoff lock stay the member's.
+  await as("insert into project_selections (org_id, project_id, category_id, status) values ($1, $2, $3, 'pending')", [orgId, project.id, category.id])
+  await as("update project_selections set notes = 'Buyer prefers oak', locked_at = now() where id = $1", [kitchen.id])
+  assert.deepEqual(await statuses(db), ["pending", "pending", "pending"])
 })

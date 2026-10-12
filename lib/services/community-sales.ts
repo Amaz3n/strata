@@ -1240,12 +1240,6 @@ export async function bulkRepriceCommunityPlans(input: unknown, orgId?: string) 
 }
 
 /**
- * The base price a plan sells for in one community. Plans decides *which* plans
- * are offered where; this decides what they cost there, because repricing is the
- * sales manager's weekly edit and not an estimating change. `setCommunityAvailability`
- * on the plan side sets the launch price and never touches it again.
- */
-/**
  * Puts a plan into, or takes it out of, this community's offering.
  *
  * The plan library owns the *product*; whether a community sells it, and for
@@ -1357,6 +1351,13 @@ export async function searchOfferablePlans(
   }
 }
 
+/**
+ * The base price a plan sells for in one community. Plans decides *which* plans
+ * are offered where; this decides what they cost there, because repricing is the
+ * sales manager's weekly edit and not an estimating change. A sheet change is a
+ * community pricing act (sales.manage, which the database also requires): it is
+ * not a per-home price move, so the spec price bands do not apply to it.
+ */
 export async function setCommunityPlanPrice(input: unknown, orgId?: string) {
   const parsed = communityPlanPriceSchema.parse(input)
   const context = await requireOrgContext(orgId)

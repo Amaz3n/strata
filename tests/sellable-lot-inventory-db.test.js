@@ -85,6 +85,25 @@ test("a price the manager set outranks the sheet", async (t) => {
   assert.equal(Number(await askingPrice(db, owner, lot.id)), 412_340_00)
 })
 
+test("the sheet is the sales manager's: a member without sales.manage reads it but moves no home's price through it", async (t) => {
+  const { db, owner, consultant, lot, plan } = await specHome(t)
+  const { userId: field } = await seedMember(db, { orgId: owner.orgId, role: "field" })
+  const as = (userId, sql, args = [plan.id]) => asRole(db, { role: "authenticated", userId }, async (tx) => (await tx.query(sql, args)).rowCount)
+
+  assert.equal(await as(field, "select 1 from community_plan_availability where house_plan_id = $1"), 1)
+  assert.equal(await as(field, "update community_plan_availability set base_price_cents = 30000000 where house_plan_id = $1"), 0)
+  assert.equal(await as(field, "update community_plan_availability set is_available = false where house_plan_id = $1"), 0)
+  assert.equal(await as(field, "delete from community_plan_availability where house_plan_id = $1"), 0)
+  await assert.rejects(
+    as(field, "insert into community_plan_availability (org_id, community_id, house_plan_id, base_price_cents, is_available) select org_id, community_id, house_plan_id, 1, true from community_plan_availability where house_plan_id = $1"),
+    /row-level security/,
+  )
+  assert.equal(Number(await askingPrice(db, owner, lot.id)), 395_000_00)
+
+  assert.equal(await as(consultant.userId, "update community_plan_availability set base_price_cents = 39900000 where house_plan_id = $1"), 1)
+  assert.equal(Number(await askingPrice(db, owner, lot.id)), 405_000_00)
+})
+
 test("a home ages from its Books completion, else from the completion sales recorded, and never from a future date", async (t) => {
   const { db, owner, lot, project } = await specHome(t)
   const agingDays = () =>

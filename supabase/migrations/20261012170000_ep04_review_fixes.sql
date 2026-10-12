@@ -37,9 +37,21 @@
 --    completing waits until nothing is still scheduled.
 -- 7. A started or closed lot moving back is a reversal: a member needs
 --    community.write, the authority the service's force path demands. A member
---    closes a lot only once its closing is recorded.
+--    closes a lot only once its closing is recorded, and attaches or detaches a
+--    home only with lot.write (attach and detach are lot.write service paths).
+--    A lot.write holder can still detach, reprice and reattach deliberately;
+--    each step is audited by the lot service.
 -- 9. An extension or penalty fee records its payment (fee_paid_on with the
 --    receipt), so an unpaid one past due stays in the cash plan.
+-- 10. The community price sheet (community_plan_availability) is a community
+--    pricing act: every member reads it, only sales.manage writes it. It is not
+--    a per-home move, so the spec price bands do not apply; the sales service
+--    audits every sheet change.
+-- 11. A home's selections are chosen, priced and confirmed only by the
+--    selection service (apply_project_selection_writes and the agreement
+--    execution, both service role): a member's direct write never sets the
+--    option, package, status or price snapshot, which feed the structural
+--    total in a spec home's asking price.
 
 set local lock_timeout = '3s';
 
@@ -230,6 +242,9 @@ begin
     if new.asking_price_override_cents is not null then
       raise exception 'A spec home''s asking price is set by a price move' using errcode = '42501';
     end if;
+    if new.project_id is not null and not public.has_org_permission(new.org_id, 'lot.write') then
+      raise exception 'Putting a home on lot % takes lot.write', new.lot_number using errcode = '42501';
+    end if;
     return new;
   end if;
   if new.asking_price_override_cents is distinct from old.asking_price_override_cents then
@@ -287,6 +302,13 @@ begin
      ) then
     raise exception 'Lot % closes when its home''s closing is recorded', old.lot_number using errcode = '42501';
   end if;
+  -- The premium and plan are frozen only while a home stands on the lot, so
+  -- taking the home off and putting it back is itself the lot steward's act:
+  -- otherwise a member could detach, reprice and reattach.
+  if new.project_id is distinct from old.project_id
+     and not public.has_org_permission(new.org_id, 'lot.write') then
+    raise exception 'Attaching a home to lot % or detaching it takes lot.write', old.lot_number using errcode = '42501';
+  end if;
   return new;
 end;
 $$;
@@ -295,7 +317,7 @@ revoke all on function public.tg_lots_member_write_guard() from public, anon, au
 
 drop trigger if exists lots_member_write_guard on public.lots;
 create trigger lots_member_write_guard
-  before insert or update of asking_price_override_cents, status, premium_cents, house_plan_id, house_plan_elevation_id on public.lots
+  before insert or update of asking_price_override_cents, status, premium_cents, house_plan_id, house_plan_elevation_id, project_id on public.lots
   for each row execute function public.tg_lots_member_write_guard();
 
 -- ---------------------------------------------------------------------------
@@ -850,3 +872,72 @@ create policy land_contract_amendments_update on public.land_contract_amendments
   with check (public.has_org_permission(org_id, 'land_contract.write'));
 
 grant update (fee_paid_on, fee_evidence_file_id) on table public.land_contract_amendments to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 10. The community price sheet is written by sales.manage.
+-- ---------------------------------------------------------------------------
+
+drop policy if exists community_plan_availability_org_access on public.community_plan_availability;
+
+drop policy if exists community_plan_availability_select on public.community_plan_availability;
+create policy community_plan_availability_select on public.community_plan_availability
+  for select
+  to authenticated
+  using (public.is_org_member(org_id));
+
+drop policy if exists community_plan_availability_insert on public.community_plan_availability;
+create policy community_plan_availability_insert on public.community_plan_availability
+  for insert
+  to authenticated
+  with check (public.has_org_permission(org_id, 'sales.manage'));
+
+drop policy if exists community_plan_availability_update on public.community_plan_availability;
+create policy community_plan_availability_update on public.community_plan_availability
+  for update
+  to authenticated
+  using (public.has_org_permission(org_id, 'sales.manage'))
+  with check (public.has_org_permission(org_id, 'sales.manage'));
+
+drop policy if exists community_plan_availability_delete on public.community_plan_availability;
+create policy community_plan_availability_delete on public.community_plan_availability
+  for delete
+  to authenticated
+  using (public.has_org_permission(org_id, 'sales.manage'));
+
+-- ---------------------------------------------------------------------------
+-- 11. A selection is chosen, priced and confirmed by the selection service.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.tg_project_selections_member_write_guard()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user <> 'authenticated' then
+    return new;
+  end if;
+  if tg_op = 'INSERT' then
+    if new.status <> 'pending'
+       or new.selected_option_id is not null
+       or new.package_id is not null
+       or new.price_cents_snapshot is not null
+       or new.cost_cents_snapshot is not null then
+      raise exception 'A selection is chosen and priced through the selection service' using errcode = '42501';
+    end if;
+    return new;
+  end if;
+  if (new.status, new.selected_option_id, new.package_id, new.price_cents_snapshot, new.cost_cents_snapshot)
+     is distinct from (old.status, old.selected_option_id, old.package_id, old.price_cents_snapshot, old.cost_cents_snapshot) then
+    raise exception 'A selection is chosen and priced through the selection service' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.tg_project_selections_member_write_guard() from public, anon, authenticated;
+
+drop trigger if exists project_selections_member_write_guard on public.project_selections;
+create trigger project_selections_member_write_guard
+  before insert or update of status, selected_option_id, package_id, price_cents_snapshot, cost_cents_snapshot on public.project_selections
+  for each row execute function public.tg_project_selections_member_write_guard();

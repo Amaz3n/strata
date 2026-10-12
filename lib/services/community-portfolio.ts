@@ -276,7 +276,7 @@ export async function getCommunityPortfolio(
           .eq("org_id", context.orgId)
           .in("community_id", ids)
           .eq("status", "scheduled")
-          .gte("scheduled_date", isoDay(today))
+          // An overdue takedown is still owed: it lands at month 0, as the cash plan carries it.
           .lte("scheduled_date", isoDay(horizonEnd))
           .order("scheduled_date", { ascending: true })
           .order("id")

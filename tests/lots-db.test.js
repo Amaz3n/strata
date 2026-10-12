@@ -343,6 +343,29 @@ test("a home's asking price moves only by repricing: a member changes neither it
   assert.deepEqual(rows, [{ id: spec.id, premium: 50_000_00, house_plan_id: twin.id }, { id: bare.id, premium: 0, house_plan_id: null }])
 })
 
+test("a home goes on or comes off a lot only for a lot.write holder, so nobody reprices a spec home by detaching it", async (t) => {
+  const { db, orgId, community, lot, home } = await sales(t)
+  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  const { userId: landManager } = await seedMember(db, { orgId, role: "org_land_manager" })
+  const as = (userId, sql, args) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+  const specId = await home()
+  const spec = await lot({ status: "assigned", project_id: specId, premium_cents: 50_000_00 })
+  const bare = await lot({ status: "owned" })
+
+  // The reviewer's sequence starts by detaching the home so its premium thaws.
+  await assert.rejects(as(field, "update lots set project_id = null where id = $1", [spec.id]), /takes lot.write/)
+  await assert.rejects(as(field, "update lots set project_id = $2 where id = $1", [bare.id, await home()]), /takes lot.write/)
+  await assert.rejects(
+    as(field, "insert into lots (org_id, community_id, lot_number, status, project_id) values ($1, $2, '99', 'owned', $3)", [orgId, community.id, await home()]),
+    /takes lot.write/,
+  )
+
+  await as(landManager, "update lots set project_id = null where id = $1", [spec.id])
+  await as(landManager, "update lots set project_id = $2 where id = $1", [spec.id, specId])
+  const { rows } = await db.query("select project_id, premium_cents::int as premium from lots where id = $1", [spec.id])
+  assert.deepEqual(rows[0], { project_id: specId, premium: 50_000_00 })
+})
+
 test("a member closes a lot only once its home's closing is recorded", async (t) => {
   const { db, orgId, lot, home } = await sales(t)
   const { userId: field } = await seedMember(db, { orgId, role: "field" })

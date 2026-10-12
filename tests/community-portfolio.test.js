@@ -101,3 +101,23 @@ test("a spec ages from its recorded completion, not from the day it started", as
   // date carry no aging clock.
   assert.deepEqual(aging.map((urgency) => urgency.count), [2])
 })
+
+test("an overdue takedown stays on the runway at month 0, the way the cash plan carries it", async () => {
+  const overdue = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10)
+  const service = createServiceHarness({
+    permissions: ["community.read"],
+    tables: {
+      lot_reservations: [],
+      start_packages: [],
+      closings: [],
+      lots: [],
+      project_selections: [],
+      land_contract_deposits: [],
+      lot_takedowns: [{ id: id(700), org_id: ORG, community_id: COMMUNITY, name: "Phase 2", status: "scheduled", scheduled_date: overdue, lot_count: 12, price_per_lot_cents: 5_000_000 }],
+    },
+  })
+
+  const portfolio = await service.run(() => getCommunityPortfolio())
+
+  assert.deepEqual(portfolio.lanes[0].takedowns.map((takedown) => [takedown.name, takedown.monthOffset, takedown.lotCount]), [["Phase 2", 0, 12]])
+})
