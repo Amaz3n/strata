@@ -297,6 +297,8 @@ as $$
   select exists (
     select 1 from public.sales_commission_obligations o
     where o.id::text = p_obligation_id and o.status = 'open'
+      -- A signed-in member asks only about their own org's commissions.
+      and (coalesce((select auth.role()), '') <> 'authenticated' or public.is_org_member(o.org_id))
   )
 $$;
 
