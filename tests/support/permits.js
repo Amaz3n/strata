@@ -68,8 +68,8 @@ async function permitWorld(t, { coordinatorRole = "org_starts_coordinator" } = {
   w.open = (args = {}) => w.call("create_permit_application", {
     p_project_id: home.id, p_jurisdiction_company_id: authority.id, p_permit_type: "building", p_owner_user_id: null, p_supersedes_id: null, ...args,
   })
-  w.attach = async (applicationId, kind, fileId) => w.call("set_permit_document", {
-    p_application_id: applicationId, p_document_kind: kind, p_label: null, p_required_for: null, p_file_id: fileId,
+  w.attach = async (applicationId, kind, fileId, { label = null, requiredFor = null } = {}) => w.call("set_permit_document", {
+    p_application_id: applicationId, p_document_kind: kind, p_label: label, p_required_for: requiredFor, p_file_id: fileId,
   })
   w.submit = (applicationId, args = {}) => w.call("record_permit_submission", {
     p_application_id: applicationId, p_submitted_on: "2026-09-01", p_reference: null, p_note: null, p_responds_to_round_id: null, ...args,
@@ -88,6 +88,24 @@ async function permitWorld(t, { coordinatorRole = "org_starts_coordinator" } = {
   w.expense = (row = {}) => full.insert(db, "project_expenses", {
     org_id: orgId, project_id: home.id, vendor_company_id: authority.id, expense_date: "2026-09-02", amount_cents: 45000, status: "submitted", ...row,
   })
+
+  /**
+   * Pay a fee the way the service does: claim it, create the payable, link it.
+   * A refused link releases the claim, as the service's failure path does.
+   */
+  w.link = async (feeId, { bill, expense } = {}, userId = coordinator.userId) => {
+    await w.service("claim_permit_fee_payment", { p_fee_id: feeId }, userId)
+    try {
+      const payable = expense ? await w.expense(expense) : await w.bill(bill)
+      const paymentId = await w.service("link_permit_fee_payment", {
+        p_fee_id: feeId, p_vendor_bill_id: expense ? null : payable.id, p_project_expense_id: expense ? payable.id : null,
+      }, userId)
+      return { paymentId, payable }
+    } catch (error) {
+      await w.service("release_permit_fee_claim", { p_fee_id: feeId }, userId)
+      throw error
+    }
+  }
 
   /** A building application submitted with its plot plan, approved on its evidence. */
   w.approvedApplication = async () => {

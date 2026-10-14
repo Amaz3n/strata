@@ -377,43 +377,85 @@ const reminderGroupSchema = z.object({
   project_name: z.string().nullable(),
 })
 
+const REMINDER_PAGE = 200
+/** One sweep reads at most this many pages of groups and reports it when more remain. */
+const REMINDER_MAX_PAGES = 100
+const ROW_PAGE = 1000
+
+type PageResult<T> = { data: T[] | null; error: { message: string } | null }
+
+/** Reads every row of a query, a page at a time, so a large community is never cut off at the API's row cap. */
+async function readAllRows<T>(read: (from: number, to: number) => PromiseLike<PageResult<T>>, label: string): Promise<T[]> {
+  const rows: T[] = []
+  for (let from = 0; ; from += ROW_PAGE) {
+    const { data, error } = await read(from, from + ROW_PAGE - 1)
+    if (error) throw new Error(`Failed to load ${label}: ${error.message}`)
+    rows.push(...(data ?? []))
+    if ((data?.length ?? 0) < ROW_PAGE) return rows
+  }
+}
+
 export async function sendSelectionCutoffReminders() {
   const supabase = createServiceSupabaseClient()
-  // Days to each cutoff are counted in the home's community day, the day the
-  // database enforces the cutoff in.
-  const { data: reminderRows, error: groupsError } = await supabase.rpc("selection_cutoff_reminder_groups", { p_days: [7, 14], p_limit: 1000 })
-  if (groupsError) throw new Error(`Failed to load selection reminders: ${groupsError.message}`)
-  const groups = z.array(reminderGroupSchema).parse(reminderRows ?? [])
-  if (!groups.length) return { considered: 0, sent: 0 }
+  let considered = 0
+  let sent = 0
+  let truncated = false
+  for (let page = 0; page < REMINDER_MAX_PAGES; page += 1) {
+    // Days to each cutoff are counted in the home's community day, the day the
+    // database enforces the cutoff in.
+    const { data: reminderRows, error: groupsError } = await supabase.rpc("selection_cutoff_reminder_groups", {
+      p_days: [7, 14],
+      p_limit: REMINDER_PAGE,
+      p_offset: page * REMINDER_PAGE,
+    })
+    if (groupsError) throw new Error(`Failed to load selection reminders: ${groupsError.message}`)
+    const groups = z.array(reminderGroupSchema).parse(reminderRows ?? [])
+    if (!groups.length) break
+    considered += groups.length
+    sent += await sendReminderPage(supabase, groups)
+    if (groups.length < REMINDER_PAGE) break
+    if (page === REMINDER_MAX_PAGES - 1) truncated = true
+  }
+  return { considered, sent, truncated }
+}
 
+async function sendReminderPage(supabase: SupabaseClient, groups: Array<z.infer<typeof reminderGroupSchema>>) {
   const projectIds = Array.from(new Set(groups.map((group) => group.project_id)))
   const groupIds = Array.from(new Set(groups.map((group) => group.group_id)))
   const orgIds = Array.from(new Set(groups.map((group) => group.org_id)))
-  const [selectionsResult, tokensResult, orgsResult] = await Promise.all([
-    supabase
-      .from("project_selections")
-      .select("project_id, group_id")
-      .in("project_id", projectIds)
-      .in("group_id", groupIds)
-      .in("status", ["pending", "selected"])
-      .limit(5000),
-    supabase
-      .from("portal_access_tokens")
-      .select("project_id, token, contact:contacts(full_name, email)")
-      .in("project_id", projectIds)
-      .eq("portal_type", "client")
-      .eq("can_submit_selections", true)
-      .is("revoked_at", null)
-      .is("paused_at", null)
-      .limit(2000),
+  const [selections, tokens, orgsResult] = await Promise.all([
+    readAllRows(
+      (from, to) => supabase
+        .from("project_selections")
+        .select("project_id, group_id")
+        .in("org_id", orgIds)
+        .in("project_id", projectIds)
+        .in("group_id", groupIds)
+        .in("status", ["pending", "selected"])
+        .order("id")
+        .range(from, to),
+      "pending selections",
+    ),
+    readAllRows(
+      (from, to) => supabase
+        .from("portal_access_tokens")
+        .select("project_id, token, contact:contacts(full_name, email)")
+        .in("org_id", orgIds)
+        .in("project_id", projectIds)
+        .eq("portal_type", "client")
+        .eq("can_submit_selections", true)
+        .is("revoked_at", null)
+        .is("paused_at", null)
+        .order("id")
+        .range(from, to),
+      "buyer portals",
+    ),
     supabase.from("orgs").select("id, name, slug, logo_url").in("id", orgIds),
   ])
-  if (selectionsResult.error) throw new Error(`Failed to load pending selections: ${selectionsResult.error.message}`)
-  if (tokensResult.error) throw new Error(`Failed to load buyer portals: ${tokensResult.error.message}`)
   if (orgsResult.error) throw new Error(`Failed to load reminder organizations: ${orgsResult.error.message}`)
 
-  const pendingKeys = new Set((selectionsResult.data ?? []).map((row) => `${row.project_id}:${row.group_id}`))
-  const tokenByProject = new Map((tokensResult.data ?? []).map((token) => [token.project_id, token]))
+  const pendingKeys = new Set(selections.map((row) => `${row.project_id}:${row.group_id}`))
+  const tokenByProject = new Map(tokens.map((token) => [token.project_id, token]))
   const orgById = new Map((orgsResult.data ?? []).map((org) => [org.id, org]))
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
   let sent = 0
@@ -464,7 +506,7 @@ export async function sendSelectionCutoffReminders() {
     })
     sent += 1
   }
-  return { considered: groups.length, sent }
+  return sent
 }
 
 export async function runSelectionCutoffSweep() {

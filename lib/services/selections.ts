@@ -588,7 +588,7 @@ export async function createProjectSelection({ input, orgId }: { input: Selectio
     project_id: input.project_id,
     category_id: input.category_id,
     group_id: groupId,
-    status: input.status ?? "pending",
+    status: "pending",
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
   }

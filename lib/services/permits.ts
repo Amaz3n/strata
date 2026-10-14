@@ -32,9 +32,10 @@ import { authorize, getDivisionAccessForUser, requireAuthorization } from "@/lib
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { createProjectExpense } from "@/lib/services/cost-plus"
+import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { ensureVendorRoleWithClient } from "@/lib/services/party-roles"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { createProjectVendorBill, deleteVendorBill } from "@/lib/services/vendor-bills"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { chunk } from "@/lib/utils"
@@ -514,7 +515,14 @@ export async function updateCorrectionRound(input: unknown, orgId?: string) {
 export async function recordPermitDecision(input: unknown, orgId?: string) {
   const parsed = recordPermitDecisionSchema.parse(input)
   const context = await writeContext(orgId)
-  await authorizeHome(context, await applicationProject(context, parsed.applicationId))
+  const projectId = await applicationProject(context, parsed.applicationId)
+  await authorizeHome(context, projectId)
+  if (parsed.decision === "not_required" && parsed.issuedPermitFileId) {
+    rpcError((await context.supabase.rpc("set_permit_document", {
+      p_org_id: context.orgId, p_application_id: parsed.applicationId, p_document_kind: "authority_letter",
+      p_label: "Authority's no-permit letter", p_required_for: "decision", p_file_id: parsed.issuedPermitFileId,
+    })).error)
+  }
   rpcError((await context.supabase.rpc("record_permit_decision", {
     p_org_id: context.orgId, p_application_id: parsed.applicationId, p_decision: parsed.decision, p_decided_on: parsed.decidedOn,
     p_permit_number: parsed.permitNumber ?? null, p_issued_on: parsed.issuedOn ?? null, p_expires_on: parsed.expiresOn ?? null,
@@ -550,14 +558,16 @@ export async function voidPermitFee(input: unknown, orgId?: string) {
 }
 
 /**
- * Link a payable someone already entered: by whoever manages permits or enters
- * payables, and a counter-paid expense by whoever entered it. The function
- * checks which, on the fee's home, for the member passed in: it is callable by
- * the service role only.
+ * Link a payable someone already entered, while it is unapproved and unpaid: a
+ * bill by whoever manages permits or enters payables, an expense by whoever
+ * manages permits. The function re-checks that on the fee's home for the member
+ * passed in: it is callable by the service role only.
  */
 export async function linkPermitFeePayment(input: unknown, orgId?: string) {
   const parsed = linkPermitFeePaymentSchema.parse(input)
   const context = await requireOrgContext(orgId)
+  if (parsed.vendorBillId) await requireAnyPermission(["permit.write", "bill.write"], context)
+  else await requirePermission("permit.write", context)
   const { data, error } = await createServiceSupabaseClient().rpc("link_permit_fee_payment", {
     p_org_id: context.orgId, p_actor_id: context.userId, p_fee_id: parsed.feeId, p_vendor_bill_id: parsed.vendorBillId ?? null,
     p_project_expense_id: parsed.projectExpenseId ?? null,
@@ -578,8 +588,15 @@ async function discardUnlinkedPayable(context: OrgServiceContext, created: { kin
     await deleteVendorBill({ billId: created.id, orgId: context.orgId })
     return
   }
-  const { error } = await createServiceSupabaseClient().from("project_expenses").delete().eq("org_id", context.orgId).eq("id", created.id)
+  const service = createServiceSupabaseClient()
+  const { data: before, error: readError } = await service.from("project_expenses").select("*").eq("org_id", context.orgId).eq("id", created.id).maybeSingle()
+  if (readError) throw new Error(readError.message)
+  if (!before) return
+  const { error } = await service.from("project_expenses").delete().eq("org_id", context.orgId).eq("id", created.id)
   if (error) throw new Error(error.message)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "delete", entityType: "project_expense", entityId: created.id, before, after: null })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "expense_discarded", entityType: "project_expense", entityId: created.id,
+    payload: { project_id: before.project_id, reason: "permit_fee_link_failed" } })
 }
 
 /**
@@ -595,6 +612,7 @@ export async function payPermitFee(input: unknown, orgId?: string) {
   const parsed = payPermitFeeSchema.parse(input)
   const context = await requireOrgContext(orgId)
   if (parsed.via === "bill") await requirePermission("bill.write", context)
+  else await requirePermission("permit.write", context)
   const { data, error } = await context.supabase.from("permit_fees")
     .select("id,kind,amount_cents,status,due_before,cost_code_id,project_id,application:permit_applications(jurisdiction_company_id,permit_number,permit_type)")
     .eq("org_id", context.orgId).eq("id", parsed.feeId).maybeSingle()
@@ -849,8 +867,9 @@ export async function sweepPermitDeadlines(now: Date = new Date()) {
     await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_correction.due", entityType: "permit_correction_round", entityId: row.id,
       payload: { project_id: row.project_id, application_id: row.application_id, round_no: row.round_no, due_on: row.due_on,
         days_out: daysBetween(today, row.due_on), owner_user_id: row.owner_user_id } })
-    const { error } = await service.from("permit_correction_rounds")
-      .update({ metadata: { ...row.metadata, [permitReminderKey(reminder)]: now.toISOString() } }).eq("org_id", row.org_id).eq("id", row.id)
+    const { error } = await service.rpc("mark_permit_reminder", {
+      p_entity: "permit_correction_round", p_org_id: row.org_id, p_id: row.id, p_key: permitReminderKey(reminder), p_at: now.toISOString(),
+    })
     if (error) throw new Error(`Failed to record the correction reminder: ${error.message}`)
     corrections += 1
   }
@@ -874,8 +893,9 @@ export async function sweepPermitDeadlines(now: Date = new Date()) {
     await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_application.decision_overdue", entityType: "permit_application", entityId: row.id,
       payload: { project_id: row.project_id, permit_type: row.permit_type, expected_decision_on: row.expected_decision_on,
         days_overdue: daysBetween(row.expected_decision_on, row.today_local), owner_user_id: row.owner_user_id } })
-    const { error } = await service.from("permit_applications")
-      .update({ metadata: { ...metadata, [permitReminderKey("overdue", scope)]: now.toISOString() } }).eq("org_id", row.org_id).eq("id", row.id)
+    const { error } = await service.rpc("mark_permit_reminder", {
+      p_entity: "permit_application", p_org_id: row.org_id, p_id: row.id, p_key: permitReminderKey("overdue", scope), p_at: now.toISOString(),
+    })
     if (error) throw new Error(`Failed to record the decision reminder: ${error.message}`)
     decisions += 1
   }

@@ -14,7 +14,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { bookAppointment, cancelAppointment, listAppointments, rescheduleAppointment } = freshRequire("lib/services/design-studio-appointments.ts")
+const { bookAppointment, cancelAppointment, listAppointments, listOpenSlots, rescheduleAppointment, saveStudioRooms } = freshRequire("lib/services/design-studio-appointments.ts")
 
 const MINE = id(1)
 const THEIRS = id(2)
@@ -30,8 +30,19 @@ const BOOKED = id(10)
 const TEN_AM = "2026-11-03T15:00:00.000Z"
 const NOON = "2026-11-03T17:00:00.000Z"
 
+/** The columns the database fills in (trigger-computed end, revision, nulls) that a fake insert leaves off. */
+function completed(row) {
+  const start = Date.parse(row.scheduled_at)
+  return {
+    contact_id: null, community_id: null, coordinator_user_id: null, location_id: null, room_id: null, notes: null, cancel_reason: null,
+    status: "scheduled", revision: 1, group_ids: [], duration_minutes: 120,
+    ...row,
+    ends_at: row.ends_at ?? new Date(start + (row.duration_minutes ?? 120) * 60_000).toISOString(),
+  }
+}
+
 function harness({ permissions = ["selections.read", "design_studio.manage", "project.read"], projects, rooms = [ROOM_A, ROOM_B], appointments } = {}) {
-  return createServiceHarness({
+  const service = createServiceHarness({
     permissions,
     projects,
     tables: {
@@ -47,15 +58,23 @@ function harness({ permissions = ["selections.read", "design_studio.manage", "pr
       design_studio_locations: [{ id: STUDIO, org_id: ORG, name: "Main studio", time_zone: "America/New_York", is_archived: false }],
       design_studio_rooms: rooms.map((roomId, index) => ({ id: roomId, org_id: ORG, location_id: STUDIO, is_active: true, sort_order: index })),
       app_users: [{ id: CONSULTANT, full_name: "Dana Consultant", email: "dana@example.test" }],
-      design_studio_appointments: appointments ?? [
+      design_studio_appointments: (appointments ?? [
         { id: BOOKED, org_id: ORG, project_id: THEIRS, community_id: COMMUNITY, location_id: STUDIO, room_id: ROOM_A, coordinator_user_id: CONSULTANT, scheduled_at: "2026-11-02T15:00:00.000Z", ends_at: "2026-11-02T17:00:00.000Z", duration_minutes: 120, status: "scheduled", revision: 1, group_ids: [] },
         { id: id(14), org_id: ORG, project_id: MINE, community_id: COMMUNITY, location_id: STUDIO, room_id: ROOM_A, coordinator_user_id: CONSULTANT, scheduled_at: "2026-11-01T15:00:00.000Z", ends_at: "2026-11-01T17:00:00.000Z", duration_minutes: 120, status: "scheduled", revision: 1, group_ids: [] },
-      ],
+      ]).map(completed),
     },
     rpc: {
       selection_home_buyer: () => ({ data: BUYER, error: null }),
+      replace_studio_rooms: () => ({ data: 2, error: null }),
     },
   })
+  const fill = (result) => {
+    if (Array.isArray(result.data)) return { ...result, data: result.data.map(completed) }
+    return result.data ? { ...result, data: completed(result.data) } : result
+  }
+  service.tamper("design_studio_appointments", fill, { on: "insert" })
+  service.tamper("design_studio_appointments", fill, { on: "update" })
+  return service
 }
 
 const booking = (overrides = {}) => ({ projectId: MINE, locationId: STUDIO, consultantUserId: CONSULTANT, scheduledAt: TEN_AM, durationMinutes: 120, ...overrides })
@@ -130,6 +149,28 @@ describe("bookAppointment", () => {
     const service = harness({ permissions: ["selections.read", "project.read"] })
     await assert.rejects(service.run(() => bookAppointment(booking())), /Missing permission/)
     assert.deepEqual(service.writes(), [])
+  })
+})
+
+describe("listOpenSlots", () => {
+  const ask = (projectId) => ({ projectId, locationId: STUDIO, consultantUserId: CONSULTANT, date: "2026-11-03", durationMinutes: 60 })
+
+  test("a coordinator scoped to one home learns nothing about another's availability", async () => {
+    const service = harness({ projects: [MINE] })
+    await assert.rejects(service.run(() => listOpenSlots(ask(THEIRS))), /Missing permission/)
+    assert.deepEqual(service.reads("project_selection_groups"), [])
+    await service.run(() => listOpenSlots(ask(MINE)))
+  })
+})
+
+describe("saveStudioRooms", () => {
+  test("the whole list goes to the database in one call, so a failure leaves the rooms as they were", async () => {
+    const service = harness()
+    await service.run(() => saveStudioRooms({ locationId: STUDIO, rooms: [{ id: ROOM_A, name: "B" }, { name: "A" }] }))
+    const calls = service.queries.filter((query) => query.table === "rpc:replace_studio_rooms")
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0].payload.p_rooms, [{ id: ROOM_A, name: "B", isActive: true }, { id: null, name: "A", isActive: true }])
+    assert.deepEqual(service.writes("design_studio_rooms"), [])
   })
 })
 

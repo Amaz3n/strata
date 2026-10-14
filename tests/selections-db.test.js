@@ -648,3 +648,22 @@ test("the cutoff reminder counts days in the community's day, not the server's",
   await home.setCutoff(await home.day(14), "locked")
   assert.deepEqual(await reminders(), [])
 })
+
+test("the cutoff reminder pages over a stable order instead of stopping at a limit", async (t) => {
+  const home = await supplyHome(t, {})
+  await home.setCutoff(await home.day(7))
+  const page = (offset) => rpc(home.db, "selection_cutoff_reminder_groups", { p_days: [7, 14], p_limit: 1, p_offset: offset })
+  assert.equal((await page(0)).length, 1)
+  assert.deepEqual(await page(1), [])
+})
+
+test("a change order's metadata is merged by patch, keeping what a job stamped since", async (t) => {
+  const db = await createDatabase(t)
+  const { orgId } = await seedMember(db)
+  const project = await insert(db, "projects", { org_id: orgId, name: "Lot 12" })
+  const changeOrder = await insert(db, "change_orders", { org_id: orgId, project_id: project.id, title: "Swap", metadata: JSON.stringify({ selection_change_follow_up: { event_recorded: true } }) })
+  await rpc(db, "merge_change_order_metadata", { p_org_id: orgId, p_change_order_id: changeOrder.id, p_patch: JSON.stringify({ envelope_effects_completed: true }) })
+  const { rows } = await db.query("select metadata from public.change_orders where id = $1", [changeOrder.id])
+  assert.deepEqual(rows[0].metadata, { selection_change_follow_up: { event_recorded: true }, envelope_effects_completed: true })
+  assert.equal(await refusalCode(rpc(db, "merge_change_order_metadata", { p_org_id: orgId, p_change_order_id: uuid(), p_patch: "{}" })), "Change order not found")
+})

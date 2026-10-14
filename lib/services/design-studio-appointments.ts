@@ -120,44 +120,42 @@ const APPOINTMENT_LIST_CAP = 100
 const STUDIO_CAP = 50
 const DAY_BOOKING_CAP = 500
 
-type Embedded<T> = T | T[] | null | undefined
+const uuid = z.string().uuid()
 
-function relation<T>(value: Embedded<T>): T | null {
+/** A PostgREST embed arrives as one object or, for a to-many shape, a list of one. */
+function embedded<T extends z.ZodTypeAny>(shape: T) {
+  return z.union([shape, z.array(shape)]).nullish()
+}
+
+function relation<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null
   return value ?? null
 }
 
-interface AppointmentRow {
-  id: string
-  community_id: string | null
-  project_id: string
-  contact_id: string | null
-  coordinator_user_id: string | null
-  location_id: string | null
-  room_id: string | null
-  scheduled_at: string
-  ends_at: string
-  duration_minutes: number
-  status: string
-  revision: number
-  group_ids: string[] | null
-  notes: string | null
-  cancel_reason: string | null
-  project?: Embedded<{ name: string | null }>
-  community?: Embedded<{ name: string | null }>
-  buyer?: Embedded<{ full_name: string | null; email: string | null }>
-  consultant?: Embedded<{ full_name: string | null }>
-  location?: Embedded<{ name: string | null; time_zone: string | null }>
-  room?: Embedded<{ name: string | null }>
-}
-
-const STATUSES: AppointmentStatus[] = ["scheduled", "completed", "no_show", "canceled"]
-
-function toStatus(value: string): AppointmentStatus {
-  const status = STATUSES.find((candidate) => candidate === value)
-  if (!status) throw new Error(`Unknown appointment status: ${value}`)
-  return status
-}
+const appointmentRowSchema = z.object({
+  id: uuid,
+  community_id: uuid.nullable(),
+  project_id: uuid,
+  contact_id: uuid.nullable(),
+  coordinator_user_id: uuid.nullable(),
+  location_id: uuid.nullable(),
+  room_id: uuid.nullable(),
+  scheduled_at: z.string(),
+  ends_at: z.string(),
+  duration_minutes: z.number(),
+  status: z.enum(["scheduled", "completed", "no_show", "canceled"]),
+  revision: z.number(),
+  group_ids: z.array(uuid).nullable(),
+  notes: z.string().nullable(),
+  cancel_reason: z.string().nullable(),
+  project: embedded(z.object({ name: z.string().nullable() })),
+  community: embedded(z.object({ name: z.string().nullable() })),
+  buyer: embedded(z.object({ full_name: z.string().nullable(), email: z.string().nullable() })),
+  consultant: embedded(z.object({ full_name: z.string().nullable() })),
+  location: embedded(z.object({ name: z.string().nullable(), time_zone: z.string().nullable() })),
+  room: embedded(z.object({ name: z.string().nullable() })),
+})
+type AppointmentRow = z.infer<typeof appointmentRowSchema>
 
 function toAppointmentDto(row: AppointmentRow): AppointmentDto {
   const location = relation(row.location)
@@ -172,7 +170,7 @@ function toAppointmentDto(row: AppointmentRow): AppointmentDto {
     scheduledAt: row.scheduled_at,
     endsAt: row.ends_at,
     durationMinutes: row.duration_minutes,
-    status: toStatus(row.status),
+    status: row.status,
     revision: row.revision,
     groupIds: row.group_ids ?? [],
     notes: row.notes,
@@ -245,10 +243,12 @@ export async function listAppointments(opts: AppointmentFilter & { limit?: numbe
   if (!scoped) return []
   const { data, error } = await scoped.query.order("scheduled_at").limit(Math.min(opts.limit ?? 50, APPOINTMENT_LIST_CAP))
   if (error) throw new Error(`Failed to load design studio sessions: ${error.message}`)
-  return ((data ?? []) as AppointmentRow[]).map(toAppointmentDto)
+  return (data ?? []).map((row) => toAppointmentDto(appointmentRowSchema.parse(row)))
 }
 
 const HOME_BATCH = 200
+
+const homeNextRowSchema = z.object({ project_id: uuid, scheduled_at: z.string() })
 
 /**
  * The next scheduled session of each home, for a desk that asks "who has no
@@ -273,8 +273,8 @@ export async function nextAppointmentsByHome(projectIds: string[]): Promise<Map<
       .limit(DAY_BOOKING_CAP)))
   for (const { data, error } of results) {
     if (error) throw new Error(`Failed to load booked sessions: ${error.message}`)
-    for (const row of data ?? []) {
-      if (!next.has(row.project_id as string)) next.set(row.project_id as string, row.scheduled_at as string)
+    for (const row of z.array(homeNextRowSchema).parse(data ?? [])) {
+      if (!next.has(row.project_id)) next.set(row.project_id, row.scheduled_at)
     }
   }
   return next
@@ -290,12 +290,25 @@ export async function getNextAppointmentForHome(projectId: string): Promise<Appo
 // Studios, rooms and hours.
 // ---------------------------------------------------------------------------
 
+const consultantRowSchema = z.object({ id: uuid, full_name: z.string().nullable(), email: z.string().nullable() })
+
 async function consultantNames(db: SupabaseClient, userIds: string[]): Promise<Map<string, string>> {
   if (userIds.length === 0) return new Map()
   const { data, error } = await db.from("app_users").select("id, full_name, email").in("id", userIds)
   if (error) throw new Error(`Failed to load consultants: ${error.message}`)
-  return new Map((data ?? []).map((row) => [row.id as string, (row.full_name as string | null) ?? (row.email as string | null) ?? "Consultant"]))
+  return new Map(z.array(consultantRowSchema).parse(data ?? []).map((row) => [row.id, row.full_name ?? row.email ?? "Consultant"]))
 }
+
+const locationRowSchema = z.object({
+  id: uuid,
+  name: z.string(),
+  address: z.string().nullable(),
+  time_zone: z.string(),
+  division_id: uuid.nullable(),
+  is_archived: z.boolean(),
+})
+const roomRowSchema = z.object({ id: uuid, location_id: uuid, name: z.string(), is_active: z.boolean(), sort_order: z.number() })
+const hoursRowSchema = z.object({ user_id: uuid, location_id: uuid, weekday: z.number(), start_minute: z.number(), end_minute: z.number() })
 
 export async function listStudios(opts: { includeArchived?: boolean } = {}): Promise<StudioDirectory> {
   const context = await requireOrgContext()
@@ -314,8 +327,8 @@ export async function listStudios(opts: { includeArchived?: boolean } = {}): Pro
   ])
   if (locationsResult.error) throw new Error(`Failed to load studios: ${locationsResult.error.message}`)
   if (holdersResult.error) throw new Error(`Failed to load consultants: ${holdersResult.error.message}`)
-  const locations = locationsResult.data ?? []
-  const locationIds = locations.map((row) => row.id as string)
+  const locations = z.array(locationRowSchema).parse(locationsResult.data ?? [])
+  const locationIds = locations.map((row) => row.id)
   const [roomsResult, hoursResult] = locationIds.length
     ? await Promise.all([
         db.from("design_studio_rooms").select("id, location_id, name, is_active, sort_order").eq("org_id", context.orgId).in("location_id", locationIds).order("sort_order").order("name"),
@@ -325,27 +338,28 @@ export async function listStudios(opts: { includeArchived?: boolean } = {}): Pro
   if (roomsResult.error) throw new Error(`Failed to load studio rooms: ${roomsResult.error.message}`)
   if (hoursResult.error) throw new Error(`Failed to load consultant hours: ${hoursResult.error.message}`)
   const holderIds = z.array(z.string().uuid()).parse(holdersResult.data ?? [])
-  const hourRows = hoursResult.data ?? []
-  const names = await consultantNames(db, Array.from(new Set([...holderIds, ...hourRows.map((row) => row.user_id as string)])))
+  const roomRows = z.array(roomRowSchema).parse(roomsResult.data ?? [])
+  const hourRows = z.array(hoursRowSchema).parse(hoursResult.data ?? [])
+  const names = await consultantNames(db, Array.from(new Set([...holderIds, ...hourRows.map((row) => row.user_id)])))
 
   return {
     locations: locations.map((location) => {
       const byUser = new Map<string, HoursWindow[]>()
       for (const row of hourRows.filter((hours) => hours.location_id === location.id)) {
-        const windows = byUser.get(row.user_id as string) ?? []
-        windows.push({ weekday: row.weekday as number, startMinute: row.start_minute as number, endMinute: row.end_minute as number })
-        byUser.set(row.user_id as string, windows)
+        const windows = byUser.get(row.user_id) ?? []
+        windows.push({ weekday: row.weekday, startMinute: row.start_minute, endMinute: row.end_minute })
+        byUser.set(row.user_id, windows)
       }
       return {
-        id: location.id as string,
-        name: location.name as string,
-        address: (location.address as string | null) ?? null,
-        timeZone: location.time_zone as string,
-        divisionId: (location.division_id as string | null) ?? null,
-        isArchived: Boolean(location.is_archived),
-        rooms: (roomsResult.data ?? [])
+        id: location.id,
+        name: location.name,
+        address: location.address,
+        timeZone: location.time_zone,
+        divisionId: location.division_id,
+        isArchived: location.is_archived,
+        rooms: roomRows
           .filter((room) => room.location_id === location.id)
-          .map((room) => ({ id: room.id as string, name: room.name as string, isActive: Boolean(room.is_active) })),
+          .map((room) => ({ id: room.id, name: room.name, isActive: room.is_active })),
         consultants: Array.from(byUser.entries())
           .map(([userId, windows]) => ({ userId, name: names.get(userId) ?? "Consultant", windows }))
           .sort((a, b) => a.name.localeCompare(b.name)),
@@ -381,17 +395,18 @@ export async function saveStudioLocation(raw: StudioLocationInput): Promise<{ id
   const write = input.id
     ? context.supabase.from("design_studio_locations").update(payload).eq("org_id", context.orgId).eq("id", input.id)
     : context.supabase.from("design_studio_locations").insert({ org_id: context.orgId, created_by: context.userId, ...payload })
-  const { data, error } = await write.select("id").maybeSingle()
+  const { data: saved, error } = await write.select("id").maybeSingle()
   if (error?.code === "23505") throw new Error(`A studio named ${input.name} already exists`)
   // The member's own client writes this one, so the division wall is row security's.
   if (error?.code === "42501") throw new Error("That studio is outside your divisions")
   if (error) throw new Error(error.message)
-  if (!data) throw new Error("Studio not found")
+  const data = z.object({ id: uuid }).safeParse(saved)
+  if (!data.success) throw new Error("Studio not found")
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: input.id ? "design_studio_location_updated" : "design_studio_location_created", entityType: "design_studio_location", entityId: data.id, payload }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "design_studio_location", entityId: data.id, after: payload }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: input.id ? "design_studio_location_updated" : "design_studio_location_created", entityType: "design_studio_location", entityId: data.data.id, payload }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "design_studio_location", entityId: data.data.id, after: payload }),
   ])
-  return { id: data.id as string }
+  return { id: data.data.id }
 }
 
 /**
@@ -404,23 +419,11 @@ export async function saveStudioRooms(raw: StudioRoomsInput): Promise<{ rooms: n
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
   await assertStudioInScope(context, input.locationId)
-  const db = createServiceSupabaseClient()
-  const { data: existing, error } = await db.from("design_studio_rooms").select("id, is_active").eq("org_id", context.orgId).eq("location_id", input.locationId)
-  if (error) throw new Error(`Failed to load the studio's rooms: ${error.message}`)
-  const listed = new Set(input.rooms.flatMap((room) => (room.id ? [room.id] : [])))
-  const unknown = [...listed].filter((roomId) => !(existing ?? []).some((row) => row.id === roomId))
-  if (unknown.length) throw new Error("A room on the list belongs to another studio")
-  for (const [index, room] of input.rooms.entries()) {
-    const payload = { name: room.name, is_active: room.isActive, sort_order: index }
-    const { error: writeError } = room.id
-      ? await db.from("design_studio_rooms").update(payload).eq("org_id", context.orgId).eq("id", room.id)
-      : await db.from("design_studio_rooms").insert({ org_id: context.orgId, location_id: input.locationId, ...payload })
-    if (writeError) throw new Error(writeError.code === "23505" ? `Two rooms are named ${room.name}` : writeError.message)
-  }
-  for (const row of (existing ?? []).filter((candidate) => !listed.has(candidate.id as string) && candidate.is_active)) {
-    const { error: retireError } = await db.from("design_studio_rooms").update({ is_active: false }).eq("org_id", context.orgId).eq("id", row.id)
-    if (retireError) throw new Error(retireError.message)
-  }
+  const { error } = await createServiceSupabaseClient().rpc("replace_studio_rooms", {
+    p_org_id: context.orgId, p_location_id: input.locationId,
+    p_rooms: input.rooms.map((room) => ({ id: room.id ?? null, name: room.name, isActive: room.isActive })),
+  })
+  if (error) throw new Error(error.message)
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "design_studio_rooms_updated", entityType: "design_studio_location", entityId: input.locationId, payload: { rooms: input.rooms } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "design_studio_location", entityId: input.locationId, after: { rooms: input.rooms } }),
@@ -467,16 +470,18 @@ async function loadStudio(context: OrgContext, db: SupabaseClient, locationId: s
   ])
   if (locationResult.error) throw new Error(`Failed to load the studio: ${locationResult.error.message}`)
   if (roomsResult.error) throw new Error(`Failed to load the studio's rooms: ${roomsResult.error.message}`)
-  const location = locationResult.data
-  if (!location) throw new Error("Studio not found")
-  if (location.is_archived) throw new Error(`${location.name} is closed; choose another studio`)
+  const location = locationRowSchema.pick({ id: true, name: true, time_zone: true, is_archived: true }).safeParse(locationResult.data)
+  if (!location.success) throw new Error("Studio not found")
+  if (location.data.is_archived) throw new Error(`${location.data.name} is closed; choose another studio`)
   return {
-    id: location.id as string,
-    name: location.name as string,
-    timeZone: location.time_zone as string,
-    rooms: (roomsResult.data ?? []).map((room) => ({ id: room.id as string, isActive: Boolean(room.is_active) })),
+    id: location.data.id,
+    name: location.data.name,
+    timeZone: location.data.time_zone,
+    rooms: z.array(roomRowSchema.pick({ id: true, is_active: true })).parse(roomsResult.data ?? []).map((room) => ({ id: room.id, isActive: room.is_active })),
   }
 }
+
+const bookingRowSchema = z.object({ id: uuid, room_id: uuid.nullable(), scheduled_at: z.string(), ends_at: z.string() })
 
 /** Sessions booked over a window, read with the service role: a room taken by another division's buyer is still taken. */
 async function bookingsOver(
@@ -498,9 +503,9 @@ async function bookingsOver(
   if (filter.consultantUserId) query = query.eq("coordinator_user_id", filter.consultantUserId)
   const { data, error } = await query
   if (error) throw new Error(`Failed to read the studio calendar: ${error.message}`)
-  return (data ?? [])
+  return z.array(bookingRowSchema).parse(data ?? [])
     .filter((row) => row.id !== excludeAppointmentId)
-    .map((row) => ({ roomId: (row.room_id as string | null) ?? null, start: row.scheduled_at as string, end: row.ends_at as string }))
+    .map((row) => ({ roomId: row.room_id, start: row.scheduled_at, end: row.ends_at }))
 }
 
 interface HomeForBooking {
@@ -508,6 +513,8 @@ interface HomeForBooking {
   buyerContactId: string | null
   openGroups: Array<{ groupId: string; cutoffDate: string | null }>
 }
+
+const openGroupRowSchema = z.object({ group_id: uuid, cutoff_date: z.string().nullable() })
 
 async function loadHome(db: SupabaseClient, orgId: string, projectId: string): Promise<HomeForBooking> {
   const [lotResult, buyerResult, groupsResult] = await Promise.all([
@@ -518,10 +525,11 @@ async function loadHome(db: SupabaseClient, orgId: string, projectId: string): P
   if (lotResult.error) throw new Error(`Failed to load the home: ${lotResult.error.message}`)
   if (buyerResult.error) throw new Error(`Failed to load the home's buyer: ${buyerResult.error.message}`)
   if (groupsResult.error) throw new Error(`Failed to load the home's selection groups: ${groupsResult.error.message}`)
+  const lot = z.object({ community_id: uuid.nullable() }).nullable().parse(lotResult.data)
   return {
-    communityId: (lotResult.data?.community_id as string | null | undefined) ?? null,
+    communityId: lot?.community_id ?? null,
     buyerContactId: typeof buyerResult.data === "string" ? buyerResult.data : null,
-    openGroups: (groupsResult.data ?? []).map((row) => ({ groupId: row.group_id as string, cutoffDate: (row.cutoff_date as string | null) ?? null })),
+    openGroups: z.array(openGroupRowSchema).parse(groupsResult.data ?? []).map((row) => ({ groupId: row.group_id, cutoffDate: row.cutoff_date })),
   }
 }
 
@@ -574,7 +582,7 @@ async function writeInFreeRoom(
     const roomId = pickRoom(studio.rooms, bookings, window)
     if (!roomId) throw studioFull(studio)
     const { data, error } = await write(roomId)
-    if (!error && data) return data as AppointmentRow
+    if (!error && data) return appointmentRowSchema.parse(data)
     if (error && isConstraint(error, "design_studio_appointments_room_free")) continue
     throw await describeWriteError(db, error ?? { message: "missing row" }, consultantUserId, studio)
   }
@@ -620,7 +628,7 @@ async function loadAppointmentForChange(context: OrgContext, db: SupabaseClient,
   const { data, error } = await db.from("design_studio_appointments").select(APPOINTMENT_COLUMNS).eq("org_id", context.orgId).eq("id", appointmentId).maybeSingle()
   if (error) throw new Error(`Failed to load the session: ${error.message}`)
   if (!data) throw new Error("Session not found")
-  const row = data as AppointmentRow
+  const row = appointmentRowSchema.parse(data)
   // A change to a session is a change on its home: authorized there.
   await authorizeHome(context, row.project_id)
   return row
@@ -668,7 +676,7 @@ export async function cancelAppointment(raw: CancelAppointmentInput): Promise<Ap
     .eq("org_id", context.orgId).eq("id", before.id).eq("status", "scheduled")
     .select(APPOINTMENT_SELECT).single()
   if (error || !data) throw new Error(`Failed to cancel the session: ${error?.message ?? "it changed while you were working"}`)
-  const appointment = toAppointmentDto(data as AppointmentRow)
+  const appointment = toAppointmentDto(appointmentRowSchema.parse(data))
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "design_studio_appointment_canceled", entityType: "design_studio_appointment", entityId: appointment.id, payload: { project_id: appointment.projectId, scheduled_at: before.scheduled_at, reason: input.reason } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "design_studio_appointment", entityId: appointment.id, before: { status: before.status }, after: { status: "canceled", cancel_reason: input.reason } }),
@@ -691,7 +699,7 @@ export async function recordAppointmentOutcome(raw: AppointmentOutcomeInput): Pr
     .eq("org_id", context.orgId).eq("id", before.id).eq("status", "scheduled")
     .select(APPOINTMENT_SELECT).single()
   if (error || !data) throw new Error(`Failed to close out the session: ${error?.message ?? "it changed while you were working"}`)
-  const appointment = toAppointmentDto(data as AppointmentRow)
+  const appointment = toAppointmentDto(appointmentRowSchema.parse(data))
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: `design_studio_appointment_${input.outcome}`, entityType: "design_studio_appointment", entityId: appointment.id, payload: { project_id: appointment.projectId } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "design_studio_appointment", entityId: appointment.id, before: { status: before.status }, after: { status: input.outcome } }),
@@ -708,6 +716,7 @@ export async function listOpenSlots(raw: OpenSlotsInput): Promise<{ timeZone: st
   const input = openSlotsSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
+  await authorizeHome(context, input.projectId)
   const db = createServiceSupabaseClient()
   const studio = await loadStudio(context, db, input.locationId)
   const day: Interval = {
@@ -725,14 +734,15 @@ export async function listOpenSlots(raw: OpenSlotsInput): Promise<{ timeZone: st
   ])
   if (hoursResult.error) throw new Error(`Failed to load the consultant's hours: ${hoursResult.error.message}`)
   if (moving.error) throw new Error(`Failed to load the session: ${moving.error.message}`)
-  const covered = new Set<string>((moving.data?.group_ids as string[] | null | undefined) ?? home.openGroups.map((group) => group.groupId))
+  const movingGroups = z.object({ group_ids: z.array(uuid).nullable() }).nullable().parse(moving.data)
+  const covered = new Set<string>(movingGroups?.group_ids ?? home.openGroups.map((group) => group.groupId))
   return {
     timeZone: studio.timeZone,
     slots: openSlots({
       date: input.date,
       timeZone: studio.timeZone,
       durationMinutes: input.durationMinutes,
-      windows: (hoursResult.data ?? []).map((row) => ({ weekday: row.weekday as number, startMinute: row.start_minute as number, endMinute: row.end_minute as number })),
+      windows: z.array(hoursRowSchema.omit({ user_id: true, location_id: true })).parse(hoursResult.data ?? []).map((row) => ({ weekday: row.weekday, startMinute: row.start_minute, endMinute: row.end_minute })),
       consultantBusy,
       rooms: studio.rooms,
       roomBookings,

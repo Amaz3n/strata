@@ -2,12 +2,9 @@ import { z } from "zod"
 
 import { modelChangesSchema } from "@/lib/drawings/model-options"
 
-export const selectionStatusSchema = z.enum(["pending", "selected", "confirmed", "ordered", "received"])
-
 export const selectionInputSchema = z.object({
   project_id: z.string().uuid("Project is required"),
   category_id: z.string().uuid("Category is required"),
-  status: selectionStatusSchema.default("pending"),
   due_date: z.string().optional(),
   notes: z
     .string()

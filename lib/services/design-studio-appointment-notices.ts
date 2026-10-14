@@ -34,6 +34,29 @@ const noticeJobSchema = z.object({
   }).nullable().optional(),
 })
 
+const uuid = z.string().uuid()
+
+const studioSchema = z.object({ name: z.string(), address: z.string().nullable(), time_zone: z.string() })
+
+const appointmentSchema = z.object({
+  id: uuid,
+  project_id: uuid,
+  contact_id: uuid.nullable(),
+  coordinator_user_id: uuid.nullable(),
+  scheduled_at: z.string(),
+  ends_at: z.string(),
+  status: z.string(),
+  revision: z.number(),
+  group_ids: z.array(uuid).nullable(),
+  cancel_reason: z.string().nullable(),
+  location: z.union([studioSchema, z.array(studioSchema)]).nullable(),
+})
+
+const groupCutoffSchema = z.object({
+  cutoff_date: z.string().nullable(),
+  group: z.union([z.object({ name: z.string() }), z.array(z.object({ name: z.string() }))]).nullable(),
+})
+
 const CONSULTANT_COPY: Record<"booked" | "rescheduled" | "canceled", { type: NotificationType; title: string }> = {
   booked: { type: "design_studio_appointment_assigned", title: "Design studio session booked" },
   rescheduled: { type: "design_studio_appointment_rescheduled", title: "Design studio session moved" },
@@ -61,22 +84,23 @@ interface DesignStudioNoticeResult {
 export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayload: unknown): Promise<DesignStudioNoticeResult> {
   const job = noticeJobSchema.parse(rawPayload)
   const supabase = createServiceSupabaseClient()
-  const { data: appointment, error } = await supabase
+  const { data: appointmentRow, error } = await supabase
     .from("design_studio_appointments")
     .select("id, project_id, contact_id, coordinator_user_id, scheduled_at, ends_at, status, revision, group_ids, cancel_reason, location:design_studio_locations(name, address, time_zone)")
     .eq("org_id", orgId)
     .eq("id", job.appointment_id)
     .maybeSingle()
   if (error) throw new Error(`Failed to load the session: ${error.message}`)
-  if (!appointment) throw new Error("Session not found")
+  if (!appointmentRow) throw new Error("Session not found")
+  const appointment = appointmentSchema.parse(appointmentRow)
   // A later move superseded this one; its own notice tells the buyer the time that stands.
   if (job.kind !== "canceled" && (appointment.revision !== job.revision || appointment.status !== "scheduled")) {
     return { skipped: "superseded", buyer: null, consultants_notified: 0 }
   }
 
-  const location = relation<{ name: string; address: string | null; time_zone: string }>(appointment.location)
+  const location = relation(appointment.location)
   if (!location) throw new Error("The session has no studio")
-  const groupIds = (appointment.group_ids as string[] | null) ?? []
+  const groupIds = appointment.group_ids ?? []
   const consultantIds = Array.from(new Set([appointment.coordinator_user_id, job.previous?.coordinator_user_id].filter((value): value is string => Boolean(value))))
   const [orgResult, projectResult, groupsResult, consultantsResult] = await Promise.all([
     supabase.from("orgs").select("name, slug, logo_url").eq("id", orgId).maybeSingle(),
@@ -88,13 +112,13 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
   ])
   if (groupsResult.error) throw new Error(`Failed to load the covered groups: ${groupsResult.error.message}`)
   const org = orgResult.data
-  const homeName = (projectResult.data?.name as string | undefined) ?? null
+  const homeName = z.object({ name: z.string().nullable() }).nullable().parse(projectResult.data)?.name ?? null
   const consultantName = (consultantsResult.data ?? []).find((row) => row.id === appointment.coordinator_user_id)?.full_name ?? null
   const windowText = formatWarrantyVisitWindow(appointment.scheduled_at, appointment.ends_at, location.time_zone)
   const previousWindowText = job.kind === "rescheduled" && job.previous ? formatWarrantyVisitWindow(job.previous.scheduled_at, job.previous.ends_at, location.time_zone) : null
-  const deadlines = (groupsResult.data ?? []).map((row) => ({
-    name: relation<{ name: string }>(row.group)?.name ?? "Selections",
-    cutoffText: row.cutoff_date ? formatCutoff(row.cutoff_date as string) : null,
+  const deadlines = z.array(groupCutoffSchema).parse(groupsResult.data ?? []).map((row) => ({
+    name: relation(row.group)?.name ?? "Selections",
+    cutoffText: row.cutoff_date ? formatCutoff(row.cutoff_date) : null,
   }))
 
   const emailBuyer = async (): Promise<DesignStudioNoticeResult["buyer"]> => {
@@ -109,7 +133,7 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
     const html = await renderEmailTemplate(DesignStudioAppointmentEmail({
       orgName: org?.name ?? null, orgLogoUrl: org?.logo_url ?? null, recipientName: contact.full_name ?? null, kind: job.kind,
       homeName, studioName: location.name, studioAddress: location.address, consultantName, windowText, previousWindowText, deadlines,
-      reason: job.kind === "canceled" ? (appointment.cancel_reason as string | null) : null,
+      reason: job.kind === "canceled" ? appointment.cancel_reason : null,
       actionHref: `${portal}/selections`, actionLabel: "Review your selections",
     }))
     const subject = job.kind === "canceled" ? "Design studio appointment canceled" : job.kind === "rescheduled" ? "Design studio appointment moved" : "Your design studio appointment"

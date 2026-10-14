@@ -6,11 +6,12 @@ import { toast } from "sonner"
 
 import {
   recordInPersonSelectionApprovalAction,
+  resendSelectionApprovalRequestAction,
   sendSelectionApprovalAction,
+  uploadSelectionSignedCopyAction,
   voidSelectionApprovalAction,
 } from "@/app/(app)/design-studio/actions"
 import { unwrapAction } from "@/lib/action-result"
-import { uploadDocumentForm } from "@/lib/files/upload-document-form"
 import {
   SELECTION_APPROVAL_CHANNEL_LABELS,
   SELECTION_APPROVAL_STATE_LABELS,
@@ -88,8 +89,8 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
       try {
         const result = unwrapAction(await sendSelectionApprovalAction({ projectId, groupId: current.groupId, channel, termsHash: current.terms.termsHash }))
         const description =
-          result.buyerEmail === "no_email" ? "The buyer has no email on file; share the portal link with them."
-          : result.buyerEmail === "failed" ? "The request is out, but the email to the buyer did not send. Share the portal link with them."
+          result.buyerEmail === "no_email" ? "The buyer has no email on file. Add one on the home's contact, then mail the request again."
+          : result.buyerEmail === "failed" ? "The request is out, but the email to the buyer did not send. Use Resend email to try again."
           : undefined
         const title = channel === "esign" ? "Sent for e-signature" : "Sent to the buyer portal"
         if (description) toast.warning(title, { description })
@@ -97,6 +98,22 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
         router.refresh()
       } catch (error) {
         toast.error("Could not send the selections", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
+
+  function resendEmail() {
+    if (!current.latest) return
+    const approvalId = current.latest.id
+    startTransition(async () => {
+      try {
+        const result = unwrapAction(await resendSelectionApprovalRequestAction({ projectId, approvalId }))
+        if (result.buyerEmail === "sent") toast.success("Request emailed to the buyer")
+        else toast.warning("The email did not go out", {
+          description: result.buyerEmail === "no_email" ? "The buyer has no email on file." : "The email service did not accept it. Try again shortly.",
+        })
+      } catch (error) {
+        toast.error("Could not resend the email", { description: error instanceof Error ? error.message : undefined })
       }
     })
   }
@@ -127,10 +144,8 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
         const upload = new FormData()
         upload.set("file", file)
         upload.set("projectId", projectId)
-        upload.set("category", "contracts")
-        upload.set("visibility", "private")
-        const signed = unwrapAction(await uploadDocumentForm(upload))
-        unwrapAction(await recordInPersonSelectionApprovalAction({ projectId, groupId: current.groupId, termsHash: current.terms.termsHash, signedCopyFileId: signed.id }))
+        const signed = unwrapAction(await uploadSelectionSignedCopyAction(upload))
+        unwrapAction(await recordInPersonSelectionApprovalAction({ projectId, groupId: current.groupId, termsHash: current.terms.termsHash, signedCopyFileId: signed.fileId }))
         setDialog(null)
         toast.success(`${current.groupName} approved`)
         router.refresh()
@@ -158,9 +173,16 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
       {canManage && (
         <div className={stacked ? "flex flex-col gap-1.5" : "flex flex-wrap items-center gap-1.5"}>
           {live ? (
-            <Button size="sm" variant="outline" className="h-7 rounded-none" disabled={pending} onClick={() => setDialog("void")}>
-              Void request
-            </Button>
+            <>
+              {live.channel === "portal" && (
+                <Button size="sm" variant="outline" className="h-7 rounded-none" disabled={pending} onClick={resendEmail}>
+                  Resend email
+                </Button>
+              )}
+              <Button size="sm" variant="outline" className="h-7 rounded-none" disabled={pending} onClick={() => setDialog("void")}>
+                Void request
+              </Button>
+            </>
           ) : current.blocker && current.state !== "approved" ? (
             <span className="text-[11.5px] text-muted-foreground">{current.blocker}</span>
           ) : current.state === "approved" ? null : (

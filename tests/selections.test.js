@@ -312,6 +312,16 @@ describe("createProjectSelection", () => {
     assert.equal(service.db.project_selections.length, 1)
   })
 
+  test("a selection opens pending whatever status is asked for: only the approval paths confirm", async () => {
+    const { service } = harness({ selections: [] })
+    service.grant(["selections.write"])
+
+    const created = await service.run(() => createProjectSelection({ input: { project_id: HOME, category_id: CATEGORY, status: "confirmed" } }))
+
+    assert.equal(created.status, "pending")
+    assert.equal(service.db.project_selections[0].status, "pending")
+  })
+
   test("a member limited to another division cannot open a selection on the home", async () => {
     const { service } = harness({ selections: [] })
     service.db.projects[0].division_id = DIVISION

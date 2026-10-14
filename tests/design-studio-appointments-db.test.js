@@ -13,7 +13,7 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
 
-const { asRole, createDatabase, insert, seedMember } = require("./support/pglite")
+const { asRole, createDatabase, insert, rpc, seedMember } = require("./support/pglite")
 
 const HOURS = { start_minute: 9 * 60, end_minute: 17 * 60 }
 
@@ -230,4 +230,33 @@ test("a studio's division is its wall: rooms, hours and bookings stay with the d
   })
   const undivided = await insert(db, "projects", { org_id: orgId, name: "Loose home" })
   await insert(db, "design_studio_appointments", { ...atlanticSlot, project_id: undivided.id, location_id: fixture.location.id, room_id: fixture.rooms[0].id, coordinator_user_id: consultant, scheduled_at: TEN_AM })
+  // A home with no division belongs to no division's calendar, so it may use a divisional studio.
+  await insert(db, "design_studio_appointments", { ...atlanticSlot, project_id: undivided.id, location_id: gulfStudio.id, room_id: gulfRoom.id, scheduled_at: "2026-11-03T20:00:00Z" })
+})
+
+test("a studio's rooms are replaced whole: names swap, a failure changes nothing, and unlisted rooms retire", async (t) => {
+  const fixture = await studio(t, { rooms: 2 })
+  const { db, orgId, location, rooms } = fixture
+  const replace = (list, locationId = location.id) => rpc(db, "replace_studio_rooms", { p_org_id: orgId, p_location_id: locationId, p_rooms: JSON.stringify(list) })
+  const state = async () => (await db.query("select name, is_active, sort_order from design_studio_rooms where location_id = $1 order by sort_order, name", [location.id])).rows
+
+  await replace([{ id: rooms[1].id, name: "Room 1", isActive: true }, { id: rooms[0].id, name: "Room 2", isActive: true }])
+  assert.deepEqual(await state(), [
+    { name: "Room 1", is_active: true, sort_order: 0 },
+    { name: "Room 2", is_active: true, sort_order: 1 },
+  ])
+  assert.equal((await db.query("select name from design_studio_rooms where id = $1", [rooms[0].id])).rows[0].name, "Room 2")
+
+  const before = await state()
+  await assert.rejects(replace([{ id: rooms[0].id, name: "Renamed", isActive: true }, { name: "Dup", isActive: true }, { name: "dup", isActive: true }]), /Two rooms are named dup/)
+  assert.deepEqual(await state(), before)
+
+  const other = await insert(db, "design_studio_locations", { org_id: orgId, name: "Annex", time_zone: "America/Chicago" })
+  const annexRoom = await insert(db, "design_studio_rooms", { org_id: orgId, location_id: other.id, name: "X1" })
+  await assert.rejects(replace([{ id: annexRoom.id, name: "Stolen", isActive: true }]), /belongs to another studio/)
+  assert.equal((await db.query("select name from design_studio_rooms where id = $1", [annexRoom.id])).rows[0].name, "X1")
+
+  await replace([{ id: rooms[0].id, name: "Room 2", isActive: true }, { name: "Gallery", isActive: true }])
+  const after = await db.query("select name, is_active from design_studio_rooms where location_id = $1 order by name", [location.id])
+  assert.deepEqual(after.rows, [{ name: "Gallery", is_active: true }, { name: "Room 1", is_active: false }, { name: "Room 2", is_active: true }])
 })

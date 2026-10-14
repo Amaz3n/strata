@@ -100,5 +100,11 @@ export const inPersonSelectionApprovalSchema = z.object({
 })
 export type InPersonSelectionApprovalInput = z.input<typeof inPersonSelectionApprovalSchema>
 
+export const resendSelectionApprovalSchema = z.object({ approvalId: id })
+export type ResendSelectionApprovalInput = z.input<typeof resendSelectionApprovalSchema>
+
+export const signedCopyUploadSchema = z.object({ projectId: id, file: z.instanceof(File) })
+export type SignedCopyUploadInput = z.input<typeof signedCopyUploadSchema>
+
 export const portalSelectionApprovalSchema = z.object({ groupId: id.nullable(), termsHash })
 export const portalSelectionDeclineSchema = z.object({ approvalId: id, reason: z.string().trim().max(1000).optional() })

@@ -246,6 +246,24 @@ test("resending the signing envelope reissues it and keeps the request, which th
   assert.equal(await approvalStatus(quoting.db, third.approval.id), "voided")
 })
 
+test("a resent signing envelope never outlives the approval's deadline, and an expired approval cannot be resent", async (t) => {
+  const soon = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10)
+  const fixture = await home(t, { cutoff: soon })
+  const { db, orgId, userId } = fixture
+  const { approval, envelopeId } = await sendForSignature(fixture)
+  const deadline = (await db.query("select expires_at from selection_approvals where id = $1", [approval.id])).rows[0].expires_at
+  assert.ok(deadline)
+  const replacementId = await rpc(db, "resend_esign_envelope", { p_org_id: orgId, p_envelope_id: envelopeId, p_actor_id: userId })
+  const { rows: [replacement] } = await db.query("select expires_at from envelopes where id = $1", [replacementId])
+  assert.ok(new Date(replacement.expires_at) <= new Date(deadline))
+
+  await db.query("update envelopes set expires_at = now() + interval '30 days' where id = $1", [replacementId])
+  await db.query("alter table selection_approvals disable trigger user")
+  await db.query("update selection_approvals set expires_at = now() - interval '1 minute' where id = $1", [approval.id])
+  await db.query("alter table selection_approvals enable trigger user")
+  await assert.rejects(rpc(db, "resend_esign_envelope", { p_org_id: orgId, p_envelope_id: replacementId, p_actor_id: userId }), /deadline for this approval has passed/)
+})
+
 test("a signed-in member writes no approval, no line and no approval document", async (t) => {
   const fixture = await home(t)
   const { db, orgId, userId, project } = fixture

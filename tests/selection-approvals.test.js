@@ -60,12 +60,27 @@ stubModule("@/lib/services/notifications", {
   },
 })
 
+const filedFiles = []
+const uploads = []
+stubModule("@/lib/services/files", {
+  createFileRecord: async (input, orgId, options) => {
+    filedFiles.push({ input, orgId, options })
+    return { id: id(700 + filedFiles.length) }
+  },
+})
+stubModule("@/lib/storage/files-storage", {
+  buildOrgScopedPath: (...parts) => parts.join("/"),
+  uploadFilesObject: async (payload) => { uploads.push(payload) },
+})
+
 const {
   approveSelectionsFromPortal,
   executeSelectionApprovalFromEnvelope,
   listHomeSelectionApprovals,
   notifySelectionApprovalOutcome,
+  resendSelectionApprovalRequest,
   sendSelectionApproval,
+  uploadSelectionSignedCopy,
 } = freshRequire("lib/services/selection-approvals.ts")
 
 const approvalRow = (overrides = {}) => ({
@@ -158,6 +173,48 @@ describe("sendSelectionApproval", () => {
     const { service, calls } = harness({ permissions: ["selections.read", "project.read"], rpc: { send_selection_approval: () => ({ data: approvalRow(), error: null }) } })
     await assert.rejects(service.run(() => sendSelectionApproval({ projectId: HOME, groupId: GROUP, channel: "portal", termsHash: HASH })), /Missing permission/)
     assert.deepEqual(calls, [])
+  })
+})
+
+describe("resendSelectionApprovalRequest", () => {
+  test("mails the buyer again under a key of its own, so a failed send can be retried", async () => {
+    const { service } = harness({ approvals: [approvalRow()] })
+    emailDelivers = false
+    assert.equal((await service.run(() => resendSelectionApprovalRequest({ approvalId: APPROVAL }))).buyerEmail, "failed")
+    emailDelivers = true
+    assert.equal((await service.run(() => resendSelectionApprovalRequest({ approvalId: APPROVAL }))).buyerEmail, "sent")
+    assert.equal(new Set(emails.map((email) => email.idempotencyKey)).size, 2)
+    assert.ok(emails.every((email) => email.idempotencyKey.startsWith(`selection-approval-request:${APPROVAL}:`)))
+  })
+
+  test("only a portal request still out is mailed, and only by someone who can write selections", async () => {
+    const answered = harness({ approvals: [approvalRow({ status: "approved" })] })
+    await assert.rejects(answered.service.run(() => resendSelectionApprovalRequest({ approvalId: APPROVAL })), /still waiting on the buyer/)
+    const signing = harness({ approvals: [approvalRow({ channel: "esign" })] })
+    await assert.rejects(signing.service.run(() => resendSelectionApprovalRequest({ approvalId: APPROVAL })), /still waiting on the buyer/)
+    const reader = harness({ approvals: [approvalRow()], permissions: ["selections.read", "project.read"] })
+    await assert.rejects(reader.service.run(() => resendSelectionApprovalRequest({ approvalId: APPROVAL })), /Missing permission/)
+    assert.deepEqual(emails, [])
+  })
+})
+
+describe("uploadSelectionSignedCopy", () => {
+  const signedCopy = () => new File([new Uint8Array([37, 80, 68, 70])], "signed.pdf", { type: "application/pdf" })
+
+  test("files the copy as a contracts upload on selections.write alone, without docs.upload", async () => {
+    filedFiles.length = 0
+    const { service } = harness()
+    const { fileId } = await service.run(() => uploadSelectionSignedCopy({ projectId: HOME, file: signedCopy() }))
+    assert.equal(fileId, id(701))
+    assert.deepEqual([filedFiles[0].input.category, filedFiles[0].input.project_id, filedFiles[0].options.authorizationPermission], ["contracts", HOME, "selections.write"])
+    assert.equal(uploads.at(-1).contentType, "application/pdf")
+  })
+
+  test("refuses a file that is not a PDF or a photo, and a caller who cannot write selections", async () => {
+    const { service } = harness()
+    await assert.rejects(service.run(() => uploadSelectionSignedCopy({ projectId: HOME, file: new File(["x"], "notes.txt", { type: "text/plain" }) })), /PDF or a photo/)
+    const reader = harness({ permissions: ["selections.read", "project.read"] })
+    await assert.rejects(reader.service.run(() => uploadSelectionSignedCopy({ projectId: HOME, file: signedCopy() })), /Missing permission/)
   })
 })
 

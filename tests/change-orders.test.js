@@ -14,6 +14,15 @@ stubModule("@/lib/services/file-links", {
 
 const { approveChangeOrder, approveChangeOrderFromEnvelopeExecution, updateChangeOrder, voidChangeOrder } = freshRequire("lib/services/change-orders.ts")
 
+// The database merges a patch into a change order's metadata (`merge_change_order_metadata`).
+function mergeMetadata(getService) {
+  return (args) => {
+    const row = getService().db.change_orders.find((changeOrder) => changeOrder.id === args.p_change_order_id && changeOrder.org_id === args.p_org_id)
+    row.metadata = { ...row.metadata, ...args.p_patch }
+    return { data: null, error: null }
+  }
+}
+
 const PROJECT = id(1)
 const CHANGE_ORDER = id(2)
 const CONTRACT = id(3)
@@ -31,7 +40,8 @@ describe("approving a change order from an executed envelope", () => {
 
   function harness(contract = {}) {
     attached.length = 0
-    return createServiceHarness({
+    const service = createServiceHarness({
+      rpc: { merge_change_order_metadata: mergeMetadata(() => service) },
       tables: {
         change_orders: [
           {
@@ -54,6 +64,7 @@ describe("approving a change order from an executed envelope", () => {
         approvals: [],
       },
     })
+    return service
   }
 
   test("an effect that fails after approval is replayed once, without double-counting", async () => {
@@ -73,6 +84,20 @@ describe("approving a change order from an executed envelope", () => {
     assert.equal(service.db.approvals.length, 1)
     assert.equal(service.db.contracts[0].total_cents, 1_050_000)
     assert.equal(service.db.contracts[0].snapshot.base_total_cents, 1_000_000)
+  })
+
+  test("the completion stamp merges into the metadata an outbox job stamped meanwhile", async () => {
+    const service = harness()
+    service.tamper("draw_schedules", (result) => {
+      service.db.change_orders[0].metadata = { ...service.db.change_orders[0].metadata, selection_change_follow_up: { event_recorded: true } }
+      return result
+    }, { on: "select", times: 1 })
+
+    await service.run(() => approveChangeOrderFromEnvelopeExecution(input))
+
+    const { metadata } = service.db.change_orders[0]
+    assert.equal(metadata.envelope_effects_completed, true)
+    assert.deepEqual(metadata.selection_change_follow_up, { event_recorded: true })
   })
 
   test("a completed execution replays as a no-op", async () => {
@@ -124,6 +149,15 @@ describe("a change order on a sold home is an amendment to the buyer's agreement
     assert.deepEqual(service.db.approvals, [])
   })
 
+  test("an applied selection change order cannot be voided even without an agreement amendment", async () => {
+    const service = harness({
+      changeOrder: { status: "approved", lifecycle: "approved", metadata: { selection_change: { changes: [] } } },
+    })
+    await assert.rejects(service.run(() => voidChangeOrder({ changeOrderId: CHANGE_ORDER, reason: "Buyer changed mind" })), /Reverse it with a new change order/)
+    assert.equal(service.db.change_orders[0].status, "approved")
+    assert.equal(service.queries.some((query) => query.table === "rpc:void_approved_change_order_atomic"), false)
+  })
+
   test("a signed amendment cannot be voided; it is reversed by another the buyer signs", async () => {
     const service = harness({
       changeOrder: { status: "approved", lifecycle: "approved", contract_id: CONTRACT },
@@ -141,7 +175,8 @@ describe("a selection change order", () => {
 
   function harness() {
     attached.length = 0
-    return createServiceHarness({
+    const service = createServiceHarness({
+      rpc: { merge_change_order_metadata: mergeMetadata(() => service) },
       permissions: ["change_order.write", "project.read"],
       tables: {
         projects: [{ id: PROJECT, org_id: ORG, division_id: null }],
@@ -158,6 +193,7 @@ describe("a selection change order", () => {
         budget_revision_lines: [],
       },
     })
+    return service
   }
 
   test("its budget revision is the approval's own, and an uncosted fee line no longer stops a budget posting", async () => {

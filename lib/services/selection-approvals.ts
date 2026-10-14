@@ -19,6 +19,7 @@ import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { requireOrgContext } from "@/lib/services/context"
 import { ensureFrozenSigningSource } from "@/lib/services/esign-execution"
 import { getOrgBranding } from "@/lib/services/estimate-portal"
+import { validateDocumentUpload } from "@/lib/files/content-policy"
 import { createFileRecord } from "@/lib/services/files"
 import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
@@ -33,10 +34,14 @@ import {
   inPersonSelectionApprovalSchema,
   portalSelectionApprovalSchema,
   portalSelectionDeclineSchema,
+  resendSelectionApprovalSchema,
   sendSelectionApprovalSchema,
+  signedCopyUploadSchema,
   voidSelectionApprovalSchema,
   type InPersonSelectionApprovalInput,
+  type ResendSelectionApprovalInput,
   type SendSelectionApprovalInput,
+  type SignedCopyUploadInput,
   type VoidSelectionApprovalInput,
 } from "@/lib/validation/design-studio"
 
@@ -317,7 +322,11 @@ async function publishSigningDocument(context: OrgContext, db: SupabaseClient, a
 
 type BuyerEmailOutcome = "sent" | "no_email" | "failed"
 
-async function emailPortalRequest(context: OrgContext, db: SupabaseClient, approval: ApprovalRow, lineCount: number): Promise<BuyerEmailOutcome> {
+async function emailPortalRequest(
+  context: OrgContext, db: SupabaseClient, approval: ApprovalRow, idempotencyKey: string,
+): Promise<BuyerEmailOutcome> {
+  const lines = await db.from("selection_approval_lines").select("selection_id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("approval_id", approval.id)
+  const lineCount = lines.count ?? 0
   const facts = await homeFacts(db, context.orgId, approval.project_id, approval.group_id)
   if (!facts.buyer?.email) return "no_email"
   const [portal, org] = await Promise.all([
@@ -332,7 +341,7 @@ async function emailPortalRequest(context: OrgContext, db: SupabaseClient, appro
   }))
   const delivered = await sendEmail({
     to: [facts.buyer.email], subject: `Please approve your ${facts.groupName.toLowerCase()} selections`, html, from: getOrgSenderEmail(org.data?.slug, org.data?.name),
-    idempotencyKey: `selection-approval-request:${approval.id}`,
+    idempotencyKey,
   })
   return delivered ? "sent" : "failed"
 }
@@ -360,9 +369,22 @@ export async function sendSelectionApproval(raw: SendSelectionApprovalInput): Pr
       throw error
     }
   }
-  const lines = await db.from("selection_approval_lines").select("selection_id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("approval_id", approval.id)
   // The request stands either way; the coordinator is told whether the buyer's email went out.
-  return { approvalId: approval.id, envelopeId: null, buyerEmail: await emailPortalRequest(context, db, approval, lines.count ?? 0).catch(() => "failed" as const) }
+  return { approvalId: approval.id, envelopeId: null, buyerEmail: await emailPortalRequest(context, db, approval, `selection-approval-request:${approval.id}`).catch(() => "failed" as const) }
+}
+
+/** Mails the buyer a portal request again; each attempt is its own send, so a failed one can be retried. */
+export async function resendSelectionApprovalRequest(raw: ResendSelectionApprovalInput): Promise<{ approvalId: string; buyerEmail: BuyerEmailOutcome }> {
+  const input = resendSelectionApprovalSchema.parse(raw)
+  const context = await requireOrgContext()
+  const db = createServiceSupabaseClient()
+  const approval = await loadApproval(db, context.orgId, input.approvalId)
+  await authorizeHome(context, approval.project_id, "selections.write")
+  if (approval.channel !== "portal" || approval.status !== "sent") throw new Error("Only a portal request still waiting on the buyer can be mailed again")
+  if (approval.expires_at && Date.parse(approval.expires_at) <= Date.now()) throw new Error("This request has passed its deadline")
+  const buyerEmail = await emailPortalRequest(context, db, approval, `selection-approval-request:${approval.id}:${randomUUID()}`).catch(() => "failed" as const)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "selection_approval", entityId: approval.id, after: { resent: true, buyer_email: buyerEmail } })
+  return { approvalId: approval.id, buyerEmail }
 }
 
 export async function voidSelectionApproval(raw: VoidSelectionApprovalInput): Promise<{ approvalId: string }> {
@@ -375,6 +397,29 @@ export async function voidSelectionApproval(raw: VoidSelectionApprovalInput): Pr
   if (error) throw rpcError(error, "Failed to void the request")
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "selection_approval", entityId: approval.id, before: { status: approval.status }, after: { status: "voided", void_reason: input.reason } })
   return { approvalId: approval.id }
+}
+
+/**
+ * Files the buyer's signed paper copy on the home, as the coordinator who is
+ * about to record it. Authorized on `selections.write` (the desk role that
+ * records paper approvals does not hold `docs.upload`); the database accepts
+ * only a fresh contracts-category upload by the recording user as evidence.
+ */
+export async function uploadSelectionSignedCopy(raw: SignedCopyUploadInput): Promise<{ fileId: string }> {
+  const input = signedCopyUploadSchema.parse(raw)
+  const context = await requireOrgContext()
+  await authorizeHome(context, input.projectId, "selections.write")
+  const { contentType, sizeBytes } = validateDocumentUpload({ fileName: input.file.name, contentType: input.file.type, sizeBytes: input.file.size })
+  if (contentType !== "application/pdf" && !contentType.startsWith("image/")) throw new Error("Attach the signed copy as a PDF or a photo")
+  const bytes = Buffer.from(await input.file.arrayBuffer())
+  const fileName = input.file.name.trim().replace(/[^a-zA-Z0-9._-]/g, "_")
+  const storagePath = buildOrgScopedPath(context.orgId, "projects", input.projectId, "selections", "signed-copies", `${randomUUID()}_${fileName}`)
+  await uploadFilesObject({ supabase: createServiceSupabaseClient(), orgId: context.orgId, path: storagePath, bytes, contentType, upsert: false })
+  const file = await createFileRecord({
+    project_id: input.projectId, file_name: fileName, storage_path: storagePath, mime_type: contentType, size_bytes: sizeBytes,
+    checksum: createHash("sha256").update(bytes).digest("hex"), visibility: "private", category: "contracts", folder_path: "/contracts", source: "upload",
+  }, context.orgId, { authorizationPermission: "selections.write" })
+  return { fileId: file.id }
 }
 
 /** The coordinator records the buyer's signed paper copy, filed on the home. */

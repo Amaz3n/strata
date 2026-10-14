@@ -739,7 +739,9 @@ test("the authority's letter that no permit is needed clears the gate; a denial 
   const exempt = await w.open()
   const note = "County confirms a fence repair needs no permit"
   await assert.rejects(w.decide(exempt, { p_decision: "not_required", p_note: note }), /no-permit letter is required/)
-  await w.decide(exempt, { p_decision: "not_required", p_issued_permit_file_id: await w.file("exemption-letter.pdf"), p_note: note })
+  const letter = await w.file("exemption-letter.pdf")
+  await w.attach(exempt, "authority_letter", letter, { label: "Authority's no-permit letter", requiredFor: "decision" })
+  await w.decide(exempt, { p_decision: "not_required", p_issued_permit_file_id: letter, p_note: note })
   assert.equal(await w.evidence("permit_approved"), true)
 })
 

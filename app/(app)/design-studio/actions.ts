@@ -12,9 +12,11 @@ import {
   cancelAppointmentSchema,
   consultantHoursSchema,
   inPersonSelectionApprovalSchema,
+  resendSelectionApprovalSchema,
   openSlotsSchema,
   rescheduleAppointmentSchema,
   sendSelectionApprovalSchema,
+  signedCopyUploadSchema,
   studioLocationSchema,
   studioRoomsSchema,
   voidSelectionApprovalSchema,
@@ -52,7 +54,7 @@ import {
   saveStudioLocation,
   saveStudioRooms,
 } from "@/lib/services/design-studio-appointments"
-import { recordInPersonSelectionApproval, sendSelectionApproval, voidSelectionApproval } from "@/lib/services/selection-approvals"
+import { recordInPersonSelectionApproval, resendSelectionApprovalRequest, sendSelectionApproval, uploadSelectionSignedCopy, voidSelectionApproval } from "@/lib/services/selection-approvals"
 import { requireOrgContext } from "@/lib/services/context"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { listBookableHomes } from "@/lib/services/design-studio"
@@ -292,6 +294,20 @@ export async function voidSelectionApprovalAction(input: unknown) {
     const parsed = voidSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
     return voidSelectionApproval({ approvalId: parsed.approvalId, reason: parsed.reason })
   }, approvalPaths(projectId))
+}
+
+export async function resendSelectionApprovalRequestAction(input: unknown) {
+  const projectId = approvalProjectId(input)
+  return run(() => {
+    const parsed = resendSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
+    return resendSelectionApprovalRequest({ approvalId: parsed.approvalId })
+  }, approvalPaths(projectId))
+}
+
+/** The signed paper copy goes up on the coordinator's own permission; recording it is the next call. */
+export async function uploadSelectionSignedCopyAction(formData: FormData) {
+  const projectId = formData.get("projectId")
+  return run(() => uploadSelectionSignedCopy(signedCopyUploadSchema.parse({ projectId, file: formData.get("file") })))
 }
 
 export async function recordInPersonSelectionApprovalAction(input: unknown) {

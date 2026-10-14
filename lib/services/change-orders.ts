@@ -1404,9 +1404,12 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     },
   })
 
-  const { error: completionError } = await supabase.from("change_orders")
-    .update({ metadata: { ...metadataPatch, envelope_effects_completed: true } })
-    .eq("org_id", input.orgId).eq("id", input.changeOrderId)
+  // Merged in the database: a job may have stamped follow-up steps since the read above.
+  const { error: completionError } = await supabase.rpc("merge_change_order_metadata", {
+    p_org_id: input.orgId,
+    p_change_order_id: input.changeOrderId,
+    p_patch: { envelope_effects_completed: true },
+  })
   if (completionError) throw new Error(`Failed to complete envelope effects: ${completionError.message}`)
   return { success: true, idempotent: false }
 }
@@ -1874,6 +1877,10 @@ export async function voidChangeOrder({
 
   if (existing.lifecycle === "void" || existing.status === "cancelled") {
     throw new Error("This change order is already voided.")
+  }
+
+  if (existing.lifecycle === "approved" && carriesSelectionChange(existing)) {
+    throw new Error("This selection change order has been applied to the home's selections, orders and schedule and cannot be voided. Reverse it with a new change order.")
   }
 
   if (existing.lifecycle === "approved" && await isSignedAgreementAmendment(supabase, resolvedOrgId, changeOrderId)) {

@@ -72,8 +72,9 @@ test("an approval is recorded only on its evidence", async (t) => {
   const fee = await w.fee(applicationId)
   await w.fee(applicationId, { p_kind: "impact", p_amount_cents: 650000, p_due_before: "certificate_of_occupancy" })
   await assert.rejects(w.decide(applicationId, evidence), /Fees due before issuance are not paid: permit \$2180\.00/)
-  const bill = await w.bill({ status: "paid", paid_cents: 218000 })
-  await w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: bill.id, p_project_expense_id: null })
+  const { payable: bill } = await w.link(fee, { bill: {} })
+  await assert.rejects(w.decide(applicationId, evidence), /Fees due before issuance are not paid: permit \$2180\.00/, "a linked bill that is not paid does not reconcile the fee")
+  await w.db.query("update vendor_bills set status = 'paid', paid_cents = 218000 where id = $1", [bill.id])
 
   await w.decide(applicationId, evidence)
   const decided = await w.row("select decision, permit_number, decided_by from permit_applications where id = $1", [applicationId])
@@ -149,19 +150,16 @@ test("a fee is paid only by a payable to its authority on its home, never past t
   const w = await permitWorld(t)
   const applicationId = await w.open()
   const fee = await w.fee(applicationId, { p_amount_cents: 218000 })
-  const link = (bill, expense = null, userId) => w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: bill, p_project_expense_id: expense }, userId)
+  const link = (row, userId) => w.link(fee, row, userId)
 
-  await assert.rejects(link((await w.bill({ project_id: w.otherHome.id })).id), /another home/)
-  await assert.rejects(link((await w.bill({ company_id: w.otherAuthority.id })).id), /not to this application's jurisdiction/)
-  await assert.rejects(link((await w.bill({ total_cents: 300000 })).id), /more than what remains/)
-  await assert.rejects(link((await w.bill({ status: "rejected", rejected_at: "2026-09-03T00:00:00Z", rejection_reason: "Duplicate of the county invoice" })).id), /rejected payable/)
-  await assert.rejects(link(null, null, w.viewer.userId), /Link one bill or one expense/)
+  await assert.rejects(link({ bill: { project_id: w.otherHome.id } }), /another home/)
+  await assert.rejects(link({ bill: { company_id: w.otherAuthority.id } }), /not to this application's jurisdiction/)
+  await assert.rejects(link({ bill: { total_cents: 300000 } }), /more than what remains/)
+  await assert.rejects(link({ bill: { status: "rejected", rejected_at: "2026-09-03T00:00:00Z", rejection_reason: "Duplicate of the county invoice" } }), /rejected payable/)
 
-  const counter = await w.expense({ amount_cents: 18000 })
-  await link(null, counter.id, w.office.userId)
-  const bill = await w.bill({ total_cents: 200000 })
-  await link(bill.id)
-  await assert.rejects(link((await w.bill({ total_cents: 1 })).id), /more than what remains/)
+  const { payable: counter } = await link({ expense: { amount_cents: 18000 } })
+  const { payable: bill } = await link({ bill: { total_cents: 200000 } })
+  await assert.rejects(link({ bill: { total_cents: 1 } }), /Nothing remains to pay/, "a fully linked fee is not claimed again")
   const second = await w.call("assess_permit_fee", {
     p_application_id: applicationId, p_kind: "plan_review", p_description: null, p_amount_cents: 500000, p_assessed_on: "2026-09-02",
     p_due_before: "submission", p_cost_code_id: null, p_replaces_fee_id: null,
@@ -240,7 +238,10 @@ test("'no permit required' stands on the authority's own letter, a reason and th
 
   await assert.rejects(notRequired({ p_note: null }), /Say why no permit is required/)
   await assert.rejects(notRequired({ p_note: "no permit" }), /Say why no permit is required/)
-  await assert.rejects(notRequired({ p_issued_permit_file_id: plotPlan }), /its own file, not the one filed as: Plot \/ site plan/)
+  await assert.rejects(notRequired(), /File the authority's letter on the application as its authority letter first/, "any home file is not the letter")
+  await w.call("set_permit_document", { p_application_id: applicationId, p_document_kind: "authority_letter", p_label: "Authority's no-permit letter", p_required_for: "decision", p_file_id: letter })
+  await assert.rejects(notRequired({ p_issued_permit_file_id: await w.file("unrelated.pdf") }), /File the authority's letter on the application as its authority letter first/)
+  await assert.rejects(notRequired({ p_issued_permit_file_id: plotPlan }), /File the authority's letter|its own file, not the one filed as: Plot \/ site plan/)
   await assert.rejects(notRequired({ p_issued_permit_file_id: null }), /no-permit letter is required/)
   await w.db.query("update communities set permit_jurisdiction_company_id = null where id = $1", [w.community.id])
   await assert.rejects(notRequired(), /Set the community's permitting authority first/)
@@ -269,7 +270,8 @@ test("a fee's payables keep what reconciliation reads: no member writes a bill's
   const w = await permitWorld(t)
   const applicationId = await w.open()
   const fee = await w.fee(applicationId, { p_amount_cents: 218000 })
-  const bill = await w.bill({ status: "approved", total_cents: 218000 })
+  await w.service("claim_permit_fee_payment", { p_fee_id: fee })
+  const bill = await w.bill({ total_cents: 218000 })
   await full.insert(w.db, "bill_lines", { org_id: w.orgId, bill_id: bill.id, project_id: w.otherHome.id, description: "Plan review fee", quantity: 1, unit_cost_cents: 218000 })
   const link = (id) => w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: id, p_project_expense_id: null })
   await assert.rejects(link(bill.id), /lines are coded to another home/)
@@ -278,6 +280,7 @@ test("a fee's payables keep what reconciliation reads: no member writes a bill's
   await assert.rejects(link(bill.id), /lines do not add up/)
   await w.db.query("update bill_lines set unit_cost_cents = 218000 where bill_id = $1", [bill.id])
   await link(bill.id)
+  await w.db.query("update vendor_bills set status = 'approved' where id = $1", [bill.id])
 
   await assert.rejects(member(w, w.office.userId, "update vendor_bills set paid_cents = 218000 where id = $1", [bill.id]), /not written onto a bill/)
   const bookkeeper = await full.seedMember(w.db, { orgId: w.orgId, role: "org_bookkeeper" })
@@ -286,25 +289,40 @@ test("a fee's payables keep what reconciliation reads: no member writes a bill's
   await assert.rejects(member(w, bookkeeper.userId, "update vendor_bills set status = 'paid' where id = $1", [bill.id]), /needs payment\.release/)
   await assert.rejects(member(w, w.office.userId, "update bill_lines set unit_cost_cents = 1 where bill_id = $1", [bill.id]), /keeps its line amounts/)
   await assert.rejects(member(w, w.office.userId, "insert into bill_lines (org_id, bill_id, project_id, description, quantity, unit_cost_cents) values ($1, $2, $3, 'Extra', 1, 100)", [w.orgId, bill.id, w.home.id]), /for more than its total/)
+  await assert.rejects(member(w, w.office.userId, "delete from bill_lines where bill_id = $1", [bill.id]), /keeps its lines/)
+  await assert.rejects(member(w, w.office.userId, "update bill_lines set bill_id = $2 where bill_id = $1", [bill.id, (await w.bill({ total_cents: 5 })).id]), /keeps its lines/)
+  assert.equal(Number((await w.row("select count(*)::int as n from bill_lines where bill_id = $1", [bill.id])).n), 1)
   assert.equal(Number((await w.row("select permit_fee_paid_cents($1) as n", [fee])).n), 0, "nothing was paid by those writes")
 
-  const counter = await w.expense({ amount_cents: 18000, submitted_by_user_id: w.coordinator.userId })
   const second = await w.fee(applicationId, { p_kind: "other", p_amount_cents: 18000 })
-  await w.service("link_permit_fee_payment", { p_fee_id: second, p_vendor_bill_id: null, p_project_expense_id: counter.id }, w.coordinator.userId)
+  const { payable: counter } = await w.link(second, { expense: { amount_cents: 18000, submitted_by_user_id: w.coordinator.userId } })
   await assert.rejects(member(w, bookkeeper.userId, "update project_expenses set status = 'approved' where id = $1", [counter.id]), /needs bill\.approve/)
 })
 
-test("whoever entered a counter-paid expense links it, and a stranger to payables does not", async (t) => {
+test("a payable is linked only by a permit.write holder (bill.write for a bill), never past another payer's claim, and never one already approved or paid", async (t) => {
   const w = await permitWorld(t)
   const applicationId = await w.open()
   const fee = await w.fee(applicationId, { p_amount_cents: 45000 })
-  const super_ = await full.seedMember(w.db, { orgId: w.orgId, role: "org_viewer" })
-  const mine = await w.expense({ submitted_by_user_id: super_.userId })
-  const theirs = await w.expense({ submitted_by_user_id: w.coordinator.userId })
-  const link = (expense, userId) => w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: null, p_project_expense_id: expense }, userId)
-  await assert.rejects(link(theirs.id, super_.userId), /permit\.write or bill\.write/)
-  await link(mine.id, super_.userId)
-  await assert.rejects(link(null, super_.userId), /Link one bill or one expense/)
+  const super_ = await full.seedMember(w.db, { orgId: w.orgId, role: "org_superintendent" })
+  const bookkeeper = await full.seedMember(w.db, { orgId: w.orgId, role: "org_bookkeeper" })
+  const link = (expense, userId, bill = null) => w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: bill, p_project_expense_id: expense }, userId)
+
+  await assert.rejects(w.service("claim_permit_fee_payment", { p_fee_id: fee }, super_.userId), /permit\.write or bill\.write/)
+  const forged = await w.expense({ status: "approved", submitted_by_user_id: super_.userId })
+  await assert.rejects(link(forged.id, super_.userId), /permit\.write/, "whoever entered an expense does not link it by that alone")
+  await assert.rejects(link(forged.id), /already approved or paid/, "an expense entered as approved reconciles nothing")
+  await assert.rejects(link((await w.expense({ status: "locked" })).id), /already approved or paid/)
+  await assert.rejects(link(null, bookkeeper.userId, (await w.bill({ total_cents: 45000, status: "paid", paid_cents: 45000 })).id), /already approved or paid/, "a pre-paid bill reconciles nothing")
+  await assert.rejects(link(null, bookkeeper.userId, (await w.bill({ total_cents: 45000, status: "approved" })).id), /already approved or paid/)
+  await assert.rejects(link(null, bookkeeper.userId, (await w.bill({ total_cents: 45000, paid_cents: 100 })).id), /already approved or paid/)
+  assert.equal(Number((await w.row("select permit_fee_linked_cents($1) as n", [fee])).n), 0, "nothing linked")
+
+  await w.service("claim_permit_fee_payment", { p_fee_id: fee }, bookkeeper.userId)
+  await assert.rejects(link((await w.expense()).id), /already recording a payment/, "another payer's live claim holds")
+  await assert.rejects(link((await w.expense()).id, bookkeeper.userId), /permit\.write/, "an expense link needs permit.write, even for a bill.write holder")
+  await link(null, bookkeeper.userId, (await w.bill({ total_cents: 45000 })).id)
+  assert.equal(Number((await w.row("select permit_fee_linked_cents($1) as n", [fee])).n), 45000)
+  assert.equal((await w.row("select pay_claim_until from permit_fees where id = $1", [fee])).pay_claim_until, null)
 })
 
 test("a fee is claimed by one payer at a time, and a due-before-submission fee stops the submission", async (t) => {
@@ -321,8 +339,9 @@ test("a fee is claimed by one payer at a time, and a due-before-submission fee s
   await w.service("release_permit_fee_claim", { p_fee_id: fee })
   assert.equal(Number(await claim(w.office.userId)), 50000)
   await assert.rejects(claim(w.viewer.userId), /bill\.write/)
-  const bill = await w.bill({ total_cents: 50000, status: "paid", paid_cents: 50000 })
-  await w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: bill.id, p_project_expense_id: null })
+  const bill = await w.bill({ total_cents: 50000 })
+  await w.service("link_permit_fee_payment", { p_fee_id: fee, p_vendor_bill_id: bill.id, p_project_expense_id: null }, w.office.userId)
+  await w.db.query("update vendor_bills set status = 'paid', paid_cents = 50000 where id = $1", [bill.id])
   assert.equal(await w.row("select pay_claim_until from permit_fees where id = $1", [fee]).then((row) => row.pay_claim_until), null, "linking releases the claim")
   await assert.rejects(claim(), /Nothing remains to pay/)
   await w.submit(applicationId)
@@ -347,6 +366,13 @@ test("a correction round is always due on a date, and dates are the home's own",
   const positions = await w.row("select today_local::text, chase, decision_overdue from permit_application_positions where id = $1", [applicationId])
   assert.equal(positions.today_local, today)
   assert.equal(positions.chase, true)
+
+  await w.db.query("update permit_correction_rounds set metadata = '{\"kept\": true}'::jsonb where id = $1", [id])
+  const mark = (key) => full.rpc(w.db, "mark_permit_reminder", { p_entity: "permit_correction_round", p_org_id: w.orgId, p_id: id, p_key: key, p_at: "2026-09-02T00:00:00Z" })
+  await mark("reminded_due")
+  await mark("reminded_overdue")
+  assert.deepEqual(Object.keys((await w.row("select metadata from permit_correction_rounds where id = $1", [id])).metadata).sort(), ["kept", "reminded_due", "reminded_overdue"], "marks merge into the row's metadata")
+  await assert.rejects(full.rpc(w.db, "mark_permit_reminder", { p_entity: "permit_correction_round", p_org_id: w.orgId, p_id: id, p_key: "x", p_at: "2026-09-02T00:00:00Z" }, { role: "authenticated", userId: w.coordinator.userId }), /permission denied/)
 })
 
 test("permit functions authorize before they look or lock, and a stranger learns nothing about an application", async (t) => {
@@ -368,6 +394,8 @@ test("permit functions authorize before they look or lock, and a stranger learns
   assert.equal(await w.evidence("permit_approved"), false)
   const probe = await full.rpc(w.db, "start_gate_sql_evidence", { p_org_id: w.orgId, p_package_id: w.pkg.id, p_source: "plot_plan_file" }, { role: "authenticated", userId: w.coordinator.userId })
   assert.equal(probe, false, "a package outside the caller's division answers false")
+  const stranger = await full.seedMember(w.db, {})
+  await assert.rejects(full.rpc(w.db, "permit_local_today", { p_org_id: w.orgId, p_project_id: w.home.id }, { role: "authenticated", userId: stranger.userId }), /outside your access/, "another org's member reads no home's date")
 })
 
 test("evidence files follow their home's deletion and refuse every other change with a plain message", async (t) => {
@@ -387,6 +415,9 @@ test("the release re-reads the permit gate in its own transaction", async (t) =>
   const w = await permitWorld(t)
   const owner = await full.seedMember(w.db, { orgId: w.orgId, role: "org_owner" })
   const applicationId = await w.approvedApplication()
+  await w.db.query("update communities set permit_jurisdiction_company_id = null where id = $1", [w.community.id])
+  assert.equal(await w.evidence("permit_approved"), false, "a gate cannot pass against an unknown jurisdiction")
+  await w.db.query("update communities set permit_jurisdiction_company_id = $1 where id = $2", [w.authority.id, w.community.id])
   await w.db.query("update start_packages set status = 'ready' where id = $1", [w.pkg.id])
   const queue = () => full.rpc(w.db, "queue_start_release", {
     p_org_id: w.orgId, p_package_id: w.pkg.id, p_actor_id: owner.userId, p_scheduled_start_date: "2026-11-02", p_target_week: "2026-11-02",

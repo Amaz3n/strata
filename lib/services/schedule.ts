@@ -1903,181 +1903,6 @@ export async function getScheduleChangeOrderImpactsByProject(
   return (data ?? []).map(mapScheduleItemChangeOrder);
 }
 
-/**
- * Link a change order to a schedule item with an optional days adjustment
- */
-export async function applyChangeOrderToSchedule({
-  changeOrderId,
-  scheduleItemId,
-  daysAdjusted,
-  notes,
-  applyNow = false,
-  orgId,
-}: {
-  changeOrderId: string;
-  scheduleItemId: string;
-  daysAdjusted: number;
-  notes?: string;
-  applyNow?: boolean;
-  orgId?: string;
-}): Promise<ScheduleItemChangeOrder> {
-  const {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-  } = await requireOrgContext(orgId);
-
-  // Verify the schedule item exists
-  const { data: scheduleItem, error: itemError } = await supabase
-    .from("schedule_items")
-    .select("id, name, project_id")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", scheduleItemId)
-    .single();
-
-  if (itemError || !scheduleItem) {
-    throw new Error("Schedule item not found");
-  }
-
-  await requireProjectPermission(
-    userId,
-    scheduleItem.project_id,
-    "schedule.edit",
-  );
-
-  // Verify the change order exists
-  const { data: changeOrder, error: coError } = await supabase
-    .from("change_orders")
-    .select("id, co_number, title, status")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", changeOrderId)
-    .single();
-
-  if (coError || !changeOrder) {
-    throw new Error("Change order not found");
-  }
-
-  // A link is written by the service after the schedule.edit check above: the
-  // table refuses a signed-in member's direct write, so an impact is never
-  // marked applied, re-dated or removed behind the superintendent.
-  const writer = createServiceSupabaseClient()
-  const { data: linked, error: linkedError } = await writer
-    .from("schedule_item_change_orders")
-    .select("applied_at")
-    .eq("org_id", resolvedOrgId)
-    .eq("schedule_item_id", scheduleItemId)
-    .eq("change_order_id", changeOrderId)
-    .maybeSingle()
-  if (linkedError) throw new Error(`Failed to check the schedule impact: ${linkedError.message}`)
-  if (linked?.applied_at) throw new Error("This schedule impact was already applied.")
-
-  const { data, error } = await writer
-    .from("schedule_item_change_orders")
-    .upsert(
-      {
-        org_id: resolvedOrgId,
-        schedule_item_id: scheduleItemId,
-        change_order_id: changeOrderId,
-        days_adjusted: daysAdjusted,
-        notes: notes || null,
-      },
-      { onConflict: "schedule_item_id,change_order_id" },
-    )
-    .select(
-      `
-      id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at
-    `,
-    )
-    .single();
-
-  if (error || !data) {
-    throw new Error(
-      `Failed to apply change order to schedule: ${error?.message}`,
-    );
-  }
-
-  // Applying now moves the item in the same step that stamps the impact applied.
-  if (applyNow) {
-    await applyScheduleImpact(resolvedOrgId, data.id);
-  }
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "schedule_co_applied",
-    entityType: "schedule_item",
-    entityId: scheduleItemId,
-    payload: {
-      change_order_id: changeOrderId,
-      co_number: changeOrder.co_number,
-      days_adjusted: daysAdjusted,
-      applied: applyNow,
-    },
-  });
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "schedule_item_change_order",
-    entityId: data.id,
-    after: data,
-  });
-
-  return mapScheduleItemChangeOrder({ ...data, change_order: changeOrder });
-}
-
-/**
- * Remove a change order link from a schedule item
- */
-export async function removeChangeOrderFromSchedule(
-  scheduleItemChangeOrderId: string,
-  orgId?: string,
-): Promise<void> {
-  const {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-  } = await requireOrgContext(orgId);
-  await requirePermission("schedule.edit", {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-  });
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("schedule_item_change_orders")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", scheduleItemChangeOrderId)
-    .single();
-
-  if (fetchError || !existing) {
-    throw new Error("Schedule change order link not found");
-  }
-  if (existing.applied_at) {
-    throw new Error("An applied schedule impact is a record and cannot be removed.");
-  }
-
-  const { error } = await createServiceSupabaseClient()
-    .from("schedule_item_change_orders")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("id", scheduleItemChangeOrderId);
-
-  if (error) {
-    throw new Error(`Failed to remove change order link: ${error.message}`);
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "schedule_item_change_order",
-    entityId: scheduleItemChangeOrderId,
-    before: existing,
-  });
-}
-
 const appliedImpactSchema = z.object({
   schedule_item_id: z.string().uuid(),
   change_order_id: z.string().uuid(),
@@ -2113,7 +1938,7 @@ async function applyScheduleImpact(orgId: string, impactId: string) {
  * critical path on its own).
  */
 export async function applyScheduleChangeOrderImpact(impactId: string, orgId?: string) {
-  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  const { orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId);
   // Read service-role and authorized on the home below: the superintendent runs
   // the community's homes without being a member of each project.
   const { data: impact, error } = await createServiceSupabaseClient()
@@ -2128,6 +1953,17 @@ export async function applyScheduleChangeOrderImpact(impactId: string, orgId?: s
   await requireProjectPermission(userId, item.project_id, "schedule.edit");
   const applied = await applyScheduleImpact(resolvedOrgId, impact.id);
   await Promise.all([
+    enqueueOutboxJob({
+      orgId: resolvedOrgId,
+      jobType: "selection_cutoff_recompute",
+      payload: { project_id: item.project_id },
+      dedupeByPayloadKeys: ["project_id"],
+    }),
+    enqueueProductionScheduleChange({
+      supabase: createServiceSupabaseClient(), orgId: resolvedOrgId, actorId: userId, productTier,
+      projectId: item.project_id, scheduleItemId: applied.schedule_item_id,
+      oldStart: applied.before.start_date, newStart: applied.after.start_date,
+    }),
     recordEvent({
       orgId: resolvedOrgId,
       actorId: userId,
