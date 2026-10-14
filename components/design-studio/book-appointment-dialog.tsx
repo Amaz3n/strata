@@ -131,11 +131,13 @@ export function BookAppointmentDialog({ open, onOpenChange, communityId, studios
     startTransition(async () => {
       try {
         if (moving) {
-          unwrapAction(await rescheduleAppointmentAction({ appointmentId: moving.id, locationId, consultantUserId, scheduledAt: start, durationMinutes: duration }))
-          toast.success("Session moved", { description: "The buyer has been told the new time." })
+          const saved = unwrapAction(await rescheduleAppointmentAction({ appointmentId: moving.id, locationId, consultantUserId, scheduledAt: start, durationMinutes: duration }))
+          if (saved.buyerHasEmail) toast.success("Session moved", { description: "The buyer has been told the new time." })
+          else toast.warning("Session moved", { description: "The buyer has no email on file. Tell them the new time yourself." })
         } else {
-          unwrapAction(await bookAppointmentAction({ projectId, locationId, consultantUserId, scheduledAt: start, durationMinutes: duration, notes: String(formData.get("notes") ?? "") || null }))
-          toast.success("Session booked", { description: "The buyer has been sent the details." })
+          const saved = unwrapAction(await bookAppointmentAction({ projectId, locationId, consultantUserId, scheduledAt: start, durationMinutes: duration, notes: String(formData.get("notes") ?? "") || null }))
+          if (saved.buyerHasEmail) toast.success("Session booked", { description: "The buyer has been sent the details." })
+          else toast.warning("Session booked", { description: "The buyer has no email on file. Tell them the time yourself." })
         }
         onOpenChange(false)
         onSaved()

@@ -188,3 +188,46 @@ test("a signed-in member books, moves and cancels only through the design studio
   await renameRoom(consultant, "Sample room")
   assert.equal(await roomName(), "Sample room")
 })
+
+test("a studio's division is its wall: rooms, hours and bookings stay with the division", async (t) => {
+  const fixture = await studio(t, { rooms: 1 })
+  const { db, orgId, consultant } = fixture
+  const gulf = await insert(db, "divisions", { org_id: orgId, name: "Gulf Coast" })
+  const atlantic = await insert(db, "divisions", { org_id: orgId, name: "Atlantic" })
+  const gulfStudio = await insert(db, "design_studio_locations", { org_id: orgId, name: "Gulf studio", time_zone: "America/Chicago", division_id: gulf.id })
+  const atlanticStudio = await insert(db, "design_studio_locations", { org_id: orgId, name: "Atlantic studio", time_zone: "America/New_York", division_id: atlantic.id })
+  const atlanticRoom = await insert(db, "design_studio_rooms", { org_id: orgId, location_id: atlanticStudio.id, name: "A1" })
+  const gulfRoom = await insert(db, "design_studio_rooms", { org_id: orgId, location_id: gulfStudio.id, name: "G1" })
+
+  const { userId: gulfCoordinator } = await seedMember(db, { orgId, role: "org_design_studio_coordinator" })
+  const { rows: [membership] } = await db.query("update memberships set division_scope = 'assigned' where org_id = $1 and user_id = $2 returning id", [orgId, gulfCoordinator])
+  await insert(db, "membership_divisions", { membership_id: membership.id, division_id: gulf.id })
+  const asGulf = (sql, params) => asRole(db, { role: "authenticated", userId: gulfCoordinator }, (tx) => tx.query(sql, params))
+
+  assert.deepEqual((await asGulf("select name from design_studio_locations where division_id is not null")).rows.map((row) => row.name), ["Gulf studio"])
+  assert.deepEqual((await asGulf("select name from design_studio_rooms where location_id in ($1, $2)", [gulfStudio.id, atlanticStudio.id])).rows.map((row) => row.name), ["G1"])
+  await asGulf("insert into design_studio_rooms (org_id, location_id, name) values ($1, $2, 'G2')", [orgId, gulfStudio.id])
+  await assert.rejects(
+    asGulf("insert into design_studio_rooms (org_id, location_id, name) values ($1, $2, 'A2')", [orgId, atlanticStudio.id]),
+    (error) => error.code === "42501" || /row-level security/.test(error.message),
+  )
+  await assert.rejects(
+    asGulf("insert into design_studio_consultant_hours (org_id, user_id, location_id, weekday, start_minute, end_minute) values ($1, $2, $3, 1, 540, 600)", [orgId, gulfCoordinator, atlanticStudio.id]),
+    (error) => error.code === "42501" || /row-level security/.test(error.message),
+  )
+  await asGulf("update design_studio_rooms set name = 'Hijacked' where id = $1", [atlanticRoom.id])
+  assert.equal((await db.query("select name from design_studio_rooms where id = $1", [atlanticRoom.id])).rows[0].name, "A1")
+
+  // The service role books too: a home books into its own division's studio or an undivided one.
+  const { userId: booker } = await seedMember(db, { orgId, role: "org_design_studio_coordinator" })
+  await insert(db, "design_studio_consultant_hours", { org_id: orgId, user_id: booker, location_id: gulfStudio.id, weekday: 2, ...HOURS })
+  await insert(db, "design_studio_consultant_hours", { org_id: orgId, user_id: booker, location_id: atlanticStudio.id, weekday: 3, ...HOURS })
+  const gulfHome = await insert(db, "projects", { org_id: orgId, name: "Gulf home", division_id: gulf.id })
+  const atlanticSlot = { org_id: orgId, project_id: gulfHome.id, location_id: atlanticStudio.id, room_id: atlanticRoom.id, coordinator_user_id: booker, duration_minutes: 60, status: "scheduled", scheduled_at: "2026-11-04T15:00:00Z" }
+  await assert.rejects(insert(db, "design_studio_appointments", atlanticSlot), refused("DESIGN_STUDIO_DIVISION"))
+  await insert(db, "design_studio_appointments", {
+    ...atlanticSlot, location_id: gulfStudio.id, room_id: gulfRoom.id, scheduled_at: "2026-11-03T16:00:00Z",
+  })
+  const undivided = await insert(db, "projects", { org_id: orgId, name: "Loose home" })
+  await insert(db, "design_studio_appointments", { ...atlanticSlot, project_id: undivided.id, location_id: fixture.location.id, room_id: fixture.rooms[0].id, coordinator_user_id: consultant, scheduled_at: TEN_AM })
+})

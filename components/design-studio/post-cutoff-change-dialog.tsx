@@ -28,7 +28,7 @@ interface Props {
   changeFeeCents: number
   canWaiveChangeFee: boolean
   /** The refused choice this change order is raised for, when there is one. */
-  initial?: { selectionId: string; optionId: string } | null
+  initial?: { selectionId: string; optionId?: string } | null
 }
 
 function money(cents: number) {

@@ -1653,20 +1653,22 @@ export async function approveChangeOrder({
   approval?: ManualOfflineChangeOrderApprovalInput
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) {
+    throw new Error("Change order not found")
+  }
+  // The authority is the home's (its division), and the database holds the same
+  // line for a selection change order: approval in the approver's own name.
   await requireAuthorization({
     permission: "change_order.approve",
     userId,
     orgId: resolvedOrgId,
+    projectId: existing.project_id,
     supabase,
     logDecision: true,
     resourceType: "change_order",
     resourceId: changeOrderId,
   })
-
-  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
-  if (!existing) {
-    throw new Error("Change order not found")
-  }
 
   if (existing.status === "approved") {
     return existing

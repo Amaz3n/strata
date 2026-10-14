@@ -166,8 +166,8 @@ Dismissed payloads are purged after 90 days. Deal writes take `sales.manage` or
   `createEnvelopeSigningRequests` (L221) → `document_signing_requests` rows with
   signer tokens. Execution callbacks are the established pattern:
   `acceptProposalFromEnvelopeExecution` (`proposals.ts:231`, records
-  `source: "envelope_execution"`), `confirmSelectionFromEnvelopeExecution`
-  (`selections.ts:133`). Purchase agreements add one more callback, nothing new
+  `source: "envelope_execution"`), `executeSelectionApprovalFromEnvelope`
+  (`selection-approvals.ts`). Purchase agreements add one more callback, nothing new
   in the e-sign machinery.
 
 **Invoices & payments (the money rails deposits and the closing invoice ride):**

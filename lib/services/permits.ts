@@ -32,11 +32,10 @@ import { authorize, getDivisionAccessForUser, requireAuthorization } from "@/lib
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { createProjectExpense } from "@/lib/services/cost-plus"
-import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { ensureVendorRoleWithClient } from "@/lib/services/party-roles"
 import { requirePermission } from "@/lib/services/permissions"
-import { createProjectVendorBill } from "@/lib/services/vendor-bills"
+import { createProjectVendorBill, deleteVendorBill } from "@/lib/services/vendor-bills"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { chunk } from "@/lib/utils"
 import {
@@ -150,15 +149,11 @@ const positionRow = z.object({
   lot_number: z.string().nullable(), block: z.string().nullable(), community_name: z.string().nullable(),
   submission_count: z.number().int(), expected_decision_on: z.string().nullable(), open_rounds: z.number().int(),
   unresolved_rounds: z.number().int(), next_round_due_on: z.string().nullable(), start_target_week: z.string().nullable(),
-  jurisdiction_company_id: z.string().uuid(),
+  jurisdiction_company_id: z.string().uuid(), today_local: z.string(),
 })
 
 type ApplicationRow = z.infer<typeof applicationRow>
 type RoundRow = z.infer<typeof roundRow>
-
-function todayIso() {
-  return new Date().toISOString().slice(0, 10)
-}
 
 function rpcError(error: { message: string } | null) {
   if (error) throw new Error(error.message)
@@ -214,7 +209,7 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
   await requirePermission("permit.read", context)
   await requireAuthorization({ permission: "permit.read", orgId: context.orgId, userId: context.userId, projectId,
     supabase: context.supabase, resourceType: "project", resourceId: projectId, logDecision: true })
-  const [project, applications, files, members, canWrite, canBill, costCodes] = await Promise.all([
+  const [project, applications, files, members, canWrite, canBill, canReadBills, localToday, costCodes] = await Promise.all([
     context.supabase.from("projects").select("id,name,lots(id,lot_number,block,house_plan_version_id,community:communities(id,name,permit_jurisdiction_company_id))")
       .eq("org_id", context.orgId).eq("id", projectId).maybeSingle(),
     context.supabase.from("permit_applications").select(APPLICATION_SELECT).eq("org_id", context.orgId).eq("project_id", projectId)
@@ -224,17 +219,24 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
     readNames(context.supabase, context.orgId),
     authorize({ permission: "permit.write", orgId: context.orgId, userId: context.userId, projectId, supabase: context.supabase }),
     authorize({ permission: "bill.write", orgId: context.orgId, userId: context.userId, projectId, supabase: context.supabase }),
+    authorize({ permission: "bill.read", orgId: context.orgId, userId: context.userId, projectId, supabase: context.supabase }),
+    context.supabase.rpc("permit_local_today", { p_org_id: context.orgId, p_project_id: projectId }),
     listCostCodes(context.orgId),
   ])
   if (project.error) throw new Error(`Unable to read the home: ${project.error.message}`)
   if (!project.data) throw new Error("Home not found")
   if (applications.error) throw new Error(`Unable to read permit applications: ${applications.error.message}`)
   if (files.error) throw new Error(`Unable to read the home's files: ${files.error.message}`)
+  rpcError(localToday.error)
+  const today = z.string().date().parse(localToday.data)
   const rows = z.array(applicationRow).parse(applications.data ?? [])
   const shown = rows.slice(0, HOME_APPLICATION_CAP)
   const ids = shown.map((row) => row.id)
 
   const jurisdictionIds = [...new Set(shown.map((row) => row.jurisdiction_company_id))]
+  // Bills and expenses offered for linking are payables: only whoever reads
+  // payables, and may link them, sees them.
+  const offerPayables = canReadBills.allowed && (canWrite.allowed || canBill.allowed) && jurisdictionIds.length > 0
   // A fee's payables are read service-role on this authorized home: whoever
   // reconciles permit fees (the starts coordinator) is rarely a member of the
   // project, and row security would hide the bill and read the fee as unpaid.
@@ -259,10 +261,10 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
       .select("id,fee_id,vendor_bill_id,project_expense_id,bill:vendor_bills(bill_number,status,total_cents,paid_cents),expense:project_expenses(status,amount_cents,tax_cents,expense_date)")
       .eq("org_id", context.orgId).eq("project_id", projectId).limit(1000) : Promise.resolve({ data: [], error: null }),
     readCompanyNames(context.supabase, context.orgId, jurisdictionIds),
-    jurisdictionIds.length ? payables.from("vendor_bills").select("id,company_id,bill_number,status,total_cents,bill_date")
+    offerPayables ? payables.from("vendor_bills").select("id,company_id,bill_number,status,total_cents,bill_date")
       .eq("org_id", context.orgId).eq("project_id", projectId).in("company_id", jurisdictionIds).neq("status", "rejected")
       .order("bill_date", { ascending: false }).limit(LINKABLE_CAP) : Promise.resolve({ data: [], error: null }),
-    jurisdictionIds.length ? payables.from("project_expenses").select("id,vendor_company_id,status,amount_cents,tax_cents,expense_date")
+    offerPayables ? payables.from("project_expenses").select("id,vendor_company_id,status,amount_cents,tax_cents,expense_date")
       .eq("org_id", context.orgId).eq("project_id", projectId).in("vendor_company_id", jurisdictionIds).neq("status", "rejected")
       .order("expense_date", { ascending: false }).limit(LINKABLE_CAP) : Promise.resolve({ data: [], error: null }),
   ])
@@ -278,7 +280,6 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
   const paymentRows = z.array(paymentRow).parse(payments.data ?? [])
   const names = new Map(members.map((member) => [member.id, member.name]))
   const costCodeLabels = new Map(costCodes.map((code) => [code.id, code.code ? `${code.code} — ${code.name}` : code.name]))
-  const today = todayIso()
   const linked = new Set(paymentRows.flatMap((row) => [row.vendor_bill_id, row.project_expense_id]).filter((id): id is string => Boolean(id)))
   const linkablePayables = [
     ...z.array(z.object({ id: z.string().uuid(), company_id: z.string().uuid(), bill_number: z.string().nullable(), status: z.string(), total_cents: z.coerce.number().nullable(), bill_date: z.string().nullable() }))
@@ -397,6 +398,7 @@ export async function getProjectPermits(projectId: string, orgId?: string) {
 
   return {
     projectId,
+    today,
     projectName: z.string().parse(project.data.name),
     lot: lot ? { id: lot.id, label: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number, planPinned: Boolean(lot.house_plan_version_id) } : null,
     communityAuthority: authorityId ? { id: authorityId, name: authorityName ?? "Authority" } : null,
@@ -485,7 +487,7 @@ export async function recordCorrectionRound(input: unknown, orgId?: string) {
   await authorizeHome(context, await applicationProject(context, parsed.applicationId))
   const { data, error } = await context.supabase.rpc("record_permit_correction_round", {
     p_org_id: context.orgId, p_application_id: parsed.applicationId, p_received_on: parsed.receivedOn, p_comments: parsed.comments,
-    p_comment_file_id: parsed.commentFileId ?? null, p_owner_user_id: parsed.ownerUserId ?? null, p_due_on: parsed.dueOn ?? null,
+    p_comment_file_id: parsed.commentFileId ?? null, p_owner_user_id: parsed.ownerUserId ?? null, p_due_on: parsed.dueOn,
   })
   rpcError(error)
   return { roundId: z.string().uuid().parse(data) }
@@ -547,17 +549,17 @@ export async function voidPermitFee(input: unknown, orgId?: string) {
   rpcError((await context.supabase.rpc("void_permit_fee", { p_org_id: context.orgId, p_fee_id: parsed.feeId, p_reason: parsed.reason })).error)
 }
 
-/** Link a payable someone already entered: by whoever manages permits or enters payables. */
+/**
+ * Link a payable someone already entered: by whoever manages permits or enters
+ * payables, and a counter-paid expense by whoever entered it. The function
+ * checks which, on the fee's home, for the member passed in: it is callable by
+ * the service role only.
+ */
 export async function linkPermitFeePayment(input: unknown, orgId?: string) {
   const parsed = linkPermitFeePaymentSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  const [permits, bills] = await Promise.all([
-    authorize({ permission: "permit.write", orgId: context.orgId, userId: context.userId, supabase: context.supabase }),
-    authorize({ permission: "bill.write", orgId: context.orgId, userId: context.userId, supabase: context.supabase }),
-  ])
-  if (!permits.allowed && !bills.allowed) throw new Error("Linking a fee payment needs permit.write or bill.write")
-  const { data, error } = await context.supabase.rpc("link_permit_fee_payment", {
-    p_org_id: context.orgId, p_fee_id: parsed.feeId, p_vendor_bill_id: parsed.vendorBillId ?? null,
+  const { data, error } = await createServiceSupabaseClient().rpc("link_permit_fee_payment", {
+    p_org_id: context.orgId, p_actor_id: context.userId, p_fee_id: parsed.feeId, p_vendor_bill_id: parsed.vendorBillId ?? null,
     p_project_expense_id: parsed.projectExpenseId ?? null,
   })
   rpcError(error)
@@ -570,17 +572,29 @@ const payableFeeSchema = z.object({
   application: relationObject(z.object({ jurisdiction_company_id: z.string().uuid(), permit_number: z.string().nullable(), permit_type: z.enum(PERMIT_TYPES) })),
 })
 
+/** A payable created for a fee that could not be linked to it is removed, so none stands unlinked on the home's job cost. */
+async function discardUnlinkedPayable(context: OrgServiceContext, created: { kind: "bill" | "expense"; id: string }) {
+  if (created.kind === "bill") {
+    await deleteVendorBill({ billId: created.id, orgId: context.orgId })
+    return
+  }
+  const { error } = await createServiceSupabaseClient().from("project_expenses").delete().eq("org_id", context.orgId).eq("id", created.id)
+  if (error) throw new Error(error.message)
+}
+
 /**
  * Pay a fee: payables stays the one home for creating a bill or an expense.
  * A bill from the authority is for whoever enters payables (bill.write); a
- * counter payment already made is an expense with its receipt. Either is
- * created for what remains of the fee, on the home's job cost, to the
- * authority, then linked to the fee.
+ * counter payment already made is an expense with its receipt, entered by
+ * whoever may enter expenses on the home. Either is created for what remains
+ * of the fee, on the home's job cost, to the authority, then linked to the
+ * fee. The fee is claimed first, so two payers cannot each create a payable
+ * for the same remainder, and a payable that cannot be linked is removed.
  */
 export async function payPermitFee(input: unknown, orgId?: string) {
   const parsed = payPermitFeeSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("bill.write", context)
+  if (parsed.via === "bill") await requirePermission("bill.write", context)
   const { data, error } = await context.supabase.from("permit_fees")
     .select("id,kind,amount_cents,status,due_before,cost_code_id,project_id,application:permit_applications(jurisdiction_company_id,permit_number,permit_type)")
     .eq("org_id", context.orgId).eq("id", parsed.feeId).maybeSingle()
@@ -588,39 +602,49 @@ export async function payPermitFee(input: unknown, orgId?: string) {
   if (!data) throw new Error("Permit fee not found")
   const fee = payableFeeSchema.parse(data)
   if (!fee.application) throw new Error("Permit application not found")
-  const { data: linked, error: linkedError } = await context.supabase.from("permit_fee_payments")
-    .select("id,fee_id,vendor_bill_id,project_expense_id,bill:vendor_bills(bill_number,status,total_cents,paid_cents),expense:project_expenses(status,amount_cents,tax_cents,expense_date)")
-    .eq("org_id", context.orgId).eq("fee_id", fee.id).limit(100)
-  if (linkedError) throw new Error(`Unable to read the fee's payments: ${linkedError.message}`)
-  const remaining = feeRemainingToLinkCents(
-    { id: fee.id, kind: fee.kind, amountCents: fee.amount_cents, status: fee.status, dueBefore: fee.due_before },
-    z.array(paymentRow).parse(linked ?? []).map(paymentFact),
-  )
-  if (remaining <= 0) throw new Error("Nothing remains to pay on this fee")
+  const claim = await createServiceSupabaseClient().rpc("claim_permit_fee_payment", { p_org_id: context.orgId, p_actor_id: context.userId, p_fee_id: fee.id })
+  rpcError(claim.error)
+  const remaining = z.coerce.number().int().positive().parse(claim.data)
   const description = `${PERMIT_FEE_KIND_LABELS[fee.kind]} fee — ${PERMIT_TYPE_LABELS[fee.application.permit_type]} permit${fee.application.permit_number ? ` ${fee.application.permit_number}` : ""}`
   const companyId = fee.application.jurisdiction_company_id
-  if (parsed.via === "bill") {
-    const bill = await createProjectVendorBill({
-      projectId: fee.project_id,
-      orgId: context.orgId,
-      input: {
-        company_id: companyId, bill_number: parsed.billNumber, bill_date: parsed.billDate, due_date: parsed.dueDate ?? undefined,
-        total_cents: remaining, description,
-        actual_lines: [{ amount_cents: remaining, project_id: fee.project_id, cost_code_id: fee.cost_code_id, description }],
-      },
-    })
-    const { paymentId } = await linkPermitFeePayment({ feeId: fee.id, vendorBillId: bill.id }, context.orgId)
-    return { paymentId, vendorBillId: bill.id }
+  let created: { kind: "bill" | "expense"; id: string } | null = null
+  try {
+    if (parsed.via === "bill") {
+      const bill = await createProjectVendorBill({
+        projectId: fee.project_id,
+        orgId: context.orgId,
+        input: {
+          company_id: companyId, bill_number: parsed.billNumber, bill_date: parsed.billDate, due_date: parsed.dueDate ?? undefined,
+          total_cents: remaining, description,
+          actual_lines: [{ amount_cents: remaining, project_id: fee.project_id, cost_code_id: fee.cost_code_id, description }],
+        },
+      })
+      created = { kind: "bill", id: bill.id }
+      const { paymentId } = await linkPermitFeePayment({ feeId: fee.id, vendorBillId: bill.id }, context.orgId)
+      return { paymentId, vendorBillId: bill.id }
+    }
+    const expense = z.object({ id: z.string().uuid() }).parse(await createProjectExpense({
+      projectId: fee.project_id, vendorCompanyId: companyId, costCodeId: fee.cost_code_id, expenseDate: new Date(`${parsed.paidOn}T12:00:00Z`), description,
+      amountCents: remaining, taxCents: 0, paymentMethod: parsed.paymentMethod, receiptFileId: parsed.receiptFileId,
+      isBillable: true, allowDuplicate: true,
+    }, context.orgId))
+    created = { kind: "expense", id: expense.id }
+    // Money creates roles: the authority is a payee the directory recognises as a vendor.
+    await ensureVendorRoleWithClient(context.supabase, context.orgId, companyId, context.userId)
+    const { paymentId } = await linkPermitFeePayment({ feeId: fee.id, projectExpenseId: expense.id }, context.orgId)
+    return { paymentId, projectExpenseId: expense.id }
+  } catch (failure) {
+    let leftover = ""
+    if (created) {
+      try {
+        await discardUnlinkedPayable(context, created)
+      } catch (discardError) {
+        leftover = ` The ${created.kind} it created could not be removed (${discardError instanceof Error ? discardError.message : "unknown error"}); reject it in payables.`
+      }
+    }
+    rpcError((await createServiceSupabaseClient().rpc("release_permit_fee_claim", { p_org_id: context.orgId, p_actor_id: context.userId, p_fee_id: fee.id })).error)
+    throw new Error(`${failure instanceof Error ? failure.message : "Unable to record the fee payment"}${leftover}`)
   }
-  const expense = z.object({ id: z.string().uuid() }).parse(await createProjectExpense({
-    projectId: fee.project_id, vendorCompanyId: companyId, costCodeId: fee.cost_code_id, expenseDate: new Date(`${parsed.paidOn}T12:00:00Z`), description,
-    amountCents: remaining, taxCents: 0, paymentMethod: parsed.paymentMethod, receiptFileId: parsed.receiptFileId,
-    isBillable: true, allowDuplicate: true,
-  }, context.orgId))
-  // Money creates roles: the authority is a payee the directory recognises as a vendor.
-  await ensureVendorRoleWithClient(context.supabase, context.orgId, companyId, context.userId)
-  const { paymentId } = await linkPermitFeePayment({ feeId: fee.id, projectExpenseId: expense.id }, context.orgId)
-  return { paymentId, projectExpenseId: expense.id }
 }
 
 export async function setPermitJurisdictionProfile(input: unknown, orgId?: string) {
@@ -688,25 +712,9 @@ export async function setCommunityPermitAuthority(input: unknown, orgId?: string
   const parsed = setCommunityPermitAuthoritySchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
-  const { data: before, error: readError } = await context.supabase.from("communities").select("id,permit_jurisdiction_company_id")
-    .eq("org_id", context.orgId).eq("id", parsed.communityId).maybeSingle()
-  if (readError) throw new Error(`Unable to read the community: ${readError.message}`)
-  if (!before) throw new Error("Community not found")
-  if (parsed.companyId) {
-    const { data: company, error } = await context.supabase.from("companies").select("id").eq("org_id", context.orgId)
-      .eq("id", parsed.companyId).is("archived_at", null).maybeSingle()
-    if (error) throw new Error(`Unable to read the authority: ${error.message}`)
-    if (!company) throw new Error("Authority not found")
-  }
-  const { error } = await context.supabase.from("communities").update({ permit_jurisdiction_company_id: parsed.companyId })
-    .eq("org_id", context.orgId).eq("id", parsed.communityId)
-  if (error) throw new Error(`Unable to set the community's permitting authority: ${error.message}`)
-  await Promise.all([
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "community", entityId: parsed.communityId,
-      before: { permit_jurisdiction_company_id: before.permit_jurisdiction_company_id }, after: { permit_jurisdiction_company_id: parsed.companyId } }),
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "community.permit_authority_set", entityType: "community",
-      entityId: parsed.communityId, payload: { company_id: parsed.companyId } }),
-  ])
+  rpcError((await context.supabase.rpc("set_community_permit_authority", {
+    p_org_id: context.orgId, p_community_id: parsed.communityId, p_company_id: parsed.companyId,
+  })).error)
 }
 
 export async function getCommunityPermitAuthority(communityId: string, orgId?: string) {
@@ -749,12 +757,12 @@ export async function listPermitQueue(filters: { communityId?: string; divisionI
   if (parsed.divisionId && access.assignedOnly && !access.divisionIds.includes(parsed.divisionId)) {
     return { rows: [] as PermitQueueRow[], total: 0, truncated: false }
   }
-  const today = todayIso()
-  const soon = new Date(Date.parse(`${today}T00:00:00Z`) + 3 * 86_400_000).toISOString().slice(0, 10)
+  // Each application is aged on its own home's date (the community's time zone);
+  // the view says which are due for a chase.
   let query = context.supabase.from("permit_application_positions")
-    .select("id,project_id,lot_id,permit_type,owner_user_id,permit_number,decision,expires_on,superseded_at,community_id,lot_number,block,community_name,submission_count,expected_decision_on,open_rounds,unresolved_rounds,next_round_due_on,start_target_week,jurisdiction_company_id", { count: "exact" })
+    .select("id,project_id,lot_id,permit_type,owner_user_id,permit_number,decision,expires_on,superseded_at,community_id,lot_number,block,community_name,submission_count,expected_decision_on,open_rounds,unresolved_rounds,next_round_due_on,start_target_week,jurisdiction_company_id,today_local", { count: "exact" })
     .eq("org_id", context.orgId).is("decision", null).is("superseded_at", null).gt("submission_count", 0)
-    .or(`unresolved_rounds.gt.0,expected_decision_on.lte.${soon}`)
+    .eq("chase", true)
   if (parsed.communityId) query = query.eq("community_id", parsed.communityId)
   if (parsed.divisionId) query = query.eq("division_id", parsed.divisionId)
   const { data, error, count } = await query.order("expected_decision_on", { ascending: true }).order("id").limit(PERMIT_QUEUE_CAP)
@@ -777,7 +785,7 @@ export async function listPermitQueue(filters: { communityId?: string; divisionI
   const candidates: PermitQueueRow[] = rows.map((row) => {
     const stage = permitApplicationStage({
       decision: row.decision, supersededAt: row.superseded_at, expiresOn: row.expires_on, submissionCount: row.submission_count, openRounds: row.open_rounds,
-    }, today)
+    }, row.today_local)
     return {
       id: row.id,
       projectId: row.project_id,
@@ -791,7 +799,7 @@ export async function listPermitQueue(filters: { communityId?: string; divisionI
       aging: permitAging({
         stage, expectedDecisionOn: row.expected_decision_on,
         rounds: roundRows.filter((round) => round.application_id === row.id).map((round) => ({ status: round.status, dueOn: round.due_on })),
-      }, today),
+      }, row.today_local),
       startTargetWeek: row.start_target_week,
       href: `/projects/${row.project_id}/permits?permit=${row.id}`,
     }
@@ -809,26 +817,33 @@ const SWEEP_CAP = 2000
  */
 export async function sweepPermitDeadlines(now: Date = new Date()) {
   const service = createServiceSupabaseClient()
-  const today = now.toISOString().slice(0, 10)
-  const soon = new Date(now.getTime() + 3 * 86_400_000).toISOString().slice(0, 10)
+  // The sweep reads each application on its own home's date; the window here
+  // only has to be wide enough to hold every time zone's tomorrow.
+  const reach = new Date(now.getTime() + 4 * 86_400_000).toISOString().slice(0, 10)
   const [rounds, positions] = await Promise.all([
     readAllRows((from, to) => service.from("permit_correction_rounds")
       .select("id,org_id,project_id,application_id,round_no,due_on,owner_user_id,metadata,application:permit_applications!inner(decision,superseded_at,permit_type)")
-      .eq("status", "open").not("due_on", "is", null).lte("due_on", soon)
+      .eq("status", "open").not("due_on", "is", null).lte("due_on", reach)
       .is("application.decision", null).is("application.superseded_at", null)
       .order("id").range(from, to), { cap: SWEEP_CAP, label: "Failed to load correction rounds coming due" }),
     readAllRows((from, to) => service.from("permit_application_positions")
-      .select("id,org_id,project_id,permit_type,owner_user_id,submission_count,expected_decision_on,open_rounds")
-      .is("decision", null).is("superseded_at", null).gt("submission_count", 0).eq("open_rounds", 0)
-      .lt("expected_decision_on", today).order("id").range(from, to), { cap: SWEEP_CAP, label: "Failed to load overdue permit decisions" }),
+      .select("id,org_id,project_id,permit_type,owner_user_id,submission_count,expected_decision_on,today_local")
+      .eq("decision_overdue", true).order("id").range(from, to), { cap: SWEEP_CAP, label: "Failed to load overdue permit decisions" }),
   ])
+  const roundRows = rounds.rows.map((raw) => z.object({
+    id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid(), application_id: z.string().uuid(),
+    round_no: z.number().int(), due_on: z.string(), owner_user_id: z.string().uuid().nullable(),
+    metadata: z.record(z.string(), z.unknown()),
+  }).parse(raw))
+  const localDates = new Map<string, string>()
+  for (const batch of chunk([...new Set(roundRows.map((row) => row.application_id))], 100)) {
+    const { data, error } = await service.from("permit_application_positions").select("id,today_local").in("id", batch)
+    if (error) throw new Error(`Failed to read permit dates: ${error.message}`)
+    for (const row of z.array(z.object({ id: z.string().uuid(), today_local: z.string() })).parse(data ?? [])) localDates.set(row.id, row.today_local)
+  }
   let corrections = 0
-  for (const raw of rounds.rows) {
-    const row = z.object({
-      id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid(), application_id: z.string().uuid(),
-      round_no: z.number().int(), due_on: z.string(), owner_user_id: z.string().uuid().nullable(),
-      metadata: z.record(z.string(), z.unknown()),
-    }).parse(raw)
+  for (const row of roundRows) {
+    const today = localDates.get(row.application_id) ?? now.toISOString().slice(0, 10)
     const reminder = permitReminderDue(row.due_on, today, row.metadata)
     if (!reminder) continue
     await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_correction.due", entityType: "permit_correction_round", entityId: row.id,
@@ -841,7 +856,7 @@ export async function sweepPermitDeadlines(now: Date = new Date()) {
   }
   const overdueRows = positions.rows.map((raw) => z.object({
     id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid(), permit_type: z.enum(PERMIT_TYPES),
-    owner_user_id: z.string().uuid().nullable(), submission_count: z.number().int(), expected_decision_on: z.string(),
+    owner_user_id: z.string().uuid().nullable(), submission_count: z.number().int(), expected_decision_on: z.string(), today_local: z.string(),
   }).parse(raw))
   const markers = new Map<string, Record<string, unknown>>()
   for (const batch of chunk(overdueRows.map((row) => row.id), 100)) {
@@ -855,10 +870,10 @@ export async function sweepPermitDeadlines(now: Date = new Date()) {
   for (const row of overdueRows) {
     const metadata = markers.get(row.id) ?? {}
     const scope = `decision_${row.submission_count}`
-    if (permitReminderDue(row.expected_decision_on, today, metadata, scope) !== "overdue") continue
+    if (permitReminderDue(row.expected_decision_on, row.today_local, metadata, scope) !== "overdue") continue
     await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_application.decision_overdue", entityType: "permit_application", entityId: row.id,
       payload: { project_id: row.project_id, permit_type: row.permit_type, expected_decision_on: row.expected_decision_on,
-        days_overdue: daysBetween(row.expected_decision_on, today), owner_user_id: row.owner_user_id } })
+        days_overdue: daysBetween(row.expected_decision_on, row.today_local), owner_user_id: row.owner_user_id } })
     const { error } = await service.from("permit_applications")
       .update({ metadata: { ...metadata, [permitReminderKey("overdue", scope)]: now.toISOString() } }).eq("org_id", row.org_id).eq("id", row.id)
     if (error) throw new Error(`Failed to record the decision reminder: ${error.message}`)

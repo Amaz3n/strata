@@ -710,7 +710,7 @@ test("the permit gate passes only on an approved permit for the lot's pinned pla
   await desk.refresh()
   assert.deepEqual([await desk.status(w.gates.permit), await desk.status(w.gates.plot)], ["passed", "passed"])
 
-  await w.db.query("update permit_applications set expires_on = current_date - 1 where id = $1", [applicationId])
+  await w.db.query("update permit_applications set expires_on = permit_local_today(org_id, project_id) - 1 where id = $1", [applicationId])
   assert.equal(await w.evidence("permit_approved"), false, "an expired permit starts nothing")
   await w.db.query("update permit_applications set expires_on = null where id = $1", [applicationId])
 
@@ -737,8 +737,9 @@ test("the authority's letter that no permit is needed clears the gate; a denial 
   await w.decide(denied, { p_decision: "denied", p_note: "Flood elevation not met" })
   assert.equal(await w.evidence("permit_approved"), false)
   const exempt = await w.open()
-  await assert.rejects(w.decide(exempt, { p_decision: "not_required" }), /no-permit letter is required/)
-  await w.decide(exempt, { p_decision: "not_required", p_issued_permit_file_id: await w.file("exemption-letter.pdf") })
+  const note = "County confirms a fence repair needs no permit"
+  await assert.rejects(w.decide(exempt, { p_decision: "not_required", p_note: note }), /no-permit letter is required/)
+  await w.decide(exempt, { p_decision: "not_required", p_issued_permit_file_id: await w.file("exemption-letter.pdf"), p_note: note })
   assert.equal(await w.evidence("permit_approved"), true)
 })
 

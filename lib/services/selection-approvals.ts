@@ -228,6 +228,24 @@ async function assertChoicesStillValid(db: SupabaseClient, orgId: string, projec
   await assertProjectConfiguration(orgId, projectId)
 }
 
+/**
+ * An answer to a request that is still out binds at the terms that were sent:
+ * the database verifies the hash, and an option withdrawn since is not a
+ * reason to refuse. Only an approval with no live request behind it (a buyer
+ * confirming on their own, a coordinator recording paper) checks the choices.
+ */
+async function assertChoicesUnlessRequested(
+  db: SupabaseClient, orgId: string, projectId: string, groupId: string | null, channel: "portal" | "in_person", termsHash: string,
+) {
+  let query = db.from("selection_approvals").select("id", { count: "exact", head: true })
+    .eq("org_id", orgId).eq("project_id", projectId).eq("status", "sent").eq("channel", channel).eq("terms_hash", termsHash)
+  query = groupId ? query.eq("group_id", groupId) : query.is("group_id", null)
+  const { count, error } = await query
+  if (error) throw new Error(`Failed to check for a request still out: ${error.message}`)
+  if ((count ?? 0) > 0) return
+  await assertChoicesStillValid(db, orgId, projectId, groupId)
+}
+
 async function loadApproval(db: SupabaseClient, orgId: string, approvalId: string): Promise<ApprovalRow> {
   const { data, error } = await db.from("selection_approvals").select("*").eq("org_id", orgId).eq("id", approvalId).maybeSingle()
   if (error) throw new Error(`Failed to load the approval: ${error.message}`)
@@ -297,9 +315,11 @@ async function publishSigningDocument(context: OrgContext, db: SupabaseClient, a
   return envelopeId.data
 }
 
-async function emailPortalRequest(context: OrgContext, db: SupabaseClient, approval: ApprovalRow, lineCount: number): Promise<boolean> {
+type BuyerEmailOutcome = "sent" | "no_email" | "failed"
+
+async function emailPortalRequest(context: OrgContext, db: SupabaseClient, approval: ApprovalRow, lineCount: number): Promise<BuyerEmailOutcome> {
   const facts = await homeFacts(db, context.orgId, approval.project_id, approval.group_id)
-  if (!facts.buyer?.email) return false
+  if (!facts.buyer?.email) return "no_email"
   const [portal, org] = await Promise.all([
     ensurePortalLink({ supabase: db, orgId: context.orgId, projectId: approval.project_id, portalType: "client", contactId: facts.buyer.id, createdBy: context.userId, capabilities: { can_submit_selections: true }, fallbackPath: "/" }),
     db.from("orgs").select("name, slug, logo_url").eq("id", context.orgId).maybeSingle(),
@@ -310,10 +330,14 @@ async function emailPortalRequest(context: OrgContext, db: SupabaseClient, appro
     respondByText: approval.expires_at ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(Date.parse(approval.expires_at) - 1)) : null,
     actionHref: `${portal}/selections`,
   }))
-  return sendEmail({ to: [facts.buyer.email], subject: `Please approve your ${facts.groupName.toLowerCase()} selections`, html, from: getOrgSenderEmail(org.data?.slug, org.data?.name) })
+  const delivered = await sendEmail({
+    to: [facts.buyer.email], subject: `Please approve your ${facts.groupName.toLowerCase()} selections`, html, from: getOrgSenderEmail(org.data?.slug, org.data?.name),
+    idempotencyKey: `selection-approval-request:${approval.id}`,
+  })
+  return delivered ? "sent" : "failed"
 }
 
-export async function sendSelectionApproval(raw: SendSelectionApprovalInput): Promise<{ approvalId: string; envelopeId: string | null; buyerEmailed: boolean }> {
+export async function sendSelectionApproval(raw: SendSelectionApprovalInput): Promise<{ approvalId: string; envelopeId: string | null; buyerEmail: BuyerEmailOutcome }> {
   const input = sendSelectionApprovalSchema.parse(raw)
   const context = await requireOrgContext()
   await authorizeHome(context, input.projectId, "selections.write")
@@ -329,7 +353,7 @@ export async function sendSelectionApproval(raw: SendSelectionApprovalInput): Pr
 
   if (input.channel === "esign") {
     try {
-      return { approvalId: approval.id, envelopeId: await publishSigningDocument(context, db, approval), buyerEmailed: true }
+      return { approvalId: approval.id, envelopeId: await publishSigningDocument(context, db, approval), buyerEmail: "sent" }
     } catch (error) {
       // A request the buyer can never answer would block the group; withdraw it and say why.
       await db.rpc("void_selection_approval", { p_org_id: context.orgId, p_approval_id: approval.id, p_actor_id: context.userId, p_reason: "The signing document could not be sent" })
@@ -337,7 +361,8 @@ export async function sendSelectionApproval(raw: SendSelectionApprovalInput): Pr
     }
   }
   const lines = await db.from("selection_approval_lines").select("selection_id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("approval_id", approval.id)
-  return { approvalId: approval.id, envelopeId: null, buyerEmailed: await emailPortalRequest(context, db, approval, lines.count ?? 0).catch(() => false) }
+  // The request stands either way; the coordinator is told whether the buyer's email went out.
+  return { approvalId: approval.id, envelopeId: null, buyerEmail: await emailPortalRequest(context, db, approval, lines.count ?? 0).catch(() => "failed" as const) }
 }
 
 export async function voidSelectionApproval(raw: VoidSelectionApprovalInput): Promise<{ approvalId: string }> {
@@ -358,7 +383,7 @@ export async function recordInPersonSelectionApproval(raw: InPersonSelectionAppr
   const context = await requireOrgContext()
   await authorizeHome(context, input.projectId, "selections.write")
   const db = createServiceSupabaseClient()
-  await assertChoicesStillValid(db, context.orgId, input.projectId, input.groupId)
+  await assertChoicesUnlessRequested(db, context.orgId, input.projectId, input.groupId, "in_person", input.termsHash)
   const { data, error } = await db.rpc("approve_selection_terms", {
     p_org_id: context.orgId, p_project_id: input.projectId, p_group_id: input.groupId, p_channel: "in_person",
     p_terms_hash: input.termsHash, p_contact_id: null, p_user_id: context.userId, p_signed_copy_file_id: input.signedCopyFileId,
@@ -373,7 +398,7 @@ export async function recordInPersonSelectionApproval(raw: InPersonSelectionAppr
 export async function approveSelectionsFromPortal(input: { orgId: string; projectId: string; contactId: string; groupId: string | null; termsHash: string }): Promise<{ approvalId: string }> {
   const parsed = portalSelectionApprovalSchema.parse({ groupId: input.groupId, termsHash: input.termsHash })
   const db = createServiceSupabaseClient()
-  await assertChoicesStillValid(db, input.orgId, input.projectId, parsed.groupId)
+  await assertChoicesUnlessRequested(db, input.orgId, input.projectId, parsed.groupId, "portal", parsed.termsHash)
   const { data, error } = await db.rpc("approve_selection_terms", {
     p_org_id: input.orgId, p_project_id: input.projectId, p_group_id: parsed.groupId, p_channel: "portal",
     p_terms_hash: parsed.termsHash, p_contact_id: input.contactId, p_user_id: null, p_signed_copy_file_id: null,

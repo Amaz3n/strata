@@ -574,10 +574,20 @@ export async function createProjectSelection({ input, orgId }: { input: Selectio
   ])
   if (homeError) throw new Error(`Failed to load the home: ${homeError.message}`)
   if (!home || (access.assignedOnly && !access.divisionIds.includes(String(home.division_id)))) throw new Error("Home not found")
+  // A selection opened on a home belongs to the deadline group its category is
+  // in there, so it cannot be chosen after that group's cutoff.
+  const [{ data: groups, error: groupsError }, { data: links, error: linksError }] = await Promise.all([
+    service.from("project_selection_groups").select("group_id").eq("org_id", context.orgId).eq("project_id", input.project_id),
+    service.from("selection_group_categories").select("group_id").eq("org_id", context.orgId).eq("category_id", input.category_id),
+  ])
+  if (groupsError || linksError) throw new Error(`Failed to load the home's selection groups: ${(groupsError ?? linksError)?.message}`)
+  const homeGroups = new Set((groups ?? []).map((group) => group.group_id as string))
+  const groupId = (links ?? []).map((link) => link.group_id as string).filter((id) => homeGroups.has(id)).sort()[0] ?? null
   const payload = {
     org_id: context.orgId,
     project_id: input.project_id,
     category_id: input.category_id,
+    group_id: groupId,
     status: input.status ?? "pending",
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,

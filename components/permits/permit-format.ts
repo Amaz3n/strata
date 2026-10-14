@@ -7,8 +7,8 @@ export function formatDay(value?: string | null) {
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
 
-export function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+export function addDaysIso(value: string, days: number) {
+  return new Date(Date.parse(`${value}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
 }
 
 /** Stage reports state: green when the house may build on it, amber while the builder owes a response, red when it cannot. */

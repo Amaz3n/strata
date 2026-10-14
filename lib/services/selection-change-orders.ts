@@ -5,6 +5,7 @@ import { createChangeOrder } from "@/lib/services/change-orders"
 import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { getProjectCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { readHomePricingScope } from "@/lib/services/home-pricing-scope"
 import { NotificationService } from "@/lib/services/notifications"
 import { resolveOptionPricing } from "@/lib/services/option-catalog"
@@ -196,6 +197,12 @@ export async function createPostCutoffSelectionChangeOrder(raw: PostCutoffChange
       cost_code_id: nextOption?.cost_code_id ?? resolved?.costCodeId ?? null,
     }
   })
+  // Where costs are coded, a cost change needs its code now: the approval posts
+  // the budget and refuses an uncoded line, so it is raised before the buyer signs.
+  const uncoded = changes.find((change) => change.cost_delta_cents !== 0 && !change.cost_code_id)
+  if (uncoded && await getProjectCostCodesEnabled(service, context.orgId, input.projectId)) {
+    throw new Error(`${uncoded.option_name} has no cost code, so its cost change cannot post to the budget. Code the option first.`)
+  }
   // The buyer signs what the configuration rules accept; nothing is re-checked
   // against the catalog when the signature lands.
   await assertProjectConfiguration(context.orgId, input.projectId, changes.map((change) => ({ selectionId: change.selection_id, optionId: change.new_option_id })))
@@ -368,37 +375,74 @@ export async function processSelectionChangeApplied(orgId: string, raw: unknown)
   const changeOrder = changeOrderResult.data
   if (!changeOrder) throw new Error("The applied selection change order was not found")
   const changes = z.array(appliedChangeSchema).parse(changeOrder.metadata?.selection_change?.changes ?? [])
-  for (const change of changes) {
-    await recordEvent({
-      orgId, eventType: "selection_changed_post_cutoff", entityType: "selection", entityId: change.selection_id,
-      payload: { project_id: payload.project_id, change_order_id: changeOrder.id, old_option_id: change.old_option_id ?? null, new_option_id: change.new_option_id,
-        cost_delta_cents: change.cost_delta_cents ?? 0, cost_code_id: change.cost_code_id ?? null },
-    })
-    await recordAudit({
-      orgId, action: "update", entityType: "selection", entityId: change.selection_id,
-      after: { selected_option_id: change.new_option_id, status: "confirmed", price_cents_snapshot: change.price_cents ?? null, source_change_order_id: changeOrder.id },
-    })
+  const done = followUpDone(changeOrder.metadata)
+  // A retry after a partial failure resumes at the first step that did not
+  // finish: each step is stamped on the change order when it completes.
+  const once = async (step: FollowUpStep, work: () => Promise<void>) => {
+    if (done.has(step)) return
+    await work()
+    await stampFollowUp(supabase, orgId, changeOrder.id, step)
   }
-  await recordVarianceOrders({ orgId, projectId: payload.project_id, changeOrderId: changeOrder.id, orders: payload.variance_orders ?? [] })
-  await announceSelectionExceptions(orgId, (exceptionsResult.data ?? []).map((row) => row.id as string))
+
+  await once("selections", async () => {
+    for (const change of changes) {
+      await recordEvent({
+        orgId, eventType: "selection_changed_post_cutoff", entityType: "selection", entityId: change.selection_id,
+        payload: { project_id: payload.project_id, change_order_id: changeOrder.id, old_option_id: change.old_option_id ?? null, new_option_id: change.new_option_id,
+          cost_delta_cents: change.cost_delta_cents ?? 0, cost_code_id: change.cost_code_id ?? null },
+      })
+      await recordAudit({
+        orgId, action: "update", entityType: "selection", entityId: change.selection_id,
+        after: { selected_option_id: change.new_option_id, status: "confirmed", price_cents_snapshot: change.price_cents ?? null, source_change_order_id: changeOrder.id },
+      })
+    }
+  })
+  await once("variance_orders", () => recordVarianceOrders({ orgId, projectId: payload.project_id, changeOrderId: changeOrder.id, orders: payload.variance_orders ?? [] }))
+  await once("exceptions", () => announceSelectionExceptions(orgId, (exceptionsResult.data ?? []).map((row) => row.id as string)))
 
   const daysImpact = Number(changeOrder.days_impact ?? 0)
   const superintendentId = projectResult.data?.superintendent_id as string | null | undefined
-  if (daysImpact !== 0) {
+  if (daysImpact === 0) return
+  await once("schedule_event", async () => {
     await recordEvent({
       orgId, eventType: "selection_change_schedule_pending", entityType: "change_order", entityId: changeOrder.id,
       payload: { project_id: payload.project_id, schedule_item_id: payload.schedule_item_id ?? null, days_impact: daysImpact },
     })
-    if (superintendentId) {
-      await new NotificationService().createAndQueue({
-        orgId, userId: superintendentId, type: "selection_change_schedule_pending",
-        title: `Schedule impact: ${daysImpact} day${Math.abs(daysImpact) === 1 ? "" : "s"}`,
-        message: payload.schedule_item_id
-          ? `CO #${changeOrder.co_number ?? ""} (${changeOrder.title}) on ${projectResult.data?.name ?? "a home"} is waiting for you to apply its schedule impact.`
-          : `CO #${changeOrder.co_number ?? ""} (${changeOrder.title}) on ${projectResult.data?.name ?? "a home"} carries a schedule impact with no linked task; adjust the schedule by hand.`,
-        projectId: payload.project_id, entityType: "change_order", entityId: changeOrder.id,
-        metadata: { href: `/projects/${payload.project_id}/schedule`, schedule_item_id: payload.schedule_item_id ?? null },
-      })
-    }
-  }
+  })
+  if (!superintendentId) return
+  await once("schedule_notice", async () => {
+    await new NotificationService().createAndQueue({
+      orgId, userId: superintendentId, type: "selection_change_schedule_pending",
+      title: `Schedule impact: ${daysImpact} day${Math.abs(daysImpact) === 1 ? "" : "s"}`,
+      message: payload.schedule_item_id
+        ? `CO #${changeOrder.co_number ?? ""} (${changeOrder.title}) on ${projectResult.data?.name ?? "a home"} is waiting for you to apply its schedule impact.`
+        : `CO #${changeOrder.co_number ?? ""} (${changeOrder.title}) on ${projectResult.data?.name ?? "a home"} carries a schedule impact with no linked task; adjust the schedule by hand.`,
+      projectId: payload.project_id, entityType: "change_order", entityId: changeOrder.id,
+      metadata: { href: `/projects/${payload.project_id}/schedule`, schedule_item_id: payload.schedule_item_id ?? null },
+    })
+  })
+}
+
+const FOLLOW_UP_STEPS = ["selections", "variance_orders", "exceptions", "schedule_event", "schedule_notice"] as const
+type FollowUpStep = (typeof FOLLOW_UP_STEPS)[number]
+const FOLLOW_UP_KEY = "selection_change_follow_up"
+
+function followUpDone(metadata: unknown): Set<FollowUpStep> {
+  const parsed = z.object({ [FOLLOW_UP_KEY]: z.record(z.string(), z.unknown()) }).safeParse(metadata)
+  const stamped = parsed.success ? parsed.data[FOLLOW_UP_KEY] : {}
+  return new Set(FOLLOW_UP_STEPS.filter((step) => step in stamped))
+}
+
+/** Stamps a finished step on the change order, merged into its metadata as it stands now. */
+async function stampFollowUp(supabase: ReturnType<typeof createServiceSupabaseClient>, orgId: string, changeOrderId: string, step: FollowUpStep) {
+  const { data, error } = await supabase.from("change_orders").select("metadata").eq("org_id", orgId).eq("id", changeOrderId).single()
+  if (error) throw new Error(`Failed to read the change order's follow-up: ${error.message}`)
+  const metadata = z.record(z.string(), z.unknown()).parse(data.metadata ?? {})
+  const stamped = z.record(z.string(), z.unknown()).catch({}).parse(metadata[FOLLOW_UP_KEY])
+  const { error: writeError } = await supabase
+    .from("change_orders")
+    .update({ metadata: { ...metadata, [FOLLOW_UP_KEY]: { ...stamped, [step]: new Date().toISOString() } } })
+    .eq("org_id", orgId)
+    .eq("id", changeOrderId)
+  if (writeError) throw new Error(`Failed to record the change order's follow-up: ${writeError.message}`)
 }

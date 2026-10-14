@@ -526,3 +526,125 @@ test("a cost change with no purchase order is a selection exception, and a membe
   )
   await as("update commitment_change_orders set status = 'sent' where id = $1", [vpo.id])
 })
+
+// ---------------------------------------------------------------------------
+// EP06 review fixes: no writer walks around the cutoff, the approval or the schedule.
+// ---------------------------------------------------------------------------
+
+/** A member of the home with the org role `role`, the way PostgREST would see them. */
+async function homeMember(home, role) {
+  const member = await seedMember(home.db, { orgId: home.orgId, role })
+  await home.db.query(
+    "insert into project_members (org_id, project_id, user_id, role_id, status) select $1, $2, $3, id, 'active' from roles where key = 'pm'",
+    [home.orgId, home.project.id, member.userId],
+  )
+  return member
+}
+
+/** A write is refused when it errors or when row security leaves it no row to touch. */
+const refused = async (work) => {
+  try {
+    return (await work).rowCount === 0
+  } catch {
+    return true
+  }
+}
+
+test("a member approves a selection change order only with change_order.approve, in their own name, and cannot rewrite its signature or days", async (t) => {
+  const home = await supplyHome(t)
+  await home.choose(home.laminate.id)
+  await home.setCutoff(await home.day(-1), "locked")
+  const countertops = await insert(home.db, "cost_codes", { org_id: home.orgId, code: "06-400", name: "Countertops" })
+  const raised = await insert(home.db, "change_orders", {
+    org_id: home.orgId, project_id: home.project.id, title: "Post-cutoff selection change", status: "pending", lifecycle: "proposed",
+    total_cents: 1500_00, requires_signature: true, days_impact: 4,
+  })
+  const change = {
+    selection_id: home.selection.id, old_option_id: home.laminate.id, old_price_cents: 1000_00, old_cost_cents: 400_00,
+    new_option_id: home.quartz.id, new_package_id: null, group_id: home.group.id, category_name: "Countertop", option_name: "Quartz",
+    price_cents: 2300_00, cost_cents: 1100_00, price_delta_cents: 1300_00, cost_delta_cents: 700_00, cost_code_id: countertops.id,
+  }
+  await home.db.query("update change_orders set metadata = metadata || jsonb_build_object('selection_change', $2::jsonb) where id = $1", [raised.id, JSON.stringify({ changes: [change], fee_cents: 0 })])
+
+  const agent = await homeMember(home, "org_sales_agent")
+  const asAgent = (sql, args) => asRole(home.db, { role: "authenticated", userId: agent.userId }, (tx) => tx.query(sql, args))
+  await assert.rejects(asAgent("update change_orders set requires_signature = false where id = $1", [raised.id]), /fixed as raised/)
+  await assert.rejects(asAgent("update change_orders set days_impact = 0 where id = $1", [raised.id]), /fixed as raised/)
+  await assert.rejects(asAgent("update change_orders set approved_by = $2 where id = $1", [raised.id, agent.userId]), /recorded only when it is approved/)
+  await assert.rejects(
+    asAgent("update change_orders set status = 'approved', lifecycle = 'approved', approved_by = $2, approved_at = now() where id = $1", [raised.id, agent.userId]),
+    /needs change_order.approve/,
+  )
+  const approver = (userId) => asRole(home.db, { role: "authenticated", userId }, (tx) => tx.query(
+    "update change_orders set status = 'approved', lifecycle = 'approved', approved_by = $2, approved_at = now() where id = $1", [raised.id, home.owner.userId]))
+  await assert.rejects(approver(agent.userId), /needs change_order.approve/)
+  const stranger = await seedMember(home.db, { orgId: home.orgId, role: "org_owner" })
+  await assert.rejects(approver(stranger.userId), /own name/)
+  assert.equal((await home.row()).selected_option_id, home.laminate.id)
+  await approver(home.owner.userId)
+  assert.equal((await home.row()).selected_option_id, home.quartz.id)
+})
+
+test("a cost change with no cost code fails the approval where costs are coded", async (t) => {
+  const home = await soldSupplyHome(t)
+  const raised = await home.changeOrder()
+  await home.attach(raised.id, [home.change({ cost_code_id: null })])
+  assert.equal(await refusalCode(home.approve(raised.id)), "SELECTION_COST_CODE_REQUIRED")
+  assert.equal((await home.row()).selected_option_id, home.laminate.id)
+})
+
+test("a member withdraws a pending selection only with selections.write and only while its group is open, and opens one only in its category's group", async (t) => {
+  const home = await supplyHome(t)
+  const agent = await homeMember(home, "org_superintendent")
+  const asAgent = (sql, args) => asRole(home.db, { role: "authenticated", userId: agent.userId }, (tx) => tx.query(sql, args))
+  const asOwner = (sql, args) => asRole(home.db, { role: "authenticated", userId: home.owner.userId }, (tx) => tx.query(sql, args))
+  await insert(home.db, "selection_group_categories", { org_id: home.orgId, group_id: home.group.id, category_id: home.category.id })
+
+  assert.ok(await refused(asAgent("delete from project_selections where id = $1", [home.selection.id])))
+  assert.ok(await refused(asAgent("insert into project_selections (org_id, project_id, category_id, group_id, status) values ($1, $2, $3, $4, 'pending')", [home.orgId, home.project.id, home.category.id, home.group.id])))
+
+  await home.setCutoff(await home.day(-1))
+  await assert.rejects(asOwner("delete from project_selections where id = $1", [home.selection.id]), /group is closed/)
+  await home.setCutoff(await home.day(10), "locked")
+  await assert.rejects(asOwner("delete from project_selections where id = $1", [home.selection.id]), /group is closed/)
+
+  await home.setCutoff(await home.day(10), "open")
+  await asOwner("delete from project_selections where id = $1", [home.selection.id])
+  const insertInto = (groupId) => asOwner("insert into project_selections (org_id, project_id, category_id, group_id, status) values ($1, $2, $3, $4, 'pending')", [home.orgId, home.project.id, home.category.id, groupId])
+  await assert.rejects(insertInto(null), /belongs to the deadline group/)
+  await home.setCutoff(await home.day(-1))
+  await assert.rejects(insertInto(home.group.id), /group is closed/)
+  await home.setCutoff(await home.day(10))
+  await insertInto(home.group.id)
+  assert.equal(Number((await home.db.query("select count(*) n from project_selections where group_id = $1", [home.group.id])).rows[0].n), 1)
+})
+
+test("a schedule impact is written by the approval and applied by the superintendent, never by a member", async (t) => {
+  const home = await soldSupplyHome(t)
+  const raised = await home.changeOrder()
+  await home.attach(raised.id)
+  await home.approve(raised.id)
+  const [impact] = (await home.db.query("select id from schedule_item_change_orders where change_order_id = $1", [raised.id])).rows
+  const agent = await homeMember(home, "org_sales_agent")
+  for (const userId of [agent.userId, home.owner.userId]) {
+    const as = (sql, args) => asRole(home.db, { role: "authenticated", userId }, (tx) => tx.query(sql, args))
+    assert.ok(await refused(as("update schedule_item_change_orders set days_adjusted = -300, applied_at = now() where id = $1", [impact.id])))
+    assert.ok(await refused(as("delete from schedule_item_change_orders where id = $1", [impact.id])))
+    assert.ok(await refused(as("insert into schedule_item_change_orders (org_id, schedule_item_id, change_order_id, days_adjusted) values ($1, $2, $3, 1)", [home.orgId, home.cabinets.id, raised.id])))
+  }
+  const { rows: [kept] } = await home.db.query("select days_adjusted, applied_at from schedule_item_change_orders where id = $1", [impact.id])
+  assert.deepEqual(kept, { days_adjusted: 4, applied_at: null })
+  const applied = await rpc(home.db, "apply_schedule_item_change_order", { p_org_id: home.orgId, p_impact_id: impact.id })
+  assert.equal(applied.days_adjusted, 4)
+})
+
+test("the cutoff reminder counts days in the community's day, not the server's", async (t) => {
+  const home = await supplyHome(t, { timeZone: "Pacific/Auckland" })
+  const reminders = () => rpc(home.db, "selection_cutoff_reminder_groups", { p_days: [7, 14], p_limit: 10 })
+  await home.setCutoff(await home.day(7))
+  assert.deepEqual((await reminders()).map((row) => [row.id, row.days_remaining, row.group_name]), [[home.instance.id, 7, "Kitchen"]])
+  await home.setCutoff(await home.day(9))
+  assert.deepEqual(await reminders(), [])
+  await home.setCutoff(await home.day(14), "locked")
+  assert.deepEqual(await reminders(), [])
+})

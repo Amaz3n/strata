@@ -1957,8 +1957,21 @@ export async function applyChangeOrderToSchedule({
     throw new Error("Change order not found");
   }
 
-  // Insert the link
-  const { data, error } = await supabase
+  // A link is written by the service after the schedule.edit check above: the
+  // table refuses a signed-in member's direct write, so an impact is never
+  // marked applied, re-dated or removed behind the superintendent.
+  const writer = createServiceSupabaseClient()
+  const { data: linked, error: linkedError } = await writer
+    .from("schedule_item_change_orders")
+    .select("applied_at")
+    .eq("org_id", resolvedOrgId)
+    .eq("schedule_item_id", scheduleItemId)
+    .eq("change_order_id", changeOrderId)
+    .maybeSingle()
+  if (linkedError) throw new Error(`Failed to check the schedule impact: ${linkedError.message}`)
+  if (linked?.applied_at) throw new Error("This schedule impact was already applied.")
+
+  const { data, error } = await writer
     .from("schedule_item_change_orders")
     .upsert(
       {
@@ -2041,8 +2054,11 @@ export async function removeChangeOrderFromSchedule(
   if (fetchError || !existing) {
     throw new Error("Schedule change order link not found");
   }
+  if (existing.applied_at) {
+    throw new Error("An applied schedule impact is a record and cannot be removed.");
+  }
 
-  const { error } = await supabase
+  const { error } = await createServiceSupabaseClient()
     .from("schedule_item_change_orders")
     .delete()
     .eq("org_id", resolvedOrgId)

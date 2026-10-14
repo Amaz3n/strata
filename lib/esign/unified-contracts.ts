@@ -10,7 +10,6 @@ export const unifiedSignableEntityTypeSchema = z.enum([
   "contract",
   "change_order",
   "lien_waiver",
-  "selection",
   "subcontract",
   "subcontract_change_order",
   "closeout",
@@ -113,7 +112,7 @@ export const ENVELOPE_EVENT_TYPES = {
 export const completionEventByEntityType: Record<
   Extract<
     UnifiedSignableEntityType,
-    "estimate" | "proposal" | "change_order" | "lien_waiver" | "selection" | "subcontract" | "subcontract_change_order"
+    "estimate" | "proposal" | "change_order" | "lien_waiver" | "subcontract" | "subcontract_change_order"
   >,
   string
 > = {
@@ -121,7 +120,6 @@ export const completionEventByEntityType: Record<
   proposal: "proposal.accepted_contract_created",
   change_order: "change_order.approved",
   lien_waiver: "lien_waiver.signed",
-  selection: "selection.confirmed",
   subcontract: "commitment.executed",
   subcontract_change_order: "commitment_change_order.approved",
 }

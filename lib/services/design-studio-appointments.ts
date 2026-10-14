@@ -72,6 +72,8 @@ export interface AppointmentDto {
   projectName: string | null
   communityName: string | null
   buyerName: string | null
+  /** False when the home has no buyer, or the buyer has no email: the coordinator tells them. */
+  buyerHasEmail: boolean
   consultantName: string | null
   locationName: string | null
   roomName: string | null
@@ -111,7 +113,7 @@ export interface StudioDirectory {
 
 const APPOINTMENT_COLUMNS =
   "id, org_id, community_id, project_id, contact_id, coordinator_user_id, location_id, room_id, scheduled_at, ends_at, duration_minutes, status, revision, group_ids, notes, cancel_reason"
-const APPOINTMENT_SELECT = `${APPOINTMENT_COLUMNS}, project:projects!inner(name, division_id), community:communities(name), buyer:contacts(full_name), consultant:app_users!design_studio_appointments_coordinator_user_id_fkey(full_name), location:design_studio_locations(name, time_zone), room:design_studio_rooms(name)`
+const APPOINTMENT_SELECT = `${APPOINTMENT_COLUMNS}, project:projects!inner(name, division_id), community:communities(name), buyer:contacts(full_name, email), consultant:app_users!design_studio_appointments_coordinator_user_id_fkey(full_name), location:design_studio_locations(name, time_zone), room:design_studio_rooms(name)`
 
 /** The calendar list is a page; `countAppointments` says how many there are. */
 const APPOINTMENT_LIST_CAP = 100
@@ -143,7 +145,7 @@ interface AppointmentRow {
   cancel_reason: string | null
   project?: Embedded<{ name: string | null }>
   community?: Embedded<{ name: string | null }>
-  buyer?: Embedded<{ full_name: string | null }>
+  buyer?: Embedded<{ full_name: string | null; email: string | null }>
   consultant?: Embedded<{ full_name: string | null }>
   location?: Embedded<{ name: string | null; time_zone: string | null }>
   room?: Embedded<{ name: string | null }>
@@ -178,6 +180,7 @@ function toAppointmentDto(row: AppointmentRow): AppointmentDto {
     projectName: relation(row.project)?.name ?? null,
     communityName: relation(row.community)?.name ?? null,
     buyerName: relation(row.buyer)?.full_name ?? null,
+    buyerHasEmail: Boolean(relation(row.buyer)?.email?.trim()),
     consultantName: relation(row.consultant)?.full_name ?? null,
     locationName: location?.name ?? null,
     roomName: relation(row.room)?.name ?? null,
@@ -352,11 +355,22 @@ export async function listStudios(opts: { includeArchived?: boolean } = {}): Pro
   }
 }
 
+/**
+ * A studio assigned to a division is that division's. The member's own client
+ * sees only the studios their division scope reaches (row security), so a
+ * studio it cannot read is one this caller may not change or book into --
+ * whatever the service role could read.
+ */
+async function assertStudioInScope(context: OrgContext, locationId: string) {
+  const { data, error } = await context.supabase.from("design_studio_locations").select("id").eq("org_id", context.orgId).eq("id", locationId).maybeSingle()
+  if (error) throw new Error(`Failed to load the studio: ${error.message}`)
+  if (!data) throw new Error("Studio not found")
+}
+
 export async function saveStudioLocation(raw: StudioLocationInput): Promise<{ id: string }> {
   const input = studioLocationSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
-  const db = createServiceSupabaseClient()
   const payload = {
     name: input.name,
     address: input.address ?? null,
@@ -365,10 +379,14 @@ export async function saveStudioLocation(raw: StudioLocationInput): Promise<{ id
     is_archived: input.isArchived,
   }
   const write = input.id
-    ? db.from("design_studio_locations").update(payload).eq("org_id", context.orgId).eq("id", input.id)
-    : db.from("design_studio_locations").insert({ org_id: context.orgId, created_by: context.userId, ...payload })
-  const { data, error } = await write.select("id").single()
-  if (error || !data) throw new Error(error?.code === "23505" ? `A studio named ${input.name} already exists` : error?.message ?? "Failed to save the studio")
+    ? context.supabase.from("design_studio_locations").update(payload).eq("org_id", context.orgId).eq("id", input.id)
+    : context.supabase.from("design_studio_locations").insert({ org_id: context.orgId, created_by: context.userId, ...payload })
+  const { data, error } = await write.select("id").maybeSingle()
+  if (error?.code === "23505") throw new Error(`A studio named ${input.name} already exists`)
+  // The member's own client writes this one, so the division wall is row security's.
+  if (error?.code === "42501") throw new Error("That studio is outside your divisions")
+  if (error) throw new Error(error.message)
+  if (!data) throw new Error("Studio not found")
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: input.id ? "design_studio_location_updated" : "design_studio_location_created", entityType: "design_studio_location", entityId: data.id, payload }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "design_studio_location", entityId: data.id, after: payload }),
@@ -385,6 +403,7 @@ export async function saveStudioRooms(raw: StudioRoomsInput): Promise<{ rooms: n
   const input = studioRoomsSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
+  await assertStudioInScope(context, input.locationId)
   const db = createServiceSupabaseClient()
   const { data: existing, error } = await db.from("design_studio_rooms").select("id, is_active").eq("org_id", context.orgId).eq("location_id", input.locationId)
   if (error) throw new Error(`Failed to load the studio's rooms: ${error.message}`)
@@ -414,6 +433,7 @@ export async function saveConsultantHours(raw: ConsultantHoursInput): Promise<{ 
   const input = consultantHoursSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
+  await assertStudioInScope(context, input.locationId)
   const { error } = await createServiceSupabaseClient().rpc("replace_consultant_hours", {
     p_org_id: context.orgId, p_location_id: input.locationId, p_user_id: input.userId, p_windows: input.windows,
   })
@@ -438,7 +458,9 @@ interface StudioForBooking {
   rooms: Array<{ id: string; isActive: boolean }>
 }
 
-async function loadStudio(db: SupabaseClient, orgId: string, locationId: string): Promise<StudioForBooking> {
+async function loadStudio(context: OrgContext, db: SupabaseClient, locationId: string): Promise<StudioForBooking> {
+  const orgId = context.orgId
+  await assertStudioInScope(context, locationId)
   const [locationResult, roomsResult] = await Promise.all([
     db.from("design_studio_locations").select("id, name, time_zone, is_archived").eq("org_id", orgId).eq("id", locationId).maybeSingle(),
     db.from("design_studio_rooms").select("id, is_active, sort_order").eq("org_id", orgId).eq("location_id", locationId).order("sort_order"),
@@ -565,7 +587,7 @@ export async function bookAppointment(raw: BookAppointmentInput): Promise<Appoin
   await requirePermission("design_studio.manage", context)
   await authorizeHome(context, input.projectId)
   const db = createServiceSupabaseClient()
-  const [home, studio] = await Promise.all([loadHome(db, context.orgId, input.projectId), loadStudio(db, context.orgId, input.locationId)])
+  const [home, studio] = await Promise.all([loadHome(db, context.orgId, input.projectId), loadStudio(context, db, input.locationId)])
   const window = sessionInterval(input.scheduledAt, input.durationMinutes)
   const groupIds = input.groupIds ?? home.openGroups.map((group) => group.groupId)
   const row = await writeInFreeRoom(db, context.orgId, studio, input.consultantUserId, window, undefined, (roomId) =>
@@ -612,7 +634,7 @@ export async function rescheduleAppointment(raw: RescheduleAppointmentInput): Pr
   const db = createServiceSupabaseClient()
   const before = await loadAppointmentForChange(context, db, input.appointmentId)
   if (before.status !== "scheduled") throw new Error(`A ${before.status.replace("_", " ")} session cannot be moved; book a new one`)
-  const studio = await loadStudio(db, context.orgId, input.locationId)
+  const studio = await loadStudio(context, db, input.locationId)
   const window = sessionInterval(input.scheduledAt, input.durationMinutes)
   const row = await writeInFreeRoom(db, context.orgId, studio, input.consultantUserId, window, before.id, (roomId) =>
     db.from("design_studio_appointments").update({
@@ -687,7 +709,7 @@ export async function listOpenSlots(raw: OpenSlotsInput): Promise<{ timeZone: st
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
   const db = createServiceSupabaseClient()
-  const studio = await loadStudio(db, context.orgId, input.locationId)
+  const studio = await loadStudio(context, db, input.locationId)
   const day: Interval = {
     start: zonedTimeToUtc(input.date, 0, studio.timeZone).toISOString(),
     end: zonedTimeToUtc(input.date, 1440, studio.timeZone).toISOString(),

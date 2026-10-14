@@ -1,4 +1,5 @@
 import { connection } from "next/server"
+import { z } from "zod"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -6,6 +7,8 @@ import { getProjectAction } from "../actions"
 import { listChangeOrdersAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrdersClient } from "@/components/change-orders/change-orders-client"
 import { Skeleton } from "@/components/ui/skeleton"
+import { SelectionChangeOrderPrompt } from "@/components/selections/selection-change-order-prompt"
+import { getSelectionSheet } from "@/lib/services/design-studio"
 import { getOrgBilling } from "@/lib/services/orgs"
 import { requireOrgContext } from "@/lib/services/context"
 import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
@@ -20,7 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 interface ProjectChangeOrdersPageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ new?: string; title?: string; description?: string }>
+  searchParams: Promise<{ new?: string; title?: string; description?: string; selection?: string }>
 }
 
 export default function ProjectChangeOrdersPage({
@@ -29,22 +32,22 @@ export default function ProjectChangeOrdersPage({
 }: ProjectChangeOrdersPageProps) {
   return (
     <>
-      <PageLayout title="Change Orders" breadcrumbs={[
-        { label: "Project" },
-        { label: "Change Orders" },
-      ]} />
-      <Suspense fallback={
-        <div className="p-6 space-y-4">
+        <PageLayout title="Change Orders" breadcrumbs={[
+          { label: "Project" },
+          { label: "Change Orders" },
+        ]} />
+        <Suspense fallback={
+          <div className="p-6 space-y-4">
           <Skeleton className="h-8 w-48 mb-6" />
           <div className="space-y-2">
             {Array.from({ length: 5 }).map((_, i) => (
               <Skeleton key={i} className="h-16 w-full rounded-md" />
             ))}
           </div>
-        </div>
-      }>
-        <ProjectChangeOrdersPageRoute params={params} searchParams={searchParams} />
-      </Suspense>
+          </div>
+        }>
+          <ProjectChangeOrdersPageRoute params={params} searchParams={searchParams} />
+        </Suspense>
     </>
   )
 }
@@ -64,15 +67,21 @@ async function ProjectChangeOrdersPageRoute({
       ? { title: query.title ?? null, notes: query.description ?? null }
       : null
 
-  return <ProjectChangeOrdersData id={id} initialDraft={initialDraft} />
+  // `?selection=<id>` — the selection exceptions band sends a choice the home
+  // can no longer take directly here; the selection change order opens prefilled.
+  const selectionId = z.string().uuid().safeParse(query.selection).data ?? null
+
+  return <ProjectChangeOrdersData id={id} initialDraft={initialDraft} selectionId={selectionId} />
 }
 
 async function ProjectChangeOrdersData({
   id,
   initialDraft,
+  selectionId,
 }: {
   id: string
   initialDraft: { title: string | null; notes: string | null } | null
+  selectionId: string | null
 }) {
   const project = await getProjectAction(id)
 
@@ -92,33 +101,48 @@ async function ProjectChangeOrdersData({
     ])
     return { costCodesEnabled, costCodes, budgetLines }
   })()
-  const [changeOrders, changeEvents, orgBilling, { costCodesEnabled, costCodes, budgetLines }] = await Promise.all([
+  const [changeOrders, changeEvents, orgBilling, { costCodesEnabled, costCodes, budgetLines }, selectionSheet] = await Promise.all([
     listChangeOrdersAction(id),
     listChangeEvents(id).catch(() => []),
     getOrgBilling().catch(() => null),
     costOptionsPromise,
+    selectionId ? getSelectionSheet(id).catch(() => null) : Promise.resolve(null),
   ])
+  const selectionGroup = selectionId && selectionSheet?.canManage
+    ? selectionSheet.groups.find((group) => group.categories.some((category) => category.selectionId === selectionId)) ?? null
+    : null
 
   return (
-    <Tabs defaultValue="events" className="space-y-4">
-      <TabsList><TabsTrigger value="events">Change events</TabsTrigger><TabsTrigger value="orders">Change orders</TabsTrigger></TabsList>
-      <TabsContent value="events"><ChangeEventsClient projectId={id} initialEvents={changeEvents} /></TabsContent>
-      <TabsContent value="orders"><ChangeOrdersClient
-        key={project.id}
-        changeOrders={changeOrders}
-        projects={[project]}
-        costCodes={costCodes}
-        budgetLines={budgetLines}
-        costCodesEnabled={costCodesEnabled}
-        hideProjectFilter
-        initialDraft={initialDraft}
-        builderInfo={{
-          name: orgBilling?.org?.name,
-          email: orgBilling?.org?.billing_email,
-          address: formatAddress(orgBilling?.org?.address as Address | undefined),
-        }}
-      /></TabsContent>
-    </Tabs>
+    <>
+      <Tabs defaultValue={selectionGroup ? "orders" : "events"} className="space-y-4">
+        <TabsList><TabsTrigger value="events">Change events</TabsTrigger><TabsTrigger value="orders">Change orders</TabsTrigger></TabsList>
+        <TabsContent value="events"><ChangeEventsClient projectId={id} initialEvents={changeEvents} /></TabsContent>
+        <TabsContent value="orders"><ChangeOrdersClient
+          key={project.id}
+          changeOrders={changeOrders}
+          projects={[project]}
+          costCodes={costCodes}
+          budgetLines={budgetLines}
+          costCodesEnabled={costCodesEnabled}
+          hideProjectFilter
+          initialDraft={initialDraft}
+          builderInfo={{
+            name: orgBilling?.org?.name,
+            email: orgBilling?.org?.billing_email,
+            address: formatAddress(orgBilling?.org?.address as Address | undefined),
+          }}
+        /></TabsContent>
+      </Tabs>
+      {selectionGroup && selectionId && selectionSheet && (
+        <SelectionChangeOrderPrompt
+          projectId={id}
+          group={selectionGroup}
+          selectionId={selectionId}
+          changeFeeCents={selectionGroup.status === "locked" ? selectionSheet.changeFeeCents : 0}
+          canWaiveChangeFee={selectionSheet.canWaiveChangeFee}
+        />
+      )}
+    </>
   )
 }
 

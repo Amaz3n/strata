@@ -52,7 +52,8 @@ function formatCutoff(date: string) {
 
 interface DesignStudioNoticeResult {
   skipped: "superseded" | null
-  buyer_emailed: boolean
+  /** "sent", or why the buyer was not told: no contact on the home, or no email on the contact. */
+  buyer: "sent" | "no_buyer" | "no_email" | null
   consultants_notified: number
 }
 
@@ -69,7 +70,7 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
   if (!appointment) throw new Error("Session not found")
   // A later move superseded this one; its own notice tells the buyer the time that stands.
   if (job.kind !== "canceled" && (appointment.revision !== job.revision || appointment.status !== "scheduled")) {
-    return { skipped: "superseded", buyer_emailed: false, consultants_notified: 0 }
+    return { skipped: "superseded", buyer: null, consultants_notified: 0 }
   }
 
   const location = relation<{ name: string; address: string | null; time_zone: string }>(appointment.location)
@@ -95,10 +96,10 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
     cutoffText: row.cutoff_date ? formatCutoff(row.cutoff_date as string) : null,
   }))
 
-  const emailBuyer = async () => {
-    if (!appointment.contact_id) return false
+  const emailBuyer = async (): Promise<DesignStudioNoticeResult["buyer"]> => {
+    if (!appointment.contact_id) return "no_buyer"
     const contact = await fetchContactEmail(supabase, appointment.contact_id)
-    if (!contact?.email) return false
+    if (!contact?.email) return "no_email"
     const portal = await ensurePortalLink({
       supabase, orgId, projectId: appointment.project_id, portalType: "client", contactId: appointment.contact_id,
       createdBy: null, capabilities: { can_submit_selections: true }, fallbackPath: "/",
@@ -110,31 +111,35 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
       actionHref: `${portal}/selections`, actionLabel: "Review your selections",
     }))
     const subject = job.kind === "canceled" ? "Design studio appointment canceled" : job.kind === "rescheduled" ? "Design studio appointment moved" : "Your design studio appointment"
-    return sendEmail({ to: [contact.email], subject, html, from: getOrgSenderEmail(org?.slug, org?.name) })
+    const delivered = await sendEmail({
+      to: [contact.email], subject, html, from: getOrgSenderEmail(org?.slug, org?.name),
+      idempotencyKey: `design-studio-notice:${appointment.id}:${job.revision}:${job.kind}`,
+    })
+    // The outbox retries a job that throws; the idempotency key keeps a retry from telling the buyer twice.
+    if (!delivered) throw new Error("The buyer's appointment notice could not be sent")
+    return "sent"
   }
 
-  const notifyConsultants = async () => {
+  const notifyConsultants = async (buyer: DesignStudioNoticeResult["buyer"]) => {
     const notifications = new NotificationService()
     const recipients: Array<{ userId: string; kind: keyof typeof CONSULTANT_COPY }> = []
     if (appointment.coordinator_user_id) recipients.push({ userId: appointment.coordinator_user_id, kind: job.kind })
     // A session handed to another consultant is, for the one who had it, canceled.
     const previousConsultant = job.previous?.coordinator_user_id
     if (previousConsultant && previousConsultant !== appointment.coordinator_user_id) recipients.push({ userId: previousConsultant, kind: "canceled" })
+    const buyerGap = buyer === "no_buyer" ? " · the home has no buyer on file; tell them yourself" : buyer === "no_email" ? " · the buyer has no email on file; tell them yourself" : ""
     const sent = await Promise.allSettled(recipients.map(({ userId, kind }) => notifications.createAndQueue({
       orgId, userId, type: CONSULTANT_COPY[kind].type, title: CONSULTANT_COPY[kind].title,
-      message: `${homeName ?? "A home"} · ${location.name} · ${kind === "canceled" && previousWindowText ? previousWindowText : windowText}`,
+      message: `${homeName ?? "A home"} · ${location.name} · ${kind === "canceled" && previousWindowText ? previousWindowText : windowText}${buyerGap}`,
       projectId: appointment.project_id, entityType: "design_studio_appointment", entityId: appointment.id,
       metadata: { href: `/design-studio/sheet/${appointment.project_id}` },
     })))
     return sent.filter((result) => result.status === "fulfilled").length
   }
 
-  const [buyer, consultants] = await Promise.allSettled([emailBuyer(), notifyConsultants()])
-  const result: DesignStudioNoticeResult = {
-    skipped: null,
-    buyer_emailed: buyer.status === "fulfilled" && buyer.value,
-    consultants_notified: consultants.status === "fulfilled" ? consultants.value : 0,
-  }
+  // The buyer first: a failed send throws before anyone else is told, so the retry repeats nothing.
+  const buyer = await emailBuyer()
+  const result: DesignStudioNoticeResult = { skipped: null, buyer, consultants_notified: await notifyConsultants(buyer) }
   await recordEvent({
     orgId, eventType: "design_studio_appointment_notice_sent", entityType: "design_studio_appointment", entityId: appointment.id,
     payload: { project_id: appointment.project_id, kind: job.kind, revision: job.revision, time_zone: location.time_zone, ...result },

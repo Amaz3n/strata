@@ -61,7 +61,6 @@ export async function createDocument(
       | "contract"
       | "change_order"
       | "lien_waiver"
-      | "selection"
       | "subcontract"
       | "subcontract_change_order"
       | "closeout"

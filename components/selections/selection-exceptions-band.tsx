@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { chooseSelectionAlternateAction, closeSelectionExceptionAction } from "@/app/(app)/selections/actions"
+import type { SelectionExceptionAbilities } from "@/lib/services/selection-exceptions"
 import type { HomeSelectionException } from "@/lib/services/selections"
 import {
   formatSupplyDate,
@@ -61,11 +62,13 @@ export function SelectionExceptionsBand({
   exceptions,
   truncated,
   error,
+  abilities,
 }: {
   projectId: string
   exceptions: HomeSelectionException[]
   truncated: boolean
   error: string | null
+  abilities: SelectionExceptionAbilities
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -155,7 +158,7 @@ export function SelectionExceptionsBand({
                 <TableCell className="text-right">
                   {isOpen && (
                     <div className="flex flex-wrap items-center justify-end gap-2">
-                      {answerable && exception.alternates.length > 0 && (
+                      {answerable && abilities.canChoose && exception.alternates.length > 0 && (
                         <>
                           <Select
                             value={alternateByException[exception.id] ?? exception.alternates[0].optionId}
@@ -175,19 +178,21 @@ export function SelectionExceptionsBand({
                           <Button size="sm" variant="outline" className="h-7" disabled={isPending} onClick={() => choose(exception)}>Choose</Button>
                         </>
                       )}
-                      {answerable && exception.alternates.length === 0 && <span className="text-xs text-muted-foreground">No alternate in time</span>}
-                      {exception.reason !== "variance_unrouted" && (
+                      {answerable && abilities.canChoose && exception.alternates.length === 0 && <span className="text-xs text-muted-foreground">No alternate in time</span>}
+                      {exception.reason !== "variance_unrouted" && abilities.canChoose && (
                         <Button asChild size="sm" variant="ghost" className="h-7">
                           <a href={`/projects/${projectId}/change-orders?selection=${exception.selection_id}`}>Change order</a>
                         </Button>
                       )}
-                      {exception.reason === "lead_time_exceeded" && (
+                      {exception.reason === "lead_time_exceeded" && abilities.canOverride && (
                         <Button size="sm" variant="ghost" className="h-7" disabled={isPending} onClick={() => setClosing({ exception, resolution: "waived" })}>Expedite</Button>
                       )}
-                      {exception.reason === "variance_unrouted" && (
+                      {exception.reason === "variance_unrouted" && abilities.canRaiseVariance && (
                         <Button size="sm" variant="outline" className="h-7" disabled={isPending} onClick={() => setClosing({ exception, resolution: "resolved_manual" })}>Mark handled</Button>
                       )}
-                      <Button size="sm" variant="ghost" className="h-7 text-muted-foreground" disabled={isPending} onClick={() => setClosing({ exception, resolution: "void" })}>Dismiss</Button>
+                      {abilities.canOverride && (
+                        <Button size="sm" variant="ghost" className="h-7 text-muted-foreground" disabled={isPending} onClick={() => setClosing({ exception, resolution: "void" })}>Dismiss</Button>
+                      )}
                     </div>
                   )}
                 </TableCell>

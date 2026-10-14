@@ -188,7 +188,7 @@ test("a request past its deadline expires on the sweep", async (t) => {
   assert.equal(await approvalStatus(db, approval.id), "expired")
 })
 
-test("an in-person approval needs the buyer's signed copy filed on the home", async (t) => {
+test("an in-person approval needs a signed copy uploaded for it, once", async (t) => {
   const fixture = await home(t)
   const { db, orgId, userId, project } = fixture
   const hash = (await fixture.terms()).terms_hash
@@ -196,12 +196,54 @@ test("an in-person approval needs the buyer's signed copy filed on the home", as
     p_org_id: orgId, p_project_id: project.id, p_group_id: fixture.group.id, p_channel: "in_person",
     p_terms_hash: hash, p_user_id: userId, p_signed_copy_file_id: fileId,
   })
+  const upload = (overrides) => insert(db, "files", {
+    org_id: orgId, project_id: project.id, file_name: "signed.pdf", storage_path: `${orgId}/${Math.random()}.pdf`,
+    mime_type: "application/pdf", category: "contracts", uploaded_by: userId, ...overrides,
+  })
   const elsewhere = await insert(db, "projects", { org_id: orgId, name: "Lot 9" })
-  const strayFile = await insert(db, "files", { org_id: orgId, project_id: elsewhere.id, file_name: "signed.pdf", storage_path: `${orgId}/stray.pdf`, mime_type: "application/pdf" })
-  await assert.rejects(inPerson(strayFile.id), refusal("SELECTION_SIGNED_COPY_REQUIRED"))
-  const signed = await insert(db, "files", { org_id: orgId, project_id: project.id, file_name: "signed.pdf", storage_path: `${orgId}/signed.pdf`, mime_type: "application/pdf" })
+  const { userId: someoneElse } = await seedMember(db, { orgId })
+  const refusedFiles = [
+    await upload({ project_id: elsewhere.id }),
+    await upload({ category: "photos" }),
+    await upload({ mime_type: "text/plain" }),
+    await upload({ uploaded_by: someoneElse }),
+    await upload({ created_at: new Date(Date.now() - 3 * 3600_000).toISOString() }),
+    await upload({ source: "generated" }),
+  ]
+  for (const file of refusedFiles) await assert.rejects(inPerson(file.id), refusal("SELECTION_SIGNED_COPY_REQUIRED"))
+  const signed = await upload({})
   const approval = await inPerson(signed.id)
   assert.deepEqual([approval.status, approval.channel, approval.signed_copy_file_id], ["approved", "in_person", signed.id])
+
+  // A signed copy is one approval's evidence; it is never cited again.
+  await assert.rejects(inPerson(signed.id), refusal("SELECTION_SIGNED_COPY_REQUIRED"))
+})
+
+test("resending the signing envelope reissues it and keeps the request, which then approves from the replacement", async (t) => {
+  const fixture = await home(t)
+  const { db, orgId, userId } = fixture
+  const { approval, envelopeId } = await sendForSignature(fixture)
+  const replacementId = await rpc(db, "resend_esign_envelope", { p_org_id: orgId, p_envelope_id: envelopeId, p_actor_id: userId })
+  assert.notEqual(replacementId, envelopeId)
+  const { rows: [kept] } = await db.query("select status, envelope_id, document_id from selection_approvals where id = $1", [approval.id])
+  const { rows: [replacement] } = await db.query("select status, document_id from envelopes where id = $1", [replacementId])
+  assert.deepEqual([kept.status, kept.envelope_id, kept.document_id], ["sent", replacementId, replacement.document_id])
+  assert.equal((await db.query("select status from envelopes where id = $1", [envelopeId])).rows[0].status, "voided")
+
+  const outcome = await rpc(db, "approve_selection_approval_from_envelope", { p_org_id: orgId, p_approval_id: approval.id, p_envelope_id: replacementId, p_evidence: "{}" })
+  assert.equal(outcome.outcome, "approved")
+  // Voiding the replacement by hand still voids a request that is out.
+  const again = await home(t)
+  const second = await sendForSignature(again)
+  const replaced = await rpc(again.db, "resend_esign_envelope", { p_org_id: again.orgId, p_envelope_id: second.envelopeId, p_actor_id: again.userId })
+  await rpc(again.db, "cancel_esign_envelope", { p_org_id: again.orgId, p_envelope_id: replaced, p_reason: "Buyer changed their mind" })
+  assert.equal(await approvalStatus(again.db, second.approval.id), "voided")
+
+  // The words of a resend's reason are not the signal: a plain void that quotes them still voids the request.
+  const quoting = await home(t)
+  const third = await sendForSignature(quoting)
+  await rpc(quoting.db, "cancel_esign_envelope", { p_org_id: quoting.orgId, p_envelope_id: third.envelopeId, p_reason: "Superseded by new signature copy" })
+  assert.equal(await approvalStatus(quoting.db, third.approval.id), "voided")
 })
 
 test("a signed-in member writes no approval, no line and no approval document", async (t) => {

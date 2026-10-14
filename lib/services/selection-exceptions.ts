@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { authorize, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
@@ -215,6 +215,18 @@ export async function closeSelectionException(raw: SelectionExceptionCloseInput)
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "selection_exception", entityId: exception.id, before: result.before, after: result.after, critical: input.resolution === "waived" }),
   ])
   return { id: exception.id, projectId: exception.project_id, status: input.resolution }
+}
+
+/** What the viewer may do about a home's exceptions, so the band offers only those. */
+export type SelectionExceptionAbilities = { canChoose: boolean; canOverride: boolean; canRaiseVariance: boolean }
+
+export async function getSelectionExceptionAbilities(projectId: string): Promise<SelectionExceptionAbilities> {
+  const context = await requireOrgContext()
+  const can = async (permission: string) => (await authorize({
+    permission, userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase, logDecision: false,
+  })).allowed
+  const [canChoose, canOverride, canRaiseVariance] = await Promise.all([can("selections.write"), can("selections.cutoff.override"), can("vpo.request")])
+  return { canChoose, canOverride, canRaiseVariance }
 }
 
 /** Stamps who answered an exception the write closed when they chose an alternate. */

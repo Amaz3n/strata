@@ -123,7 +123,6 @@ const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string>
   contract: "contract_id",
   change_order: "change_order_id",
   lien_waiver: "lien_waiver_id",
-  selection: "selection_id",
   subcontract: "subcontract_id",
   subcontract_change_order: "subcontract_change_order_id",
   closeout: "closeout_id",
@@ -181,8 +180,6 @@ function getSourceOptionTypeLabel(type: UnifiedSignableEntityType) {
       return "Change Order"
     case "proposal":
       return "Proposal"
-    case "selection":
-      return "Selection"
     case "subcontract":
       return "Subcontract"
     case "subcontract_change_order":

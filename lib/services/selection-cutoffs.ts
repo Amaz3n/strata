@@ -12,7 +12,6 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { cutoffOverrideSchema, revertCutoffSchema, type CutoffOverrideInput } from "@/lib/validation/selections"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
-  addCalendarDays,
   deriveSelectionCutoff,
   normalizeScheduleTemplateItems,
   selectionReminderKey,
@@ -366,18 +365,26 @@ async function announceLockedGroups(supabase: SupabaseClient, rows: Array<z.infe
   }
 }
 
+const reminderGroupSchema = z.object({
+  id: z.string().uuid(),
+  org_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  group_id: z.string().uuid(),
+  cutoff_date: z.string(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  days_remaining: z.number().int(),
+  group_name: z.string().nullable(),
+  project_name: z.string().nullable(),
+})
+
 export async function sendSelectionCutoffReminders() {
   const supabase = createServiceSupabaseClient()
-  const today = new Date().toISOString().slice(0, 10)
-  const reminderDates = [7, 14].map((days) => addCalendarDays(today, days))
-  const { data: groups, error: groupsError } = await supabase
-    .from("project_selection_groups")
-    .select("id, org_id, project_id, group_id, cutoff_date, metadata, group:selection_groups(name), project:projects(name)")
-    .eq("status", "open")
-    .in("cutoff_date", reminderDates)
-    .limit(1000)
+  // Days to each cutoff are counted in the home's community day, the day the
+  // database enforces the cutoff in.
+  const { data: reminderRows, error: groupsError } = await supabase.rpc("selection_cutoff_reminder_groups", { p_days: [7, 14], p_limit: 1000 })
   if (groupsError) throw new Error(`Failed to load selection reminders: ${groupsError.message}`)
-  if (!groups?.length) return { considered: 0, sent: 0 }
+  const groups = z.array(reminderGroupSchema).parse(reminderRows ?? [])
+  if (!groups.length) return { considered: 0, sent: 0 }
 
   const projectIds = Array.from(new Set(groups.map((group) => group.project_id)))
   const groupIds = Array.from(new Set(groups.map((group) => group.group_id)))
@@ -413,12 +420,10 @@ export async function sendSelectionCutoffReminders() {
 
   for (const instance of groups) {
     if (!pendingKeys.has(`${instance.project_id}:${instance.group_id}`)) continue
-    const daysRemaining = Math.round((Date.parse(`${instance.cutoff_date}T00:00:00.000Z`) - Date.parse(`${today}T00:00:00.000Z`)) / 86_400_000)
+    const daysRemaining = instance.days_remaining
     const reminderKey = selectionReminderKey(daysRemaining)
     if (!reminderKey) continue
-    const metadata = typeof instance.metadata === "object" && instance.metadata !== null && !Array.isArray(instance.metadata)
-      ? instance.metadata
-      : {}
+    const metadata = instance.metadata ?? {}
     const remindersSent = Array.isArray(metadata.reminders_sent)
       ? metadata.reminders_sent.filter((value: unknown): value is string => typeof value === "string")
       : []
@@ -426,12 +431,10 @@ export async function sendSelectionCutoffReminders() {
     const portal = tokenByProject.get(instance.project_id)
     const contact = Array.isArray(portal?.contact) ? portal.contact[0] : portal?.contact
     if (!portal || !contact?.email) continue
-    const group = Array.isArray(instance.group) ? instance.group[0] : instance.group
-    const project = Array.isArray(instance.project) ? instance.project[0] : instance.project
     const org = orgById.get(instance.org_id)
     const html = renderStandardEmailLayout({
       title: "Selection deadline approaching",
-      messageHtml: `<p>Your ${group?.name ?? "selection"} choices for ${project?.name ?? "your project"} are due in ${daysRemaining} days.</p>`,
+      messageHtml: `<p>Your ${instance.group_name ?? "selection"} choices for ${instance.project_name ?? "your project"} are due in ${daysRemaining} days.</p>`,
       buttonText: "Review selections",
       buttonUrl: `${appUrl}/p/${portal.token}/selections`,
       orgName: org?.name ?? null,
@@ -457,7 +460,7 @@ export async function sendSelectionCutoffReminders() {
       entityId: instance.id,
       type: "selection_cutoff_reminder",
       title: `Selections due in ${daysRemaining} days`,
-      message: `${project?.name ?? "A project"} has unconfirmed choices in ${group?.name ?? "a selection group"}.`,
+      message: `${instance.project_name ?? "A project"} has unconfirmed choices in ${instance.group_name ?? "a selection group"}.`,
     })
     sent += 1
   }

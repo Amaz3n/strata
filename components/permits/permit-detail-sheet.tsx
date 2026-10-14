@@ -18,7 +18,7 @@ import {
 } from "@/app/(app)/projects/[id]/permits/actions"
 import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
 import { AlertTriangle } from "@/components/icons"
-import { AGING_CLASS, STAGE_CLASS, dueLabel, formatDay, parseDollars, todayIso } from "@/components/permits/permit-format"
+import { AGING_CLASS, STAGE_CLASS, addDaysIso, dueLabel, formatDay, parseDollars } from "@/components/permits/permit-format"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -194,7 +194,7 @@ function DocumentsBand({ data, application, editable, pending, act }: BandProps)
 
 function SubmissionsBand({ data, application, editable, pending, act }: BandProps) {
   const [open, setOpen] = useState(false)
-  const [submittedOn, setSubmittedOn] = useState(todayIso())
+  const [submittedOn, setSubmittedOn] = useState(data.today)
   const [reference, setReference] = useState("")
   const [note, setNote] = useState("")
   const [respondsTo, setRespondsTo] = useState<string>(NONE)
@@ -210,7 +210,7 @@ function SubmissionsBand({ data, application, editable, pending, act }: BandProp
       {editable && blocked.length ? <p className="mb-2 text-xs text-warning">Attach before submitting: {blocked.join(", ")}</p> : null}
       {open ? (
         <div className="mb-3 grid gap-2 border bg-muted/30 p-3 sm:grid-cols-2">
-          <div className="grid gap-1"><Label className="text-xs" htmlFor="submitted-on">Submitted</Label><Input id="submitted-on" type="date" className="h-8 rounded-none text-xs" max={todayIso()} value={submittedOn} onChange={(event) => setSubmittedOn(event.target.value)} /></div>
+          <div className="grid gap-1"><Label className="text-xs" htmlFor="submitted-on">Submitted</Label><Input id="submitted-on" type="date" className="h-8 rounded-none text-xs" max={data.today} value={submittedOn} onChange={(event) => setSubmittedOn(event.target.value)} /></div>
           <div className="grid gap-1"><Label className="text-xs" htmlFor="submission-reference">Portal reference</Label><Input id="submission-reference" className="h-8 rounded-none text-xs" value={reference} onChange={(event) => setReference(event.target.value)} /></div>
           {openRounds.length ? (
             <div className="grid gap-1 sm:col-span-2">
@@ -255,10 +255,10 @@ function SubmissionsBand({ data, application, editable, pending, act }: BandProp
 
 function RoundsBand({ data, application, editable, pending, act }: BandProps) {
   const [open, setOpen] = useState(false)
-  const [receivedOn, setReceivedOn] = useState(todayIso())
+  const [receivedOn, setReceivedOn] = useState(data.today)
   const [comments, setComments] = useState("")
   const [owner, setOwner] = useState<string>(application.ownerUserId ?? NONE)
-  const [dueOn, setDueOn] = useState("")
+  const [dueOn, setDueOn] = useState(addDaysIso(data.today, 14))
   const [letter, setLetter] = useState("")
   const [historyFor, setHistoryFor] = useState<string | null>(null)
   const [noteFor, setNoteFor] = useState<{ roundId: string; status: "withdrawn" | "open" } | null>(null)
@@ -272,8 +272,8 @@ function RoundsBand({ data, application, editable, pending, act }: BandProps) {
     ) : null}>
       {open ? (
         <div className="mb-3 grid gap-2 border bg-muted/30 p-3 sm:grid-cols-2">
-          <div className="grid gap-1"><Label className="text-xs" htmlFor="round-received">Received</Label><Input id="round-received" type="date" className="h-8 rounded-none text-xs" max={todayIso()} value={receivedOn} onChange={(event) => setReceivedOn(event.target.value)} /></div>
-          <div className="grid gap-1"><Label className="text-xs" htmlFor="round-due">Response due</Label><Input id="round-due" type="date" className="h-8 rounded-none text-xs" min={receivedOn} value={dueOn} onChange={(event) => setDueOn(event.target.value)} /></div>
+          <div className="grid gap-1"><Label className="text-xs" htmlFor="round-received">Received</Label><Input id="round-received" type="date" className="h-8 rounded-none text-xs" max={data.today} value={receivedOn} onChange={(event) => setReceivedOn(event.target.value)} /></div>
+          <div className="grid gap-1"><Label className="text-xs" htmlFor="round-due">Response due</Label><Input id="round-due" type="date" required className="h-8 rounded-none text-xs" min={receivedOn} value={dueOn} onChange={(event) => setDueOn(event.target.value)} /></div>
           <div className="grid gap-1">
             <Label className="text-xs" htmlFor="round-owner">Owner</Label>
             <Select value={owner} onValueChange={setOwner}>
@@ -286,9 +286,9 @@ function RoundsBand({ data, application, editable, pending, act }: BandProps) {
           </div>
           <div className="grid gap-1"><Label className="text-xs" htmlFor="round-letter">Comment letter</Label><FilePicker id="round-letter" files={data.files} value={letter} onChange={setLetter} placeholder="No letter on file" /></div>
           <Textarea className="rounded-none text-xs sm:col-span-2" rows={3} placeholder="What the reviewer asked for" value={comments} onChange={(event) => setComments(event.target.value)} />
-          <Button size="sm" className="rounded-none sm:col-span-2 sm:justify-self-end" disabled={pending || !comments.trim()}
+          <Button size="sm" className="rounded-none sm:col-span-2 sm:justify-self-end" disabled={pending || !comments.trim() || !dueOn}
             onClick={() => act(() => recordCorrectionRoundAction(data.projectId, {
-              applicationId: application.id, receivedOn, comments, commentFileId: letter || null, ownerUserId: owner === NONE ? null : owner, dueOn: dueOn || null,
+              applicationId: application.id, receivedOn, comments, commentFileId: letter || null, ownerUserId: owner === NONE ? null : owner, dueOn,
             }), "Corrections recorded", () => { setOpen(false); setComments(""); setLetter("") })}>
             Record
           </Button>
@@ -322,7 +322,7 @@ function RoundsBand({ data, application, editable, pending, act }: BandProps) {
                         onBlur={(event) => { if (event.target.value && event.target.value !== round.dueOn) update(round.id, { dueOn: event.target.value }, "Due date moved") }} />
                     </>
                   ) : <span className="text-muted-foreground">{round.ownerName ?? "Unassigned"} · due {formatDay(round.dueOn)}</span>}
-                  {round.status === "open" && round.dueOn ? <span className={late ? AGING_CLASS.overdue : "text-muted-foreground"}>{late ? `${round.overdueDays}d late` : dueLabel(Math.round((Date.parse(round.dueOn) - Date.parse(todayIso())) / 86_400_000))}</span> : null}
+                  {round.status === "open" && round.dueOn ? <span className={late ? AGING_CLASS.overdue : "text-muted-foreground"}>{late ? `${round.overdueDays}d late` : dueLabel(Math.round((Date.parse(round.dueOn) - Date.parse(data.today)) / 86_400_000))}</span> : null}
                   {round.status === "responded" ? <span className="text-muted-foreground">Responded {formatDay(round.respondedOn)}</span> : null}
                   {round.status === "resolved" ? <span className="text-success">Resolved {formatDay(round.resolvedOn)}</span> : null}
                   <span className="ml-auto flex gap-1">
@@ -369,7 +369,7 @@ function RoundsBand({ data, application, editable, pending, act }: BandProps) {
 
 function DecisionBand({ data, application, editable, pending, act, onRevise }: BandProps & { onRevise: () => void }) {
   const [decision, setDecision] = useState<"approved" | "not_required" | "denied" | "withdrawn">("approved")
-  const [decidedOn, setDecidedOn] = useState(todayIso())
+  const [decidedOn, setDecidedOn] = useState(data.today)
   const [permitNumber, setPermitNumber] = useState("")
   const [expiresOn, setExpiresOn] = useState("")
   const [permitFile, setPermitFile] = useState("")
@@ -412,7 +412,7 @@ function DecisionBand({ data, application, editable, pending, act, onRevise }: B
             </SelectContent>
           </Select>
         </div>
-        <div className="grid gap-1"><Label className="text-xs" htmlFor="decided-on">On</Label><Input id="decided-on" type="date" className="h-8 rounded-none text-xs" max={todayIso()} value={decidedOn} onChange={(event) => setDecidedOn(event.target.value)} /></div>
+        <div className="grid gap-1"><Label className="text-xs" htmlFor="decided-on">On</Label><Input id="decided-on" type="date" className="h-8 rounded-none text-xs" max={data.today} value={decidedOn} onChange={(event) => setDecidedOn(event.target.value)} /></div>
         {approving ? (
           <>
             <div className="grid gap-1"><Label className="text-xs" htmlFor="permit-number">Permit number</Label><Input id="permit-number" className="h-8 rounded-none text-xs" value={permitNumber} onChange={(event) => setPermitNumber(event.target.value)} /></div>
@@ -423,7 +423,7 @@ function DecisionBand({ data, application, editable, pending, act, onRevise }: B
         ) : decision === "not_required" ? (
           <div className="grid gap-1 sm:col-span-2"><Label className="text-xs" htmlFor="letter-file">The authority&apos;s letter</Label><FilePicker id="letter-file" files={data.files} value={permitFile} onChange={setPermitFile} /></div>
         ) : null}
-        <Textarea className="rounded-none text-xs sm:col-span-2" rows={2} placeholder={approving ? "Note" : "Why"} value={note} onChange={(event) => setNote(event.target.value)} />
+        <Textarea className="rounded-none text-xs sm:col-span-2" rows={2} placeholder={approving ? "Note" : decision === "not_required" ? "Why no permit is required (10+ characters)" : "Why"} value={note} onChange={(event) => setNote(event.target.value)} />
       </div>
       {blocked ? (
         <ul className="mt-2 space-y-0.5 text-xs text-warning">
@@ -432,7 +432,7 @@ function DecisionBand({ data, application, editable, pending, act, onRevise }: B
       ) : null}
       <div className="mt-2 flex justify-end">
         <Button size="sm" className="rounded-none" variant={approving || decision === "not_required" ? "default" : "destructive"}
-          disabled={pending || blocked || (approving && (!permitNumber.trim() || !permitFile || !plansFile)) || (decision === "not_required" && !permitFile)}
+          disabled={pending || blocked || (approving && (!permitNumber.trim() || !permitFile || !plansFile)) || (decision === "not_required" && (!permitFile || note.trim().length < 10))}
           onClick={() => act(() => recordPermitDecisionAction(data.projectId, {
             applicationId: application.id, decision, decidedOn, permitNumber: permitNumber || null, expiresOn: expiresOn || null,
             issuedPermitFileId: permitFile || null, approvedPlansFileId: plansFile || null, note: note || null,
@@ -450,7 +450,7 @@ function FeesBand({ data, application, pending, act }: Omit<BandProps, "editable
   const [kind, setKind] = useState<PermitFeeKind>("permit")
   const [amount, setAmount] = useState("")
   const [dueBefore, setDueBefore] = useState<PermitFeeDue | typeof NONE>("issuance")
-  const [assessedOn, setAssessedOn] = useState(todayIso())
+  const [assessedOn, setAssessedOn] = useState(data.today)
   const [description, setDescription] = useState("")
   const [costCodeId, setCostCodeId] = useState("")
   const [paying, setPaying] = useState<{ feeId: string; via: "bill" | "expense" | "link" } | null>(null)
@@ -474,7 +474,7 @@ function FeesBand({ data, application, pending, act }: Omit<BandProps, "editable
               {PERMIT_FEE_DUE.map((option) => <SelectItem key={option} value={option}>{PERMIT_FEE_DUE_LABELS[option]}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Input type="date" className="h-8 rounded-none text-xs" aria-label="Assessed on" max={todayIso()} value={assessedOn} onChange={(event) => setAssessedOn(event.target.value)} />
+          <Input type="date" className="h-8 rounded-none text-xs" aria-label="Assessed on" max={data.today} value={assessedOn} onChange={(event) => setAssessedOn(event.target.value)} />
           <Select value={costCodeId || NONE} onValueChange={(value) => setCostCodeId(value === NONE ? "" : value)}>
             <SelectTrigger className="h-8 rounded-none text-xs" aria-label="Cost code"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -570,7 +570,7 @@ function PayFeeForm({ data, application, paying, pending, act, onDone }: {
   onDone: () => void
 }) {
   const [billNumber, setBillNumber] = useState("")
-  const [date, setDate] = useState(todayIso())
+  const [date, setDate] = useState(data.today)
   const [method, setMethod] = useState("check")
   const [receipt, setReceipt] = useState("")
   const [payable, setPayable] = useState("")
@@ -590,7 +590,7 @@ function PayFeeForm({ data, application, paying, pending, act, onDone }: {
         </>
       ) : paying.via === "expense" ? (
         <>
-          <Input type="date" className="h-8 rounded-none text-xs" aria-label="Paid on" max={todayIso()} value={date} onChange={(event) => setDate(event.target.value)} />
+          <Input type="date" className="h-8 rounded-none text-xs" aria-label="Paid on" max={data.today} value={date} onChange={(event) => setDate(event.target.value)} />
           <Select value={method} onValueChange={setMethod}>
             <SelectTrigger className="h-8 rounded-none text-xs" aria-label="Paid by"><SelectValue /></SelectTrigger>
             <SelectContent>

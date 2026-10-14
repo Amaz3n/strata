@@ -86,9 +86,12 @@ typical).
   + `recordAudit`. **No `requirePermission` call** (predates the RBAC sweep — the
   RBAC catalog seed `20260708120500_rbac_catalog_seed.sql` has **no selection
   permissions at all**; this workstream adds them).
-- `confirmSelectionFromEnvelopeExecution` — idempotent e-sign confirmation: stamps
-  metadata evidence, transitions to `confirmed`, attaches the executed file via
-  `attachFileWithServiceRole`, emits `selection_confirmed`.
+- Buyer confirmation is the selection approval (`lib/services/selection-approvals.ts`):
+  `executeSelectionApprovalFromEnvelope` records an e-sign execution,
+  `approveSelectionsFromPortal` a portal confirmation and
+  `recordInPersonSelectionApproval` a coordinator's signed copy. Each binds the
+  exact options and prices sent (terms hash) and confirms the group's selections
+  through `apply_project_selection_writes`.
 
 **Validation** — `lib/validation/selections.ts`: one schema (`selectionInputSchema`:
 project_id, category_id, status, due_date, notes ≤1000).
@@ -482,10 +485,12 @@ instantiateSelectionGroupsForProject(projectId: string, orgId: string): Promise<
   member categories), `recordEvent("selection_updated")` + `recordAudit` (fixing
   today's silent update).
 - `confirmSelection(selectionId)` — explicit builder-side confirm (status →
-  `confirmed`, stamps snapshots); `confirmSelectionFromEnvelopeExecution` keeps
-  working and also stamps snapshots.
-- New `applySelectionChangeFromChangeOrder(changeOrderId)` — called from the CO
-  approval path (see Enforcement) to apply the post-cutoff change.
+  `confirmed`, stamps snapshots); e-sign confirmation goes through
+  `executeSelectionApprovalFromEnvelope` (selection approvals).
+- A post-cutoff change is applied by the database, not a service function: the
+  approval of a selection change order fires `tg_change_order_selection_apply`
+  (see Enforcement), and `processSelectionChangeApplied`
+  (`lib/services/selection-change-orders.ts`) runs the follow-ups once per step.
 - Existing residential callers (`SelectionsBuilderClient`, portal actions) keep
   their signatures — ungrouped selections take the legacy path untouched.
 
@@ -715,17 +720,24 @@ createPostCutoffSelectionChangeOrder(input: {
    fee_waived, group_ids }`.
 4. The CO rides the normal lifecycle (draft→proposed→approved, e-sign, portal) from
    `change-orders.ts` — nothing forked.
-5. On approval, `approveChangeOrder`'s existing hook chain calls
-   `applySelectionChangeFromChangeOrder(coId)`: updates each `project_selections`
+5. On approval, `tg_change_order_selection_apply` (an `after update` trigger on
+   `change_orders`, in the approval's own transaction; a member's approval needs
+   `change_order.approve` in their own name) updates each `project_selections`
    row (new option, re-stamped snapshots, `source_change_order_id = coId`,
-   status `confirmed`), emits `selection_changed_post_cutoff` per row with
-   `{ old_option_id, new_option_id, cost_delta_cents, cost_code_id, project_id }`.
-6. **Purchasing variance signal (workstream 04 contract):**
-   `selection_changed_post_cutoff` is the event 04 subscribes to (outbox consumer).
-   If a PO already exists for the affected cost code on this lot, 04 raises a VPO
-   proposal referencing the CO; if not yet released, the start-package PO generator
-   picks up the new selection naturally. This doc only guarantees the event shape
-   above — 04 owns the consumption.
+   status `confirmed`) and, in the same transaction, raises draft variance orders
+   on the purchase orders that own each cost (`create_change_order_variance_orders`;
+   a cost with no purchase order becomes a `variance_unrouted` selection
+   exception), posts the budget revision (an uncoded cost fails the approval where
+   costs are coded), records a pending `schedule_item_change_orders` impact for the
+   superintendent to apply (`apply_schedule_item_change_order`, `schedule.edit`;
+   nothing moves on its own), and voids the buyer's earlier approval of those
+   selections. A refusal anywhere fails the approval.
+6. **Follow-ups:** the approval enqueues a `selection_change_applied` outbox job;
+   `processSelectionChangeApplied` emits `selection_changed_post_cutoff` per row
+   with `{ old_option_id, new_option_id, cost_delta_cents, cost_code_id,
+   project_id }`, records the variance orders, announces the exceptions and
+   notifies the superintendent. Each step is stamped on the change order, so a
+   retry never repeats one.
 
 No enforcement bypass exists outside `overrideGroupCutoff` (moves the date,
 audited) and `waiveFee` (keeps the CO, drops the fee, audited). There is

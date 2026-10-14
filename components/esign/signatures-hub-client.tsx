@@ -238,8 +238,8 @@ function getSourceLabel(row: SignatureHubRow) {
       return `Estimate · ${row.document_title}`
     case "proposal":
       return `Proposal · ${row.document_title}`
-    case "selection":
-      return `Selection · ${row.document_title}`
+    case "selection_approval":
+      return `Selections approval · ${row.document_title}`
     case "subcontract":
       return `Subcontract · ${row.document_title}`
     case "subcontract_change_order":
@@ -259,8 +259,8 @@ function getOpenSourceActionLabel(row: SignatureHubRow) {
       return "Open estimate"
     case "proposal":
       return "Open proposal"
-    case "selection":
-      return "Open selection"
+    case "selection_approval":
+      return "Open selections"
     case "subcontract":
       return "Open commitment"
     case "subcontract_change_order":
@@ -633,7 +633,7 @@ export function SignaturesHubClient({
       estimate: "estimates",
       proposal: "proposals",
       change_order: "change-orders",
-      selection: "selections",
+      selection_approval: "selections",
       subcontract: "commitments",
       subcontract_change_order: "commitments",
       closeout: "closeout",
@@ -676,7 +676,6 @@ export function SignaturesHubClient({
       sourceType === "proposal" ||
       sourceType === "change_order" ||
       sourceType === "lien_waiver" ||
-      sourceType === "selection" ||
       sourceType === "subcontract" ||
       sourceType === "subcontract_change_order" ||
       sourceType === "closeout" ||

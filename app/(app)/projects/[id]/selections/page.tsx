@@ -12,6 +12,7 @@ import { runAction } from "@/lib/action-result"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 import { listHomeSelectionApprovals } from "@/lib/services/selection-approvals"
+import { getSelectionExceptionAbilities } from "@/lib/services/selection-exceptions"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -23,11 +24,12 @@ async function ProjectSelectionsPageContent({ params }: PageProps) {
   const project = await getProjectAction(id)
   if (!project) notFound()
   const context = await requireOrgContext()
-  const [data, exceptions, approvals, canManageApprovals] = await Promise.all([
+  const [data, exceptions, approvals, canManageApprovals, abilities] = await Promise.all([
     loadSelectionsBuilderAction(id),
     loadHomeSelectionExceptionsAction(id),
     runAction(() => listHomeSelectionApprovals(id)),
     hasPermission("selections.write", context),
+    getSelectionExceptionAbilities(id),
   ])
 
   return (
@@ -48,6 +50,7 @@ async function ProjectSelectionsPageContent({ params }: PageProps) {
             exceptions={exceptions.success ? exceptions.data.exceptions : []}
             truncated={exceptions.success ? exceptions.data.truncated : false}
             error={exceptions.success ? null : exceptions.error}
+            abilities={abilities}
           />
         }
       />

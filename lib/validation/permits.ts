@@ -42,13 +42,13 @@ export const recordCorrectionRoundSchema = z.object({
   comments: z.string().trim().min(1, "Summarize what the authority asked for").max(5000),
   commentFileId: z.string().uuid().nullable().optional(),
   ownerUserId: z.string().uuid().nullable().optional(),
-  dueOn: isoDate.nullable().optional(),
+  dueOn: isoDate,
 })
 
 export const updateCorrectionRoundSchema = z.object({
   roundId: z.string().uuid(),
   ownerUserId: z.string().uuid().nullable().optional(),
-  dueOn: isoDate.nullable().optional(),
+  dueOn: isoDate.optional(),
   status: z.enum(["open", "resolved", "withdrawn"]).optional(),
   note: z.string().trim().max(2000).nullable().optional(),
 }).refine((value) => value.ownerUserId !== undefined || value.dueOn !== undefined || value.status !== undefined, "Nothing to change")

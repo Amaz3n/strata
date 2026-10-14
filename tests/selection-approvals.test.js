@@ -38,12 +38,13 @@ stubModule("@/lib/services/configuration-rules", {
   },
 })
 const emails = []
+let emailDelivers = true
 stubModule("@/lib/services/mailer", {
   getOrgSenderEmail: () => "builder@example.test",
   renderEmailTemplate: async () => "<html />",
   sendEmail: async (payload) => {
     emails.push(payload)
-    return true
+    return emailDelivers
   },
 })
 stubModule("@/lib/services/portal-links", {
@@ -73,10 +74,11 @@ const approvalRow = (overrides = {}) => ({
   ...overrides,
 })
 
-function harness({ approvals = [], rpc = {}, permissions = ["selections.read", "selections.write", "project.read"] } = {}) {
+function harness({ approvals = [], rpc = {}, buyerEmail = "dana@example.test", permissions = ["selections.read", "selections.write", "project.read"] } = {}) {
   catalog = { [OPTION]: { available: true, optionId: OPTION, priceCents: 4_500_00, categoryIds: [CATEGORY] } }
   configurationFailure = null
   emails.length = 0
+  emailDelivers = true
   notifications.length = 0
   const calls = []
   const service = createServiceHarness({
@@ -85,7 +87,7 @@ function harness({ approvals = [], rpc = {}, permissions = ["selections.read", "
       projects: [{ id: HOME, org_id: ORG, name: "Lot 7", property_type: "production" }],
       orgs: [{ id: ORG, name: "Builder", product_tier: "production" }],
       lots: [],
-      contacts: [{ id: BUYER, org_id: ORG, full_name: "Dana Buyer", email: "dana@example.test" }],
+      contacts: [{ id: BUYER, org_id: ORG, full_name: "Dana Buyer", email: buyerEmail }],
       selection_groups: [{ id: GROUP, org_id: ORG, name: "Interior" }],
       project_selection_groups: [{ org_id: ORG, project_id: HOME, group_id: GROUP, status: "open", cutoff_date: "2099-06-30", group: { name: "Interior", sort_order: 1 } }],
       project_selections: [{ id: SELECTION, org_id: ORG, project_id: HOME, group_id: GROUP, category_id: CATEGORY, selected_option_id: OPTION }],
@@ -107,12 +109,24 @@ describe("sendSelectionApproval", () => {
   test("a portal request goes out for the terms the coordinator reviewed, and the buyer gets a portal link", async () => {
     const { service, calls } = harness({ rpc: { send_selection_approval: () => ({ data: approvalRow(), error: null }) } })
     const result = await service.run(() => sendSelectionApproval({ projectId: HOME, groupId: GROUP, channel: "portal", termsHash: HASH }))
-    assert.deepEqual(result, { approvalId: APPROVAL, envelopeId: null, buyerEmailed: true })
+    assert.deepEqual(result, { approvalId: APPROVAL, envelopeId: null, buyerEmail: "sent" })
     assert.equal(calls[0].args.p_expected_terms_hash, HASH)
     assert.equal(calls[0].args.p_actor_id, service.userId)
     assert.deepEqual(emails.map((email) => email.to), [["dana@example.test"]])
     assert.match(emails[0].subject, /approve your interior selections/)
     assert.equal(service.audits.length, 1)
+  })
+
+  test("the request stands when the buyer's email fails or the buyer has none, and the coordinator is told which", async () => {
+    const failing = harness({ rpc: { send_selection_approval: () => ({ data: approvalRow(), error: null }) } })
+    emailDelivers = false
+    const failed = await failing.service.run(() => sendSelectionApproval({ projectId: HOME, groupId: GROUP, channel: "portal", termsHash: HASH }))
+    assert.equal(failed.buyerEmail, "failed")
+    assert.match(emails[0].idempotencyKey, /selection-approval-request/)
+
+    const noEmail = harness({ buyerEmail: null, rpc: { send_selection_approval: () => ({ data: approvalRow(), error: null }) } })
+    const missing = await noEmail.service.run(() => sendSelectionApproval({ projectId: HOME, groupId: GROUP, channel: "portal", termsHash: HASH }))
+    assert.equal(missing.buyerEmail, "no_email")
   })
 
   test("an option no longer sold for the home is refused before anything is sent", async () => {
@@ -154,6 +168,27 @@ test("the buyer's portal approval names the buyer and carries the hash the page 
     [calls[0].args.p_channel, calls[0].args.p_contact_id, calls[0].args.p_terms_hash, calls[0].args.p_user_id],
     ["portal", BUYER, HASH, null],
   )
+})
+
+describe("an answer to a request that is out", () => {
+  const approve = { orgId: ORG, projectId: HOME, contactId: BUYER, groupId: GROUP, termsHash: HASH }
+  const approved = { approve_selection_terms: () => ({ data: approvalRow({ status: "approved", approved_at: "2026-10-11T12:00:00Z" }), error: null }) }
+
+  test("binds at the terms that were sent even when an option was withdrawn since", async () => {
+    const { service, calls } = harness({ approvals: [approvalRow()], rpc: approved })
+    catalog = {}
+    await service.run(() => approveSelectionsFromPortal(approve))
+    assert.equal(calls[0].args.p_terms_hash, HASH)
+  })
+
+  test("a buyer confirming without a request, or on terms other than the ones sent, still needs the options on sale", async () => {
+    const own = harness({ rpc: approved })
+    catalog = {}
+    await assert.rejects(own.service.run(() => approveSelectionsFromPortal(approve)), /no longer available/)
+    const other = harness({ approvals: [approvalRow({ terms_hash: "b".repeat(64) })], rpc: approved })
+    catalog = {}
+    await assert.rejects(other.service.run(() => approveSelectionsFromPortal(approve)), /no longer available/)
+  })
 })
 
 describe("executeSelectionApprovalFromEnvelope", () => {

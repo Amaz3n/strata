@@ -76,7 +76,6 @@ const SOURCE_ENTITY_TYPES: UnifiedSignableEntityType[] = [
   "contract",
   "change_order",
   "lien_waiver",
-  "selection",
   "subcontract",
   "subcontract_change_order",
   "closeout",
@@ -98,7 +97,6 @@ const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string>
   contract: "contract_id",
   change_order: "change_order_id",
   lien_waiver: "lien_waiver_id",
-  selection: "selection_id",
   subcontract: "subcontract_id",
   subcontract_change_order: "subcontract_change_order_id",
   closeout: "closeout_id",
@@ -152,7 +150,6 @@ function getSourceEntityCompletionEvent(sourceEntityType: UnifiedSignableEntityT
   if (sourceEntityType === "proposal") return completionEventByEntityType.proposal
   if (sourceEntityType === "change_order") return completionEventByEntityType.change_order
   if (sourceEntityType === "lien_waiver") return completionEventByEntityType.lien_waiver
-  if (sourceEntityType === "selection") return completionEventByEntityType.selection
   if (sourceEntityType === "subcontract") return completionEventByEntityType.subcontract
   if (sourceEntityType === "subcontract_change_order") return completionEventByEntityType.subcontract_change_order
   return null

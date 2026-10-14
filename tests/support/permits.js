@@ -58,6 +58,10 @@ async function permitWorld(t, { coordinatorRole = "org_starts_coordinator" } = {
   w.call = (name, args, userId = coordinator.userId) =>
     full.rpc(db, name, { p_org_id: orgId, ...args }, { role: "authenticated", userId })
 
+  /** A money function: the service role calls it for a member the service has already signed in. */
+  w.service = (name, args, userId = coordinator.userId) =>
+    full.rpc(db, name, { p_org_id: orgId, p_actor_id: userId, ...args })
+
   w.row = async (sql, params = []) => (await db.query(sql, params)).rows[0]
   w.rows = async (sql, params = []) => (await db.query(sql, params)).rows
 

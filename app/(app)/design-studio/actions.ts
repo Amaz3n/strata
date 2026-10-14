@@ -5,8 +5,20 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { discoverCatalogGroupCategories } from "@/lib/services/catalog-group-categories"
 import { reviewCatalogGroupCategories } from "@/lib/services/catalog-group-publication"
-import { revertCutoffSchema, selectionGroupSchema } from "@/lib/validation/selections"
-import { inPersonSelectionApprovalSchema, sendSelectionApprovalSchema, voidSelectionApprovalSchema } from "@/lib/validation/design-studio"
+import { catalogCategorySchema, catalogOptionSchema, cutoffOverrideSchema, packageSchema, postCutoffChangeSchema, revertCutoffSchema, selectionGroupSchema } from "@/lib/validation/selections"
+import {
+  appointmentOutcomeSchema,
+  bookAppointmentSchema,
+  cancelAppointmentSchema,
+  consultantHoursSchema,
+  inPersonSelectionApprovalSchema,
+  openSlotsSchema,
+  rescheduleAppointmentSchema,
+  sendSelectionApprovalSchema,
+  studioLocationSchema,
+  studioRoomsSchema,
+  voidSelectionApprovalSchema,
+} from "@/lib/validation/design-studio"
 
 import { createHash } from "node:crypto"
 
@@ -62,11 +74,11 @@ async function run<T>(operation: () => Promise<T>, paths: string[] = []): Promis
 }
 
 export async function upsertCategoryAction(input: unknown) {
-  return run(() => upsertCategory(input as Parameters<typeof upsertCategory>[0]), ["/design-studio/catalog"])
+  return run(() => upsertCategory(catalogCategorySchema.parse(input)), ["/design-studio/catalog"])
 }
 
 export async function upsertOptionAction(input: unknown) {
-  return run(() => upsertOption(input as Parameters<typeof upsertOption>[0]), ["/design-studio/catalog"])
+  return run(() => upsertOption(catalogOptionSchema.parse(input)), ["/design-studio/catalog"])
 }
 
 /** Which homes an edit to this option reaches, read before it is saved. Read-only, so nothing is revalidated. */
@@ -88,7 +100,7 @@ export async function loadModelOptionsAction(projectId: string): Promise<ActionR
 }
 
 export async function upsertPackageAction(input: unknown) {
-  return run(() => upsertPackage(input as Parameters<typeof upsertPackage>[0]), ["/design-studio/catalog"])
+  return run(() => upsertPackage(packageSchema.parse(input)), ["/design-studio/catalog"])
 }
 
 export async function publishCatalogPricesAction(input: unknown) {
@@ -116,40 +128,40 @@ export async function upsertSelectionGroupAction(input: unknown) {
 
 /** Design studio sessions. Booking, moving and closing out live on this desk; every rule is the service's and the database's. */
 export async function bookAppointmentAction(input: unknown) {
-  return run(() => bookAppointment(input as Parameters<typeof bookAppointment>[0]))
+  return run(() => bookAppointment(bookAppointmentSchema.parse(input)))
 }
 
 export async function rescheduleAppointmentAction(input: unknown) {
-  return run(() => rescheduleAppointment(input as Parameters<typeof rescheduleAppointment>[0]))
+  return run(() => rescheduleAppointment(rescheduleAppointmentSchema.parse(input)))
 }
 
 export async function cancelAppointmentAction(input: unknown) {
-  return run(() => cancelAppointment(input as Parameters<typeof cancelAppointment>[0]))
+  return run(() => cancelAppointment(cancelAppointmentSchema.parse(input)))
 }
 
 export async function recordAppointmentOutcomeAction(input: unknown) {
-  return run(() => recordAppointmentOutcome(input as Parameters<typeof recordAppointmentOutcome>[0]))
+  return run(() => recordAppointmentOutcome(appointmentOutcomeSchema.parse(input)))
 }
 
 /** Read-only, for the booking dialog's slot picker; nothing is revalidated. */
 export async function listOpenSlotsAction(input: unknown): Promise<ActionResult<Awaited<ReturnType<typeof listOpenSlots>>>> {
   try {
-    return { success: true, data: await listOpenSlots(input as Parameters<typeof listOpenSlots>[0]) }
+    return { success: true, data: await listOpenSlots(openSlotsSchema.parse(input)) }
   } catch (error) {
     return actionError(error)
   }
 }
 
 export async function saveStudioLocationAction(input: unknown) {
-  return run(() => saveStudioLocation(input as Parameters<typeof saveStudioLocation>[0]), ["/design-studio/studios"])
+  return run(() => saveStudioLocation(studioLocationSchema.parse(input)), ["/design-studio/studios"])
 }
 
 export async function saveStudioRoomsAction(input: unknown) {
-  return run(() => saveStudioRooms(input as Parameters<typeof saveStudioRooms>[0]), ["/design-studio/studios"])
+  return run(() => saveStudioRooms(studioRoomsSchema.parse(input)), ["/design-studio/studios"])
 }
 
 export async function saveConsultantHoursAction(input: unknown) {
-  return run(() => saveConsultantHours(input as Parameters<typeof saveConsultantHours>[0]), ["/design-studio/studios"])
+  return run(() => saveConsultantHours(consultantHoursSchema.parse(input)), ["/design-studio/studios"])
 }
 
 const bookableHomesSchema = z.object({
@@ -214,7 +226,7 @@ export async function cloneOrgGroupsAction(communityId: string) {
 }
 
 export async function overrideGroupCutoffAction(input: unknown) {
-  return run(() => overrideGroupCutoff(input as Parameters<typeof overrideGroupCutoff>[0]))
+  return run(() => overrideGroupCutoff(cutoffOverrideSchema.parse(input)))
 }
 
 export async function revertGroupCutoffAction(input: unknown) {
@@ -223,7 +235,7 @@ export async function revertGroupCutoffAction(input: unknown) {
 }
 
 export async function createPostCutoffChangeOrderAction(input: unknown) {
-  return run(() => createPostCutoffSelectionChangeOrder(input as Parameters<typeof createPostCutoffSelectionChangeOrder>[0]))
+  return run(() => createPostCutoffSelectionChangeOrder(postCutoffChangeSchema.parse(input)))
 }
 
 const sheetSelectionSchema = z.object({
@@ -254,7 +266,14 @@ export async function applyPackageAction(input: unknown) {
   }, [`/design-studio/sheet/${parsed.projectId}`, `/projects/${parsed.projectId}/selections`])
 }
 
-const approvalPaths = (projectId: string) => [`/design-studio/sheet/${projectId}`, `/projects/${projectId}/selections`, "/starts"]
+const approvalPaths = (projectId: string | null) =>
+  projectId ? [`/design-studio/sheet/${projectId}`, `/projects/${projectId}/selections`, "/starts"] : ["/starts"]
+
+/** The page to revalidate, read without validating: a malformed input still reaches run() and fails there as a result. */
+function approvalProjectId(input: unknown): string | null {
+  const parsed = z.object({ projectId: z.string().uuid() }).safeParse(input)
+  return parsed.success ? parsed.data.projectId : null
+}
 
 /**
  * Buyer approval of a group's selections. The workbench and the selection
@@ -263,20 +282,22 @@ const approvalPaths = (projectId: string) => [`/design-studio/sheet/${projectId}
  * coordinator did not see.
  */
 export async function sendSelectionApprovalAction(input: unknown) {
-  const parsed = sendSelectionApprovalSchema.parse(input)
-  return run(() => sendSelectionApproval(parsed), approvalPaths(parsed.projectId))
+  const projectId = approvalProjectId(input)
+  return run(() => sendSelectionApproval(sendSelectionApprovalSchema.parse(input)), approvalPaths(projectId))
 }
 
 export async function voidSelectionApprovalAction(input: unknown) {
-  const parsed = voidSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
-  return run(() => voidSelectionApproval({ approvalId: parsed.approvalId, reason: parsed.reason }), approvalPaths(parsed.projectId))
+  const projectId = approvalProjectId(input)
+  return run(() => {
+    const parsed = voidSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
+    return voidSelectionApproval({ approvalId: parsed.approvalId, reason: parsed.reason })
+  }, approvalPaths(projectId))
 }
 
 export async function recordInPersonSelectionApprovalAction(input: unknown) {
-  const parsed = inPersonSelectionApprovalSchema.parse(input)
-  return run(() => recordInPersonSelectionApproval(parsed), approvalPaths(parsed.projectId))
+  const projectId = approvalProjectId(input)
+  return run(() => recordInPersonSelectionApproval(inPersonSelectionApprovalSchema.parse(input)), approvalPaths(projectId))
 }
-
 
 export async function listOptionConfigurationRulesAction(optionId: string) {
   try { return { success: true as const, data: await listOptionConfigurationRules(optionId) } } catch (error) { return actionError(error) }

@@ -87,9 +87,13 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
     startTransition(async () => {
       try {
         const result = unwrapAction(await sendSelectionApprovalAction({ projectId, groupId: current.groupId, channel, termsHash: current.terms.termsHash }))
-        toast.success(channel === "esign" ? "Sent for e-signature" : "Sent to the buyer portal", {
-          description: channel === "portal" && !result.buyerEmailed ? "The buyer has no email on file; share the portal link with them." : undefined,
-        })
+        const description =
+          result.buyerEmail === "no_email" ? "The buyer has no email on file; share the portal link with them."
+          : result.buyerEmail === "failed" ? "The request is out, but the email to the buyer did not send. Share the portal link with them."
+          : undefined
+        const title = channel === "esign" ? "Sent for e-signature" : "Sent to the buyer portal"
+        if (description) toast.warning(title, { description })
+        else toast.success(title)
         router.refresh()
       } catch (error) {
         toast.error("Could not send the selections", { description: error instanceof Error ? error.message : undefined })
