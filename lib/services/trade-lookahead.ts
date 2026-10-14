@@ -71,6 +71,11 @@ async function loadTradeLookahead(
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const access = await getProjectReadScopeForUser(context)
+  // Authorized above. The schedule's row security admits only project members
+  // and org admins, which would show a starts coordinator or purchasing
+  // manager an empty look-ahead; the division and membership predicates below
+  // are the scope.
+  const reader = createServiceSupabaseClient()
   const divisions = parsed.divisionId ? access.divisionIds === null || access.divisionIds.includes(parsed.divisionId) ? [parsed.divisionId] : [] : access.divisionIds
   if (divisions !== null && !divisions.length) return []
   const lot = `lot:lots!lots_project_id_fkey${parsed.communityId ? "!inner" : ""}(org_id,lot_number,block,community_id,community:communities${parsed.communityId ? "!inner" : ""}(org_id,name))`
@@ -81,7 +86,7 @@ async function loadTradeLookahead(
   // lot filter; its join is inner only for an explicit community lens.
   // Unscoped work keeps projects without lots, while scoped queries narrow early.
   const items = await readAllRowsById(async (after, take) => {
-    let query = context.supabase.from("schedule_items").select(`
+    let query = reader.from("schedule_items").select(`
     id,project_id,name,trade,status,start_date,end_date,cost_code_id,
     ${projectSelect},
     assignments:schedule_assignments(company_id,confirmed_at,company:companies(name))
@@ -114,7 +119,7 @@ async function loadTradeLookahead(
     const costCodeIds = Array.from(new Set(batch.flatMap((id) => Array.from(costsByProject.get(id) ?? []))))
     for (let costOffset = 0; costOffset < costCodeIds.length; costOffset += 100) {
       const commitments = await readAllRowsById((after, take) => {
-        let query = context.supabase.from("commitment_lines").select("id,cost_code_id,commitment:commitments!inner(project_id,company_id,company:companies(name),commitment_type)")
+        let query = reader.from("commitment_lines").select("id,cost_code_id,commitment:commitments!inner(project_id,company_id,company:companies(name),commitment_type)")
           .eq("org_id", context.orgId).eq("commitment.org_id", context.orgId)
           .in("commitment.project_id", batch).in("cost_code_id", costCodeIds.slice(costOffset, costOffset + 100))
           .eq("commitment.commitment_type", "purchase_order").in("commitment.status", [...LOOKAHEAD_PO_STATUSES])
@@ -278,12 +283,13 @@ export async function sendTradeLookahead(
   opts: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string },
   orgId?: string,
 ) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("start.write", context)
+  const authorized = await requireOrgContext(orgId)
+  await requirePermission("start.write", authorized)
+  const context = { supabase: createServiceSupabaseClient(), orgId: authorized.orgId }
   const entries = await companyRowsFor(companyId, opts, context.orgId)
   if (!entries.length) throw new Error("No scheduled work is available for this trade.")
   const outcome = await deliverTradeNotice({
-    orgId: context.orgId, actorId: context.userId, kind: "lookahead", companyId, projectId: null,
+    orgId: context.orgId, actorId: authorized.userId, kind: "lookahead", companyId, projectId: null,
     dedupeKey: lookaheadDedupeKey({ companyId, weeks: opts.weeks, communityId: opts.communityId, divisionId: opts.divisionId, utcDay: new Date().toISOString().slice(0, 10) }),
     scope: { weeks: opts.weeks, communityId: opts.communityId ?? null, divisionId: opts.divisionId ?? null },
     build: () => lookaheadDraft(context, companyId, opts, entries),
@@ -301,8 +307,9 @@ export async function sendReleaseTradeNotice(
   input: { companyId: string; packageId: string; projectId: string; outboxId: number; actorId: string },
   orgId: string,
 ) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("start.write", context)
+  const authorized = await requireOrgContext(orgId)
+  await requirePermission("start.write", authorized)
+  const context = { supabase: createServiceSupabaseClient(), orgId: authorized.orgId }
   const opts = { weeks: 3 as const, projectId: input.projectId }
   const outcome = await deliverTradeNotice({
     orgId: context.orgId, actorId: input.actorId, kind: "release", companyId: input.companyId, projectId: input.projectId,
