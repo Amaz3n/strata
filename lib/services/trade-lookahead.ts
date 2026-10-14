@@ -50,12 +50,17 @@ function text(value: unknown) {
 }
 
 async function companyRecipients(supabase: SupabaseClient, orgId: string, companyId: string) {
-  const contacts = await readAllRowsById((after, take) => {
-    let query = supabase.from("contacts").select("id,email").eq("org_id", orgId).eq("company_id", companyId).not("email", "is", null)
+  // contact_company_links is the only person-to-company link.
+  const links = await readAllRowsById((after, take) => {
+    let query = supabase.from("contact_company_links").select("id,contact:contacts!inner(org_id,email)")
+      .eq("org_id", orgId).eq("company_id", companyId).eq("contact.org_id", orgId)
     if (after) query = query.gt("id", after)
     return query.order("id").limit(take)
   }, { cap: 10000, label: "Failed to load trade contacts" })
-  return Array.from(new Set(contacts.flatMap(contact => contact.email ? [contact.email] : [])))
+  return Array.from(new Set(links.flatMap((link) => {
+    const email = text(one(link.contact)?.email)
+    return email ? [email] : []
+  })))
 }
 
 async function loadTradeLookahead(

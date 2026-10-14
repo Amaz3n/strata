@@ -17,6 +17,13 @@ const { app } = require("./shared.cjs")
 const lot = () => require("./lot-01.cjs").helpers
 const eq = (check, label, expected, observed) => lot().equal(check, label, expected, observed)
 const day = (offset) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
+/** A trade contact as the directory has it: the person, linked to the company through contact_company_links. */
+function contactSql(org, companyId, name, email) {
+  const contactId = randomUUID()
+  const q = (value) => `'${String(value).replaceAll("'", "''")}'`
+  return `insert into public.contacts(id,org_id,full_name,email) values(${q(contactId)},${q(org.orgId)},${q(name)},${q(email)});
+    insert into public.contact_company_links(org_id,contact_id,company_id,is_primary) values(${q(org.orgId)},${q(contactId)},${q(companyId)},true);`
+}
 const attempt = async (work) => { try { await work(); return "allowed" } catch (error) { return error.message } }
 
 /** Resend's contract: one message per Idempotency-Key. `loseResponse` stores the message and reports a failure, as a dropped connection would. */
@@ -42,7 +49,7 @@ async function house(kit) {
   const company = (name) => {
     const id = randomUUID()
     kit.sql(`insert into public.companies(id,org_id,name) values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(`${name} ${tag}`)});
-      insert into public.contacts(org_id,company_id,full_name,email) values(${kit.q(org.orgId)},${kit.q(id)},'Foreman',${kit.q(`foreman-${tag}@acceptance.example.test`)})`)
+      ${contactSql(org, id, "Foreman", `foreman-${tag}@acceptance.example.test`)}`)
     return id
   }
   const costCode = Object.values(org.costCodeIds)[0]
@@ -117,7 +124,7 @@ async function tradeNoticeSnapshotAndCrash(kit, expected, check) {
     const afterLoss = deliveries()
     // The schedule changes after the notice was reserved, and a contact is added.
     kit.sql(`update public.schedule_items set name=${kit.q(`QA-${h.tag} Moved to the lake house`)} where id=${kit.q(item)};
-      insert into public.contacts(org_id,company_id,full_name,email) values(${kit.q(h.org.orgId)},${kit.q(framer)},'Owner',${kit.q(`owner-${h.tag}@acceptance.example.test`)})`)
+      ${contactSql(h.org, framer, "Owner", `owner-${h.tag}@acceptance.example.test`)}`)
     mail.loseResponse = false
     result.retry = await send().then((r) => (r.sent ? "sent" : "duplicate"))
     result.doubleClick = await Promise.all([send(), send()]).then((rs) => rs.filter((r) => r.sent).length)

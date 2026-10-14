@@ -49,7 +49,9 @@ function harness({
   const tables = {
     schedule_items: Array.from({ length: count }, (_, i) => schedule(i, { multipleTrades, unresolved })),
     commitment_lines: Array.from({ length: count }, (_, i) => purchaseOrderLine(i)),
-    contacts: Array.from({ length: contacts }, (_, i) => ({ id: `contact-${i}`, org_id: ORG, company_id: COMPANY, email: `person${i}@example.test` })),
+    contact_company_links: Array.from({ length: contacts }, (_, i) => ({
+      id: `link-${i}`, org_id: ORG, company_id: COMPANY, "contact.org_id": ORG, contact: { org_id: ORG, email: `person${i}@example.test` },
+    })),
     orgs: [{ id: ORG, name: "Builder" }], portal_access_tokens: [],
   }
   const db = client ?? createFakeSupabase(tables)
@@ -181,7 +183,7 @@ test("a look-ahead's duplicate key follows its scope and its day, so a community
 })
 
 test("a notice is never built when a contact read fails", async () => {
-  const h = harness({ count: 1, fail: "contacts" })
+  const h = harness({ count: 1, fail: "contact_company_links" })
   await assert.rejects(h.sendTradeLookahead(COMPANY, { weeks: 3 }), /offline/)
   const none = harness({ count: 1, contacts: 0 })
   await assert.rejects(none.sendTradeLookahead(COMPANY, { weeks: 3 }), /no email contacts/)

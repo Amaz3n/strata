@@ -127,12 +127,19 @@ const dueNow = (kit, home) => kit.sql(`update public.outbox set status='pending'
  * BEFORE it queues, and waits here for that first run to stop before it looks at the home.
  */
 async function quiesce(kit, home) {
-  let quiet = 0
+  const jobs = (status) => count(kit, `public.outbox where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} and ${status}`)
+  let quiet = 0, waiting = 0
   for (let tries = 0; tries < 80 && quiet < 3; tries += 1) {
     await sleep(500)
-    quiet = count(kit, `public.outbox where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} and status='processing'`) === 0 ? quiet + 1 : 0
+    const busy = jobs("status='processing'") > 0
+    const due = jobs("status='pending' and run_at<=now()") > 0
+    // A due job nobody has claimed after two seconds is claimed here: the wake-up is best effort.
+    if (due && !busy && (waiting += 1) >= 4) { await runPipeline(kit); waiting = 0 }
+    quiet = busy || due ? 0 : quiet + 1
   }
 }
+/** A release the coordinator cancelled ends as a failed job by design; it is retired so the org's outbox can drain. */
+const retireCancelled = (kit, home) => kit.sql(`update public.outbox set status='completed' where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} and status='failed' and last_error='Release cancelled by coordinator'`)
 async function runUntilSettled(kit, home) {
   for (let tries = 0; tries < 6; tries += 1) {
     dueNow(kit, home)
@@ -238,6 +245,7 @@ async function cancelMidStepThenRereleaseBuildsEachArtifactOnce(kit, spec, check
     midway = { items: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`) }
   })
   const cancelled = await kit.as(home.actor, () => app("starts").cancelRelease(home.packageId))
+  retireCancelled(kit, home)
   const afterCancel = { package: packageStatus(kit, home), budgetStepKept: cancelled.preserved.includes("budget"), scheduleStepReset: cancelled.reset.includes("schedule"), items: midway.items }
   const again = await queueRelease(kit, home)
   settleDrawings(kit, home)
@@ -286,7 +294,8 @@ async function lotDetachWhilePackageActiveIsRefusedAndCancelHealsStrandings(kit,
   const serviceDetach = labelled(await attempt(() => kit.as(org.owner, () => lots.detachProjectFromLot(lot.id))), /Cancel this lot's start package/, "refused: cancel the package first")
   const sql = (statement) => { try { kit.sql(`${asMember(org.owner)}\n${statement}`); return "allowed" } catch (error) { return error.message } }
   const sessionDetach = labelled(sql(`update public.lots set project_id=null, status='assigned' where id=${kit.q(lot.id)};`), /Cancel the start package before detaching/, "refused: cancel the package first")
-  const other = one(kit, `insert into public.communities(org_id,name) values(${kit.q(org.orgId)},'RELEASE-01 Inland') returning id::text`)
+  kit.sql(`insert into public.communities(org_id,name) select ${kit.q(org.orgId)},'RELEASE-01 Inland' where not exists(select 1 from public.communities where org_id=${kit.q(org.orgId)} and name='RELEASE-01 Inland')`)
+  const other = one(kit, `select id::text from public.communities where org_id=${kit.q(org.orgId)} and name='RELEASE-01 Inland'`)
   const move = other ? labelled(sql(`update public.lots set community_id=${kit.q(other.id)} where id=${kit.q(lot.id)};`), /Cancel the start package before detaching or moving/, "refused: cancel the package first") : "no other community"
   const stillAttached = JSON.stringify(lotRow()) === JSON.stringify(before)
 
@@ -315,7 +324,8 @@ async function newGateDefinitionReachesOpenPackagesAndReleaseCompletes(kit, spec
   const key = `qa_soil_${randomUUID().slice(0, 6)}`
   const gatesOf = (packageId) => kit.rows(`select d.key, g.status from public.start_package_gates g join public.start_gate_definitions d on d.id=g.gate_definition_id where g.start_package_id=${kit.q(packageId)} and d.key=${kit.q(key)}`)
   const before = { readyPackage: packageStatus(kit, home), gate: gatesOf(home.packageId).length, openPackageGate: gatesOf(second.id).length }
-  await kit.as(org.owner, () => starts.upsertGateDefinition({ key, label: "Soil report on file", checkKind: "manual", appliesWhen: "always", sortOrder: 70, isActive: true }))
+  const definition = { key, label: "Soil report on file", checkKind: "manual", appliesWhen: "always", sortOrder: 70 }
+  const saved = await kit.as(org.owner, () => starts.upsertGateDefinition({ ...definition, isActive: true }))
   const reached = { readyPackage: packageStatus(kit, home), gate: gatesOf(home.packageId), openPackageGate: gatesOf(second.id), notReadyEvent: count(kit, `public.events where entity_id=${kit.q(home.packageId)} and event_type='start_package.not_ready'`) >= 1 }
   const refused = labelled(await attempt(() => queueRelease(kit, home)), /not ready/i, "refused: not ready")
   const gate = (await kit.as(org.team.starts, () => starts.getStartPackage(home.packageId))).gates.find((entry) => entry.key === key)
@@ -326,6 +336,8 @@ async function newGateDefinitionReachesOpenPackagesAndReleaseCompletes(kit, spec
   settleDrawings(kit, home)
   const finalStatus = await runUntilSettled(kit, home)
   await kit.drainOutbox(home.orgId)
+  // The gate is this subcase's: it is switched off so no later home in the org opens with an unanswered gate.
+  await kit.as(org.owner, () => starts.upsertGateDefinition({ ...definition, id: saved.id, isActive: false }))
   const viewer = await attempt(() => kit.as(org.team.sales, () => starts.upsertGateDefinition({ key: `${key}_x`, label: "Not allowed", checkKind: "manual", appliesWhen: "always", sortOrder: 71, isActive: true })))
   equal(check, "a new gate reaches the ready package and the open one, the ready package returns to open and cannot be released", spec.expected.reach, { before, reached: { ...reached, gate: reached.gate.map((row) => row.status), openPackageGate: reached.openPackageGate.map((row) => row.status) }, refused })
   equal(check, "answered with evidence the package is ready again and the release completes, and a member without start.release cannot define a gate", spec.expected.complete, { ready, finalStatus, ledger: ledger(kit, home), salesDefinesAGate: labelled(viewer, /start\.release/, "refused: start.release") })
