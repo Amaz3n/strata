@@ -28,8 +28,10 @@ export const gateAttestSchema = z.object({
 export const gateWaiveSchema = z.object({ reason: z.string().trim().min(10).max(2000) })
 
 export const releaseInputSchema = z.object({
+  // Every zone Arc serves is at most a day behind UTC; the release checks the
+  // home's own calendar day.
   scheduledStartDate: z.string().date().refine(
-    (value) => value >= new Date().toISOString().slice(0, 10),
+    (value) => value >= new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
     "Scheduled start date cannot be in the past",
   ),
   confirmOverSlot: z.boolean().optional().default(false),

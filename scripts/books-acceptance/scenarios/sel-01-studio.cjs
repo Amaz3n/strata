@@ -382,8 +382,8 @@ async function inPersonApprovalNeedsSignedCopy(kit, expected, check) {
   const [home, elsewhere] = await Promise.all(["Paper Buyer", "Other Home"].map((name, index) => soldHome(kit, org, name, { choose: index === 0 })))
   const group = await interior(kit, org, home.projectId)
   const record = (fileId) => attempt(() => kit.as(org.team.design, () => approvals().recordInPersonSelectionApproval({ projectId: home.projectId, groupId: org.selectionGroupId, termsHash: group.terms.termsHash, signedCopyFileId: fileId })))
-  const wrongHome = await record(seed.signedCopyFile(kit, org, elsewhere.projectId, "signed-selections.pdf"))
-  const recorded = await record(seed.signedCopyFile(kit, org, home.projectId, "signed-selections.pdf"))
+  const wrongHome = await record(seed.signedSelectionCopy(kit, org, elsewhere.projectId, org.team.design))
+  const recorded = await record(seed.signedSelectionCopy(kit, org, home.projectId, org.team.design))
   equal(check, "a coordinator's approval needs the buyer's signed copy filed on this home", expected.expected, {
     wrongHome,
     recorded,

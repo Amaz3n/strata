@@ -773,6 +773,10 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
     pkg = { ...pkg, project_id: startHomeResultSchema.parse(data).project_id }
   }
 
+  const { data: localToday, error: todayError } = await startsWriter().rpc("permit_local_today", { p_org_id: context.orgId, p_project_id: pkg.project_id })
+  if (todayError) throw new Error(`Failed to read the home's calendar day: ${todayError.message}`)
+  if (parsed.scheduledStartDate < z.string().date().parse(localToday)) throw new Error("Scheduled start date cannot be in the past")
+
   await assertProjectConfiguration(context.orgId, pkg.project_id)
   const target = await getReleaseSlotTarget(context.orgId, pkg.community_id, targetWeek)
   // One transaction claims the package, counts the week WITH this house in it

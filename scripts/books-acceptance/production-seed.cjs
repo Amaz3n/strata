@@ -136,6 +136,13 @@ function signedCopyFile(kit, org, projectId, name = "signed-change-order.pdf") {
   return id
 }
 
+/** The buyer's signed selection sheet, filed on the home by the person recording the approval just now. */
+function signedSelectionCopy(kit, org, projectId, actor, name = "signed-selections.pdf") {
+  const id = randomUUID()
+  kit.sql(`insert into public.files(id,org_id,project_id,file_name,storage_path,mime_type,category,uploaded_by) values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(projectId)},${kit.q(name)},${kit.q(`acceptance/${id}.pdf`)},'application/pdf','contracts',${kit.q(actor.userId)})`)
+  return id
+}
+
 /** Division, community, phases, lots, takedown and team assignments. */
 async function seedCommunity(kit, org) {
   const { createDivision } = app("divisions"), communities = app("communities"), lotsService = app("lots")
@@ -295,7 +302,7 @@ async function approveSelectionsInPerson(kit, org, { projectId, groupId = org.se
   const approvals = app("selection-approvals")
   const group = (await kit.as(actor, () => approvals.listHomeSelectionApprovals(projectId))).find((row) => row.groupId === groupId)
   if (!group) throw Error("The home has no such selection group")
-  await kit.as(actor, () => approvals.recordInPersonSelectionApproval({ projectId, groupId, termsHash: group.terms.termsHash, signedCopyFileId: signedCopyFile(kit, org, projectId, "signed-selections.pdf") }))
+  await kit.as(actor, () => approvals.recordInPersonSelectionApproval({ projectId, groupId, termsHash: group.terms.termsHash, signedCopyFileId: signedSelectionCopy(kit, org, projectId, actor) }))
   return kit.rows(`select count(*)::int n from public.project_selections where project_id=${kit.q(projectId)} and group_id=${kit.q(groupId)} and status='confirmed'`)[0].n
 }
 
@@ -540,6 +547,6 @@ module.exports = {
   EVIDENCE, COST_CODES, TRADES, PLANS, OPTIONS, DESIGN_PICKS,
   defaultPeriods, isoDay, glId, csv, planTradeCostCents,
   productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveHold, reserveLot, configuration, signAgreement,
-  agreementPacketFor, signedCopyFile, homeFile, permitAuthority, approvePermit,
+  agreementPacketFor, signedCopyFile, signedSelectionCopy, homeFile, permitAuthority, approvePermit,
   approveSelectionsInPerson, chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, prepareClosingGates, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
 }

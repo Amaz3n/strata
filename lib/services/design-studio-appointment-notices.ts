@@ -3,6 +3,7 @@ import { z } from "zod"
 import { DesignStudioAppointmentEmail } from "@/lib/emails/design-studio-appointment-email"
 import { recordEvent } from "@/lib/services/events"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { isPlaceholderEmail } from "@/lib/emails/recipient-policy"
 import { NotificationService } from "@/lib/services/notifications"
 import { ensurePortalLink, fetchContactEmail } from "@/lib/services/portal-links"
 import { formatWarrantyVisitWindow } from "@/lib/services/warranty/visit-time"
@@ -99,7 +100,8 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
   const emailBuyer = async (): Promise<DesignStudioNoticeResult["buyer"]> => {
     if (!appointment.contact_id) return "no_buyer"
     const contact = await fetchContactEmail(supabase, appointment.contact_id)
-    if (!contact?.email) return "no_email"
+    // A reserved placeholder address can never be delivered; retrying it would only stall the job.
+    if (!contact?.email || isPlaceholderEmail(contact.email)) return "no_email"
     const portal = await ensurePortalLink({
       supabase, orgId, projectId: appointment.project_id, portalType: "client", contactId: appointment.contact_id,
       createdBy: null, capabilities: { can_submit_selections: true }, fallbackPath: "/",
