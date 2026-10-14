@@ -43,17 +43,22 @@ function settingsNumber(settings: unknown, key: string, fallback: number, max: n
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(0, Math.trunc(value))) : fallback
 }
 
-async function ensureSlotsWithClient(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  orgId: string,
-  community: { id: string; settings: unknown },
-) {
+function slotHorizonRows(orgId: string, community: { id: string; settings: unknown }, current: string) {
   const target = settingsNumber(community.settings, "starts_per_week", 2, 20)
   const horizon = settingsNumber(community.settings, "release_horizon_weeks", 16, 104)
-  const current = mondayOfIsoWeek(new Date())
-  const rows = Array.from({ length: horizon }, (_, index) => ({
+  return Array.from({ length: horizon }, (_, index) => ({
     org_id: orgId, community_id: community.id, week_start: addWeeks(current, index), target_starts: target,
   }))
+}
+
+/** One upsert for every community given: a page of communities is one request, not one each. */
+async function ensureSlotsWithClient(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  communities: Array<{ id: string; org_id: string; settings: unknown }>,
+) {
+  const current = mondayOfIsoWeek(new Date())
+  const rows = communities.flatMap((community) => slotHorizonRows(community.org_id, community, current))
+  if (!rows.length) return
   const { error } = await supabase.from("community_release_slots").upsert(rows, { onConflict: "community_id,week_start", ignoreDuplicates: true })
   if (error) throw new Error(`Failed to seed release slots: ${error.message}`)
 }
@@ -64,7 +69,7 @@ export async function ensureReleaseSlots(communityId: string, orgId?: string) {
   const { data: community, error } = await context.supabase.from("communities").select("id,settings")
     .eq("org_id", context.orgId).eq("id", communityId).maybeSingle()
   if (error || !community) throw new Error("Community not found")
-  await ensureSlotsWithClient(createServiceSupabaseClient(), context.orgId, community)
+  await ensureSlotsWithClient(createServiceSupabaseClient(), [{ ...community, org_id: context.orgId }])
 }
 
 /**
@@ -111,7 +116,7 @@ export async function ensureReleaseSlotsForActiveCommunities(pageSize = 200) {
     const { data, error } = await query
     if (error) throw new Error(`Failed to load slot communities: ${error.message}`)
     const page = data ?? []
-    await Promise.all(page.map((community) => ensureSlotsWithClient(supabase, community.org_id, community)))
+    await ensureSlotsWithClient(supabase, page)
     if (page.length < size) return
     after = page[page.length - 1].id
   }
@@ -176,7 +181,7 @@ export async function getCommunityReleaseSlots(
   }
   const orderedCommunities = communitiesQuery.order("name").order("id")
   const communities = await readScopedCommunities((from, to) => orderedCommunities.range(from, to), "Failed to load communities")
-  await Promise.all(communities.map((community) => ensureSlotsWithClient(createServiceSupabaseClient(), context.orgId, community)))
+  await ensureSlotsWithClient(createServiceSupabaseClient(), communities.map((community) => ({ ...community, org_id: context.orgId })))
   const communityIds = communities.map((community) => community.id)
   if (!communityIds.length) return []
   const currentWeek = mondayOfIsoWeek(new Date())

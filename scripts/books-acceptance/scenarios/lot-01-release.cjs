@@ -645,7 +645,10 @@ async function releaseFinalizesTogether(kit, spec, check) {
   // Notification intent: the claimed job is the intent; every recipient has one stable notification identity.
   const notified = kit.rows(`select id, user_id, payload->>'event_id' as event_id from public.notifications where org_id=${kit.q(home.orgId)} and notification_type='start_released' and payload->>'entity_id'=${kit.q(home.packageId)} order by user_id`)
   const holders = kit.rows(`select distinct m.user_id from public.memberships m join public.role_permissions rp on rp.role_id=m.role_id where m.org_id=${kit.q(home.orgId)} and m.status='active' and rp.permission_key in ('start.release','*')`).map((row) => row.user_id)
-  const expectedIds = holders.map((userId) => confirmation().startsConfirmationId(home.orgId, home.packageId, "notification", userId)).sort()
+  // The house's assigned superintendent (every home needs one before it releases) is told too, with start.read.
+  const superintendent = kit.rows(`select superintendent_id from public.projects where id=${kit.q(home.projectId)}`)[0].superintendent_id
+  const audience = Array.from(new Set(superintendent ? [...holders, superintendent] : holders))
+  const expectedIds = audience.map((userId) => confirmation().startsConfirmationId(home.orgId, home.packageId, "notification", userId)).sort()
   // Running the pipeline again, and the operator's recovery of the confirmation, publish nothing twice.
   await runPipeline(kit)
   await kit.drainOutbox(home.orgId)
