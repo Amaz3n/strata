@@ -24,7 +24,8 @@ import { isElevationKeptBySale } from "@/lib/services/product-change-impact"
 import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createServiceSupabaseClient, createStartsWorkerSupabaseClient } from "@/lib/supabase/server"
 import { runWithServiceSupabaseClient } from "@/lib/supabase/service-client-context"
-import { sendScheduleChangeDigestJob, sendTradeLookahead } from "@/lib/services/trade-lookahead"
+import { sendReleaseTradeNotice, sendScheduleChangeDigestJob } from "@/lib/services/trade-lookahead"
+import { findMissingSchemaRequirement } from "@/lib/release/schema-requirements"
 
 export const START_PIPELINE_JOB_TYPES = ["start_release", "trade_schedule_change_notice", "start_release_trade_notice", "start_package_notice"] as const
 const RELEASE_STEPS = ["project", "budget", "schedule", "checklists", "drawings", "pos", "notify_trades", "finalize"] as const
@@ -49,6 +50,10 @@ export interface StartsPipelineSummary {
   processed: number
   failed: number
   remaining: number
+  /** Abandoned drawing copies the sweep could not clear this run (they stay abandoned for the next). */
+  copyCleanupFailed?: number
+  /** The database does not have the schema this worker needs yet; nothing was touched. */
+  notCutOver?: boolean
 }
 
 function requiredString(value: unknown, label: string) {
@@ -114,19 +119,49 @@ async function updateStep(
   if (error) throw new Error(`Failed to update ${stepKey} release step: ${error.message}`)
 }
 
+/**
+ * What a step promises it left on the home, which `settle_release_step` counts
+ * back before the step may complete. A step that built nothing promises 0; one
+ * the project ledger skipped, or a budget handed to purchasing, promises nothing.
+ */
+function promisedCount(step: typeof RELEASE_STEPS[number], detail: Record<string, unknown>) {
+  if (detail.already_instantiated === true || typeof detail.delegated_to === "string") return null
+  if (step === "budget") return typeof detail.line_count === "number" ? detail.line_count : null
+  if (step === "schedule") return Array.isArray(detail.item_ids) ? detail.item_ids.length : null
+  if (step === "checklists") return Array.isArray(detail.inspection_ids) ? detail.inspection_ids.length : null
+  return null
+}
+
+/**
+ * Closes a step in one transaction: the claim, package lease and actor are
+ * re-proved, what the step left on the home is counted against what it promised,
+ * and the project's instantiation ledger and the release ledger are written
+ * together. Runs on the plain service client, which fences itself.
+ */
+async function settleStep(
+  service: SupabaseClient, job: ClaimedJob, step: typeof RELEASE_STEPS[number],
+  detail: Record<string, unknown>, versionId: string,
+) {
+  const { error } = await service.rpc("settle_release_step", {
+    p_org_id: job.org_id, p_job_id: job.job_id, p_token: job.claim_token, p_step: step, p_detail: detail,
+    p_expected_count: promisedCount(step, detail), p_version_id: versionId,
+  })
+  if (error) throw new Error(`Failed to settle the ${step} release step: ${error.message}`)
+}
+
 async function runInstantiationStep(
   step: PlanInstantiationStep,
   input: { projectId: string; lotId: string; versionId: string; elevationId: string | null; swing: "left" | "right" | null; communityId: string; startDate: string },
 ) {
-  // `resume: true` is load-bearing. The instantiation ledger lives on the
-  // project and the release ledger lives on `start_release_steps`; they are two
-  // writes, so a crash between them leaves a step marked in one and pending in
-  // the other. Without this the retry threw "already instantiated" forever, the
-  // package parked in `attention`, and no amount of retrying could clear it.
+  // `resume: true` is load-bearing: a step the project ledger already records
+  // (written before releases keyed their artifacts) is a skip, not "already
+  // instantiated" forever. `releaseKeyed` makes each artifact replay-safe, so a
+  // re-run builds only what is missing, and leaves the project ledger to
+  // `settle_release_step`, which writes it together with the release ledger.
   const result = await instantiatePlanForProject({
     projectId: input.projectId, lotId: input.lotId, housePlanVersionId: input.versionId,
     elevationId: input.elevationId, swing: input.swing, communityId: input.communityId,
-    startDate: input.startDate, steps: [step], resume: true,
+    startDate: input.startDate, steps: [step], resume: true, releaseKeyed: true,
   }, undefined)
   if (!result.success) throw new Error(result.errors.join("; ") || `${step} instantiation failed`)
   if (result.skipped.includes(step)) return { already_instantiated: true }
@@ -358,7 +393,7 @@ async function executeRelease(supabase: SupabaseClient, service: SupabaseClient,
         detail = { project_id: pkg.project_id, gates: producedGates }
       }
       await assertReleaseLease(supabase, job, packageId)
-      await updateStep(supabase, job.org_id, packageId, step, { status: "completed", completed_at: new Date().toISOString(), error: null, detail })
+      await settleStep(service, job, step, detail, input.versionId)
     } catch (error) {
       if (error instanceof ReleaseLeaseLostError) throw error
       await assertReleaseLease(supabase, job, packageId)
@@ -401,13 +436,14 @@ async function processScheduleChangeNotice(supabase: SupabaseClient, job: Claime
 async function processReleaseTradeNotice(supabase: SupabaseClient, job: ClaimedJob): Promise<ReleaseOutcome> {
   const packageId = requiredString(job.payload.start_package_id, "start_package_id")
   const companyId = requiredString(job.payload.company_id, "company_id")
-  const { data: pkg, error } = await supabase.from("start_packages").select("status,community_id")
+  const { data: pkg, error } = await supabase.from("start_packages").select("status,community_id,project_id")
     .eq("org_id", job.org_id).eq("id", packageId).maybeSingle()
   if (error || !pkg) throw new Error(`Failed to load notice release: ${error?.message ?? "Start package not found"}`)
   await assertStartCommunityAccess(supabase, job.org_id, pkg.community_id)
   if (pkg.status === "releasing" || pkg.status === "attention") return "deferred"
   if (pkg.status !== "released") throw new Error("Trade notice package is not released")
-  await sendTradeLookahead(companyId, { weeks: 3, releaseNoticeKey: packageId }, job.org_id)
+  if (!pkg.project_id) throw new Error("Trade notice package has no house")
+  await sendReleaseTradeNotice({ companyId, packageId, projectId: pkg.project_id, outboxId: job.job_id, actorId: requiredString(job.payload.actor_id, "actor_id") }, job.org_id)
   return "completed"
 }
 
@@ -530,26 +566,37 @@ async function processJob(service: SupabaseClient, job: ClaimedJob) {
 export async function runStartsPipeline(options: { deadlineMs?: number } = {}): Promise<StartsPipelineSummary> {
   const service = createServiceSupabaseClient()
   const deadline = options.deadlineMs ?? Date.now() + 240_000
-  const summary = { processed: 0, failed: 0, remaining: 0 }
+  const summary: StartsPipelineSummary = { processed: 0, failed: 0, remaining: 0 }
+  // New code on an old schema stays inert: nothing here may claim, drain or
+  // sweep until the migrations the worker is written against have landed.
+  const missing = await findMissingSchemaRequirement(service, "starts-pipeline")
+  if (missing) {
+    console.warn(`[starts-pipeline] Schema not cut over (missing ${missing}); skipping this run`)
+    return { ...summary, notCutOver: true }
+  }
   await drainLegacyProcessingJobs(service)
   const { error: recoverError } = await service.rpc("recover_starts_job_leases", { p_limit: 500 })
   if (recoverError) throw new Error(`Failed to recover expired starts claims: ${recoverError.message}`)
   while (Date.now() < deadline) {
-    const { data, error } = await service.rpc("claim_starts_jobs", { p_limit: 2 })
+    // One job at a time: every claim carries a 3-minute lease that only starts
+    // being renewed once the job runs, so a second job claimed up front would
+    // sit out the first one's runtime and come back dead.
+    const { data, error } = await service.rpc("claim_starts_jobs", { p_limit: 1 })
     if (error) throw new Error(`Failed to claim starts jobs: ${error.message}`)
-    const jobs = z.array(claimedJobSchema).parse(data ?? [])
-    if (!jobs.length) break
-    for (const job of jobs) {
-      if (await processJob(service, job)) summary.processed += 1
-      else summary.failed += 1
-      if (Date.now() >= deadline) break
-    }
+    const [job] = z.array(claimedJobSchema).parse(data ?? [])
+    if (!job) break
+    if (await processJob(service, job)) summary.processed += 1
+    else summary.failed += 1
   }
   const { count, error: countError } = await service.from("outbox").select("id", { count: "exact", head: true })
     .in("job_type", [...START_PIPELINE_JOB_TYPES]).eq("status", "pending").lte("run_at", new Date().toISOString())
   if (countError || count === null) throw new Error(`Failed to count remaining starts jobs: ${countError?.message ?? "Count unavailable"}`)
   summary.remaining = count
   await ensureReleaseSlotsForActiveCommunities(200)
-  await cleanupAbandonedPlanDrawingCopies()
+  const cleanup = await cleanupAbandonedPlanDrawingCopies()
+  if (cleanup.failed.length) {
+    console.warn("[starts-pipeline] Abandoned drawing copies not cleared:", cleanup.failed)
+    summary.copyCleanupFailed = cleanup.failed.length
+  }
   return summary
 }

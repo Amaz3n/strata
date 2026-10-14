@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { AlertTriangle, ArrowRight, Check, Loader2 } from "@/components/icons"
 import { formatDay } from "@/components/starts/start-card"
+import { CloseImpactTable, OverageNotice } from "@/components/starts/release-dialog-parts"
 import { StartStatusBadge } from "@/components/starts/start-badges"
 import { StartDeliveryPanel } from "@/components/starts/start-delivery-panel"
 import { Button } from "@/components/ui/button"
@@ -20,15 +21,19 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
 import { uploadDocumentForm } from "@/lib/files/upload-document-form"
-import type { StartGateDTO, StartPackageDetailDTO, SuperintendentCandidateDTO } from "@/lib/services/starts"
+import type { ReleaseOverage, StartGateDTO, StartPackageDetailDTO, SuperintendentCandidateDTO } from "@/lib/services/starts"
+import { closeImpacts, lateCloses, startDateForWeek } from "@/lib/starts/close-impact"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
-import { superintendentLoad } from "@/lib/starts/superintendent-load"
 import { cn } from "@/lib/utils"
 import {
   attestGateAction, cancelReleaseAction, cancelStartPackageAction, getStartPackageAction,
-  refreshGatesAction, releaseStartAction, reopenGateAction, retryReleaseAction, retryStartTradeNoticeAction, retryStartConfirmationAction,
+  refreshGatesAction, releaseStartAction, reopenGateAction, retryReleaseAction, retryStartTradeNoticeAction, resolveTradeNoticeAction, retryStartConfirmationAction,
   setProjectSuperintendentAction, setStartTargetWeekAction, waiveGateAction,
 } from "@/app/(app)/starts/actions"
+
+const NOTICE_KIND_LABELS: Record<StartPackageDetailDTO["tradeNotices"][number]["kind"], string> = {
+  release: "Release notice", schedule_change: "Schedule change", package: "Package alert",
+}
 
 const STEP_LABELS: Record<string, string> = {
   project: "Project", budget: "Budget", schedule: "Schedule", checklists: "Checklists",
@@ -41,6 +46,7 @@ const AUTO_GATE_HINTS: Record<string, { hint: string; tab?: string; cta?: string
   plot_plan: { hint: "The home's permit application has no plot plan attached", tab: "permits", cta: "Open permits" },
   selections_locked: { hint: "This house has no locked selection groups yet — every structural group must exist and be closed", tab: "selections", cta: "Open selections" },
   plan_pinned: { hint: "The lot needs a released plan version and elevation pinned" },
+  financing: { hint: "The buyer's financing is not proved — the lender's loan approval (or a cash buyer's proof of funds) must be satisfied with its document on the agreement's milestones", tab: "closing", cta: "Open milestones" },
   price_book: { hint: "The price book has not been run clean against this house yet — dry-run generation and clear any exceptions", tab: "commitments", cta: "Run generation" },
   budget: { hint: "Generated when the house is released" },
   po_set: { hint: "Generated when the house is released" },
@@ -72,7 +78,11 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
 
   const [releaseOpen, setReleaseOpen] = useState(false)
   const [releaseDate, setReleaseDate] = useState("")
-  const [overSlot, setOverSlot] = useState<{ targetWeek: string; target: number; alreadyTargeted: number } | null>(null)
+  const [overSlot, setOverSlot] = useState<ReleaseOverage | null>(null)
+  const [overReason, setOverReason] = useState("")
+  const [moveWeek, setMoveWeek] = useState<string | null>(null)
+  const [overrideTarget, setOverrideTarget] = useState<{ userId: string; name: string; houses: number; limit: number } | null>(null)
+  const [overrideReason, setOverrideReason] = useState("")
   const [attestTarget, setAttestTarget] = useState<StartGateDTO | null>(null)
   const [attestNote, setAttestNote] = useState("")
   const [attestFile, setAttestFile] = useState<File | null>(null)
@@ -83,6 +93,8 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   const [dismissedWarning, setDismissedWarning] = useState(false)
   const [noticePage, setNoticePage] = useState(1)
   const [failedNoticesOnly, setFailedNoticesOnly] = useState(false)
+  const [resolveTarget, setResolveTarget] = useState<{ deliveryId: string; resolution: "delivered" | "resend" } | null>(null)
+  const [resolveNote, setResolveNote] = useState("")
 
   // The package the sheet is showing now. A response for any other package
   // (the user opened a different one, or a permalink swapped it) is stale.
@@ -137,6 +149,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
     const today = new Date().toISOString().slice(0, 10)
     setReleaseDate(target.scheduledStartDate ?? (target.targetWeek && target.targetWeek > today ? target.targetWeek : today))
     setOverSlot(null)
+    setOverReason("")
     setReleaseOpen(true)
   }
 
@@ -144,7 +157,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
     if (!pkg) return
     startTransition(async () => {
       try {
-        const result = unwrapAction(await releaseStartAction(pkg.id, { scheduledStartDate: releaseDate, confirmOverSlot }))
+        const result = unwrapAction(await releaseStartAction(pkg.id, { scheduledStartDate: releaseDate, ...(confirmOverSlot ? { overTargetReason: overReason.trim() } : {}) }))
         if ("requiresConfirm" in result) {
           setOverSlot(result.slot)
           return
@@ -160,6 +173,43 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
     })
   }
 
+  function moveTo(week: string | null) {
+    if (!pkg) return
+    const id = pkg.id
+    runAction(
+      async () => { unwrapAction(await setStartTargetWeekAction(id, week)) },
+      "Target week updated",
+      "Unable to retarget this house",
+      () => setMoveWeek(null),
+    )
+  }
+
+  function assignSuperintendent(userId: string | null, reason?: string) {
+    const projectId = pkg?.projectId
+    if (!projectId) return
+    startTransition(async () => {
+      try {
+        const result = unwrapAction(await setProjectSuperintendentAction(projectId, userId, reason ? { overReason: reason } : {}))
+        if (!result.assigned) {
+          const candidate = superintendents.find((entry) => entry.id === userId)
+          if (!result.canOverride || !userId) {
+            toast.error("Superintendent not assigned", { description: `${candidate?.name ?? "They"} already run ${result.houses} houses, at their limit of ${result.limit}. Someone who can release starts must approve going past it.` })
+            return
+          }
+          setOverrideReason("")
+          setOverrideTarget({ userId, name: candidate?.name ?? "This superintendent", houses: result.houses, limit: result.limit })
+          return
+        }
+        toast.success("Superintendent updated")
+        setOverrideTarget(null)
+        if (packageId) await load(packageId)
+        onChanged()
+      } catch (error) {
+        toast.error("Unable to assign superintendent", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
+
   const editable = pkg ? ["open", "ready"].includes(pkg.status) : false
   const gatesLocked = pkg ? ["releasing", "released", "cancelled"].includes(pkg.status) : true
   // Automatic retries remain in releasing. Only attention permits a manual
@@ -171,8 +221,10 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
     ? pkg.steps.filter((step) => step.status === "failed")
     : []
   const assignedSuper = superintendents.find((candidate) => candidate.id === pkg?.superintendentId) ?? null
-  const overloadedSuper = assignedSuper && superintendentLoad(assignedSuper.activeHouses) !== "clear" ? assignedSuper : null
-  const visibleNotices = (pkg?.tradeNotices ?? []).filter((notice) => !failedNoticesOnly || notice.status === "failed")
+  const overloadedSuper = assignedSuper && assignedSuper.load !== "clear" ? assignedSuper : null
+  const releaseImpacts = pkg && releaseOpen && releaseDate ? closeImpacts([{ id: pkg.id, lotLabel: pkg.lotLabel, closingDate: pkg.sale.closingDate, cycleDays: pkg.cycleDays }], releaseDate) : []
+  const moveImpacts = pkg && moveWeek ? closeImpacts([{ id: pkg.id, lotLabel: pkg.lotLabel, closingDate: pkg.sale.closingDate, cycleDays: pkg.cycleDays }], startDateForWeek(moveWeek, new Date().toISOString().slice(0, 10))) : []
+  const visibleNotices = (pkg?.tradeNotices ?? []).filter((notice) => !failedNoticesOnly || notice.status === "failed" || notice.status === "ambiguous")
   const noticePageCount = Math.max(1, Math.ceil(visibleNotices.length / 20))
   const activeNoticePage = Math.min(noticePage, noticePageCount)
 
@@ -319,7 +371,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                         <Link href="/settings/starts">Start gate settings</Link>
                       </Button>
                       {canRelease && pkg.status === "ready" ? (
-                        <Button size="sm" className="rounded-none" disabled={pending} onClick={() => { openReleaseDialog(pkg) }}>
+                        <Button size="sm" className="rounded-none" disabled={pending || !pkg.superintendentId} onClick={() => { openReleaseDialog(pkg) }}>
                           Release anyway
                         </Button>
                       ) : null}
@@ -344,7 +396,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                     <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Ready</p>
                     <p className="mt-1 text-lg font-semibold leading-tight">Every gate is clear</p>
                     {canRelease && pkg.status === "ready" ? (
-                      <Button size="sm" className="mt-3 rounded-none" disabled={pending} onClick={() => openReleaseDialog(pkg)}>
+                      <Button size="sm" className="mt-3 rounded-none" disabled={pending || !pkg.superintendentId} onClick={() => openReleaseDialog(pkg)}>
                         Release start
                       </Button>
                     ) : null}
@@ -361,13 +413,15 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                   <Select
                     value={pkg.targetWeek ?? "none"}
                     disabled={!canWrite || !editable || pending}
-                    onValueChange={(value) =>
-                      runAction(
-                        async () => { unwrapAction(await setStartTargetWeekAction(pkg.id, value === "none" ? null : value)) },
-                        "Target week updated",
-                        "Unable to retarget this house",
-                      )
-                    }
+                    onValueChange={(value) => {
+                      const week = value === "none" ? null : value
+                      // A sold home whose closing the new week would push out says so first.
+                      if (week && lateCloses(closeImpacts([{ id: pkg.id, lotLabel: pkg.lotLabel, closingDate: pkg.sale.closingDate, cycleDays: pkg.cycleDays }], startDateForWeek(week, new Date().toISOString().slice(0, 10)))).length) {
+                        setMoveWeek(week)
+                        return
+                      }
+                      moveTo(week)
+                    }}
                   >
                     <SelectTrigger id="sheet-week" className="h-8 rounded-none text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -383,15 +437,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                   <Select
                     value={pkg.superintendentId ?? "unassigned"}
                     disabled={!canWrite || !pkg.projectId || pending}
-                    onValueChange={(value) => {
-                      const projectId = pkg.projectId
-                      if (!projectId) return
-                      runAction(
-                        async () => { unwrapAction(await setProjectSuperintendentAction(projectId, value === "unassigned" ? null : value)) },
-                        "Superintendent updated",
-                        "Unable to assign superintendent",
-                      )
-                    }}
+                    onValueChange={(value) => assignSuperintendent(value === "unassigned" ? null : value)}
                   >
                     <SelectTrigger id="sheet-super" className="h-8 rounded-none text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -404,11 +450,9 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                             <span className="truncate">{candidate.name}</span>
                             <span className={cn(
                               "flex-none tabular-nums",
-                              superintendentLoad(candidate.activeHouses) === "over" ? "text-destructive"
-                                : superintendentLoad(candidate.activeHouses) === "stretched" ? "text-warning"
-                                  : "text-muted-foreground",
+                              candidate.load === "over" ? "text-destructive" : candidate.load === "stretched" ? "text-warning" : "text-muted-foreground",
                             )}>
-                              {candidate.activeHouses} {candidate.activeHouses === 1 ? "house" : "houses"}
+                              {candidate.activeHouses} of {candidate.limit}
                             </span>
                           </span>
                         </SelectItem>
@@ -422,7 +466,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                   </Select>
                   {overloadedSuper ? (
                     <p className="text-[11px] text-warning">
-                      {overloadedSuper.name} already runs {overloadedSuper.activeHouses} houses.
+                      {overloadedSuper.name} already runs {overloadedSuper.activeHouses} houses (stretched at {overloadedSuper.warnAt}, limit {overloadedSuper.limit}).
                     </p>
                   ) : null}
                 </div>
@@ -553,7 +597,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                     <Button size="sm" variant="ghost" disabled={pending || loading} onClick={() => void load(pkg.id)}>Refresh</Button>
                   </div>
                   <p className="mb-3 text-xs text-muted-foreground">
-                    {pkg.tradeNotices.filter((notice) => notice.status === "completed").length} sent · {pkg.tradeNotices.filter((notice) => notice.status === "failed").length} need attention · {pkg.tradeNotices.filter((notice) => notice.status === "pending" || notice.status === "processing").length} queued or sending
+                    {pkg.tradeNotices.filter((notice) => notice.status === "completed").length} sent · {pkg.tradeNotices.filter((notice) => notice.status === "failed" || notice.status === "ambiguous").length} need attention · {pkg.tradeNotices.filter((notice) => notice.status === "pending" || notice.status === "processing").length} queued or sending
                   </p>
                   <Button size="sm" variant="outline" className="mb-3" aria-pressed={failedNoticesOnly} onClick={() => { setFailedNoticesOnly((value) => !value); setNoticePage(1) }}>
                     {failedNoticesOnly ? "Show all notices" : "Show failed notices"}
@@ -562,14 +606,20 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                     {visibleNotices.slice((activeNoticePage - 1) * 20, activeNoticePage * 20).map((notice) => (
                       <li key={notice.id} className="flex items-start gap-2 text-xs">
                         <div className="min-w-0 flex-1">
-                          <p className="font-medium">{notice.companyName}</p>
-                          <p className={cn("mt-1", notice.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
-                            {notice.status === "completed" ? "Sent" : notice.status === "processing" ? "Sending" : notice.status === "failed" ? "Needs attention" : "Queued"}
+                          <p className="font-medium">{notice.companyName} <span className="font-normal text-muted-foreground">· {NOTICE_KIND_LABELS[notice.kind]}</span></p>
+                          <p className={cn("mt-1", notice.status === "failed" || notice.status === "ambiguous" ? "text-destructive" : "text-muted-foreground")}>
+                            {notice.status === "completed" ? "Sent" : notice.status === "processing" ? "Sending" : notice.status === "failed" ? "Needs attention" : notice.status === "ambiguous" ? "Outcome unknown — it may already have been delivered" : "Queued"}
                             {notice.retryCount ? ` · ${notice.retryCount} unsuccessful attempts` : ""}
                           </p>
                           {notice.error ? <p className="mt-1 break-words text-muted-foreground">{notice.error}</p> : null}
                         </div>
-                        {canRelease && canWrite && pkg.status === "released" && notice.status === "failed" ? (
+                        {canRelease && canWrite && notice.source === "delivery" && notice.status === "ambiguous" ? (
+                          <div className="flex flex-none gap-1.5">
+                            <Button size="sm" variant="outline" disabled={pending} onClick={() => { setResolveNote(""); setResolveTarget({ deliveryId: notice.id, resolution: "delivered" }) }}>Mark delivered</Button>
+                            <Button size="sm" variant="outline" disabled={pending} onClick={() => { setResolveNote(""); setResolveTarget({ deliveryId: notice.id, resolution: "resend" }) }}>Send again</Button>
+                          </div>
+                        ) : null}
+                        {canRelease && canWrite && pkg.status === "released" && notice.source === "job" && notice.status === "failed" ? (
                           <Button size="sm" variant="outline" disabled={pending} onClick={() => runAction(async () => { unwrapAction(await retryStartTradeNoticeAction(pkg.id, notice.id)) }, "Trade notice retry queued", "Unable to retry trade notice")}>
                             Retry notice
                           </Button>
@@ -623,21 +673,20 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
             />
             {releaseDate ? <p className="text-xs text-muted-foreground">Counts against the week of Monday {formatDay(mondayOfIsoWeek(releaseDate))}.</p> : null}
           </div>
+          <CloseImpactTable impacts={releaseImpacts} />
           {overSlot ? (
-            <div className="border border-destructive/50 bg-destructive/5 p-3 text-sm">
-              <p className="flex items-center gap-1.5 font-medium text-destructive">
-                <AlertTriangle className="h-4 w-4" />
-                Over even-flow target
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                The week of {formatDay(overSlot.targetWeek)} targets {overSlot.target} {overSlot.target === 1 ? "start" : "starts"} and already has {overSlot.alreadyTargeted}. This would be #{overSlot.alreadyTargeted + 1}.
-              </p>
+            <div className="grid gap-3">
+              <OverageNotice overage={overSlot} />
+              <div className="grid gap-1.5">
+                <Label htmlFor="sheet-over-reason">Why release over target</Label>
+                <Textarea id="sheet-over-reason" className="rounded-none" rows={2} maxLength={1000} value={overReason} onChange={(event) => setOverReason(event.target.value)} placeholder="Recorded with the release (at least 10 characters)" />
+              </div>
             </div>
           ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => { setReleaseOpen(false); setOverSlot(null) }}>Cancel</Button>
             {overSlot ? (
-              <Button variant="destructive" disabled={pending || !releaseDate} onClick={() => release(true)}>
+              <Button variant="destructive" disabled={pending || !releaseDate || overReason.trim().length < 10} onClick={() => release(true)}>
                 {pending ? "Releasing…" : "Release over target"}
               </Button>
             ) : (
@@ -645,6 +694,44 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                 {pending ? "Releasing…" : "Release"}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== Move that slips the promised closing ===== */}
+      <Dialog open={moveWeek !== null} onOpenChange={(open) => { if (!open) setMoveWeek(null) }}>
+        <DialogContent className="rounded-none sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move to the week of {moveWeek ? formatDay(moveWeek) : ""}</DialogTitle>
+            <DialogDescription>This start date pushes the home past its promised closing.</DialogDescription>
+          </DialogHeader>
+          <CloseImpactTable impacts={moveImpacts} />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMoveWeek(null)}>Keep current week</Button>
+            <Button variant="destructive" disabled={pending} onClick={() => moveTo(moveWeek)}>{pending ? "Moving…" : "Move anyway"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== Assign past a superintendent's limit ===== */}
+      <Dialog open={overrideTarget !== null} onOpenChange={(open) => { if (!open) setOverrideTarget(null) }}>
+        <DialogContent className="rounded-none sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{overrideTarget?.name} is at their limit</DialogTitle>
+            <DialogDescription>
+              They run {overrideTarget?.houses} houses against a limit of {overrideTarget?.limit}. Assigning this one anyway is recorded with your reason.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="override-reason">Reason</Label>
+            <Textarea id="override-reason" className="rounded-none" rows={3} maxLength={1000} value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} />
+            <p className={cn("text-xs", overrideReason.trim().length < 10 ? "text-muted-foreground" : "text-transparent")}>Minimum 10 characters.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOverrideTarget(null)}>Cancel</Button>
+            <Button variant="destructive" disabled={pending || overrideReason.trim().length < 10} onClick={() => { if (overrideTarget) assignSuperintendent(overrideTarget.userId, overrideReason.trim()) }}>
+              {pending ? "Assigning…" : "Assign anyway"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -744,6 +831,43 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
               }}
             >
               {pending ? "Waiving…" : "Waive gate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== Resolve an unknown trade notice ===== */}
+      <Dialog open={resolveTarget !== null} onOpenChange={(open) => { if (!open) setResolveTarget(null) }}>
+        <DialogContent className="rounded-none sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{resolveTarget?.resolution === "delivered" ? "Mark notice delivered" : "Send notice again"}</DialogTitle>
+            <DialogDescription>
+              {resolveTarget?.resolution === "delivered"
+                ? "Record that the trade did receive this notice. The record shows who confirmed it."
+                : "The same words go to the same people under a new delivery. If the first one did arrive, the trade gets it twice."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="resolve-note">Why</Label>
+            <Textarea id="resolve-note" className="rounded-none" rows={3} maxLength={500} value={resolveNote} onChange={(event) => setResolveNote(event.target.value)} />
+            <p className={cn("text-xs", resolveNote.trim().length < 5 ? "text-muted-foreground" : "text-transparent")}>Minimum 5 characters.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResolveTarget(null)}>Cancel</Button>
+            <Button
+              disabled={pending || resolveNote.trim().length < 5}
+              onClick={() => {
+                const target = resolveTarget
+                if (!target || !pkg) return
+                runAction(
+                  async () => { unwrapAction(await resolveTradeNoticeAction({ ...target, note: resolveNote.trim() }, pkg.id)) },
+                  target.resolution === "delivered" ? "Notice marked delivered" : "Notice queued to send again",
+                  "Unable to resolve trade notice",
+                  () => setResolveTarget(null),
+                )
+              }}
+            >
+              {pending ? "Saving…" : "Confirm"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -12,7 +12,7 @@ function setup({ count = 1, denied = false, outsideDivision = false } = {}) {
   }))
   h.store.companies = Array.from({ length: count }, (_, i) => ({ id: `company-${i}`, org_id: ORG, name: `Trade ${i}` }))
   stubModule("@/lib/services/permissions", { requirePermission: async () => { if (denied) throw new Error("Forbidden") }, getCurrentUserPermissions: async () => ({ permissions: ["*"] }) })
-  stubModule("@/lib/services/authorization", { getDivisionAccessForUser: async () => ({ assignedOnly: true, divisionIds: outsideDivision ? ["other"] : ["division"] }), getDivisionScopedProjectIds: async () => null })
+  stubModule("@/lib/services/authorization", { getDivisionAccessForUser: async () => ({ assignedOnly: true, divisionIds: outsideDivision ? ["other"] : ["division"] }), hasPlatformOrgContext: async () => false, getDivisionScopedProjectIds: async () => null })
   // Fake Supabase keeps embedded filter fields literal, so model the lot lens.
   h.store.start_packages[0]["lot.division_id"] = "division"
   const reads = [], from = h.supabase.from.bind(h.supabase)
@@ -103,4 +103,28 @@ test("opening a start checks community and lot division before seeding or creati
     assert.ok(!h.reads.some(read => ["update", "insert", "upsert", "delete"].includes(read.action)))
     assert.equal(h.calls.projects.length, 0)
   }
+})
+
+test("start detail lists the house's failed schedule digests and package alerts and an unresolved delivery in place of its job", async () => {
+  const h = setup({ count: 2 })
+  const failed = (id, jobType, payload) => ({ id, org_id: ORG, job_type: jobType, status: "failed", payload, retry_count: 3, last_error: "Provider unavailable", run_at: "2026-01-01T00:00:00Z" })
+  h.store.outbox.push(
+    failed("10", "trade_schedule_change_notice", { project_id: h.store.start_packages[0].project_id, company_id: "company-0", changes: [] }),
+    failed("11", "trade_schedule_change_notice", { project_id: "another-house", company_id: "company-0", changes: [] }),
+    failed("12", "start_package_notice", { start_package_id: PACKAGE, kind: "ready" }),
+    { ...failed("13", "trade_schedule_change_notice", { project_id: "another-house" }), status: "completed" },
+  )
+  h.store.trade_notice_deliveries = [
+    { id: "delivery-1", org_id: ORG, project_id: h.store.start_packages[0].project_id, kind: "release", company_id: "company-1", status: "ambiguous", attempts: 1, last_error: "The provider may have sent this notice", outbox_id: 2, updated_at: "2026-01-02T00:00:00Z" },
+  ]
+  for (const gate of h.store.start_package_gates) gate.definition = h.store.start_gate_definitions.find((definition) => definition.id === gate.gate_definition_id)
+  const detail = await h.service.getStartPackage(PACKAGE)
+  const shape = (notice) => [notice.source, notice.kind, notice.id, notice.status]
+  assert.deepEqual(detail.tradeNotices.map(shape).sort(), [
+    ["delivery", "release", "delivery-1", "ambiguous"],
+    ["job", "package", "12", "failed"],
+    ["job", "release", "1", "failed"],
+    ["job", "schedule_change", "10", "failed"],
+  ], "another house's digest and a completed digest are not this house's notices; job 2 is shown as its ambiguous delivery")
+  assert.equal(detail.tradeNotices.find((notice) => notice.kind === "package").companyName, "Start package")
 })

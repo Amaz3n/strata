@@ -8,15 +8,14 @@ import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
-import { RELEASE_PRODUCED_GATE_KEYS, SQL_EVIDENCE_SOURCES, SYSTEM_GATE_KEYS, canWaiveGate, gateRequiresEvidence, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
+import { RELEASE_PRODUCED_GATE_KEYS, SQL_EVIDENCE_SOURCES, SYSTEM_GATE_KEYS, canWaiveGate, financingGateClear, gateRequiresEvidence, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
-import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { getReleaseSlotTarget } from "@/lib/services/even-flow"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
-import { requirePermission } from "@/lib/services/permissions"
-import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { getDivisionAccessForUser, hasPlatformOrgContext } from "@/lib/services/authorization"
 import { prepareProjectAccountingDimensions, prepareProjectOpeningContract, prepareProjectCreation } from "@/lib/services/projects"
 import { prepareProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { readAllRows } from "@/lib/land/paging"
@@ -27,13 +26,15 @@ import { checkLotFits } from "@/lib/services/lot-fit"
 import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review"
 import { isElevationKeptBySale } from "@/lib/services/product-change-impact"
 import { loadEntitlementBlockersForLot } from "@/lib/services/land-entitlements"
-import { readAgreementMilestoneBlockers } from "@/lib/services/agreement-milestones"
+import { readAgreementMilestoneBlockers, readStartFinancingRecord } from "@/lib/services/agreement-milestones"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
+import { resolveSuperintendentLimits, superintendentLoad, superintendentRemaining, type SuperintendentLoad } from "@/lib/starts/superintendent-load"
 import {
   gateAttestSchema,
   gateDefinitionSchema,
   gateWaiveSchema,
   releaseInputSchema,
+  superintendentAssignmentSchema,
   startPackageInputSchema,
   startPackageUpdateSchema,
   type GateDefinitionInput,
@@ -134,10 +135,13 @@ export interface StartPackageDetailDTO extends StartPackageListItemDTO {
 }
 
 export interface StartTradeNoticeDTO {
+  /** The outbox job id, or the delivery id when `source` is "delivery". */
   id: string
-  companyId: string
+  source: "job" | "delivery"
+  kind: "release" | "schedule_change" | "package"
+  companyId: string | null
   companyName: string
-  status: "pending" | "processing" | "completed" | "failed"
+  status: "pending" | "processing" | "completed" | "failed" | "ambiguous"
   retryCount: number
   error: string | null
   runAt: string
@@ -159,10 +163,56 @@ function startsWriter() {
   return createServiceSupabaseClient()
 }
 
+/**
+ * Starts writes are a member's. Every mutation re-checks an active membership in
+ * SQL, which Arc support standing (a platform operator inside the org under a
+ * support grant) does not have, so support can read the desk and ask a member to
+ * act. Refusing here says so; the transaction would only report that the actor is
+ * "no longer an active organization member".
+ */
+async function requireStartsMember(context: OrgServiceContext) {
+  if (await hasPlatformOrgContext(context.orgId, context.userId)) {
+    throw new Error("Arc support access is read-only for starts. Ask a member of the organization to make this change.")
+  }
+}
+
+const RELEASE_LIMITS = ["community", "division", "org"] as const
 const queueReleaseResultSchema = z.discriminatedUnion("queued", [
   z.object({ queued: z.literal(true) }),
-  z.object({ queued: z.literal(false), target_week: z.string(), target: z.number(), already_targeted: z.number() }),
+  z.object({
+    queued: z.literal(false), target_week: z.string(), target: z.number(), already_targeted: z.number(),
+    limit: z.enum(RELEASE_LIMITS),
+    exceeded: z.array(z.object({ limit: z.enum(RELEASE_LIMITS), target: z.number(), already_targeted: z.number() })).min(1),
+  }),
 ])
+
+/** The start limits a release would push past, nearest first: the community's week, then its division's, then the org's. */
+export interface ReleaseOverage {
+  targetWeek: string
+  limit: (typeof RELEASE_LIMITS)[number]
+  target: number
+  alreadyTargeted: number
+  exceeded: Array<{ limit: (typeof RELEASE_LIMITS)[number]; target: number; alreadyTargeted: number }>
+}
+
+function releaseOverage(queued: Extract<z.infer<typeof queueReleaseResultSchema>, { queued: false }>): ReleaseOverage {
+  return {
+    targetWeek: queued.target_week, limit: queued.limit, target: queued.target, alreadyTargeted: queued.already_targeted,
+    exceeded: queued.exceeded.map((entry) => ({ limit: entry.limit, target: entry.target, alreadyTargeted: entry.already_targeted })),
+  }
+}
+
+const assignSuperintendentResultSchema = z.discriminatedUnion("assigned", [
+  z.object({
+    assigned: z.literal(true), changed: z.boolean(), houses: z.number().nullable(), warn: z.number().nullable(),
+    limit: z.number().nullable(), over_capacity: z.boolean(),
+  }),
+  z.object({ assigned: z.literal(false), requires_override: z.literal(true), can_override: z.boolean(), houses: z.number(), warn: z.number(), limit: z.number() }),
+])
+
+export type SuperintendentAssignment =
+  | { assigned: true; changed: boolean; houses: number | null; overCapacity: boolean }
+  | { assigned: false; requiresOverride: true; canOverride: boolean; houses: number; warn: number; limit: number }
 
 const cancelReleaseResultSchema = z.object({ preserved: z.array(z.string()), reset: z.array(z.string()) })
 
@@ -357,6 +407,7 @@ async function loadPurchasingEnabled(supabase: SupabaseClient, orgId: string, co
 export async function seedDefaultGateDefinitions(orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
+  await requireStartsMember(context)
   // Definitions are writable by start.release holders only; seeding the
   // system's defaults is part of opening a package, which start.write may do.
   const { error } = await startsWriter().from("start_gate_definitions").upsert(
@@ -375,28 +426,50 @@ export async function listGateDefinitions(orgId?: string): Promise<GateDefinitio
   return (data ?? []).map((row) => mapDefinition(row))
 }
 
+const savedGateDefinitionSchema = z.object({ definition: z.record(z.string(), z.unknown()), packages_updated: z.number().int() })
+
+/** The communities with a price book among those holding an open or ready package: it decides whether a purchasing-only gate applies. */
+async function communitiesWithPurchasingOpenPackages(orgId: string) {
+  const writer = startsWriter()
+  const packages = await readAllRows((from, to) => writer.from("start_packages").select("community_id")
+    .eq("org_id", orgId).in("status", ["open", "ready"]).order("id").range(from, to),
+  { cap: 20001, label: "Failed to read open start packages" })
+  if (packages.truncated) throw new Error("More open start packages than a gate change can reach; narrow the starts desk first.")
+  const communityIds = Array.from(new Set(packages.rows.map((row) => String(row.community_id))))
+  const enabled: string[] = []
+  for (let offset = 0; offset < communityIds.length; offset += 200) {
+    const byCommunity = await loadPurchasingEnabledByCommunity(writer, orgId, communityIds.slice(offset, offset + 200))
+    for (const [communityId, on] of byCommunity) if (on) enabled.push(communityId)
+  }
+  return enabled
+}
+
+/**
+ * Saves a gate definition. One transaction writes it with its audit and event and
+ * adds an active gate to every open and ready package, returning a ready package
+ * that gains an unanswered gate to open — a new gate used to reach only packages
+ * opened afterwards, so the rest ran the whole release and parked at publication.
+ */
 export async function upsertGateDefinition(input: GateDefinitionInput, orgId?: string) {
   const parsed = gateDefinitionSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   const system = DEFAULT_GATE_DEFINITIONS.find((gate) => gate.key === parsed.key && SYSTEM_GATE_KEYS.has(gate.key))
   if (system && (parsed.checkKind !== system.check_kind || parsed.autoSource !== system.auto_source
     || parsed.appliesWhen !== system.applies_when || !parsed.isActive || parsed.requiresAttestationPermission)) {
     throw new Error(`The ${system.label.toLowerCase()} gate is part of every start; only its label and order can change.`)
   }
-  const payload = {
-    org_id: context.orgId, key: parsed.key, label: parsed.label, description: parsed.description ?? null,
-    check_kind: parsed.checkKind, auto_source: parsed.checkKind === "auto" ? parsed.autoSource : null,
-    requires_attestation_permission: parsed.requiresAttestationPermission ?? null,
-    applies_when: parsed.appliesWhen, sort_order: parsed.sortOrder, is_active: parsed.isActive,
-  }
-  const query = parsed.id
-    ? context.supabase.from("start_gate_definitions").update(payload).eq("org_id", context.orgId).eq("id", parsed.id)
-    : context.supabase.from("start_gate_definitions").upsert(payload, { onConflict: "org_id,key" })
-  const { data, error } = await query.select("*").single()
+  const { data, error } = await startsWriter().rpc("save_start_gate_definition", {
+    p_org_id: context.orgId, p_actor_id: context.userId, p_id: parsed.id ?? null, p_key: parsed.key, p_label: parsed.label,
+    p_description: parsed.description ?? null, p_check_kind: parsed.checkKind,
+    p_auto_source: parsed.checkKind === "auto" ? parsed.autoSource : null,
+    p_requires_attestation_permission: parsed.requiresAttestationPermission ?? null, p_applies_when: parsed.appliesWhen,
+    p_sort_order: parsed.sortOrder, p_is_active: parsed.isActive,
+    p_purchasing_communities: parsed.isActive ? await communitiesWithPurchasingOpenPackages(context.orgId) : [],
+  })
   if (error) throw new Error(`Failed to save start gate: ${error.message}`)
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: parsed.id ? "update" : "insert", entityType: "start_gate_definition", entityId: data.id, after: data })
-  return mapDefinition(data)
+  return mapDefinition(savedGateDefinitionSchema.parse(data).definition)
 }
 
 async function loadPackageRow(supabase: SupabaseClient, orgId: string, packageId: string) {
@@ -440,7 +513,7 @@ export async function assertReleaseGateCompletion(
     readAllRows((from, to) => supabase.from("start_gate_definitions").select("id,key,check_kind,auto_source,applies_when")
       .eq("org_id", orgId).eq("is_active", true).order("id").range(from, to),
     { cap: 1001, label: "Failed to verify release gate definitions" }),
-    readAllRows((from, to) => supabase.from("start_package_gates").select("gate_definition_id,status,waived_reason")
+    readAllRows((from, to) => supabase.from("start_package_gates").select("gate_definition_id,status,waived_reason,passed_via,evidence_file_id")
       .eq("org_id", orgId).eq("start_package_id", packageId).order("id").range(from, to),
     { cap: 1001, label: "Failed to verify release gates" }),
   ])
@@ -463,6 +536,14 @@ export async function assertReleaseGateCompletion(
     if (gate.status === "passed" && definition.check_kind === "auto"
       && !await deriveAutoGate(supabase, orgId, pkg.data, String(definition.auto_source))) {
       throw new Error(`Release evidence no longer satisfies the ${definition.key} gate`)
+    }
+    if (gate.status === "passed" && gate.passed_via === "attested" && gate.evidence_file_id) {
+      // An attestation stands on its file: one archived or moved off the home
+      // after the gate cleared no longer proves it.
+      const { data: evidence, error: evidenceError } = await supabase.from("files").select("id")
+        .eq("org_id", orgId).eq("project_id", expected.projectId).eq("id", gate.evidence_file_id).is("archived_at", null).maybeSingle()
+      if (evidenceError) throw new Error(`Failed to verify the ${definition.key} gate's evidence: ${evidenceError.message}`)
+      if (!evidence) throw new Error(`The ${definition.key} gate's evidence is no longer on the home`)
     }
   }
 }
@@ -528,10 +609,15 @@ async function deriveAutoGate(
   }
   if (!projectId) return false
   if (source === "agreement_milestones_clear") {
-    // A spec home, or a sale whose agreement holds nothing before start, is
-    // clear; an open or failed milestone required before start holds it.
-    const blockers = await readAgreementMilestoneBlockers(supabase, orgId, projectId, "start")
-    return blockers.length === 0
+    // A spec home has no buyer to prove. A sold home clears only on the
+    // lender's loan approval (financed) or proof of funds (cash), satisfied
+    // with its document on file, and with nothing the agreement holds before
+    // start still open. Records that are absent, waived or archived never pass.
+    const [blockers, financing] = await Promise.all([
+      readAgreementMilestoneBlockers(supabase, orgId, projectId, "start"),
+      readStartFinancingRecord(supabase, orgId, projectId),
+    ])
+    return blockers.length === 0 && financingGateClear(financing)
   }
   if (source === "selections_locked") {
     // Absence of evidence is not satisfaction. "No open selection groups" is
@@ -627,12 +713,26 @@ export async function refreshAutoGates(packageId: string, orgId?: string): Promi
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
-  const [purchasingEnabled, rows] = await Promise.all([
+  const [purchasingEnabled, loadedRows, active] = await Promise.all([
     loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id),
     loadGateRows(context.supabase, context.orgId, packageId),
+    readAllRows((from, to) => context.supabase.from("start_gate_definitions").select("id")
+      .eq("org_id", context.orgId).eq("is_active", true).order("id").range(from, to),
+    { cap: 1001, label: "Failed to read start gate definitions" }),
   ])
+  let rows = loadedRows
   // Once a release begins its gates belong to the release.
   if (!["open", "ready"].includes(pkg.status)) return rows.map((row) => mapGate(row))
+  // A package opened before a gate was defined (or before a default was seeded)
+  // has no row for it; give it one so readiness and the release both answer for it.
+  const held = new Set(rows.map((row) => String(row.gate_definition_id)))
+  if (active.rows.some((definition) => !held.has(String(definition.id)))) {
+    const { error: healError } = await startsWriter().rpc("heal_start_package_gates", {
+      p_org_id: context.orgId, p_package_id: packageId, p_actor_id: context.userId, p_purchasing_enabled: purchasingEnabled,
+    })
+    if (healError) throw new Error(`Failed to add the package's missing gates: ${healError.message}`)
+    rows = await loadGateRows(context.supabase, context.orgId, packageId)
+  }
   // Evidence is read here; applicability, the verdicts and the readiness they
   // prove are written by SQL, which refuses a gate whose evidence is missing
   // and evidences the permit and plot plan itself.
@@ -657,6 +757,7 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   const parsed = startPackageInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
+  await requireStartsMember(context)
   const { data: lot, error } = await context.supabase.from("lots").select(`id,community_id,division_id,project_id,status,delivered_at,metadata,lot_number,address,community:communities(name,code),${LOT_DELIVERY_EXCEPTIONS_EMBED}`)
     .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
@@ -691,6 +792,7 @@ export async function updateStartPackage(id: string, input: { targetWeek?: strin
   const parsed = startPackageUpdateSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
+  await requireStartsMember(context)
   const before = await loadPackageRow(context.supabase, context.orgId, id)
   if (!["open", "ready"].includes(before.status)) throw new Error("Only open or ready packages can be edited.")
   const patch = {
@@ -716,6 +818,7 @@ async function mutateGate(
   action: "attest" | "waive" | "reopen",
   input: Record<string, string | null>,
 ) {
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (!["open", "ready"].includes(pkg.status)) throw new Error("Gates cannot change after release begins.")
   const { data, error } = await startsWriter().rpc("mutate_start_gate", {
@@ -750,10 +853,11 @@ export async function reopenGate(packageId: string, gateId: string, orgId?: stri
   return mutateGate(context, packageId, gateId, "reopen", {})
 }
 
-export async function releaseStart(packageId: string, input: { scheduledStartDate: string; confirmOverSlot?: boolean }, orgId?: string): Promise<{ released: true } | { requiresConfirm: true; slot: { targetWeek: string; target: number; alreadyTargeted: number } }> {
+export async function releaseStart(packageId: string, input: { scheduledStartDate: string; overTargetReason?: string }, orgId?: string): Promise<{ released: true } | { requiresConfirm: true; slot: ReleaseOverage }> {
   const parsed = releaseInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   await refreshAutoGates(packageId, context.orgId)
   let pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "ready") throw new Error("The start package is not ready to release.")
@@ -773,6 +877,13 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
     pkg = { ...pkg, project_id: startHomeResultSchema.parse(data).project_id }
   }
 
+  const { data: home, error: homeError } = await context.supabase.from("projects").select("superintendent_id")
+    .eq("org_id", context.orgId).eq("id", pkg.project_id).maybeSingle()
+  if (homeError || !home) throw new Error("The house for this start package was not found")
+  // A house is handed to the person who will run it before it starts; the
+  // release transaction refuses one without, this says so first.
+  if (!home.superintendent_id) throw new Error("Assign a superintendent to this house before releasing it.")
+
   const { data: localToday, error: todayError } = await startsWriter().rpc("permit_local_today", { p_org_id: context.orgId, p_project_id: pkg.project_id })
   if (todayError) throw new Error(`Failed to read the home's calendar day: ${todayError.message}`)
   if (parsed.scheduledStartDate < z.string().date().parse(localToday)) throw new Error("Scheduled start date cannot be in the past")
@@ -787,12 +898,12 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
   const { data, error } = await startsWriter().rpc("queue_start_release", {
     p_org_id: context.orgId, p_package_id: packageId, p_actor_id: context.userId,
     p_scheduled_start_date: parsed.scheduledStartDate, p_target_week: targetWeek,
-    p_slot_target: target, p_confirm_over_slot: parsed.confirmOverSlot === true,
+    p_slot_target: target, p_confirm_over_slot: parsed.overTargetReason !== undefined, p_over_reason: parsed.overTargetReason ?? null,
   })
   if (error) throw new Error(`Failed to queue start release: ${error.message}`)
   const queued = queueReleaseResultSchema.parse(data)
   if (!queued.queued) {
-    return { requiresConfirm: true, slot: { targetWeek: queued.target_week, target: queued.target, alreadyTargeted: queued.already_targeted } }
+    return { requiresConfirm: true, slot: releaseOverage(queued) }
   }
   void triggerStartsPipeline()
   return { released: true }
@@ -800,7 +911,7 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
 
 export interface BatchReleaseResult {
   released: string[]
-  needsConfirm: Array<{ id: string; slot: { targetWeek: string; target: number; alreadyTargeted: number } }>
+  needsConfirm: Array<{ id: string; slot: ReleaseOverage }>
   failed: Array<{ id: string; error: string }>
 }
 
@@ -811,11 +922,12 @@ export interface BatchReleaseResult {
  */
 export async function releaseStarts(
   ids: string[],
-  input: { scheduledStartDate: string; confirmOverSlot?: boolean },
+  input: { scheduledStartDate: string; overTargetReason?: string },
   orgId?: string,
 ): Promise<BatchReleaseResult> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   const result: BatchReleaseResult = { released: [], needsConfirm: [], failed: [] }
   for (const id of Array.from(new Set(ids))) {
     try {
@@ -837,6 +949,7 @@ export async function releaseStarts(
 export async function retryRelease(packageId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "attention") throw new Error("Only releases needing attention can be retried.")
   const { error } = await startsWriter().rpc("retry_start_release", {
@@ -864,6 +977,7 @@ export interface CancelReleaseResult {
 export async function cancelRelease(packageId: string, orgId?: string): Promise<CancelReleaseResult> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (!["releasing", "attention"].includes(pkg.status)) throw new Error("This release is not cancellable.")
   // Package, steps and the claimed job change together, and the claim is
@@ -879,6 +993,7 @@ export async function cancelRelease(packageId: string, orgId?: string): Promise<
 export async function cancelStartPackage(id: string, { reason }: { reason: string }, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, id)
   if (["releasing", "released"].includes(pkg.status)) throw new Error("A releasing or released start package cannot be cancelled.")
   if (reason.trim().length < 10) throw new Error("Cancellation reason must be at least 10 characters.")
@@ -888,37 +1003,36 @@ export async function cancelStartPackage(id: string, { reason }: { reason: strin
   if (error) throw new Error(`Failed to cancel start package: ${error.message}`)
 }
 
-export async function setProjectSuperintendent(projectId: string, userId: string | null, orgId?: string) {
+/**
+ * Hands a house to its superintendent, or takes it back (`userId` null). One
+ * transaction counts the person's houses against their limit under a lock,
+ * moves `superintendent_id` and the field scoping row together, and writes the
+ * audit and event. Past the limit it answers `requiresOverride` instead of
+ * assigning; a start.release holder confirms with a reason, which is audited.
+ */
+export async function setProjectSuperintendent(
+  projectId: string, userId: string | null, input: { overReason?: string } = {}, orgId?: string,
+): Promise<SuperintendentAssignment> {
+  const parsed = superintendentAssignmentSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("project.manage", context)
-  const { data: project, error: projectError } = await context.supabase.from("projects").select("id,superintendent_id")
+  await requireAnyPermission(["project.manage", "start.write"], context)
+  await requireStartsMember(context)
+  // Read on the caller's session so the division wall decides whether they can see the house.
+  const { data: project, error: projectError } = await context.supabase.from("projects").select("id")
     .eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
   if (projectError || !project) throw new Error("Project not found")
-  if (userId) {
-    const { data: membership } = await context.supabase.from("memberships").select("id").eq("org_id", context.orgId).eq("user_id", userId).eq("status", "active").maybeSingle()
-    if (!membership) throw new Error("Superintendent must be an active organization member.")
+  const { data, error } = await startsWriter().rpc("assign_project_superintendent", {
+    p_org_id: context.orgId, p_project_id: projectId, p_user_id: userId, p_actor_id: context.userId, p_over_reason: parsed.overReason ?? null,
+  })
+  if (error) throw new Error(error.message)
+  const result = assignSuperintendentResultSchema.parse(data)
+  if (!result.assigned) {
+    return { assigned: false, requiresOverride: true, canOverride: result.can_override, houses: result.houses, warn: result.warn, limit: result.limit }
   }
-  const { error } = await context.supabase.from("projects").update({ superintendent_id: userId }).eq("org_id", context.orgId).eq("id", projectId)
-  if (error) throw new Error(`Failed to assign superintendent: ${error.message}`)
-  const { data: fieldRole } = await startsWriter().from("roles").select("id").eq("key", "field").eq("scope", "project").maybeSingle()
-  if (!fieldRole) throw new Error("Field project role is missing.")
-  // The outgoing super loses the project_members row this function gave them.
-  // Without this an "assigned" member keeps seeing houses they handed off, and
-  // assignment-scoped surfaces drift away from superintendent_id forever.
-  if (project.superintendent_id && project.superintendent_id !== userId) {
-    const { error: unscopeError } = await context.supabase.from("project_members").delete()
-      .eq("org_id", context.orgId).eq("project_id", projectId)
-      .eq("user_id", project.superintendent_id).eq("role_id", fieldRole.id)
-    if (unscopeError) throw new Error(`Failed to unscope previous superintendent: ${unscopeError.message}`)
-  }
-  if (userId) {
-    const { error: memberError } = await context.supabase.from("project_members").upsert({
-      org_id: context.orgId, project_id: projectId, user_id: userId, role_id: fieldRole.id, status: "active",
-    }, { onConflict: "project_id,user_id" })
-    if (memberError) throw new Error(`Failed to scope superintendent to project: ${memberError.message}`)
+  if (userId && result.changed) {
     await new NotificationService().createAndQueue({ orgId: context.orgId, userId, type: "project_superintendent_assigned", title: "House assigned", message: "You have been assigned as superintendent.", projectId, entityType: "project", entityId: projectId })
   }
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "project.superintendent_changed", entityType: "project", entityId: projectId, payload: { previous_user_id: project.superintendent_id, user_id: userId } })
+  return { assigned: true, changed: result.changed, houses: result.houses, overCapacity: result.over_capacity }
 }
 
 export async function listStartPackages(
@@ -1016,7 +1130,7 @@ export async function getStartPackage(id: string, orgId?: string): Promise<Start
     loadGateRows(context.supabase, context.orgId, id),
     context.supabase.from("start_release_steps").select("*").eq("org_id", context.orgId).eq("start_package_id", id).order("created_at"),
     loadPackageRow(context.supabase, context.orgId, id),
-    loadStartTradeNotices(context.supabase, context.orgId, id),
+    loadStartTradeNotices(context.supabase, context.orgId, id, item.projectId),
     item.status === "released" ? loadStartConfirmationJobs(context.supabase, context.orgId, id) : Promise.resolve([]),
     item.status === "released" ? confirmationRecoveryEnabled(context.supabase, context.orgId) : Promise.resolve(false),
   ])
@@ -1030,6 +1144,7 @@ export async function getStartPackage(id: string, orgId?: string): Promise<Start
 export async function retryStartConfirmation(packageId: string, input: { jobId: string; reason: string }, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "released") throw new Error("Only released homes can retry confirmation")
   const receipt = await queueStartConfirmationRecovery({ ...input, supabase: createServiceSupabaseClient(),
@@ -1041,6 +1156,7 @@ export async function retryStartConfirmation(packageId: string, input: { jobId: 
 export async function retryStartNotificationDelivery(packageId: string, input: { receiptId: string; requestId: string; reason: string }, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "released") throw new Error("Only released homes can recover alert delivery")
   return queueStartNotificationRecovery({ ...input, supabase: createServiceSupabaseClient(), orgId: context.orgId,
@@ -1055,36 +1171,69 @@ export async function inspectStartNotificationDeliveries(packageId: string, inpu
   return readStartNotificationDeliveries({ ...input, supabase: createServiceSupabaseClient(), orgId: context.orgId, packageId, actorId: context.userId })
 }
 
-async function loadStartTradeNotices(supabase: SupabaseClient, orgId: string, packageId: string): Promise<StartTradeNoticeDTO[]> {
-  const notices = await readAllRows((from, to) => supabase.from("outbox").select("id,status,payload,retry_count,last_error,run_at")
-    .eq("org_id", orgId).eq("job_type", "start_release_trade_notice").eq("payload->>start_package_id", packageId)
-    .order("id").range(from, to), { cap: 10001, label: "Failed to load trade notice delivery" })
-  if (notices.truncated) throw new Error("Trade notice delivery exceeds the supported limit")
-  const companyIds = Array.from(new Set(notices.rows.flatMap((row) => {
-    const id = text(relation(row.payload)?.company_id)
-    return id ? [id] : []
-  })))
+const NOTICE_JOB_KINDS = { start_release_trade_notice: "release", trade_schedule_change_notice: "schedule_change", start_package_notice: "package" } as const
+const NOTICE_JOB_STATUSES = ["pending", "processing", "completed", "failed"]
+
+/**
+ * Everything the house owes its trades and its coordinators: the release
+ * notices it queued (every state), its schedule-change digests and package
+ * notices that failed, and any delivery whose outcome is unknown. A job whose
+ * delivery is ambiguous is shown as that delivery, which is what a coordinator
+ * can act on.
+ */
+async function loadStartTradeNotices(supabase: SupabaseClient, orgId: string, packageId: string, projectId: string | null): Promise<StartTradeNoticeDTO[]> {
+  const [release, failedJobs, deliveries] = await Promise.all([
+    readAllRows((from, to) => supabase.from("outbox").select("id,job_type,status,payload,retry_count,last_error,run_at")
+      .eq("org_id", orgId).eq("job_type", "start_release_trade_notice").eq("payload->>start_package_id", packageId)
+      .order("id").range(from, to), { cap: 10001, label: "Failed to load trade notice delivery" }),
+    readAllRows((from, to) => supabase.from("outbox").select("id,job_type,status,payload,retry_count,last_error,run_at")
+      .eq("org_id", orgId).eq("status", "failed")
+      .or(`and(job_type.eq.start_package_notice,payload->>start_package_id.eq.${packageId})${projectId ? `,and(job_type.eq.trade_schedule_change_notice,payload->>project_id.eq.${projectId})` : ""}`)
+      .order("id").range(from, to), { cap: 10001, label: "Failed to load failed trade notices" }),
+    projectId
+      ? readAllRows((from, to) => supabase.from("trade_notice_deliveries").select("id,kind,company_id,status,attempts,last_error,outbox_id,updated_at")
+        .eq("org_id", orgId).eq("project_id", projectId).eq("status", "ambiguous")
+        .order("id").range(from, to), { cap: 10001, label: "Failed to load unresolved trade notices" })
+      : Promise.resolve({ rows: [], truncated: false }),
+  ])
+  if (release.truncated || failedJobs.truncated || deliveries.truncated) throw new Error("Trade notice delivery exceeds the supported limit")
+  const ambiguousJobs = new Set(deliveries.rows.flatMap((row) => (row.outbox_id === null ? [] : [String(row.outbox_id)])))
+  const jobs = [...release.rows, ...failedJobs.rows].filter((row, index, all) => all.findIndex((other) => other.id === row.id) === index && !ambiguousJobs.has(String(row.id)))
+  const companyIds = Array.from(new Set([
+    ...jobs.flatMap((row) => { const id = text(relation(row.payload)?.company_id); return id ? [id] : [] }),
+    ...deliveries.rows.flatMap((row) => (typeof row.company_id === "string" ? [row.company_id] : [])),
+  ]))
   const names = new Map<string, string>()
   for (let offset = 0; offset < companyIds.length; offset += 100) {
     const { data, error } = await supabase.from("companies").select("id,name").eq("org_id", orgId).in("id", companyIds.slice(offset, offset + 100))
     if (error) throw new Error(`Failed to load trade notice companies: ${error.message}`)
     for (const company of data ?? []) names.set(company.id, company.name)
   }
-  return notices.rows.map((row) => {
+  const fromJobs = jobs.map((row): StartTradeNoticeDTO => {
+    const kind = NOTICE_JOB_KINDS[row.job_type as keyof typeof NOTICE_JOB_KINDS]
     const companyId = text(relation(row.payload)?.company_id)
-    if (!companyId || !["pending", "processing", "completed", "failed"].includes(row.status)) throw new Error("Invalid trade notice delivery record")
+    if (!kind || !NOTICE_JOB_STATUSES.includes(row.status) || (kind !== "package" && !companyId)) throw new Error("Invalid trade notice delivery record")
     return {
-      id: String(row.id), companyId, companyName: names.get(companyId) ?? "Unavailable trade company",
-      status: row.status as StartTradeNoticeDTO["status"], retryCount: Number(row.retry_count),
-      error: row.last_error, runAt: row.run_at,
+      id: String(row.id), source: "job", kind, companyId, companyName: companyId ? names.get(companyId) ?? "Unavailable trade company" : "Start package",
+      status: row.status as StartTradeNoticeDTO["status"], retryCount: Number(row.retry_count), error: row.last_error, runAt: row.run_at,
     }
   })
+  const fromDeliveries = deliveries.rows.map((row): StartTradeNoticeDTO => {
+    if (typeof row.company_id !== "string" || !["release", "schedule_change"].includes(row.kind)) throw new Error("Invalid trade notice delivery record")
+    return {
+      id: String(row.id), source: "delivery", kind: row.kind as StartTradeNoticeDTO["kind"], companyId: row.company_id,
+      companyName: names.get(row.company_id) ?? "Unavailable trade company", status: "ambiguous",
+      retryCount: Number(row.attempts), error: row.last_error, runAt: row.updated_at,
+    }
+  })
+  return [...fromJobs, ...fromDeliveries]
 }
 
 export async function retryStartTradeNotice(packageId: string, noticeId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
   await requirePermission("start.write", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "released") throw new Error("Only released houses can retry trade delivery")
   // The notice is requeued under the coordinator, audited and announced in one
@@ -1099,8 +1248,14 @@ export async function retryStartTradeNotice(packageId: string, noticeId: string,
 export interface SuperintendentCandidateDTO {
   id: string
   name: string
-  /** Delivery-phase production houses this person already runs. */
+  /** Houses this person already runs, assigned or started. */
   activeHouses: number
+  /** Where they are stretched, and the house count past which assignment needs an override. */
+  warnAt: number
+  limit: number
+  /** Houses they can still take before an override is needed. */
+  remaining: number
+  load: SuperintendentLoad
 }
 
 /**
@@ -1109,14 +1264,17 @@ export interface SuperintendentCandidateDTO {
  * the starts coordinator themselves do not.
  */
 const FIELD_ROLE_PERMISSION = "daily_log.write"
+const SUPERINTENDENT_MEMBER_CAP = 5_000
+const ASSIGNED_HOUSE_CAP = 50_000
 
 /**
- * Who can actually be handed a house, and how many they already carry. An
- * unfiltered membership list offered 300 names with no capacity signal, which
- * is how a super quietly ends up with fifteen houses.
+ * Who can actually be handed a house, how many they already carry and where
+ * their limit is. An unfiltered membership list offered 300 names with no
+ * capacity signal, which is how a super quietly ends up with fifteen houses.
  *
  * `includeUserIds` keeps whoever is currently assigned in the list even if
  * their role has since changed, so the picker never renders a blank selection.
+ * Past the member cap the list refuses rather than dropping people.
  */
 export async function listSuperintendentCandidates(
   opts: { includeUserIds?: Array<string | null> } = {},
@@ -1125,40 +1283,49 @@ export async function listSuperintendentCandidates(
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const pinned = new Set((opts.includeUserIds ?? []).filter((id): id is string => Boolean(id)))
-  const { data, error } = await context.supabase.from("memberships")
-    .select("user_id,role_id,user:app_users!memberships_user_id_fkey(id,full_name,email)")
-    .eq("org_id", context.orgId).eq("status", "active").limit(500)
-  if (error) throw new Error(`Failed to load superintendent candidates: ${error.message}`)
-  const roleIds = Array.from(new Set((data ?? []).map((row) => row.role_id)))
-  const [grants, houses] = await Promise.all([
-    roleIds.length
-      ? context.supabase.from("role_permissions").select("role_id").in("role_id", roleIds).eq("permission_key", FIELD_ROLE_PERMISSION)
-      : Promise.resolve({ data: [], error: null }),
+  const [members, capacities, houses] = await Promise.all([
+    readAllRows((from, to) => context.supabase.from("memberships")
+      .select("id,user_id,role_id,user:app_users!memberships_user_id_fkey(id,full_name,email)")
+      .eq("org_id", context.orgId).eq("status", "active").order("id").range(from, to),
+    { cap: SUPERINTENDENT_MEMBER_CAP + 1, label: "Failed to load superintendent candidates" }),
+    readAllRows((from, to) => context.supabase.from("superintendent_capacity").select("id,user_id,warn_houses,max_houses")
+      .eq("org_id", context.orgId).order("id").range(from, to),
+    { cap: SUPERINTENDENT_MEMBER_CAP + 1, label: "Failed to load superintendent limits" }),
     readAllRows((from, to) => context.supabase.from("projects").select("id,superintendent_id")
-      .eq("org_id", context.orgId).eq("property_type", "production").eq("phase", "delivery")
-      .eq("status", "active").not("superintendent_id", "is", null).order("id").range(from, to),
-      { cap: 50_000, label: "Failed to count assigned houses" }),
+      .eq("org_id", context.orgId).eq("status", "active").not("superintendent_id", "is", null).order("id").range(from, to),
+    { cap: ASSIGNED_HOUSE_CAP, label: "Failed to count assigned houses" }),
   ])
-  if (grants.error) throw new Error(`Failed to load field roles: ${grants.error.message}`)
+  if (members.truncated) throw new Error(`More than ${SUPERINTENDENT_MEMBER_CAP} active members; narrow the superintendent list by role.`)
+  if (capacities.truncated) throw new Error("Too many superintendent limits to resolve")
   if (houses.truncated) throw new Error("Too many active houses to count superintendent load")
+  const roleIds = Array.from(new Set(members.rows.map((row) => row.role_id)))
+  const grants = roleIds.length
+    ? await context.supabase.from("role_permissions").select("role_id").in("role_id", roleIds).eq("permission_key", FIELD_ROLE_PERMISSION)
+    : { data: [], error: null }
+  if (grants.error) throw new Error(`Failed to load field roles: ${grants.error.message}`)
   const fieldRoles = new Set((grants.data ?? []).map((row) => row.role_id))
+  const orgDefault = capacities.rows.find((row) => row.user_id === null)
+  const ownLimits = new Map(capacities.rows.flatMap((row) => (row.user_id ? [[row.user_id, { warn: Number(row.warn_houses), max: Number(row.max_houses) }] as const] : [])))
   const load = new Map<string, number>()
   for (const row of houses.rows) {
     if (!row.superintendent_id) continue
     load.set(row.superintendent_id, (load.get(row.superintendent_id) ?? 0) + 1)
   }
-  return (data ?? [])
+  return members.rows
     .flatMap((row) => {
       const user = relation(row.user)
       const userId = String(row.user_id)
       if (!user || !(fieldRoles.has(row.role_id) || pinned.has(userId))) return []
+      const activeHouses = load.get(userId) ?? 0
+      const limits = resolveSuperintendentLimits(ownLimits.get(userId), orgDefault ? { warn: Number(orgDefault.warn_houses), max: Number(orgDefault.max_houses) } : null)
       return [{
         id: userId,
         name: text(user.full_name) ?? text(user.email) ?? "Member",
-        activeHouses: load.get(userId) ?? 0,
+        activeHouses, warnAt: limits.warn, limit: limits.max,
+        remaining: superintendentRemaining(activeHouses, limits), load: superintendentLoad(activeHouses, limits),
       }]
     })
-    .sort((a, b) => a.activeHouses - b.activeHouses || a.name.localeCompare(b.name))
+    .sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name))
 }
 
 export async function listStartPackageCandidates(

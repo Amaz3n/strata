@@ -40,14 +40,6 @@ test('reserved identity mismatch stops before a storage copy',async()=>{
  const h=harness();h.db.rpc=async()=>({data:{attempt_id:ATTEMPT,plan_version_id:PLAN,source_file_id:HOME,actor_id:ACTOR,storage_path:'path',size_bytes:100,source_etag:'original',status:'reserved'},error:null})
  await assert.rejects(h.service.publishPlanDrawingCopy(input),/does not match this release/);assert.equal(h.calls.copies.length,0)
 })
-test('drawing publication flag defaults disabled and fails closed on uncertainty or expiry',async()=>{
- const h=harness();assert.equal(await h.service.planDrawingCopyTransactionsEnabled(h.db,ORG),false)
- h.db.store.feature_flags=[{org_id:ORG,flag_key:'plan_drawing_copy_transactions',enabled:true,expires_at:'2099-01-01'}]
- await assert.rejects(h.service.planDrawingCopyTransactionsEnabled(h.db,ORG),/expiring flag/)
- h.db.store.feature_flags[0].expires_at=null;assert.equal(await h.service.planDrawingCopyTransactionsEnabled(h.db,ORG),true)
- const from=h.db.from.bind(h.db);h.db.from=table=>{const query=from(table);query.then=resolve=>Promise.resolve({data:null,error:{message:'unavailable'}}).then(resolve);return query}
- await assert.rejects(h.service.planDrawingCopyTransactionsEnabled(h.db,ORG),/Unable to verify/)
-})
 test('reservation failure leaves storage untouched and changed recovery receipts are refused',async()=>{
  const h=harness();h.db.rpc=async()=>({data:null,error:{message:'lease lost'}})
  await assert.rejects(h.service.publishPlanDrawingCopy(input),/lease lost/);assert.equal(h.calls.copies.length,0)

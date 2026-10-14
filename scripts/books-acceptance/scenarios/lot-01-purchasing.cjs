@@ -289,7 +289,7 @@ function specHome(kit, f, lotIndex, planIndex = 1, { awardable = false } = {}) {
   if (!homes.has(key)) homes.set(key, (async () => {
     const { org } = f
     seed.pinSpecPlan(kit, { lot: org.lots[lotIndex], plan: org.plans[planIndex] })
-    const gates = await seed.clearStartGates(kit, org, { lotId: org.lots[lotIndex].id, spec: true })
+    const gates = await seed.clearStartGates(kit, org, { lotId: org.lots[lotIndex].id, spec: true, superintendent: false })
     const home = { ...gates, lotId: org.lots[lotIndex].id, plan: org.plans[planIndex] }
     if (awardable) {
       // The home carries its purchase orders and budget, the way a started home does.
@@ -702,7 +702,7 @@ async function observeVariance(kit) {
   joinHome(kit, org, buyer, closedHome); joinHome(kit, org, buyer, secondHome)
   joinHome(kit, org, f.buyerA, closedHome); joinHome(kit, org, f.buyerA, secondHome); joinHome(kit, org, f.buyerB, closedHome); joinHome(kit, org, f.buyerB, secondHome)
   // The superintendent runs the closed home only; the second home has none.
-  kit.sql(`insert into public.project_members(org_id,project_id,user_id,role_id,status) select ${kit.q(org.orgId)},${kit.q(closedHome)},${kit.q(org.team.superintendent.userId)},id,'active' from public.roles where key='field'`)
+  kit.sql(`insert into public.project_members(org_id,project_id,user_id,role_id,status) select ${kit.q(org.orgId)},${kit.q(closedHome)},${kit.q(org.team.superintendent.userId)},id,'active' from public.roles where key='field' on conflict (project_id,user_id) do nothing`)
 
   const requested = []
   const request = async (projectId, vendor, reasonCode, cents, approvedAt) => {

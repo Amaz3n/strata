@@ -149,6 +149,7 @@ async function makeReadyHome(kit, index) {
   const lot = org.lots[index]
   seed.pinSpecPlan(kit, { lot, plan: org.plans[0] })
   const gates = await seed.clearStartGates(kit, org, { lotId: lot.id, spec: true })
+  await seed.assignSuperintendent(kit, org, { projectId: gates.projectId })
   if (gates.ready.status !== "ready") throw Error(`Package for lot ${lot.lot_number} is ${gates.ready.status}, not ready`)
   return { org, lot, packageId: gates.packageId, projectId: gates.projectId }
 }
@@ -164,7 +165,7 @@ async function adoptInventory(kit, org, projectId) {
   })
 }
 const queueRelease = async (kit, org, packageId, actor = org.team.starts) => {
-  await kit.as(actor, () => app("starts").releaseStart(packageId, { scheduledStartDate: seed.isoDay(0), confirmOverSlot: true }))
+  await kit.as(actor, () => app("starts").releaseStart(packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" }))
   const id = Number(kit.rows(`select id from public.outbox where org_id=${sqlq(kit, org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${sqlq(kit, packageId)} order by id desc limit 1`)[0].id)
   park(kit, id)
   return id
@@ -730,8 +731,8 @@ async function raceReleaseAndHomeCreationYieldOneHome(kit, expected, check) {
     // two coordinators release one package at the same moment
     const home = await readyHome(kit, SLOT.raceRelease[round])
     const settled = await Promise.allSettled([
-      kit.as(org.team.starts, () => starts.releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), confirmOverSlot: true })),
-      kit.as(org.owner, () => starts.releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), confirmOverSlot: true })),
+      kit.as(org.team.starts, () => starts.releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" })),
+      kit.as(org.owner, () => starts.releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" })),
     ])
     kit.sql(`update public.outbox set run_at=${HOUR} where org_id=${q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${q(home.packageId)} and status='pending'`)
     const jobs = kit.rows(`select id::text, status from public.outbox where org_id=${q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${q(home.packageId)}`)

@@ -78,6 +78,7 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
     authorize: async () => ({ allowed: true }),
     getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }),
     getDivisionScopedProjectIds: async () => null,
+    hasPlatformOrgContext: async () => false,
   })
   // The pure helpers that prepare a new home; SQL writes what they return.
   stubModule("@/lib/services/projects", {
@@ -104,10 +105,10 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
     getReleaseSlotTarget: async () => slotTarget,
     ensureReleaseSlotsForActiveCommunities: async () => undefined,
     getMissedStarts: async () => ({ weeks: 4, missed: 0, from: "2026-08-10", to: "2026-08-31" }),
-    getCommunityReleaseSlots: async () => [],
+    getCommunityReleaseSlots: async () => [], getThroughputWeeks: async () => [],
   })
   stubModule("@/lib/services/trade-lookahead", {
-    sendTradeLookahead: async (...args) => { calls.tradeNotices.push(args); return { sent: true } },
+    sendReleaseTradeNotice: async (...args) => { calls.tradeNotices.push(args); return { sent: true, skipped: false } },
     sendScheduleChangeDigestJob: async () => undefined,
   })
   stubModule("@/lib/supabase/server", {
@@ -119,7 +120,7 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
       calls.instantiate.push(input)
       return instantiate(input)
     },
-    cleanupAbandonedPlanDrawingCopies: async () => ({ claimed: 0, cleared: 0 }),
+    cleanupAbandonedPlanDrawingCopies: async () => ({ claimed: 0, cleared: 0, failed: [] }),
   })
   stubModule("@/lib/services/po-generation", {
     generatePurchaseOrdersForStartsRelease: async (input) => {
@@ -237,6 +238,10 @@ function releaseJobs(store, orgId, packageId) {
 }
 
 const claimProtocol = {
+  starts_cutover_ready() {
+    return ok(true)
+  },
+
   claim_starts_jobs({ p_limit: limit }, store) {
     const claimed = (store.outbox ?? [])
       .filter((row) => STARTS_JOB_TYPES.includes(row.job_type) && row.status === "pending" && (!row.run_at || row.run_at <= iso()))
@@ -315,6 +320,26 @@ const claimProtocol = {
     return ok(recovered)
   },
 
+  // `settle_release_step`: the claim, lease and a running step are proven, the
+  // promised count must be present for a step that builds artifacts, and the
+  // release ledger closes. (What the step left on the home is counted in SQL,
+  // proven in tests/starts-core-write-fences-db.test.js.)
+  settle_release_step({ p_org_id: orgId, p_job_id: jobId, p_token: token, p_step: stepKey, p_detail: detail, p_expected_count: expected }, store) {
+    const job = liveClaim(store, orgId, jobId, token)
+    if (!job) return refused("Starts worker lease lost")
+    const pkg = claimPackage(store, job)
+    if (pkg?.status !== "releasing") return refused("Start package no longer releasing")
+    if (pkg.metadata?.release_lease_token !== token || !leaseFresh(pkg)) return refused("Start package lease lost")
+    const step = store.start_release_steps.find((row) => row.start_package_id === pkg.id && row.step_key === stepKey)
+    if (step?.status !== "running") return refused(`Release step ${stepKey} is not running`)
+    const skipped = detail.already_instantiated === true || detail.delegated_to !== undefined
+    if (["budget", "schedule", "checklists"].includes(stepKey) && !skipped && expected === null) {
+      return refused(`Release step ${stepKey} cannot complete without a receipt`)
+    }
+    Object.assign(step, { status: "completed", completed_at: iso(), error: null, detail })
+    return ok({ step: stepKey, status: "completed" })
+  },
+
   publish_start_release({ p_org_id: orgId, p_job_id: jobId, p_token: token, p_event_id: eventId }, store) {
     const job = liveClaim(store, orgId, jobId, token)
     if (!job) return refused("Starts worker lease lost")
@@ -355,10 +380,16 @@ const claimProtocol = {
     }
     const others = store.start_packages.filter((row) => row.org_id === args.p_org_id && row.id !== pkg.id
       && row.community_id === pkg.community_id && row.target_week === args.p_target_week && ["releasing", "released"].includes(row.status)).length
+    const home = store.projects.find((row) => row.org_id === args.p_org_id && row.id === pkg.project_id)
+    if (!home?.superintendent_id) return refused("Assign a superintendent to this house before releasing it.")
     const overSlot = others + 1 > args.p_slot_target
     if (overSlot && !args.p_confirm_over_slot) {
-      return ok({ queued: false, target_week: args.p_target_week, target: args.p_slot_target, already_targeted: others })
+      return ok({
+        queued: false, target_week: args.p_target_week, target: args.p_slot_target, already_targeted: others, limit: "community",
+        exceeded: [{ limit: "community", target: args.p_slot_target, already_targeted: others }],
+      })
     }
+    if (overSlot && String(args.p_over_reason ?? "").trim().length < 10) return refused("Releasing over a start target needs a reason of at least 10 characters.")
     Object.assign(pkg, {
       status: "releasing", scheduled_start_date: args.p_scheduled_start_date, target_week: args.p_target_week, released_by: args.p_actor_id,
       metadata: { ...(pkg.metadata ?? {}), release_requested_at: iso(), release_lease_token: null, release_lease_at: null },
@@ -534,11 +565,27 @@ const deskProtocol = {
   cancel_start_package({ p_actor_id: actorId, p_reason: reason, ...args }, store) {
     const pkg = deskPackage(store, args)
     if (!pkg) return refused("Start package not found")
+    if (pkg.status === "cancelled") return ok({ status: "cancelled", already_cancelled: true })
     if (["releasing", "released"].includes(pkg.status)) return refused("A releasing or released start package cannot be cancelled.")
     const before = { ...pkg }
     Object.assign(pkg, { status: "cancelled", metadata: { ...(pkg.metadata ?? {}), cancellation_reason: reason.trim() } })
     record(store, { orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.package_cancelled", eventType: "start_package.cancelled", payload: { reason: reason.trim() }, before, after: { ...pkg } })
     return ok({ status: "cancelled" })
+  },
+
+  // `heal_start_package_gates`: the active definitions a package has no gate for.
+  heal_start_package_gates({ p_actor_id: actorId, p_purchasing_enabled: purchasingEnabled, ...args }, store) {
+    const pkg = deskPackage(store, args)
+    if (!pkg) return refused("Start package not found")
+    if (!["open", "ready"].includes(pkg.status)) return ok({ status: pkg.status, added: 0 })
+    const held = new Set(packageGates(store, pkg).map(({ gate }) => gate.gate_definition_id))
+    const added = (store.start_gate_definitions ?? []).filter((row) => row.org_id === pkg.org_id && row.is_active && !held.has(row.id))
+    for (const definition of added) {
+      const applies = isGateApplicable({ appliesWhen: definition.applies_when }, { isFinanced: pkg.is_financed, purchasingEnabled })
+      ;(store.start_package_gates ??= []).push({ id: randomUUID(), org_id: pkg.org_id, start_package_id: pkg.id, gate_definition_id: definition.id, status: applies ? "pending" : "not_applicable", passed_via: null, attested_by: null, attested_at: null, waived_reason: null, evidence_file_id: null, created_at: iso(), definition, attested_user: null })
+    }
+    if (added.length) record(store, { orgId: pkg.org_id, actorId, entityType: "start_package", entityId: pkg.id, source: "starts.gates_added", eventType: "start_gate.added", payload: { gates: added.map((row) => row.key) } })
+    return ok({ status: settleReadiness(store, pkg, actorId, purchasingEnabled), added: added.length })
   },
 
   retry_start_trade_notice({ p_notice_id: noticeId, p_actor_id: actorId, ...args }, store) {

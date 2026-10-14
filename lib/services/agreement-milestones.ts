@@ -24,6 +24,7 @@ import {
   type MilestoneDeskSignal,
   type MilestoneGate,
 } from "@/lib/sales/agreement-milestones"
+import { FINANCING_MILESTONE_KEYS, type FinancingMilestoneRecord } from "@/lib/starts/gate-logic"
 import { recordAudit } from "@/lib/services/audit"
 import { authorize, getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
@@ -357,6 +358,42 @@ export async function readAgreementMilestoneBlockers(supabase: SupabaseClient, o
   if (contractError) throw new Error(`Unable to verify the agreement's milestones: ${contractError.message}`)
   const inForce = new Set((active ?? []).map((row) => String(row.id)))
   return gateBlockers(rows.filter((row) => inForce.has(row.contract_id)).map((row) => ({ ...row, requiredBefore: row.required_before, dueOn: row.due_on })), gate)
+}
+
+/**
+ * The financing evidence a home's purchase agreement holds: null `agreement`
+ * for a spec home, otherwise the milestones that prove the buyer's funds with
+ * whether each one's document is still on the home. Read with the caller's
+ * client inside a check that already authorized the home (the start gate);
+ * `financingGateClear` is the verdict.
+ */
+export async function readStartFinancingRecord(supabase: SupabaseClient, orgId: string, projectId: string): Promise<{ agreement: { milestones: FinancingMilestoneRecord[] } | null }> {
+  const { data: agreements, error: agreementError } = await supabase.from("contracts").select("id")
+    .eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active").limit(2)
+  if (agreementError) throw new Error(`Unable to verify the buyer's financing: ${agreementError.message}`)
+  if (!agreements?.length) return { agreement: null }
+  const { data, error } = await supabase.from("agreement_milestones").select("template_key,status,evidence_file_id")
+    .eq("org_id", orgId).in("contract_id", agreements.map((row) => row.id))
+    .in("template_key", [FINANCING_MILESTONE_KEYS.financed, FINANCING_MILESTONE_KEYS.cash])
+  if (error) throw new Error(`Unable to verify the buyer's financing: ${error.message}`)
+  const rows = z.array(z.object({ template_key: z.string(), status: z.enum(["open", "satisfied", "waived", "failed"]), evidence_file_id: z.string().uuid().nullable() }))
+    .parse((data ?? []).map((row) => ({ template_key: row.template_key, status: row.status, evidence_file_id: row.evidence_file_id })))
+  const fileIds = [...new Set(rows.flatMap((row) => (row.evidence_file_id ? [row.evidence_file_id] : [])))]
+  const onFile = new Set<string>()
+  if (fileIds.length) {
+    const { data: files, error: filesError } = await supabase.from("files").select("id")
+      .eq("org_id", orgId).eq("project_id", projectId).is("archived_at", null).in("id", fileIds)
+    if (filesError) throw new Error(`Unable to verify the buyer's financing: ${filesError.message}`)
+    for (const file of files ?? []) onFile.add(String(file.id))
+  }
+  return {
+    agreement: {
+      milestones: rows.map((row) => ({
+        templateKey: row.template_key, status: row.status, evidenceFileId: row.evidence_file_id,
+        evidenceOnFile: row.evidence_file_id !== null && onFile.has(row.evidence_file_id),
+      })),
+    },
+  }
 }
 
 /** Throws the gate's sentence when a milestone holds it. */

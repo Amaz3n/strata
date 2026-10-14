@@ -307,6 +307,7 @@ async function preflightRejectsInvalidEffectiveConfigurations(kit, expected, che
   const packageStatus = () => kit.rows(`select status from public.start_packages where id=${q(kit, gates.packageId)}`)[0].status
   const purchaseOrders = () => count(kit, `select id from public.commitments where project_id=${q(kit, h1.projectId)} and commitment_type='purchase_order'`)
   observed.packageReadyBefore = gates.ready.status
+  await seed.assignSuperintendent(kit, org, { projectId: h1.projectId })
   const releaseRule = await addRule(kit, org, lvp, lgt, "excludes")
   observed.startReleaseRefused = await configRefusal(() => kit.as(org.team.starts, () => starts.releaseStart(gates.packageId, { scheduledStartDate: seed.isoDay(0) })))
   observed.startPurchaseOrderPreviewRefused = await configRefusal(() => kit.as(org.team.starts, () => app("po-generation").generatePurchaseOrders({ projectId: h1.projectId, mode: "dry_run" })))
@@ -625,7 +626,7 @@ async function lotStatesNeedTheHomeAndReversalsAreControlled(kit, expected, chec
   const verdict = async (work) => {
     const message = await refusal(work)
     if (message === "allowed") return "allowed"
-    const rules = [[/project must be attached|cannot start without an attached project/, "refused: a started lot needs its home"], [/Record the actual land acquisition/, "refused: land must be acquired in Books first"], [/not been delivered/, "refused: land not delivered"], [/already attached to another lot/, "refused: the home is on another lot"], [/explicit force confirmation/, "refused: needs force"], [/only one step unless force/, "refused: needs force"], [/Missing permission: community\.write/, "refused: community.write"], [/Missing permission: lot\.write/, "refused: lot.write"], [/Only controlled, owned, or developed lots can be deleted/, "refused: only unbuilt lots are deleted"]]
+    const rules = [[/project must be attached|cannot start without an attached project/, "refused: a started lot needs its home"], [/Record the actual land acquisition/, "refused: land must be acquired in Books first"], [/not been delivered/, "refused: land not delivered"], [/already attached to another lot/, "refused: the home is on another lot"], [/explicit force confirmation/, "refused: needs force"], [/only one step unless force/, "refused: needs force"], [/Missing permission: community\.write/, "refused: community.write"], [/Missing permission: lot\.write/, "refused: lot.write"], [/Cancel this lot's start package/, "refused: cancel the start package first"], [/Only controlled, owned, or developed lots can be deleted/, "refused: only unbuilt lots are deleted"]]
     return (rules.find(([pattern]) => pattern.test(message)) ?? [null, message.slice(0, 160)])[1]
   }
   const shape = (row) => ({ status: row.status, hasHome: row.project_id != null })
@@ -647,9 +648,12 @@ async function lotStatesNeedTheHomeAndReversalsAreControlled(kit, expected, chec
   observed.ownershipNeedsTheLandBought = await verdict(() => kit.as(org.team.land, () => lots.setLotStatus(l1, "owned")))
 
   // Opening a start package gives the lot its home; the lot is assigned, never below.
-  await kit.as(org.team.starts, () => starts.openStartPackage(x.id, { isFinanced: false }))
+  const openedPackage = await kit.as(org.team.starts, () => starts.openStartPackage(x.id, { isFinanced: false }))
   const home = lotRow(kit, x.id).project_id
   observed.homeOpened = shape(lotRow(kit, x.id))
+  // A live package belongs to the lot's home: the coordinator withdraws it before the home comes off.
+  observed.detachWhilePackageLive = await verdict(() => kit.as(org.team.starts, () => lots.detachProjectFromLot(x.id)))
+  await kit.as(org.team.starts, () => starts.cancelStartPackage(openedPackage.id, { reason: "Withdrawn so the home can be detached" }))
   observed.detachBeforeStart = await verdict(() => kit.as(org.team.starts, () => lots.detachProjectFromLot(x.id)))
   observed.afterDetachBeforeStart = shape(lotRow(kit, x.id))
   // Linking a home starts the lot, on delivered land, once.

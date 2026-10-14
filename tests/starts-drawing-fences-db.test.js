@@ -10,6 +10,8 @@
 
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const path = require("node:path")
 
 const { asRole, createDatabase, insert, rpc, seedMember, setRequestHeaders } = require("./support/pglite")
 
@@ -557,13 +559,16 @@ test("a corrupted published receipt is refused instead of publishing again", asy
 test("publication is refused once the lot moves to another home or community", async (t) => {
   const h = await publication(t)
   const elsewhere = await insert(h.db, "communities", { org_id: h.orgId, name: "Elsewhere" })
+  // The lot guard refuses these moves while the package is live; the case is a lot moved by a path that bypassed it.
   const moveLot = async (columns) => {
     await h.asWorker(false)
+    await h.db.exec("alter table lots disable trigger lots_active_start_guard")
     await h.db.query("update lots set project_id = $1, community_id = $2 where id = $3", [
       columns.project,
       columns.community,
       h.lot.id,
     ])
+    await h.db.exec("alter table lots enable trigger lots_active_start_guard")
     await h.asWorker(true)
   }
 
@@ -753,4 +758,146 @@ test("clearing an abandoned copy frees the home for a new reservation, unless a 
   assert.equal(await clear(), false, "clearing twice is a no-op")
   const next = await h.reserve()
   assert.notEqual(next.attempt_id, copy.attempt_id)
+})
+
+// ---------------------------------------------------------------------------
+// The manifest and the drawing child jobs are server-owned: a member's own
+// client can neither forge a copy for the sweep to delete nor rewrite a job.
+// ---------------------------------------------------------------------------
+
+test("a member cannot write the drawing copy manifest, but still writes the rest of the instantiation ledger", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  const member = (sql, params) => asRole(h.db, { role: "authenticated", userId: h.actorId }, (tx) => tx.query(sql, params))
+  const forged = JSON.stringify({ plan_instantiation: { drawing_copy_attempt: { status: "reserved", storage_path: `${h.orgId}/books-exports/close.json.gz` } } })
+
+  await assert.rejects(member("update projects set metadata = metadata || $2::jsonb where id = $1", [h.home.id, forged]), /server-owned/)
+  await assert.rejects(member("update projects set metadata = '{}' where id = $1", [h.home.id]), /server-owned/)
+  await assert.rejects(member("insert into projects(org_id, name, metadata) values ($1, 'Lot 9', $2::jsonb)", [h.orgId, forged]), /server-owned/)
+  assert.equal((await h.ledger()).plan_instantiation.drawing_copy_attempt.storage_path, h.copy.storage_path)
+
+  // markStep rewrites the whole metadata but leaves the manifest as it found it.
+  const ledger = await h.ledger()
+  const next = { ...ledger, plan_instantiation: { ...ledger.plan_instantiation, steps: { budget: { at: "2026-10-14T00:00:00Z" } }, seq: 9 } }
+  const marked = await member("update projects set metadata = $2::jsonb where id = $1 returning id", [h.home.id, JSON.stringify(next)])
+  assert.equal(marked.rows.length, 1)
+  await member("update projects set metadata = metadata || '{\"note\": 1}'::jsonb where id = $1", [h.home.id])
+})
+
+test("the sweep hands out only the path the home's own reservation built", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  await h.expireLease()
+  const claim = () => rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 25 })
+  const age = (days) => h.db.query(
+    "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - make_interval(days => $2))) where id = $1",
+    [h.home.id, days],
+  )
+  const forgePath = (path) => h.db.query(
+    "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,storage_path}', to_jsonb($2::text)) where id = $1",
+    [h.home.id, path],
+  )
+  await age(2)
+
+  await forgePath(`${h.orgId}/books-exports/close-archive.json.gz`)
+  assert.deepEqual(await claim(), [], "a path outside the home's plan folder is never claimed")
+  await forgePath(`${h.orgId}/projects/${h.otherHome.id}/plans/${h.version.id}/${h.copy.attempt_id}/plan.pdf`)
+  assert.deepEqual(await claim(), [], "another home's folder is never claimed")
+  await forgePath(h.copy.storage_path)
+  assert.equal((await claim()).length, 1)
+
+  await h.db.query("update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,storage_path}', to_jsonb($2::text)) where id = $1",
+    [h.home.id, `${h.orgId}/books-exports/close-archive.json.gz`])
+  await assert.rejects(
+    rpc(h.db, "clear_abandoned_plan_drawing_copy", { p_org_id: h.orgId, p_project_id: h.home.id, p_attempt_id: h.copy.attempt_id }),
+    /own reserved path/,
+  )
+})
+
+test("young manifests and file-named manifests do not take the sweep's window", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  await h.expireLease()
+  const young = await insert(h.db, "projects", { org_id: h.orgId, name: "Lot 11" })
+  await h.db.query(
+    "update projects set metadata = jsonb_build_object('plan_instantiation', jsonb_build_object('drawing_copy_attempt', jsonb_build_object('status','reserved','reserved_at',now(),'attempt_id',gen_random_uuid()))) where id = $1",
+    [young.id],
+  )
+  await h.db.query(
+    "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - interval '2 days')) where id = $1",
+    [h.home.id],
+  )
+  const claimed = await rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 1 })
+  assert.deepEqual(claimed.map((row) => row.project_id), [h.home.id], "a limit of one still reaches the old reservation behind a young one")
+})
+
+test("a member cannot insert, rewrite, complete or delete drawing jobs or set a claim on any row", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  const member = (sql, params) => asRole(h.db, { role: "authenticated", userId: h.actorId }, (tx) => tx.query(sql, params))
+  const job = await h.service((tx) => insert(tx, "outbox", { org_id: h.orgId, job_type: "generate_drawing_tiles", payload: { sheetVersionId: "x" } }))
+  const other = await h.service((tx) => insert(tx, "outbox", { org_id: h.orgId, job_type: "reindex_search", payload: {} }))
+  const refused = /authorized server writers/
+
+  for (const type of ["generate_drawing_tiles", "process_drawing_page", "split_drawing_chunk", "detect_drawing_changes"]) {
+    await assert.rejects(member("insert into outbox(org_id, job_type, payload) values ($1, $2, '{}')", [h.orgId, type]), refused)
+  }
+  await assert.rejects(member("update outbox set payload = '{\"storagePath\":\"forged\"}' where id = $1", [job.id]), refused)
+  await assert.rejects(member("update outbox set status = 'completed' where id = $1", [job.id]), refused)
+  await assert.rejects(member("delete from outbox where id = $1", [job.id]), refused)
+  await assert.rejects(member("update outbox set drawing_lease_expires_at = now() + interval '10 years' where id = $1", [other.id]), refused)
+  await assert.rejects(member("update outbox set drawing_claim_token = gen_random_uuid(), status = 'processing' where id = $1", [other.id]), refused)
+  await assert.rejects(member("update outbox set job_type = 'process_drawing_page' where id = $1", [other.id]), refused)
+
+  // Everything else about the table is untouched.
+  await member("update outbox set priority = 5 where id = $1", [other.id])
+  await member("insert into outbox(org_id, job_type, payload) values ($1, 'reindex_search', '{}')", [h.orgId])
+  assert.equal((await h.db.query("select status from outbox where id = $1", [job.id])).rows[0].status, "pending")
+})
+
+// ---------------------------------------------------------------------------
+// The cutover's rollback and re-activation scripts (scripts/starts-cutover/),
+// run here as the human would run them, minus psql's confirmation guard.
+// ---------------------------------------------------------------------------
+
+/** The script's transaction body: what psql runs once the confirmation flag is set. */
+const cutoverScript = (name, tag) => {
+  const text = fs.readFileSync(path.join(__dirname, "../scripts/starts-cutover", name), "utf8")
+  return text.slice(text.indexOf(`do $${tag}$`), text.indexOf(`$${tag}$;`) + `$${tag}$;`.length)
+}
+
+test("the rollback script lets the previous path write again and re-activation closes it, without losing data", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  const member = { role: "authenticated", userId: h.actorId }
+  const asMember = (sql, params) => asRole(h.db, member, (tx) => tx.query(sql, params))
+  const memberWrites = async () => {
+    await asMember("update start_packages set notes = 'previous worker' where id = $1", [h.pkg.id])
+    await asMember("insert into outbox(org_id, job_type, payload) values ($1, 'process_drawing_set', '{}')", [h.orgId])
+  }
+  const refused = /authorized server|server writers|not permitted|row-level|Starts worker/
+  const fences = async () => (await h.db.query("select count(*)::int n from pg_trigger where tgenabled <> 'D' and tgname ~ '^(starts_|drawing_worker_|drawing_job_browser)'")).rows[0].n
+
+  const enabledBefore = await fences()
+  assert.ok(enabledBefore >= 31)
+  await assert.rejects(memberWrites(), refused)
+
+  const stateBefore = (await h.db.query("select (select count(*)::int from start_release_steps) steps, (select count(*)::int from start_package_gates) gates, (select count(*)::int from start_packages) packages")).rows[0]
+  const claimed = (await h.db.query("select status, start_claim_token is not null tokened from outbox where id = $1", [h.job.job_id])).rows[0]
+  assert.deepEqual(claimed, { status: "processing", tokened: true })
+  assert.ok((await h.db.query("select metadata ? 'release_lease_token' held from start_packages where id = $1", [h.pkg.id])).rows[0].held)
+
+  await h.db.exec(cutoverScript("rollback.sql", "rollback"))
+  assert.equal(await fences(), 0)
+  assert.deepEqual((await h.db.query("select status, start_claim_token is not null tokened, start_job_lease_expires_at is not null leased from outbox where id = $1", [h.job.job_id])).rows[0], { status: "pending", tokened: false, leased: false })
+  assert.equal((await h.db.query("select metadata ? 'release_lease_token' held from start_packages where id = $1", [h.pkg.id])).rows[0].held, false)
+  await memberWrites()
+  assert.deepEqual((await h.db.query("select (select count(*)::int from start_release_steps) steps, (select count(*)::int from start_package_gates) gates, (select count(*)::int from start_packages) packages")).rows[0], stateBefore)
+
+  await h.db.exec(cutoverScript("reactivate.sql", "reactivate"))
+  assert.equal(await fences(), enabledBefore)
+  await assert.rejects(memberWrites(), refused)
+  await h.db.exec(cutoverScript("rollback.sql", "rollback"))
+  await h.db.exec(cutoverScript("reactivate.sql", "reactivate"))
+  assert.equal(await fences(), enabledBefore, "rolling back and forward twice leaves the same fences")
 })

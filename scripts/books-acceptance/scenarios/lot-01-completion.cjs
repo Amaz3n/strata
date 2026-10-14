@@ -23,12 +23,8 @@ async function freshHome(kit, key, lotIndex, buyer) {
     const { reservation } = await seed.reserveLot(kit, org, { prospect, lotId: target.id, depositCents: 1000000, receivedOn: "2026-06-06" })
     const sale = await seed.signAgreement(kit, org, { reservationId: reservation.id, config: seed.configuration(org, { lotId: target.id, plan: org.plans[0], swing: lotIndex % 2 ? "left" : "right", skus: ["ST-GAR"] }) })
     // The owner assigns the house's superintendent, which scopes them to it as the field project role.
-    // DEFECT: setProjectSuperintendent reads `roles` with the caller's client and `roles` is service-role only,
-    // so the assignment fails with "Field project role is missing." (see owner-assigns-the-houses-superintendent).
-    // The scoping row the function would write is written directly so the other cases can act as the superintendent.
-    const assignment = await refuse(kit, org.owner, () => app("starts").setProjectSuperintendent(sale.projectId, org.team.superintendent.userId))
-    if (assignment !== "allowed") kit.sql(`update public.projects set superintendent_id=${kit.q(org.team.superintendent.userId)} where id=${kit.q(sale.projectId)};
-insert into public.project_members(org_id,project_id,user_id,role_id,status) select ${kit.q(org.orgId)},${kit.q(sale.projectId)},${kit.q(org.team.superintendent.userId)},id,'active' from public.roles where key='field' and scope='project' on conflict (project_id,user_id) do nothing;`)
+    const assigned = await kit.as(org.owner, () => app("starts").setProjectSuperintendent(sale.projectId, org.team.superintendent.userId))
+    const assignment = assigned.assigned ? "allowed" : "refused"
     const closingId = kit.rows(`select id from public.closings where project_id=${kit.q(sale.projectId)} and status<>'cancelled'`)[0].id
     return { org, projectId: sale.projectId, closingId, assignment }
   })())

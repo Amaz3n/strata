@@ -104,13 +104,13 @@
       }
     },
     "start-gates-and-roles": {
-      "derivation": "A package opened for lot 1 has the plan-pinned gate passed (the agreement pinned it), the selections gate passed (the buyer's design group is already locked) financing passed (the agreement holds no milestone before start) and entitlements passed (the community has no open condition); the release produces the budget and PO set, so those two wait. The starts coordinator records the county's approval of the home's building permit (its plot plan attached, the submission snapshotting the lot's plan, the issued permit and approved plans on file), so the permit and plot-plan gates clear on their own; the price book resolves in a dry run, and the coordinator gives final approval: the package is ready. A superintendent and a sales consultant cannot release (start.release).",
+      "derivation": "A package opened for lot 1 has the plan-pinned gate passed (the agreement pinned it), the selections gate passed (the buyer's design group is already locked) financing pending (the sold home's financed agreement holds the lender's loan approval, and nothing is attached yet) and entitlements passed (the community has no open condition); the release produces the budget and PO set, so those two wait. The starts coordinator records the county's approval of the home's building permit (its plot plan attached, the submission snapshotting the lot's plan, the issued permit and approved plans on file), so the permit and plot-plan gates clear on their own; the closing coordinator records the loan application and the loan approval with its document on the home, so the financing gate clears on its own; the price book resolves in a dry run, and the coordinator gives final approval: the package is ready. A superintendent and a sales consultant cannot release (start.release).",
       "inputs": {},
       "expected": {
         "opened": {
           "budget": "pending",
           "final_approval": "pending",
-          "financing": "passed",
+          "financing": "pending",
           "permit": "pending",
           "plan_pinned": "passed",
           "plot_plan": "pending",
@@ -1070,7 +1070,7 @@
       }
     },
     "owner-assigns-the-houses-superintendent": {
-      "derivation": "EP09-05 #0 (responsibility). The playbook has the owner/manager assign the house's superintendent; setProjectSuperintendent is the owner's action (project.manage) and scopes the superintendent to that one house as the field project role, which is what lets them write punch there under RLS. The call must succeed for a member with project.manage. A check, not a harness shortcut: it stays failing while the service cannot read the roles catalog with the caller's own client.",
+      "derivation": "EP09-05 #0 (responsibility). The playbook has the owner/manager assign the house's superintendent; setProjectSuperintendent is the owner's action (project.manage) and scopes the superintendent to that one house as the field project role, which is what lets them write punch there under RLS. The call must succeed for a member with project.manage. The assignment is one transaction (EP07-03), so the scoping row can never be left behind by a failed write.",
       "inputs": {
         "role": "org_owner assigns org_superintendent"
       },
@@ -1784,6 +1784,7 @@
           "status": "assigned",
           "hasHome": true
         },
+        "detachWhilePackageLive": "refused: cancel the start package first",
         "detachBeforeStart": "allowed",
         "afterDetachBeforeStart": {
           "status": "assigned",
@@ -5008,6 +5009,188 @@
           "lot": "PK-14",
           "plan": "Nimbus Alder",
           "askingPriceCents": 41000000
+        }
+      }
+    },
+    "plan-pdf-copies-privately-in-real-storage": {
+      "requires": "storage",
+      "derivation": "EP07-14 #0 on real storage. A plan-set PDF is staged in the acceptance bucket and published onto a home through publishPlanDrawingCopy (reserve, conditional server-side CopyObject, atomic publication). The copy sits at the reserved path with the source's exact bytes and size; the file row is private, generated, category plans, with both version etags recorded; an unsigned read is refused (400), the member's signed link reads it with a private Cache-Control, another organisation cannot get a link, the source object is unchanged, and the manifest is published.",
+      "inputs": {
+        "sizeBytes": 65536
+      },
+      "expected": {
+        "queued": true,
+        "rows": {
+          "files": 1,
+          "drawingSets": 1,
+          "revisions": 1,
+          "processorJobs": 1
+        },
+        "destination": {
+          "atReservedPath": true,
+          "bytesExact": true,
+          "sizeBytes": true
+        },
+        "file": {
+          "visibility": "private",
+          "source": "generated",
+          "category": "plans",
+          "evidenceRecorded": true
+        },
+        "unsignedRead": 400,
+        "memberSignedRead": {
+          "status": 200,
+          "privateCache": true
+        },
+        "anotherOrganisationsLink": "refused",
+        "sourceUntouched": true,
+        "manifest": "published"
+      }
+    },
+    "plan-pdf-copy-memory-and-latency-are-bounded": {
+      "requires": "storage",
+      "derivation": "EP07-14 #0 (bounded application memory). A 200 MB PDF is uploaded as it is generated and published onto a home with live memory (heap plus buffers after a collection) sampled throughout; the server-side copy streams no bytes through the process, so growth stays inside the budget. The copy has the source's size and exact SHA-256; one of each publication row exists. Latency is recorded in the evidence, not asserted. Needs NODE_OPTIONS=--expose-gc.",
+      "inputs": {
+        "documentMb": 200,
+        "memoryBudgetMb": 64
+      },
+      "expected": {
+        "documentMb": 200,
+        "growthWithinBudget": true,
+        "copyHolds": {
+          "sizeBytes": true,
+          "bytesExact": true
+        },
+        "published": {
+          "files": 1,
+          "drawingSets": 1,
+          "revisions": 1,
+          "processorJobs": 1
+        }
+      }
+    },
+    "changed-source-cannot-succeed-and-recovers": {
+      "requires": "storage",
+      "derivation": "EP07-14 #1 and EP07-15/16. A copy is reserved against the source's size and version; the source object is then replaced by different bytes of the same length. The copy is refused by the If-Match condition: nothing is published, the manifest stays reserved and no object exists at the reserved path. Aged a day, the reservation is swept (cleanly); the manifest is gone and the path empty; a new attempt reserves the new version, gets a new path, and publishes the new bytes.",
+      "inputs": {
+        "change": "same length, different bytes"
+      },
+      "expected": {
+        "copyOfAChangedSource": "refused: source version changed",
+        "afterRefusal": {
+          "rows": {
+            "files": 0,
+            "drawingSets": 0,
+            "revisions": 0,
+            "processorJobs": 0
+          },
+          "manifest": "reserved",
+          "destination": "absent"
+        },
+        "sweptTheReservation": true,
+        "afterSweep": {
+          "manifest": null,
+          "destination": "absent"
+        },
+        "secondAttempt": {
+          "queued": true,
+          "rows": {
+            "files": 1,
+            "drawingSets": 1,
+            "revisions": 1,
+            "processorJobs": 1
+          },
+          "newPath": true,
+          "reservedTheNewVersion": true,
+          "bytesAreTheNewVersion": true
+        }
+      }
+    },
+    "lost-copy-response-retries-to-the-same-receipt": {
+      "requires": "storage",
+      "derivation": "EP07-15 #1. A copy is reserved and performed for real, and its response is lost (nothing is published). Retrying publishPlanDrawingCopy copies again onto the same reserved path with identical bytes and publishes one file, set, revision and processor job; replaying the publication returns the same set and the same receipt and adds nothing.",
+      "inputs": {
+        "sizeBytes": 65536
+      },
+      "expected": {
+        "afterLostResponse": {
+          "rows": {
+            "files": 0,
+            "drawingSets": 0,
+            "revisions": 0,
+            "processorJobs": 0
+          },
+          "manifest": "reserved",
+          "destination": "present"
+        },
+        "retry": {
+          "queued": true,
+          "rows": {
+            "files": 1,
+            "drawingSets": 1,
+            "revisions": 1,
+            "processorJobs": 1
+          },
+          "samePath": true,
+          "bytesExact": true,
+          "manifest": "published"
+        },
+        "replay": {
+          "sameSet": true,
+          "sameReceipt": true,
+          "rows": {
+            "files": 1,
+            "drawingSets": 1,
+            "revisions": 1,
+            "processorJobs": 1
+          }
+        }
+      }
+    },
+    "release-end-to-end-copies-the-real-plan-set": {
+      "requires": "storage",
+      "derivation": "EP07-14/15 end to end. A spec home on a plan whose plan-set PDF is a real object is released through the starts pipeline with no harness settling: the drawings step completes with the published copy; the home has one file, set, revision and processor job, the manifest is published, the copy's bytes equal the source's, and the abandoned-copy sweep leaves the published copy readable.",
+      "inputs": {
+        "homes": 1
+      },
+      "expected": {
+        "package": "released",
+        "drawingsStep": "completed",
+        "rows": {
+          "files": 1,
+          "drawingSets": 1,
+          "revisions": 1,
+          "processorJobs": 1
+        },
+        "manifest": "published",
+        "copyBytesExact": true,
+        "sweepLeavesTheCopy": {
+          "claimedThisHome": true,
+          "objectAfter": "present"
+        }
+      }
+    },
+    "abandoned-copy-sweep-deletes-only-the-reserved-object": {
+      "requires": "storage",
+      "derivation": "EP07-16 #1 on real storage. Three homes: one reserved a copy that landed and was never published (aged two days); one published its copy; one carries a forged manifest naming a Books archive object that is not a plan copy. One sweep: the abandoned copy's object is deleted and its manifest cleared; the published copy's object is still readable and its manifest published; the forged manifest is skipped, its object stays and its manifest is untouched. No sweep failure.",
+      "inputs": {
+        "homes": 3
+      },
+      "expected": {
+        "sweptCleanly": true,
+        "abandonedCopy": {
+          "objectBefore": "present",
+          "objectAfter": "absent",
+          "manifest": null
+        },
+        "publishedCopy": {
+          "objectAfter": "present",
+          "bytes": true,
+          "manifest": "published"
+        },
+        "forgedManifest": {
+          "objectAfter": "present",
+          "manifest": "reserved"
         }
       }
     }

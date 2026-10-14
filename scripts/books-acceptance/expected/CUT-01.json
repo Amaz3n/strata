@@ -1,0 +1,240 @@
+{
+  "scenario": "CUT-01",
+  "reviewedFrom": "the Starts cutover (EP07-18, docs/reference/starts-cutover.md); EP07-10 (claim protocol), EP07-15/16 (server-owned drawing copy state) and the decisions of 2026-10-14: one transactional copy path, one short window behind a schema-readiness guard, rehearsed on the acceptance stack; only the human applies anything in production.",
+  "subcases": {
+    "new-code-on-old-schema-is-inert": {
+      "derivation": "Policy: code deployed ahead of its schema must be inert, not failing. The schema marker (starts_cutover_ready, the last function of the EP07 set) is renamed away and the API schema cache reloaded, which is what a database that has not been migrated looks like to the worker. A pending starts job exists. One run of the worker returns processed 0, failed 0, remaining 0, notCutOver true; the job stays pending with no retry and no claim. The marker is renamed back; the next run is an ordinary run and is not marked notCutOver.",
+      "inputs": {
+        "probe": "claim_starts_jobs(0) and starts_cutover_ready()"
+      },
+      "expected": {
+        "markerMissing": "starts_cutover_ready",
+        "inertRun": {
+          "processed": 0,
+          "failed": 0,
+          "remaining": 0,
+          "notCutOver": true
+        },
+        "jobUntouched": {
+          "status": "pending",
+          "retryCount": 0,
+          "tokened": false
+        },
+        "afterMarker": {
+          "missing": null,
+          "notCutOver": false
+        }
+      }
+    },
+    "legacy-tokenless-claims-drain-after-activation": {
+      "derivation": "Policy: a starts job the previous worker claimed carries no claim token, so the token reaper cannot see it; after activation it goes back to the queue once it has been quiet for three minutes, is claimed again under a token, and finishes once. Three spec homes each have their package notices queued (gate waived, package ready). The previous worker held all of them: two homes' jobs went quiet four minutes ago, the third's one minute ago. Nothing has been sent. After one run: the four-minute jobs are completed once (no retry, no token, no lease) and their homes are notified; the one-minute job is still the previous worker's, and its home is not notified. A second run sends nothing more. Once the third's claim is four minutes old it drains the same way. The generic claimer still hands out another job type (claim_jobs for a probe type) without a token.",
+      "inputs": {
+        "homes": 3,
+        "agedMinutes": 4,
+        "freshMinutes": 1
+      },
+      "expected": {
+        "beforeActivation": {
+          "jobsHeld": true,
+          "notificationsSent": "none"
+        },
+        "firstRun": {
+          "agedJobsFinishedOnce": true,
+          "agedHomesNotified": true,
+          "freshClaimLeftAlone": true,
+          "freshHomeNotified": 0
+        },
+        "aSecondRunSendsNothingMore": true,
+        "freshClaimOnceAged": {
+          "finishedOnce": true,
+          "notified": true
+        },
+        "claimJobsForOtherTypes": {
+          "claimed": 1,
+          "status": "processing",
+          "tokened": false
+        }
+      }
+    },
+    "legacy-release-lease-is-honoured": {
+      "derivation": "Policy: the package lease is held in the name of a claim token and is stale after five minutes. A release the previous worker claimed and went quiet on (four minutes) holds the package lease. Home 1: the lease was renewed one minute ago. The new worker drains and reclaims the release, cannot acquire the lease, and defers: the job is pending again with no retry burned, the package is still releasing, no purchase order exists. Once the holder is six minutes stale the deferred release is due again and is taken over: the package is released, with one start.released event, one purchase order set (generated once and unchanged by a further run), and the job completed with no retry. Home 2: the lease was already six minutes stale, so the first run takes it over and finishes the same way.",
+      "inputs": {
+        "freshLeaseMinutes": 1,
+        "staleLeaseMinutes": 6,
+        "homes": 2
+      },
+      "expected": {
+        "freshLease": {
+          "deferred": {
+            "status": "pending",
+            "retryCount": 0,
+            "package": "releasing",
+            "orders": 0
+          },
+          "thenTakenOver": {
+            "status": "completed",
+            "retryCount": 0,
+            "package": "released",
+            "releasedEvents": 1,
+            "orders": "generated",
+            "ordersStableOnRerun": true
+          }
+        },
+        "staleLease": {
+          "takenOverAtOnce": true,
+          "final": {
+            "status": "completed",
+            "retryCount": 0,
+            "package": "released",
+            "releasedEvents": 1,
+            "orders": "generated",
+            "ordersStableOnRerun": true
+          }
+        }
+      }
+    },
+    "members-cannot-forge-copy-state-or-drawing-jobs": {
+      "derivation": "Policy: the drawing copy manifest, the eight drawing job types and every claim or lease column are server-owned. A sales agent, through the real PostgREST API with their own session, tries: writing a reserved manifest naming a Books archive object onto a home; inserting, rewriting, completing and deleting a drawing tile job; setting a drawing lease ten years out and a drawing claim token on an ordinary job. Every one is refused (the manifest with 'Drawing copy state is server-owned', the jobs with 'Drawing jobs require authorized server writers'); an ordinary write to an ordinary job (its priority) still works; afterwards the home has no manifest, the tile job is untouched and pending, and the ordinary job holds no claim.",
+      "inputs": {
+        "actor": "sales agent"
+      },
+      "expected": {
+        "manifest": "refused",
+        "drawingJobInsert": "refused",
+        "drawingJobRewrite": "refused",
+        "drawingJobComplete": "refused",
+        "drawingJobDelete": "refused",
+        "leaseOnAnyRow": "refused",
+        "claimOnAnyRow": "refused",
+        "ordinaryJobWrite": "allowed",
+        "afterwards": {
+          "manifestAbsent": true,
+          "drawingJob": {
+            "status": "pending",
+            "payloadUntouched": true
+          },
+          "ordinaryRow": {
+            "status": "pending",
+            "unclaimed": true
+          }
+        }
+      }
+    },
+    "activation-smoke": {
+      "derivation": "Policy: once the forward set is on and the fences are active, the claim and forgery proofs of LOT-01 hold and a home still releases. Delegates to LOT-01 claim-tokens-enforce-the-current-lease and browser-clients-cannot-forge-starts-ownership (both pass), then releases a spec home through the tokened worker: released, one start.released event, purchase orders generated.",
+      "inputs": {
+        "delegates": [
+          "claim-tokens-enforce-the-current-lease",
+          "browser-clients-cannot-forge-starts-ownership"
+        ]
+      },
+      "expected": {
+        "delegated": {
+          "claim-tokens-enforce-the-current-lease": true,
+          "browser-clients-cannot-forge-starts-ownership": true
+        },
+        "release": "released",
+        "releasedEvents": 1,
+        "orders": "generated"
+      }
+    },
+    "rollback-restores-the-old-path-and-reactivation-is-clean": {
+      "derivation": "Policy: rollback relaxes only the starts and drawing fences, loses no data, and is reversible. Before: the starts and drawing fences are enabled; the starts coordinator's own client cannot update a start package or insert a drawing job. A tokened starts job and a tokened drawing job are in flight. scripts/starts-cutover/rollback.sql runs: no starts or drawing fence is enabled, both in-flight jobs are pending with no token and no lease, and the start packages, release steps and gates are byte-identical (hash per table). The previous path now works: the coordinator's client updates the package and inserts a drawing job. scripts/starts-cutover/reactivate.sql runs: the same number of fences are enabled as before, the same two writes are refused, and a spec home releases through the worker.",
+      "inputs": {
+        "scripts": [
+          "rollback.sql",
+          "reactivate.sql",
+          "verify.sql"
+        ]
+      },
+      "expected": {
+        "beforeRollback": {
+          "fences": "enabled",
+          "memberWrites": {
+            "startPackage": "refused",
+            "drawingJob": "refused"
+          }
+        },
+        "afterRollback": {
+          "fencesEnabled": 0,
+          "fencesDisabled": true,
+          "inFlightStartsJob": {
+            "status": "pending",
+            "tokened": false,
+            "leased": false
+          },
+          "inFlightDrawingJob": {
+            "status": "pending",
+            "tokened": false,
+            "leased": false
+          },
+          "startsDataUntouched": true,
+          "previousPathWrites": {
+            "startPackage": "allowed",
+            "drawingJob": "allowed"
+          }
+        },
+        "afterReactivation": {
+          "sameFences": true,
+          "memberWrites": {
+            "startPackage": "refused",
+            "drawingJob": "refused"
+          },
+          "release": "released"
+        }
+      }
+    },
+    "race-legacy-and-token-claim-same-job": {
+      "derivation": "Policy: during the window a previous worker (claim_jobs, no token) and the new worker (claim_starts_jobs, token) can look at the same queue. Both lock the row (FOR UPDATE SKIP LOCKED), so exactly one gets a single pending starts job. Three rounds on the settled queue, two real database sessions released together by a barrier: one winner each round, the job is processing, neither session claimed more than one.",
+      "inputs": {
+        "rounds": 3
+      },
+      "expected": {
+        "rounds": [
+          {
+            "winners": 1,
+            "processing": true,
+            "claimedOnce": true
+          },
+          {
+            "winners": 1,
+            "processing": true,
+            "claimedOnce": true
+          },
+          {
+            "winners": 1,
+            "processing": true,
+            "claimedOnce": true
+          }
+        ]
+      }
+    },
+    "race-two-pipeline-runs-process-each-job-once": {
+      "derivation": "Policy: the cron period equals the function's maxDuration, so two runs can overlap. Two spec homes have releases queued; two runs of the starts pipeline start together. Each home is released exactly once: package released, one start.released event, one purchase order set (unchanged by a further run), one trade notice per company, and no release job left processing.",
+      "inputs": {
+        "homes": 2,
+        "runs": 2
+      },
+      "expected": {
+        "homes": [
+          {
+            "package": "released",
+            "releasedEvents": 1,
+            "orders": "generated"
+          },
+          {
+            "package": "released",
+            "releasedEvents": 1,
+            "orders": "generated"
+          }
+        ],
+        "ordersStableOnRerun": true,
+        "duplicateNotices": [
+          0,
+          0
+        ],
+        "stuckReleases": 0
+      }
+    }
+  }
+}

@@ -249,7 +249,9 @@ export async function prioritizeSheetProcessingAction(
       .maybeSingle()
     if (!version) return
 
-    await supabase
+    // Drawing jobs are server-owned (members cannot write them), and the sheet
+    // above was read through the member's own client, so it is theirs to open.
+    await createServiceSupabaseClient()
       .from("outbox")
       .update({ priority: 100, run_at: new Date().toISOString() })
       .eq("org_id", orgId)
@@ -447,7 +449,8 @@ export async function retryProcessingAction(setId: string): Promise<ActionResult
 
       // Queue processing again (worker path supports R2-backed uploads)
       try {
-        const { error: jobError } = await supabase
+        // Drawing jobs are server-owned; the permission and the set were checked above.
+        const { error: jobError } = await createServiceSupabaseClient()
           .from("outbox")
           .insert({
             org_id: orgId,

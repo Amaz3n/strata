@@ -75,7 +75,7 @@ async function desk(t, { role = "org_starts_coordinator", status = "ready" } = {
   const db = await full.createDatabase(t)
   const { orgId, userId: actorId } = await full.seedMember(db, { role })
   const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
-  const home = await full.insert(db, "projects", { org_id: orgId, name: "Lot 7" })
+  const home = await full.insert(db, "projects", { org_id: orgId, name: "Lot 7", superintendent_id: actorId })
   const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "assigned" })
   const pkg = await full.insert(db, "start_packages", { org_id: orgId, lot_id: lot.id, community_id: community.id, project_id: home.id, status })
   const h = { db, orgId, actorId, community, home, lot, pkg }
@@ -134,10 +134,18 @@ test("an over-slot release changes nothing until the coordinator confirms it", a
   const h = await desk(t)
   const slot = await h.queue({ p_slot_target: 0 })
 
-  assert.deepEqual(slot, { queued: false, target_week: "2026-11-02", target: 0, already_targeted: 0 })
+  assert.deepEqual(slot, {
+    queued: false, target_week: "2026-11-02", target: 0, already_targeted: 0, limit: "community",
+    exceeded: [{ limit: "community", target: 0, already_targeted: 0 }],
+  })
   assert.equal((await h.row("select status from start_packages where id = $1")).status, "ready")
   assert.equal((await h.row("select count(*)::int as n from outbox where payload->>'start_package_id' = $1", [h.pkg.id])).n, 0)
-  assert.equal((await h.queue({ p_slot_target: 0, p_confirm_over_slot: true })).over_slot, true)
+  await assert.rejects(h.queue({ p_slot_target: 0, p_confirm_over_slot: true }), /needs a reason/)
+  await assert.rejects(h.queue({ p_slot_target: 0, p_confirm_over_slot: true, p_over_reason: "too short" }), /needs a reason/)
+  assert.equal((await h.queue({ p_slot_target: 0, p_confirm_over_slot: true, p_over_reason: "Model home must start before the open house" })).over_slot, true)
+  const event = await h.row("select payload from events where entity_id = $1 and event_type = 'start.released_over_slot'")
+  assert.equal(event.payload.over_reason, "Model home must start before the open house")
+  assert.deepEqual(event.payload.exceeded, [{ limit: "community", target: 0, already_targeted: 0 }])
 })
 
 test("release controls refuse an actor without release authority, and the browser outright", async (t) => {
@@ -250,7 +258,10 @@ test("a release whose lot left its home publishes nothing at all", async (t) => 
   const job = await h.claim()
   await h.db.query("update start_release_steps set status = 'completed', completed_at = now() where start_package_id = $1", [h.pkg.id])
   const other = await full.insert(h.db, "projects", { org_id: h.orgId, name: "Lot 8" })
+  // The lot guard refuses this while the package is live; the case is a lot moved by a path that bypassed it.
+  await h.db.exec("alter table lots disable trigger lots_active_start_guard")
   await h.db.query("update lots set project_id = $1 where id = $2", [other.id, h.lot.id])
+  await h.db.exec("alter table lots enable trigger lots_active_start_guard")
 
   await assert.rejects(
     full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: job.claim_token, p_event_id: full.uuid() }),
@@ -778,4 +789,318 @@ test("gate definitions change only with start.release, and the permit and plot-p
   await assert.rejects(w.db.query("delete from start_gate_definitions where key = 'permit'"), /cannot be removed/)
   await asMember(w.coordinator.userId, "update start_gate_definitions set label = 'Building permit issued' where org_id = $1 and key = 'permit'", [w.orgId])
   assert.equal((await w.row("select label, is_active from start_gate_definitions where key = 'permit'")).is_active, true)
+})
+
+// ---------------------------------------------------------------------------
+// EP07-02 / EP07-03: throughput targets, superintendent capacity and the
+// data-API lockdown, against the full migration chain.
+// ---------------------------------------------------------------------------
+
+/** One more ready house in the org, in its own community, with a superintendent. */
+async function readyHome(h, { community, superintendentId = h.actorId, number }) {
+  const home = await full.insert(h.db, "projects", { org_id: h.orgId, name: `Lot ${number}`, superintendent_id: superintendentId })
+  const lot = await full.insert(h.db, "lots", { org_id: h.orgId, community_id: community.id, project_id: home.id, lot_number: String(number), status: "assigned" })
+  const pkg = await full.insert(h.db, "start_packages", { org_id: h.orgId, lot_id: lot.id, community_id: community.id, project_id: home.id, status: "ready" })
+  return { home, lot, pkg }
+}
+
+const queueFor = (h, pkg, overrides = {}) => full.rpc(h.db, "queue_start_release", {
+  p_org_id: h.orgId, p_package_id: pkg.id, p_actor_id: h.actorId, p_scheduled_start_date: "2026-11-02", p_target_week: "2026-11-02",
+  p_slot_target: 9, p_confirm_over_slot: false, ...overrides,
+})
+
+test("a house releases only with an active member as its superintendent", async (t) => {
+  const h = await desk(t)
+  await h.db.query("update projects set superintendent_id = null where id = $1", [h.home.id])
+  await assert.rejects(h.queue(), /Assign a superintendent/)
+
+  const super1 = await full.seedMember(h.db, { orgId: h.orgId, role: "org_superintendent" })
+  await h.db.query("update projects set superintendent_id = $1 where id = $2", [super1.userId, h.home.id])
+  await h.db.query("update memberships set status = 'suspended' where user_id = $1", [super1.userId])
+  await assert.rejects(h.queue(), /no longer an active member/)
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "ready")
+
+  await h.db.query("update memberships set status = 'active' where user_id = $1", [super1.userId])
+  assert.equal((await h.queue()).queued, true)
+})
+
+test("division and org throughput targets hold across communities, and over target needs a reason", async (t) => {
+  const h = await desk(t)
+  const division = await full.insert(h.db, "divisions", { org_id: h.orgId, name: "Gulf Coast" })
+  await h.db.query("update communities set division_id = $1 where id = $2", [division.id, h.community.id])
+  const second = await full.insert(h.db, "communities", { org_id: h.orgId, name: "Bayshore", division_id: division.id })
+  const elsewhere = await full.insert(h.db, "communities", { org_id: h.orgId, name: "Inland" })
+  const b = await readyHome(h, { community: second, number: 8 })
+  const c = await readyHome(h, { community: elsewhere, number: 9 })
+  await full.insert(h.db, "release_throughput_targets", { org_id: h.orgId, division_id: division.id, week_start: "2026-11-02", target_starts: 1 })
+  await full.insert(h.db, "release_throughput_targets", { org_id: h.orgId, division_id: null, week_start: "2026-11-02", target_starts: 2 })
+
+  assert.equal((await h.queue({ p_slot_target: 9 })).queued, true)
+  const blocked = await queueFor(h, b.pkg)
+  assert.equal(blocked.queued, false)
+  assert.deepEqual(blocked.exceeded, [{ limit: "division", target: 1, already_targeted: 1 }])
+  assert.equal(blocked.limit, "division")
+  assert.equal((await h.row("select status from start_packages where id = $1", [b.pkg.id])).status, "ready")
+
+  await assert.rejects(queueFor(h, b.pkg, { p_confirm_over_slot: true }), /needs a reason/)
+  const confirmed = await queueFor(h, b.pkg, { p_confirm_over_slot: true, p_over_reason: "Buyer's rate lock expires in three weeks" })
+  assert.equal(confirmed.over_slot, true)
+
+  const orgBlocked = await queueFor(h, c.pkg)
+  assert.deepEqual(orgBlocked.exceeded, [{ limit: "org", target: 2, already_targeted: 2 }])
+  const audit = await h.row("select after_data from audit_log where entity_id = $1 and source = 'starts.release_queued'", [b.pkg.id])
+  assert.equal(audit.after_data.over_reason, "Buyer's rate lock expires in three weeks")
+
+  // A different week has no target and is not counted.
+  assert.equal((await queueFor(h, c.pkg, { p_target_week: "2026-11-09", p_scheduled_start_date: "2026-11-09" })).queued, true)
+})
+
+test("assigning a superintendent is one transaction that enforces the limit and keeps the scoping row in step", async (t) => {
+  const h = await desk(t)
+  await h.db.query("update projects set superintendent_id = null where id = $1", [h.home.id])
+  const person = await full.seedMember(h.db, { orgId: h.orgId, role: "org_superintendent" })
+  const successor = await full.seedMember(h.db, { orgId: h.orgId, role: "org_superintendent" })
+  await full.insert(h.db, "superintendent_capacity", { org_id: h.orgId, user_id: null, warn_houses: 1, max_houses: 2 })
+  for (const number of [11, 12]) await full.insert(h.db, "projects", { org_id: h.orgId, name: `Lot ${number}`, superintendent_id: person.userId })
+  const assign = (overrides = {}) => full.rpc(h.db, "assign_project_superintendent", {
+    p_org_id: h.orgId, p_project_id: h.home.id, p_user_id: person.userId, p_actor_id: h.actorId, ...overrides,
+  })
+  const scoped = async (userId) => (await h.db.query("select count(*)::int as n from project_members where project_id = $1 and user_id = $2", [h.home.id, userId])).rows[0].n
+
+  const refused = await assign()
+  assert.deepEqual(refused, { assigned: false, requires_override: true, can_override: true, houses: 2, warn: 1, limit: 2 })
+  assert.equal((await h.row("select superintendent_id from projects where id = $1", [h.home.id])).superintendent_id, null)
+  await assert.rejects(assign({ p_over_reason: "short" }), /reason of at least 10/)
+  const viewer = await full.seedMember(h.db, { orgId: h.orgId, role: "org_viewer" })
+  await assert.rejects(assign({ p_actor_id: viewer.userId, p_over_reason: "Covering a medical leave this month" }), /project.manage or start.write/)
+
+  // A person with their own row is judged by it, not by the org default.
+  await full.insert(h.db, "superintendent_capacity", { org_id: h.orgId, user_id: person.userId, warn_houses: 5, max_houses: 6 })
+  const placed = await assign()
+  assert.equal(placed.assigned, true)
+  assert.equal(placed.houses, 3)
+  assert.equal(await scoped(person.userId), 1)
+
+  // Past their own limit the same call goes through only with a reason, and says so in the audit.
+  await h.db.query("update superintendent_capacity set warn_houses = 2, max_houses = 3 where user_id = $1", [person.userId])
+  await h.db.query("update projects set superintendent_id = null where id = $1", [h.home.id])
+  const second = await full.insert(h.db, "projects", { org_id: h.orgId, name: "Lot 13", superintendent_id: null })
+  await full.rpc(h.db, "assign_project_superintendent", { p_org_id: h.orgId, p_project_id: second.id, p_user_id: person.userId, p_actor_id: h.actorId })
+  const over = await assign({ p_over_reason: "Covering a medical leave this month" })
+  assert.equal(over.over_capacity, true)
+  const audit = await h.row("select after_data from audit_log where entity_id = $1 and source = 'starts.superintendent_assigned' order by created_at desc limit 1", [h.home.id])
+  assert.equal(audit.after_data.reason, "Covering a medical leave this month")
+
+  // Handing the house to someone else swaps the scoping row; clearing removes it.
+  const handed = await assign({ p_user_id: successor.userId })
+  assert.equal(handed.previous_user_id, person.userId)
+  assert.equal(await scoped(person.userId), 0)
+  assert.equal(await scoped(successor.userId), 1)
+  await assign({ p_user_id: null })
+  assert.equal(await scoped(successor.userId), 0)
+  assert.equal((await h.row("select superintendent_id from projects where id = $1", [h.home.id])).superintendent_id, null)
+  assert.equal((await h.row("select count(*)::int as n from events where entity_id = $1 and event_type = 'project.superintendent_changed'", [h.home.id])).n, 4)
+})
+
+test("a member cannot write slot targets or assign a superintendent through the data API", async (t) => {
+  const h = await desk(t)
+  const viewer = await full.seedMember(h.db, { orgId: h.orgId, role: "org_viewer" })
+  const slot = await full.insert(h.db, "community_release_slots", { org_id: h.orgId, community_id: h.community.id, week_start: "2026-11-02", target_starts: 2 })
+  const asViewer = (sql, params = []) => full.asRole(h.db, { role: "authenticated", userId: viewer.userId }, (tx) => tx.query(sql, params))
+
+  await assert.rejects(asViewer("update community_release_slots set target_starts = 99 where id = $1", [slot.id]), /permission denied/)
+  await assert.rejects(asViewer("insert into community_release_slots (org_id, community_id, week_start, target_starts) values ($1, $2, '2026-11-09', 99)", [h.orgId, h.community.id]), /permission denied/)
+  assert.equal((await asViewer("select target_starts from community_release_slots where id = $1", [slot.id])).rows[0].target_starts, 2)
+  await assert.rejects(asViewer("update projects set superintendent_id = $1 where id = $2", [viewer.userId, h.home.id]), /assigned through the house's assignment/)
+  await assert.rejects(asViewer("insert into release_throughput_targets (org_id, week_start, target_starts) values ($1, '2026-11-02', 0)", [h.orgId]), /permission denied/)
+  await assert.rejects(asViewer("insert into superintendent_capacity (org_id, warn_houses, max_houses) values ($1, 1, 1)", [h.orgId]), /permission denied/)
+  assert.equal((await h.row("select superintendent_id from projects where id = $1", [h.home.id])).superintendent_id, h.actorId)
+})
+
+// ---------------------------------------------------------------------------
+// EP07-04 / -11 / -12 / -13 / -17: resumable release steps, a lot under a live
+// package, gates that reach packages already open, cancel idempotency and the
+// selection fence, against the full migration chain.
+// ---------------------------------------------------------------------------
+
+/** A claimed release; `running(step)` leaves a step running, as the worker does while a handler works. */
+async function claimedRelease(h) {
+  await h.queue()
+  const job = await h.claim()
+  const running = async (step) => {
+    await h.db.query("update start_release_steps set status = 'running' where start_package_id = $1 and step_key = $2", [h.pkg.id, step])
+    const settle = (overrides = {}) => full.rpc(h.db, "settle_release_step", {
+      p_org_id: h.orgId, p_job_id: job.job_id, p_token: job.claim_token, p_step: step, p_detail: {}, p_expected_count: null, p_version_id: null, ...overrides,
+    })
+    const state = () => h.row("select status, error, detail from start_release_steps where start_package_id = $1 and step_key = $2", [h.pkg.id, step])
+    return { settle, state }
+  }
+  return { job, running }
+}
+
+test("a release step settles only with the receipt it promised, and the two ledgers close together", async (t) => {
+  const h = await desk(t)
+  const { running } = await claimedRelease(h)
+  const { settle, state } = await running("schedule")
+  const version = full.uuid()
+  const item = (n) => full.insert(h.db, "schedule_items", { org_id: h.orgId, project_id: h.home.id, name: `Task ${n}`, metadata: { release_key: `schedule:${n}` } })
+
+  await assert.rejects(settle(), /cannot complete without a receipt/)
+  await item(0)
+  await assert.rejects(settle({ p_expected_count: 2, p_version_id: version }), /receipt is incomplete: 1 of 2 built/)
+  assert.equal((await state()).status, "running")
+  assert.equal((await h.row("select metadata->'plan_instantiation' as ledger from projects where id = $1", [h.home.id])).ledger, null, "a refused step marks nothing on the project")
+
+  await item(1)
+  const settled = await settle({ p_expected_count: 2, p_version_id: version, p_detail: { item_ids: ["a", "b"] } })
+  assert.deepEqual(settled.receipt, { expected: 2, found: 2 })
+  const closed = await state()
+  assert.equal(closed.status, "completed")
+  assert.deepEqual(closed.detail.receipt, { expected: 2, found: 2 })
+  const ledger = (await h.row("select metadata->'plan_instantiation' as ledger from projects where id = $1", [h.home.id])).ledger
+  assert.equal(ledger.produced.schedule.version_id, version)
+  assert.equal(ledger.seq, 1)
+  await assert.rejects(settle({ p_expected_count: 2, p_version_id: version }), /is not running/)
+})
+
+test("a step that built nothing records zero, a skipped step needs no count, and a stale claim settles nothing", async (t) => {
+  const h = await desk(t)
+  const { job, running } = await claimedRelease(h)
+  const checklists = await running("checklists")
+  assert.deepEqual((await checklists.settle({ p_expected_count: 0 })).receipt, { expected: 0, found: 0 })
+  assert.deepEqual((await checklists.state()).detail.receipt, { expected: 0, found: 0 })
+
+  const budget = await running("budget")
+  const header = await full.insert(h.db, "budgets", { org_id: h.orgId, project_id: h.home.id, version: 1, status: "approved", total_cents: 100, metadata: { release_key: "budget" } })
+  await full.insert(h.db, "budget_lines", { org_id: h.orgId, budget_id: header.id, description: "Slab", amount_cents: 60, sort_order: 0 })
+  await assert.rejects(budget.settle({ p_expected_count: 1 }), /lines total 60 of 100/)
+  await full.insert(h.db, "budget_lines", { org_id: h.orgId, budget_id: header.id, description: "Framing", amount_cents: 40, sort_order: 1 })
+  await assert.rejects(budget.settle({ p_expected_count: 3 }), /2 of 3 built/)
+  await budget.settle({ p_expected_count: 2 })
+
+  const schedule = await running("schedule")
+  const skipped = await schedule.settle({ p_detail: { already_instantiated: true }, p_version_id: full.uuid() })
+  assert.equal(skipped.receipt, null)
+  assert.notEqual((await h.row("select (metadata->'plan_instantiation'->'produced') ? 'schedule' as marked from projects where id = $1", [h.home.id])).marked, true, "a skip is not a mark")
+
+  const drawings = await running("drawings")
+  await assert.rejects(full.rpc(h.db, "settle_release_step", {
+    p_org_id: h.orgId, p_job_id: job.job_id, p_token: full.uuid(), p_step: "drawings", p_detail: {}, p_expected_count: null, p_version_id: null,
+  }), /worker lease lost/)
+  await h.db.query("update start_packages set status = 'ready' where id = $1", [h.pkg.id])
+  await assert.rejects(drawings.settle(), /no longer releasing/)
+  await assert.rejects(full.rpc(h.db, "settle_release_step", { p_org_id: h.orgId, p_job_id: 1, p_token: full.uuid(), p_step: "drawings", p_detail: {}, p_expected_count: null, p_version_id: null },
+    { role: "authenticated", userId: h.actorId }), /permission denied/)
+})
+
+test("a lot cannot leave its home while a package is live, a stranded package can still be cancelled, and a second cancel changes nothing", async (t) => {
+  const h = await desk(t, { status: "open" })
+  const detach = "update lots set project_id = null, status = 'assigned' where id = $1"
+  await assert.rejects(h.db.query(detach, [h.lot.id]), /Cancel the start package before detaching/)
+  const elsewhere = await full.insert(h.db, "communities", { org_id: h.orgId, name: "Inland" })
+  await assert.rejects(h.db.query("update lots set community_id = $1 where id = $2", [elsewhere.id, h.lot.id]), /Cancel the start package before detaching or moving/)
+  assert.equal((await h.row("select project_id from lots where id = $1", [h.lot.id])).project_id, h.home.id)
+
+  // A lot detached before the guard existed: nothing could reach its package.
+  await h.db.exec("alter table lots disable trigger lots_active_start_guard")
+  await h.db.query(detach, [h.lot.id])
+  await h.db.exec("alter table lots enable trigger lots_active_start_guard")
+  const cancel = (reason, actor = h.actorId) => full.rpc(h.db, "cancel_start_package", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: actor, p_reason: reason })
+  await assert.rejects(full.rpc(h.db, "update_start_package", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: h.actorId, p_patch: { notes: "x" }, p_purchasing_enabled: false }), /ancestry differs/)
+  const outsider = await full.seedMember(h.db, { role: "org_viewer" })
+  await assert.rejects(cancel("Stranded when the lot was detached", outsider.userId), /no longer an active organization member/)
+
+  assert.equal((await cancel("Stranded when the lot was detached")).already_cancelled, false)
+  const again = await cancel("A different reason that must not replace the first")
+  assert.deepEqual(again, { status: "cancelled", already_cancelled: true })
+  const row = await h.row("select status, metadata->>'cancellation_reason' as reason from start_packages where id = $1")
+  assert.deepEqual(row, { status: "cancelled", reason: "Stranded when the lot was detached" })
+  assert.equal((await h.audit("starts.package_cancelled")).n, 1)
+  assert.equal((await h.row("select count(*)::int as n from events where entity_id = $1 and event_type = 'start_package.cancelled'")).n, 1)
+
+  // The lot takes its home back: a null-to-home link is not a detach.
+  await h.db.query("update lots set project_id = $1 where id = $2", [h.home.id, h.lot.id])
+  await h.db.query("update start_packages set status = 'releasing' where id = $1", [h.pkg.id])
+  await assert.rejects(h.db.query(detach, [h.lot.id]), /Cancel the start package/)
+})
+
+test("cancelling a releasing package is still refused, with or without its lot", async (t) => {
+  const h = await desk(t)
+  await h.queue()
+  await assert.rejects(full.rpc(h.db, "cancel_start_package", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: h.actorId, p_reason: "Cancelling mid release" }),
+    /releasing or released start package cannot be cancelled/)
+})
+
+const saveGate = (h, overrides = {}) => full.rpc(h.db, "save_start_gate_definition", {
+  p_org_id: h.orgId, p_actor_id: h.actorId, p_id: null, p_key: "soil_report", p_label: "Soil report", p_description: null, p_check_kind: "manual",
+  p_auto_source: null, p_requires_attestation_permission: null, p_applies_when: "always", p_sort_order: 10, p_is_active: true,
+  p_purchasing_communities: [], ...overrides,
+})
+
+test("a new gate definition reaches every open and ready package, and a ready package that gains one returns to open", async (t) => {
+  const h = await desk(t, { status: "ready" })
+  const approval = await full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key: "final_approval", label: "Final approval", check_kind: "manual", applies_when: "always" })
+  await full.insert(h.db, "start_package_gates", { org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: approval.id, status: "passed", passed_via: "attested" })
+  const lotB = await full.insert(h.db, "lots", { org_id: h.orgId, community_id: h.community.id, lot_number: "8", status: "developed" })
+  const open = await full.insert(h.db, "start_packages", { org_id: h.orgId, lot_id: lotB.id, community_id: h.community.id, status: "open" })
+  const lotC = await full.insert(h.db, "lots", { org_id: h.orgId, community_id: h.community.id, lot_number: "9", status: "developed" })
+  const closed = await full.insert(h.db, "start_packages", { org_id: h.orgId, lot_id: lotC.id, community_id: h.community.id, status: "cancelled" })
+  const gatesOf = async (id) => (await h.db.query("select d.key, g.status from start_package_gates g join start_gate_definitions d on d.id = g.gate_definition_id where g.start_package_id = $1 order by d.key", [id])).rows
+
+  const saved = await saveGate(h)
+  assert.equal(saved.packages_updated, 2)
+  assert.deepEqual(await gatesOf(open.id), [{ key: "final_approval", status: "pending" }, { key: "soil_report", status: "pending" }], "the package also gains every active gate it was missing")
+  assert.deepEqual(await gatesOf(h.pkg.id), [{ key: "final_approval", status: "passed" }, { key: "soil_report", status: "pending" }])
+  assert.deepEqual(await gatesOf(closed.id), [], "a cancelled package is left alone")
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "open", "a ready package with an unanswered gate is open")
+  assert.equal((await h.audit("starts.gates_added")).n, 1)
+  assert.equal((await h.row("select count(*)::int as n from audit_log where entity_id = $1 and source = 'starts.gate_definition_saved'", [saved.definition.id])).n, 1)
+
+  assert.equal((await saveGate(h, { p_id: saved.definition.id, p_label: "Soil report on file" })).packages_updated, 0, "saving again adds nothing twice")
+  const inactive = await saveGate(h, { p_key: "survey", p_label: "Survey", p_is_active: false })
+  assert.equal(inactive.packages_updated, 0)
+  assert.equal((await gatesOf(open.id)).some((gate) => gate.key === "survey"), false, "an inactive definition reaches no package")
+  const financed = await saveGate(h, { p_key: "loan_docs", p_label: "Loan documents", p_applies_when: "financed_only" })
+  assert.equal(financed.packages_updated, 2)
+  assert.deepEqual((await gatesOf(open.id)).find((gate) => gate.key === "loan_docs"), { key: "loan_docs", status: "not_applicable" }, "a cash buyer's package does not answer a financing gate")
+
+  await h.db.query("update start_packages set status = 'releasing' where id = $1", [open.id])
+  const reactivated = await saveGate(h, { p_id: inactive.definition.id, p_key: "survey", p_label: "Survey", p_is_active: true })
+  assert.equal(reactivated.packages_updated, 1, "a reactivated gate reaches open and ready packages, not one already releasing")
+  assert.equal((await gatesOf(open.id)).some((gate) => gate.key === "survey"), false)
+})
+
+test("saving a gate definition needs start.release held now, and a definition written around it is healed into the package", async (t) => {
+  const h = await desk(t, { status: "open" })
+  const sales = await full.seedMember(h.db, { orgId: h.orgId, role: "org_sales_agent" })
+  await assert.rejects(saveGate(h, { p_actor_id: sales.userId }), /no longer has start.release permission/)
+  const stranger = await full.seedMember(h.db, { role: "org_owner" })
+  await assert.rejects(saveGate(h, { p_actor_id: stranger.userId }), /no longer an active organization member/)
+  await full.asRole(h.db, { role: "authenticated", userId: h.actorId }, (tx) => assert.rejects(tx.query("select public.save_start_gate_definition($1,$2,null,'x_y','X','',  'manual',null,null,'always',1,true,'{}')", [h.orgId, h.actorId]), /permission denied/))
+  assert.equal((await h.row("select count(*)::int as n from start_gate_definitions where org_id = $1", [h.orgId])).n, 0)
+
+  await h.db.query("update memberships set status = 'suspended' where user_id = $1", [h.actorId])
+  await assert.rejects(saveGate(h), /no longer an active organization member/)
+  await h.db.query("update memberships set status = 'active' where user_id = $1", [h.actorId])
+
+  // Written straight to the table (a path that does not fan out): the desk's refresh adds the missing gate.
+  await full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key: "survey", label: "Survey", check_kind: "manual", applies_when: "always" })
+  const healed = await full.rpc(h.db, "heal_start_package_gates", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: h.actorId, p_purchasing_enabled: false })
+  assert.equal(healed.added, 1)
+  assert.equal((await full.rpc(h.db, "heal_start_package_gates", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: h.actorId, p_purchasing_enabled: false })).added, 0)
+})
+
+test("selection groups, choices and exceptions are written under the release claim like any generated artifact", async (t) => {
+  const h = await desk(t)
+  await h.queue()
+  const job = await h.claim()
+  const other = await full.insert(h.db, "projects", { org_id: h.orgId, name: "Lot 99" })
+  const group = (projectId) => `insert into project_selection_groups (org_id, project_id, group_id) values ('${h.orgId}', '${projectId}', gen_random_uuid())`
+
+  await h.asWorker({ job_id: 999999, claim_token: full.uuid() })
+  await assert.rejects(h.db.exec(group(h.home.id)), /worker lease lost/)
+  await h.asWorker(job)
+  await assert.rejects(h.db.exec(group(other.id)), /worker project mismatch/)
+  await assert.rejects(h.db.exec(`insert into selection_exceptions (org_id, project_id, selection_id, option_id, reason) values ('${h.orgId}', '${other.id}', gen_random_uuid(), gen_random_uuid(), 'lead_time_exceeded')`), /worker project mismatch/)
+  await h.asWorker(null)
 })

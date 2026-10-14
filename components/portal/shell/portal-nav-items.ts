@@ -13,6 +13,7 @@ export type PortalNavIcon =
   | "punch"
   | "warranty"
   | "warranty-visits"
+  | "schedule"
   | "contracts"
   | "purchase-orders"
   | "invoices"
@@ -64,7 +65,7 @@ export interface SubPortalNavCounts {
  * than a job, so everything that reads one project's data is dropped — those
  * routes fail their gate, and offering a tab that 404s is worse than not
  * offering it. Compliance, prequalification, payouts and warranty appointments
- * all belong to the vendor, not the job, and stay.
+ * all belong to the vendor, not the job, and stay, as does the vendor's own schedule.
  */
 export function buildSubPortalNav({
   permissions,
@@ -112,6 +113,13 @@ export function buildSubPortalNav({
       count: counts.punch,
       primary: true,
     })
+  }
+
+  // The trade's own assigned work, answered here. A vendor-account link carries
+  // no job and no schedule permission by design; the work it lists is the
+  // vendor's own, so it stays.
+  if (!hasProject || permissions.can_view_schedule) {
+    items.push({ segment: "schedule", label: "My schedule", shortLabel: "Schedule", icon: "schedule" })
   }
 
   if (counts.warranty > 0) {

@@ -3,7 +3,8 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { cn } from "@/lib/utils"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
-import type { ScheduleBulkItemUpdate } from "./types"
+import type { ScheduleReschedulePreview } from "@/lib/services/schedule"
+import type { ScheduleBulkApproval, ScheduleBulkItemUpdate, ScheduleDateMove } from "./types"
 import { ScheduleProvider } from "./schedule-context"
 import { ScheduleToolbar } from "./schedule-toolbar"
 import { ScheduleItemSheet } from "./schedule-item-sheet"
@@ -105,7 +106,8 @@ interface ScheduleViewProps {
   assignments?: ScheduleAssignment[]
   baselines?: ScheduleBaseline[]
   onItemUpdate?: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
-  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
+  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[], approval?: ScheduleBulkApproval) => Promise<ScheduleItem[]>
+  onPreviewReschedule?: (moves: ScheduleDateMove[]) => Promise<ScheduleReschedulePreview>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
   onDependencyCreate?: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<ScheduleDependency>
@@ -123,6 +125,7 @@ export function ScheduleView({
   baselines,
   onItemUpdate,
   onItemsBulkUpdate,
+  onPreviewReschedule,
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
@@ -138,6 +141,7 @@ export function ScheduleView({
       initialBaselines={baselines}
       onItemUpdate={onItemUpdate}
       onItemsBulkUpdate={onItemsBulkUpdate}
+      onPreviewReschedule={onPreviewReschedule}
       onItemCreate={onItemCreate}
       onItemDelete={onItemDelete}
       onDependencyCreate={onDependencyCreate}

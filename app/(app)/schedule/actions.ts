@@ -7,11 +7,10 @@ import {
   listScheduleItems,
   updateScheduleItem,
   deleteScheduleItem,
-  bulkUpdateScheduleItems,
   listDependenciesByProject,
   applyScheduleChangeOrderImpact,
 } from "@/lib/services/schedule"
-import { scheduleItemInputSchema, scheduleItemUpdateSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
+import { scheduleItemInputSchema, scheduleItemUpdateSchema } from "@/lib/validation/schedule"
 import type { ScheduleDependency } from "@/lib/types"
 
 import { z } from "zod"
@@ -55,15 +54,6 @@ export async function updateScheduleItemAction(itemId: string, input: unknown) {
       revalidatePath("/schedule")
       revalidatePath("/")
       return item
-  })
-}
-
-export async function bulkUpdateScheduleItemsAction(input: unknown) {
-  return run(async () => {
-      const parsed = scheduleBulkUpdateSchema.parse(input)
-      const items = await bulkUpdateScheduleItems(parsed)
-      revalidatePath("/schedule")
-      return items
   })
 }
 

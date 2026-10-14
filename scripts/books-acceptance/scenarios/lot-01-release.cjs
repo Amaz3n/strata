@@ -92,6 +92,7 @@ async function freshHome(kit, { pdf = false } = {}) {
   const plan = pdf ? await pdfPlan(kit) : org.plans[1]
   seed.pinSpecPlan(kit, { lot: row, plan })
   const gates = await seed.clearStartGates(kit, org, { lotId: row.id, spec: true })
+  await seed.assignSuperintendent(kit, org, { projectId: gates.projectId })
   return { org, orgId: org.orgId, lot: row, lotId: row.id, projectId: gates.projectId, packageId: gates.packageId, planVersionId: plan.versionId, planFileId: plan.fileId ?? null, actorId: org.team.starts.userId }
 }
 
@@ -101,7 +102,7 @@ function settleSteps(kit, home, keys = STEPS) {
 
 /** The coordinator queues the release; one job of this org is claimed the way claim_starts_jobs claims it. */
 async function claimRelease(kit, home, { settle = false, leaseMinutes = 20 } = {}) {
-  const queued = await kit.as(home.org.team.starts, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), confirmOverSlot: true }))
+  const queued = await kit.as(home.org.team.starts, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" }))
   if (!queued.released) throw Error(`The release was not queued: ${JSON.stringify(queued)}`)
   const out = kit.sql(`update public.outbox set status='processing', updated_at=clock_timestamp(), start_claim_token=gen_random_uuid(), start_job_lease_expires_at=clock_timestamp()+interval '${leaseMinutes} minutes'
     where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} and status='pending' returning id::text||'|'||start_claim_token::text`)
@@ -468,8 +469,8 @@ async function abandonedCopyCleanup(kit, spec, check) {
   out.abandonedPathCannotBeReserved = refusedAs(attempt(kit, script(null, rpc.reserve(kit, home, evidence))), /Existing drawing copy attempt differs/)
   out.rowsAfterRefusals = rowsFor(kit, home, reserved.storage_path)
   // 3. The deleting step is outside the database: when it fails (no storage here) the manifest is NOT cleared.
-  let sweep
-  try { await planInstantiation().cleanupAbandonedPlanDrawingCopies(); sweep = "cleared" } catch (error) { sweep = /Missing R2 credentials/.test(error.message) ? "refused: object not deleted" : error.message }
+  const swept = await planInstantiation().cleanupAbandonedPlanDrawingCopies()
+  const sweep = swept.failed.some((failure) => /Missing R2 credentials/.test(failure.message)) ? "refused: object not deleted" : swept.cleared > 0 ? "cleared" : "nothing to clear"
   out.sweepWhenDeleteFails = { outcome: sweep, manifest: manifestStatus(kit, home.projectId) }
   // 4. Once the object is gone the manifest is cleared, audited, and the path is free for a new reservation.
   out.cleared = clearAbandoned(kit, home, reserved.attempt_id)
@@ -616,7 +617,7 @@ async function realRelease(kit, home) {
   const proposal = await kit.as(home.org.owner, () => policies.proposeRevenuePolicy({ projectId: home.projectId, contractId: null, method: "closing", billingMethod: "purchase_agreement", effectiveFrom: "2026-06-01", rationale: "A spec home earns its revenue at closing." }))
   await kit.as(home.org.reviewer, () => policies.reviewRevenuePolicy({ policyId: proposal.policyId, approve: true }))
   await kit.as(home.org.owner, () => app("books/inventory").enableProjectInventory({ projectId: home.projectId, effectiveOn: "2026-06-01", evidenceUrl: `${seed.EVIDENCE}/ownership` }))
-  const queued = await kit.as(home.org.team.starts, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), confirmOverSlot: true }))
+  const queued = await kit.as(home.org.team.starts, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" }))
   if (!queued.released) throw Error(`The release was not queued: ${JSON.stringify(queued)}`)
   // The plan-set PDF copy needs file storage; that one step is settled directly and nothing else about the release is.
   kit.sql(`update public.start_release_steps set status='completed', completed_at=now(), detail='{"harness":"no file storage on the acceptance stack"}' where start_package_id=${kit.q(home.packageId)} and step_key='drawings'`)
@@ -694,7 +695,8 @@ async function publicationIsAllOrNothing(kit, spec, check) {
   out.actorLeft = { outcome: refusedAs(publish(), /no longer an active organization member/), nothingChanged: unchanged() }
   kit.sql(`update public.memberships set status='active' where org_id=${kit.q(home.orgId)} and user_id=${kit.q(home.actorId)}`)
   // 6. The lot left its home.
-  kit.sql(`update public.lots set project_id=null where id=${kit.q(home.lotId)}`)
+  // The lot guard refuses this while the package is live; the case is a lot moved by a path that bypassed it.
+  kit.sql(`alter table public.lots disable trigger lots_active_start_guard; update public.lots set project_id=null where id=${kit.q(home.lotId)}; alter table public.lots enable trigger lots_active_start_guard;`)
   out.lotLeftItsHome = { outcome: refusedAs(publish(), /lot home ancestry differs/), nothingChanged: unchanged() }
   kit.sql(`update public.lots set project_id=${kit.q(home.projectId)} where id=${kit.q(home.lotId)}`)
   // 7. All good: everything lands together.
@@ -803,6 +805,248 @@ async function raceReleaseFinalizeCancelRetry(kit, spec, check) {
   return { winners }
 }
 
+// ---------------------------------------------------------------------------
+// EP07-14, -15, -16 on real storage (`--storage-env`, the acceptance bucket): the conditional server-side
+// copy, the lost-response retry, the changed source, the real sweep delete and a release that copies for
+// real. Each reports BLOCKED without storage; the no-storage subcase above stays as the fallback proof.
+
+const storageLayer = () => require("../../../lib/storage/files-storage")
+const sha256 = (bytes) => require("node:crypto").createHash("sha256").update(bytes).digest("hex")
+const objectKey = (storagePath) => `project-files/${storagePath.replace(/^\//, "")}`
+const objectUrl = (storagePath) => `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${process.env.R2_BUCKET}/${objectKey(storagePath).split("/").map(encodeURIComponent).join("/")}`
+const rawStorage = () => {
+  const { S3Client } = require("@aws-sdk/client-s3")
+  return new S3Client({ region: "auto", endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } })
+}
+const pdfBytes = (label, size = 65536) => Buffer.concat([Buffer.from(`%PDF-1.4 ${label} ${randomUUID()}\n`), Buffer.alloc(size, 0x20)]).subarray(0, size)
+const attemptOf = (kit, home) => manifestOf(kit, home.projectId).drawing_copy_attempt
+const sourceRow = (kit, home) => { const row = kit.rows(`select id, storage_path, mime_type, size_bytes, file_name from public.files where id=${kit.q(home.planFileId)}`)[0]; return { ...row, size_bytes: Number(row.size_bytes) } }
+const publishFor = (kit, home) => kit.service(() => copyService().publishPlanDrawingCopy({ orgId: home.orgId, projectId: home.projectId, planVersionId: home.planVersionId, actorId: home.actorId, source: sourceRow(kit, home) }))
+const readObject = (kit, orgId, storagePath) => kit.service(async () => Buffer.from(await storageLayer().downloadFilesObject({ supabase: null, orgId, path: storagePath })))
+const objectState = async (kit, orgId, storagePath) => {
+  try { await kit.service(() => storageLayer().headFilesObject({ orgId, path: storagePath })); return "present" } catch (error) {
+    return storageLayer().isMissingFilesObject(error) ? "absent" : error.message
+  }
+}
+/** The plan version's library PDF as a real object holding `bytes`, with the file record saying so. */
+async function stagePlanPdf(kit, home, bytes) {
+  const source = sourceRow(kit, home)
+  await kit.service(() => storageLayer().uploadFilesObject({ supabase: null, orgId: home.orgId, path: source.storage_path, bytes, contentType: "application/pdf", upsert: true }))
+  kit.sql(`update public.files set size_bytes=${bytes.length}, checksum=${kit.q(sha256(bytes))} where id=${kit.q(home.planFileId)}`)
+}
+/** What a worker records at reservation: the source's own size and version. */
+const headEvidence = async (kit, home) => {
+  const head = await kit.service(() => storageLayer().headFilesCopySource({ orgId: home.orgId, path: sourceRow(kit, home).storage_path }))
+  return { size_bytes: head.size, source_etag: head.sourceEtag }
+}
+const reserveFor = async (kit, home) => parsed(svc(kit, script(null, rpc.reserve(kit, home, await headEvidence(kit, home)))))
+const refusalOf = async (work) => { try { await work(); return "allowed" } catch (error) { return String(error.message) } }
+const publishedRows = (kit, home) => ({
+  files: count(kit, `public.files where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)} and source='generated'`),
+  drawingSets: count(kit, `public.drawing_sets where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)}`),
+  revisions: count(kit, `public.drawing_revisions where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)}`),
+  processorJobs: count(kit, `public.outbox where org_id=${kit.q(home.orgId)} and job_type='process_drawing_set' and payload->>'projectId'=${kit.q(home.projectId)}`),
+})
+const noPublishedRows = { files: 0, drawingSets: 0, revisions: 0, processorJobs: 0 }
+const onePublishedRow = { files: 1, drawingSets: 1, revisions: 1, processorJobs: 1 }
+const ageManifest = (kit, home) => kit.sql(`update public.projects set metadata=jsonb_set(metadata,'{plan_instantiation,drawing_copy_attempt,reserved_at}',to_jsonb(to_char(now()-interval '2 days','YYYY-MM-DD"T"HH24:MI:SS"Z"'))) where id=${kit.q(home.projectId)}`)
+const sweepNow = () => planInstantiation().cleanupAbandonedPlanDrawingCopies(200)
+
+async function planPdfCopiesPrivatelyInRealStorage(kit, spec, check) {
+  const { equal } = lot()
+  const home = await benchHome(kit)
+  const bytes = pdfBytes("plan set")
+  await stagePlanPdf(kit, home, bytes)
+  const source = sourceRow(kit, home)
+  const sourceBefore = await kit.service(() => storageLayer().headFilesCopySource({ orgId: home.orgId, path: source.storage_path }))
+  const result = await publishFor(kit, home)
+  shelveProcessorJobs(kit, home)
+  const manifest = attemptOf(kit, home)
+  const file = kit.rows(`select storage_path, visibility, source, category, size_bytes, metadata from public.files where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)} and source='generated'`)[0]
+  const copied = await readObject(kit, home.orgId, file.storage_path)
+  const signed = await kit.service(() => storageLayer().createFilesDownloadUrl({ supabase: null, orgId: home.orgId, path: file.storage_path, expiresIn: 60 }))
+  const member = await fetch(signed.downloadUrl)
+  const unsigned = await fetch(objectUrl(file.storage_path))
+  const otherOrg = await refusalOf(() => kit.service(() => storageLayer().createFilesDownloadUrl({ supabase: null, orgId: randomUUID(), path: file.storage_path, expiresIn: 60 })))
+  const sourceAfter = await kit.service(() => storageLayer().headFilesCopySource({ orgId: home.orgId, path: source.storage_path }))
+  equal(check, "the plan PDF is copied server-side onto the home's reserved path, byte for byte, private to its organisation, with the source untouched and the evidence recorded", spec.expected, {
+    queued: result.queued,
+    rows: publishedRows(kit, home),
+    destination: { atReservedPath: file.storage_path === manifest.storage_path, bytesExact: sha256(copied) === sha256(bytes), sizeBytes: Number(file.size_bytes) === bytes.length },
+    file: { visibility: file.visibility, source: file.source, category: file.category, evidenceRecorded: Boolean(file.metadata.source_storage_etag) && Boolean(file.metadata.storage_etag) },
+    unsignedRead: unsigned.status,
+    memberSignedRead: { status: member.status, privateCache: /private/.test(member.headers.get("cache-control") ?? "") && !/public/.test(member.headers.get("cache-control") ?? "") },
+    anotherOrganisationsLink: /belong|organization|path/i.test(otherOrg) ? "refused" : otherOrg,
+    sourceUntouched: sourceAfter.sourceEtag === sourceBefore.sourceEtag && sourceAfter.size === sourceBefore.size,
+    manifest: manifest.status,
+  })
+  return { orgId: home.orgId, projectId: home.projectId }
+}
+
+async function planPdfCopyMemoryAndLatencyAreBounded(kit, spec, check) {
+  const { equal } = lot()
+  if (typeof global.gc !== "function") throw Error("Run with NODE_OPTIONS=--expose-gc to measure copy memory")
+  const input = spec.inputs
+  const home = await benchHome(kit)
+  const source = sourceRow(kit, home)
+  // Deterministic bytes, generated as they upload, so the run never holds the PDF either.
+  const chunks = Math.ceil((input.documentMb * 1024 * 1024) / 32)
+  const digest = require("node:crypto").createHash("sha256")
+  let index = 0
+  await kit.service(() => storageLayer().uploadFilesStream({ orgId: home.orgId, path: source.storage_path, contentType: "application/pdf", stream: new ReadableStream({
+    pull(controller) {
+      if (index >= chunks) return controller.close()
+      const batch = []
+      for (let n = 0; n < 2048 && index < chunks; n += 1, index += 1) batch.push(require("node:crypto").createHash("sha256").update(`plan-${index}`).digest())
+      const bytes = Buffer.concat(batch); digest.update(bytes); controller.enqueue(bytes)
+    } }) }))
+  const size = chunks * 32, sourceSha = digest.digest("hex")
+  kit.sql(`update public.files set size_bytes=${size}, checksum=${kit.q(sourceSha)} where id=${kit.q(home.planFileId)}`)
+  const live = () => { global.gc(); const usage = process.memoryUsage(); return usage.heapUsed + usage.arrayBuffers }
+  const baseline = live()
+  let peak = baseline
+  const sampler = setInterval(() => { peak = Math.max(peak, live()) }, 100)
+  const started = Date.now()
+  try { await publishFor(kit, home) } finally { clearInterval(sampler) }
+  const latencyMs = Date.now() - started
+  shelveProcessorJobs(kit, home)
+  const file = kit.rows(`select storage_path from public.files where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)} and source='generated'`)[0]
+  const hashOf = async (storagePath) => {
+    const url = (await kit.service(() => storageLayer().createFilesDownloadUrl({ supabase: null, orgId: home.orgId, path: storagePath, expiresIn: 300 }))).downloadUrl
+    const hash = require("node:crypto").createHash("sha256")
+    for await (const chunk of (await fetch(url)).body) hash.update(chunk)
+    return hash.digest("hex")
+  }
+  const head = await kit.service(() => storageLayer().headFilesObject({ orgId: home.orgId, path: file.storage_path }))
+  equal(check, "copying a PDF larger than the memory budget keeps the process inside it, finishes, and leaves an exact private copy", spec.expected, {
+    documentMb: input.documentMb,
+    growthWithinBudget: (peak - baseline) / (1024 * 1024) < input.memoryBudgetMb,
+    copyHolds: { sizeBytes: Number(head.ContentLength) === size, bytesExact: (await hashOf(file.storage_path)) === sourceSha },
+    published: publishedRows(kit, home),
+  })
+  // The bucket keeps nothing this large between runs.
+  await kit.service(() => storageLayer().deleteFilesObjects({ supabase: null, orgId: home.orgId, paths: [source.storage_path, file.storage_path] }))
+  return { orgId: home.orgId, peakGrowthMb: Math.round((peak - baseline) / (1024 * 1024)), latencyMs }
+}
+
+async function changedSourceCannotSucceedAndRecovers(kit, spec, check) {
+  const { equal } = lot()
+  const home = await benchHome(kit)
+  const original = pdfBytes("plan set")
+  await stagePlanPdf(kit, home, original)
+  const reserved = await reserveFor(kit, home)
+  // The source is swapped for different bytes of the same length after the reservation (the bypass STORE-01 uses).
+  const { PutObjectCommand } = require("@aws-sdk/client-s3")
+  const swapped = Buffer.from(original); swapped.write(`%PDF-1.4 SWAPPED ${randomUUID()}`)
+  const source = sourceRow(kit, home)
+  await rawStorage().send(new PutObjectCommand({ Bucket: process.env.R2_BUCKET, Key: objectKey(source.storage_path), Body: swapped, ContentType: "application/pdf" }))
+  const refused = await refusalOf(() => publishFor(kit, home))
+  const afterRefusal = { rows: publishedRows(kit, home), manifest: attemptOf(kit, home)?.status, destination: await objectState(kit, home.orgId, reserved.storage_path) }
+  // The reservation is abandoned and swept; the next attempt reserves the new version and succeeds.
+  ageManifest(kit, home)
+  const swept = await sweepNow()
+  const afterSweep = { manifest: attemptOf(kit, home)?.status ?? null, destination: await objectState(kit, home.orgId, reserved.storage_path) }
+  const second = await publishFor(kit, home)
+  shelveProcessorJobs(kit, home)
+  const secondAttempt = attemptOf(kit, home)
+  const newEtag = (await headEvidence(kit, home)).source_etag
+  const file = kit.rows(`select storage_path from public.files where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)} and source='generated'`)[0]
+  equal(check, "a source replaced after reservation cannot be copied: nothing is published and no copy is referenced; the abandoned reservation is swept and a new attempt copies the new version", spec.expected, {
+    copyOfAChangedSource: /no longer matches the reserved copy/.test(refused) ? "refused: source version changed" : refused,
+    afterRefusal,
+    sweptTheReservation: swept.claimed >= 1 && swept.failed.length === 0,
+    afterSweep,
+    secondAttempt: { queued: second.queued, rows: publishedRows(kit, home), newPath: secondAttempt.storage_path !== reserved.storage_path, reservedTheNewVersion: secondAttempt.source_etag === newEtag, bytesAreTheNewVersion: sha256(await readObject(kit, home.orgId, file.storage_path)) === sha256(swapped) },
+  })
+  return { orgId: home.orgId, projectId: home.projectId }
+}
+
+async function lostCopyResponseRetriesToTheSameReceipt(kit, spec, check) {
+  const { equal } = lot()
+  const home = await benchHome(kit)
+  const bytes = pdfBytes("plan set")
+  await stagePlanPdf(kit, home, bytes)
+  const reserved = await reserveFor(kit, home)
+  const source = sourceRow(kit, home)
+  // The copy lands and its response is lost: the worker never learns the destination's version.
+  await kit.service(() => storageLayer().copyFilesObject({ orgId: home.orgId, sourcePath: source.storage_path, destinationPath: reserved.storage_path,
+    expectedSize: reserved.size_bytes, expectedSourceEtag: reserved.source_etag, contentType: "application/pdf" }))
+  const afterLostResponse = { rows: publishedRows(kit, home), manifest: attemptOf(kit, home).status, destination: await objectState(kit, home.orgId, reserved.storage_path) }
+  const retry = await publishFor(kit, home)
+  shelveProcessorJobs(kit, home)
+  const first = attemptOf(kit, home)
+  const replay = await publishFor(kit, home)
+  const replayed = attemptOf(kit, home)
+  const file = kit.rows(`select storage_path from public.files where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)} and source='generated'`)[0]
+  equal(check, "a copy whose response was lost is retried onto the same reserved path and publishes one receipt, once; replaying the publication returns that receipt", spec.expected, {
+    afterLostResponse,
+    retry: { queued: retry.queued, rows: publishedRows(kit, home), samePath: file.storage_path === reserved.storage_path, bytesExact: sha256(await readObject(kit, home.orgId, file.storage_path)) === sha256(bytes), manifest: first.status },
+    replay: { sameSet: replay.drawing_set_id === retry.drawing_set_id, sameReceipt: JSON.stringify(replayed.receipt) === JSON.stringify(first.receipt), rows: publishedRows(kit, home) },
+  })
+  return { orgId: home.orgId, projectId: home.projectId }
+}
+
+async function releaseEndToEndCopiesTheRealPlanSet(kit, spec, check) {
+  const { equal } = lot()
+  const home = await freshHome(kit, { pdf: true })
+  const bytes = pdfBytes("plan set")
+  await stagePlanPdf(kit, home, bytes)
+  const queued = await kit.as(home.org.team.starts, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" }))
+  if (!queued.released) throw Error(`The release was not queued: ${JSON.stringify(queued)}`)
+  let status
+  for (let pass = 0; pass < 6; pass += 1) {
+    await runPipeline(kit)
+    status = kit.rows(`select status from public.start_packages where id=${kit.q(home.packageId)}`)[0].status
+    if (["released", "attention"].includes(status)) break
+  }
+  const step = kit.rows(`select status, detail from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key='drawings'`)[0]
+  const manifest = attemptOf(kit, home)
+  const file = kit.rows(`select storage_path from public.files where org_id=${kit.q(home.orgId)} and project_id=${kit.q(home.projectId)} and source='generated'`)[0]
+  const swept = await sweepNow()
+  equal(check, "a release copies the plan set for real through the worker: the drawings step completes with the published copy, the home has one file, set, revision and processor job, and the sweep leaves the published copy alone", spec.expected, {
+    package: status,
+    drawingsStep: step.status,
+    rows: publishedRows(kit, home),
+    manifest: manifest?.status,
+    copyBytesExact: Boolean(file) && sha256(await readObject(kit, home.orgId, file.storage_path)) === sha256(bytes),
+    sweepLeavesTheCopy: { claimedThisHome: manifest ? swept.claimed >= 0 : false, objectAfter: file ? await objectState(kit, home.orgId, file.storage_path) : "no file" },
+  })
+  return { orgId: home.orgId, projectId: home.projectId }
+}
+
+async function abandonedCopySweepDeletesOnlyTheReservedObject(kit, spec, check) {
+  const { equal } = lot()
+  // 1. A reserved copy that landed and was never published: its object goes, then its manifest.
+  const lost = await benchHome(kit)
+  await stagePlanPdf(kit, lost, pdfBytes("plan set"))
+  const lostReservation = await reserveFor(kit, lost)
+  await kit.service(() => storageLayer().copyFilesObject({ orgId: lost.orgId, sourcePath: sourceRow(kit, lost).storage_path, destinationPath: lostReservation.storage_path,
+    expectedSize: lostReservation.size_bytes, expectedSourceEtag: lostReservation.source_etag, contentType: "application/pdf" }))
+  const landed = await objectState(kit, lost.orgId, lostReservation.storage_path)
+  ageManifest(kit, lost)
+  // 2. A published copy: its object stays, readable.
+  const kept = await benchHome(kit)
+  await stagePlanPdf(kit, kept, pdfBytes("plan set"))
+  await publishFor(kit, kept)
+  shelveProcessorJobs(kit, kept)
+  const keptFile = kit.rows(`select storage_path from public.files where org_id=${kit.q(kept.orgId)} and project_id=${kit.q(kept.projectId)} and source='generated'`)[0]
+  // 3. A forged manifest naming an object that is not a plan copy: never handed to the delete.
+  const forgedHome = await benchHome(kit)
+  const forgedPath = `${forgedHome.orgId}/books-exports/close-archive-${randomUUID().slice(0, 8)}.json.gz`
+  await kit.service(() => storageLayer().uploadFilesObject({ supabase: null, orgId: forgedHome.orgId, path: forgedPath, bytes: Buffer.from("books archive"), contentType: "application/gzip", upsert: false }))
+  kit.sql(`update public.projects set metadata=coalesce(metadata,'{}'::jsonb)||jsonb_build_object('plan_instantiation',jsonb_build_object('seq',1,'drawing_copy_attempt',jsonb_build_object('status','reserved','reserved_at',to_char(now()-interval '2 days','YYYY-MM-DD"T"HH24:MI:SS"Z"'),'attempt_id',${kit.q(randomUUID())},'plan_version_id',${kit.q(forgedHome.planVersionId)},'source_file_id',${kit.q(forgedHome.planFileId)},'actor_id',${kit.q(forgedHome.actorId)},'storage_path',${kit.q(forgedPath)},'size_bytes',13,'source_etag','forged'))) where id=${kit.q(forgedHome.projectId)}`)
+  const swept = await sweepNow()
+  equal(check, "the sweep deletes the object of a reservation that was copied and never published, then clears its manifest; a published copy stays readable; a forged manifest naming another object is skipped and that object stays", spec.expected, {
+    sweptCleanly: swept.failed.length === 0,
+    abandonedCopy: { objectBefore: landed, objectAfter: await objectState(kit, lost.orgId, lostReservation.storage_path), manifest: attemptOf(kit, lost)?.status ?? null },
+    publishedCopy: { objectAfter: await objectState(kit, kept.orgId, keptFile.storage_path), bytes: (await readObject(kit, kept.orgId, keptFile.storage_path)).length > 0, manifest: attemptOf(kit, kept).status },
+    forgedManifest: { objectAfter: await objectState(kit, forgedHome.orgId, forgedPath), manifest: attemptOf(kit, forgedHome).status },
+  })
+  kit.sql(`update public.projects set metadata=metadata #- '{plan_instantiation,drawing_copy_attempt}' where id=${kit.q(forgedHome.projectId)}`)
+  await kit.service(() => storageLayer().deleteFilesObjects({ supabase: null, orgId: forgedHome.orgId, paths: [forgedPath] }))
+  return { orgId: lost.orgId }
+}
+
 const subcases = {
   "plan-pdf-copy-without-storage-reports-no-success": planPdfCopyWithoutStorage,
   "drawing-copy-reserved-then-published-atomically-and-replayed": drawingCopyReservedThenPublishedAtomically,
@@ -814,5 +1058,11 @@ const subcases = {
   "release-finalizes-package-home-lot-event-audit-and-intent-together": releaseFinalizesTogether,
   "release-publication-is-all-or-nothing": publicationIsAllOrNothing,
   "race-release-finalize-cancel-retry": raceReleaseFinalizeCancelRetry,
+  "plan-pdf-copies-privately-in-real-storage": planPdfCopiesPrivatelyInRealStorage,
+  "plan-pdf-copy-memory-and-latency-are-bounded": planPdfCopyMemoryAndLatencyAreBounded,
+  "changed-source-cannot-succeed-and-recovers": changedSourceCannotSucceedAndRecovers,
+  "lost-copy-response-retries-to-the-same-receipt": lostCopyResponseRetriesToTheSameReceipt,
+  "release-end-to-end-copies-the-real-plan-set": releaseEndToEndCopiesTheRealPlanSet,
+  "abandoned-copy-sweep-deletes-only-the-reserved-object": abandonedCopySweepDeletesOnlyTheReservedObject,
 }
 module.exports = { subcases }

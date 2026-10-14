@@ -33,7 +33,7 @@ function version(id) {
   }
 }
 
-function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, deleteFails = false } = {}) {
+function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, deleteFails = false, deleteFailsFor = null } = {}) {
   const supabase = createFakeSupabase({
     orgs: [{ id: ORG, product_tier: "production" }],
     org_settings: [{ org_id: ORG, settings: {} }],
@@ -47,7 +47,7 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, delet
     house_plan_elevations: [{ id: ELEVATION, org_id: ORG, house_plan_id: PLAN, is_active: true }],
   })
   const context = { supabase, orgId: ORG, userId: ACTOR, productTier: "production" }
-  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], copies: [], deletes: [], cleared: [] }
+  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], published: [], deletes: [], cleared: [] }
 
   stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => supabase })
   stubModule("@/lib/services/context", {
@@ -76,11 +76,13 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, delet
     instantiateSelectionGroupsForProject: async () => { calls.selectionGroups.push(1); return { groups: 1, selections: 1 } },
   })
   stubModule("@/lib/storage/files-storage", {
-    buildOrgScopedPath: (...parts) => parts.join("/"), copyFilesObject: async (params) => { calls.copies.push(params); return { size: 100, sourceEtag: "source-etag", etag: "copy-etag" } },
     deleteFilesObjects: async (params) => {
       calls.deletes.push(params.paths)
-      if (deleteFails) throw new Error("Storage unavailable")
+      if (deleteFails || calls.deletes.length - 1 === deleteFailsFor) throw new Error("Storage unavailable")
     },
+  })
+  stubModule("@/lib/services/plan-drawing-copy", {
+    publishPlanDrawingCopy: async (params) => { calls.published.push(params); return { drawing_set_id: "set-1", queued: true } },
   })
   delete require.cache[require.resolve("@/lib/services/plan-instantiation")]
   return { supabase, calls, service: require("@/lib/services/plan-instantiation") }
@@ -189,63 +191,59 @@ function drawingContext(harness) {
   harness.supabase.store.files = [{ id: 'plan-pdf', org_id: ORG, file_name: 'plan.pdf', storage_path: 'source.pdf', mime_type: 'application/pdf', size_bytes: 100, checksum: 'hash' }]
   return { supabase: harness.supabase, orgId: ORG, userId: ACTOR, project: harness.supabase.store.projects[0], version: version(VERSION_ONE), snapshot: { ...SNAPSHOT, drawing_source_file_id: 'plan-pdf' } }
 }
-test('pending drawing review is checked before copying or inserting the plan PDF', async () => {
+test('the plan drawings go through the transactional copy, and a dry run copies nothing', async () => {
   const harness = buildInstantiationHarness(), context = drawingContext(harness)
-  harness.supabase.store.drawing_revisions = [{ id: 'pending', org_id: ORG, project_id: PROJECT, status: 'processing' }]
-  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /already pending review/)
-  assert.equal(harness.calls.copies.length, 0)
-  assert.equal(harness.supabase.store.files.length, 1)
+  assert.deepEqual(await harness.service.queuePlanDrawings({ ...input(VERSION_ONE, ['drawings']), dryRun: true }, context), { drawing_set_id: 'dry-run', queued: false })
+  assert.equal(harness.calls.published.length, 0)
+  assert.deepEqual(await harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), { drawing_set_id: 'set-1', queued: true })
+  const [published] = harness.calls.published
+  assert.equal(published.planVersionId, VERSION_ONE)
+  assert.equal(published.projectId, PROJECT)
+  assert.equal(published.source.storage_path, 'source.pdf')
 })
-test('uncertain pending drawing state fails before storage writes', async () => {
-  const harness = buildInstantiationHarness(), context = drawingContext(harness), from = harness.supabase.from.bind(harness.supabase)
-  harness.supabase.from = table => {
-    const query = from(table)
-    if (table === 'drawing_revisions') query.then = resolve => Promise.resolve({ data: null, error: { message: 'database unavailable' } }).then(resolve)
-    return query
-  }
-  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /Failed to check pending drawing revisions/)
-  assert.equal(harness.calls.copies.length, 0)
-  assert.equal(harness.supabase.store.files.length, 1)
-})
-test('drawing copies persist storage version evidence and use a fresh destination on each attempt', async () => {
+test('a release with no plan-set PDF refuses to queue drawings', async () => {
   const harness = buildInstantiationHarness(), context = drawingContext(harness)
-  await harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context)
-  const first = harness.supabase.store.files.find(file => file.project_id === PROJECT)
-  assert.equal(first.size_bytes, 100)
-  assert.equal(first.metadata.source_storage_etag, 'source-etag')
-  assert.equal(first.metadata.storage_etag, 'copy-etag')
-  assert.equal(harness.calls.copies[0].sourcePath, 'source.pdf')
-  assert.equal(harness.calls.copies[0].expectedSize, 100)
-  harness.supabase.store.drawing_revisions[0].status = 'published'
-  await harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context)
-  assert.notEqual(harness.calls.copies[0].destinationPath, harness.calls.copies[1].destinationPath)
-  assert.match(harness.calls.copies[0].destinationPath, new RegExp(`${PROJECT}/plans/${VERSION_ONE}/[a-f0-9-]+/plan.pdf$`))
-})
-test('disabling transactions with a durable attempt refuses a duplicate legacy copy', async () => {
-  const harness = buildInstantiationHarness({ projectMetadata: { plan_instantiation: { drawing_copy_attempt: { status: 'reserved' } } } }), context = drawingContext(harness)
-  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /Recover the reserved drawing copy/)
-  assert.equal(harness.calls.copies.length, 0)
+  context.snapshot = { ...context.snapshot, drawing_source_file_id: null }
+  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /no plan-set PDF/)
+  assert.equal(harness.calls.published.length, 0)
 })
 
 function abandonedCopy(harness) {
-  const copy = { org_id: ORG, project_id: PROJECT, attempt_id: "00000000-0000-4000-8000-0000000000aa", storage_path: `${ORG}/projects/${PROJECT}/plans/copy.pdf` }
+  return abandonedCopies(harness, 1)[0]
+}
+function abandonedCopies(harness, count) {
+  const copies = Array.from({ length: count }, (_, index) => ({
+    org_id: ORG, project_id: PROJECT, attempt_id: `00000000-0000-4000-8000-0000000000a${index}`, storage_path: `${ORG}/projects/${PROJECT}/plans/copy-${index}.pdf`,
+  }))
   harness.supabase.rpc = async (name, args) => {
-    if (name === "claim_abandoned_plan_drawing_copies") return { data: [copy], error: null }
+    if (name === "claim_abandoned_plan_drawing_copies") return { data: copies, error: null }
     if (name === "clear_abandoned_plan_drawing_copy") { harness.calls.cleared.push(args); return { data: true, error: null } }
     throw new Error(`unexpected rpc ${name}`)
   }
-  return copy
+  return copies
 }
-test('an abandoned copy loses its object before its manifest, and a failed delete keeps the manifest', async () => {
+test('an abandoned copy loses its object before its manifest, and a failed delete keeps only that manifest', async () => {
   const harness = buildInstantiationHarness(), copy = abandonedCopy(harness)
-  assert.deepEqual(await harness.service.cleanupAbandonedPlanDrawingCopies(), { claimed: 1, cleared: 1 })
+  assert.deepEqual(await harness.service.cleanupAbandonedPlanDrawingCopies(), { claimed: 1, cleared: 1, failed: [] })
   assert.deepEqual(harness.calls.deletes, [[copy.storage_path]])
   assert.equal(harness.calls.cleared[0].p_attempt_id, copy.attempt_id)
 
   const failing = buildInstantiationHarness({ deleteFails: true })
-  abandonedCopy(failing)
-  await assert.rejects(failing.service.cleanupAbandonedPlanDrawingCopies(), /Storage unavailable/)
+  const failingCopy = abandonedCopy(failing)
+  const result = await failing.service.cleanupAbandonedPlanDrawingCopies()
+  assert.equal(result.cleared, 0)
+  assert.deepEqual(result.failed, [{ projectId: failingCopy.project_id, attemptId: failingCopy.attempt_id, message: 'Storage unavailable' }])
   assert.equal(failing.calls.cleared.length, 0)
+})
+
+test('one failing abandoned copy does not stop the next from being cleaned', async () => {
+  const harness = buildInstantiationHarness({ deleteFailsFor: 0 })
+  const [first, second] = abandonedCopies(harness, 2)
+  const result = await harness.service.cleanupAbandonedPlanDrawingCopies()
+  assert.equal(result.claimed, 2)
+  assert.equal(result.cleared, 1)
+  assert.equal(result.failed[0].attemptId, first.attempt_id)
+  assert.deepEqual(harness.calls.cleared.map((call) => call.p_attempt_id), [second.attempt_id])
 })
 
 test("a plan the lot's community does not offer is refused, not warned about", async () => {

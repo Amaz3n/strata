@@ -30,14 +30,17 @@ import { recordEvent } from "@/lib/services/events";
 import { recordAudit } from "@/lib/services/audit";
 import { requireOrgContext } from "@/lib/services/context";
 import {
+  hasPermission,
   requirePermission,
   requireProjectPermission,
 } from "@/lib/services/permissions";
-import { wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc";
+import { planScheduleMove, wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc";
+import { readAllRows } from "@/lib/land/paging";
 import { enqueueOutboxJob } from "@/lib/services/outbox";
 import { normalizeScheduleTemplateItems, selectionTaskKey } from "@/lib/selections/cutoff-math";
 import { getProjectPosture } from "@/lib/product-tier";
 import { enqueueTradeScheduleChange } from "@/lib/services/trade-lookahead";
+import { scheduleChangeIsNotifiable } from "@/lib/starts/lookahead-rules";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 
 // ============================================================================
@@ -92,20 +95,20 @@ async function enqueueProductionScheduleChange(input: {
   oldStart: string | null;
   newStart: string | null;
 }) {
-  if (input.oldStart === input.newStart || !input.newStart) return;
-  const fourWeeksOut = new Date();
-  fourWeeksOut.setUTCDate(fourWeeksOut.getUTCDate() + 28);
-  if (input.newStart > fourWeeksOut.toISOString().slice(0, 10)) return;
-  const [{ data: project }, { data: assignment }] = await Promise.all([
+  if (!scheduleChangeIsNotifiable(input.oldStart, input.newStart, new Date().toISOString().slice(0, 10))) return;
+  const [{ data: project }, { data: assignments, error: assignmentError }] = await Promise.all([
     input.supabase.from("projects").select("property_type").eq("org_id", input.orgId).eq("id", input.projectId).maybeSingle(),
-    input.supabase.from("schedule_assignments").select("company_id").eq("org_id", input.orgId).eq("schedule_item_id", input.scheduleItemId).not("company_id", "is", null).limit(1).maybeSingle(),
+    input.supabase.from("schedule_assignments").select("company_id").eq("org_id", input.orgId).eq("schedule_item_id", input.scheduleItemId).not("company_id", "is", null).limit(100),
   ]);
-  if (!project || getProjectPosture(project.property_type, input.productTier) !== "production" || !assignment?.company_id) return;
-  await enqueueTradeScheduleChange({
-    orgId: input.orgId, actorId: input.actorId, companyId: assignment.company_id,
+  if (assignmentError) throw new Error(`Failed to load the trades to notify: ${assignmentError.message}`);
+  if (!project || getProjectPosture(project.property_type, input.productTier) !== "production") return;
+  // Every company on the item is told, not the first one returned.
+  const companyIds = Array.from(new Set((assignments ?? []).flatMap((row) => (row.company_id ? [row.company_id] : []))));
+  await Promise.all(companyIds.map((companyId) => enqueueTradeScheduleChange({
+    orgId: input.orgId, actorId: input.actorId, companyId,
     projectId: input.projectId, scheduleItemId: input.scheduleItemId,
     oldStart: input.oldStart, newStart: input.newStart,
-  });
+  })));
 }
 
 async function loadDependencies(
@@ -892,88 +895,302 @@ export async function deleteScheduleItem(
   });
 }
 
+export interface ScheduleRescheduleChange {
+  id: string;
+  projectId: string;
+  name: string;
+  cause: "requested" | "dependency";
+  oldStart: string | null;
+  oldEnd: string | null;
+  newStart: string;
+  newEnd: string;
+}
+
+/** A home whose promised close the move would push later than its date. */
+export interface ScheduleCloseImpact {
+  projectId: string;
+  projectName: string;
+  closingId: string;
+  scheduledDate: string;
+  projectedFinishBefore: string | null;
+  projectedFinish: string;
+  daysLate: number;
+}
+
+export interface ScheduleReschedulePreview {
+  changes: ScheduleRescheduleChange[];
+  closeImpacts: ScheduleCloseImpact[];
+  /** Whether the viewer may accept a breach of a promised close (start.release). */
+  canApproveCloseImpacts: boolean;
+}
+
+type DateMove = { id: string; start_date: string; end_date: string };
+
+const RESCHEDULE_ITEM_CAP = 20001;
+const PROJECT_CHUNK = 100;
+
+type PlanItemRow = {
+  id: string;
+  project_id: string;
+  name: string;
+  item_type: string | null;
+  status: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  constraint_type: string | null;
+  updated_at: string;
+};
+
+const dayMs = 86_400_000;
+const daysBetweenDates = (from: string, to: string) =>
+  Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / dayMs);
+
+/**
+ * When the house is done: the last end of its handoff tasks, or of all of its
+ * live tasks when it has no handoff. Compared with the promised close.
+ */
+function projectedFinish(items: PlanItemRow[], overrides: Map<string, { end: string }>): string | null {
+  const live = items.filter((item) => item.status !== "cancelled");
+  const handoffs = live.filter((item) => item.item_type === "handoff");
+  let latest: string | null = null;
+  for (const item of handoffs.length ? handoffs : live) {
+    const end = overrides.get(item.id)?.end ?? item.end_date ?? item.start_date;
+    if (end && (latest === null || end > latest)) latest = end;
+  }
+  return latest;
+}
+
+async function readByProjects<Row>(
+  projectIds: string[],
+  label: string,
+  read: (projects: string[], from: number, to: number) => PromiseLike<{ data: Row[] | null; error: { message: string; code?: string } | null }>,
+): Promise<Row[]> {
+  const rows: Row[] = [];
+  for (let offset = 0; offset < projectIds.length; offset += PROJECT_CHUNK) {
+    const chunk = projectIds.slice(offset, offset + PROJECT_CHUNK);
+    const page = await readAllRows((from, to) => read(chunk, from, to), { cap: RESCHEDULE_ITEM_CAP, label });
+    if (page.truncated) throw new Error("These homes have too many schedule items to move together; move fewer homes at once");
+    for (const row of page.rows) rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * The server's own answer to "what moves": the requested dates, every successor
+ * the dependencies push (one correct pass, see planScheduleMove) and the promised
+ * closes that end up later than their date. The client never supplies dependent
+ * dates.
+ */
+async function buildReschedulePlan(supabase: SupabaseClient, orgId: string, moves: DateMove[]) {
+  const ids = Array.from(new Set(moves.map((move) => move.id)));
+  const { data: moved, error: movedError } = await supabase
+    .from("schedule_items").select("id,project_id").eq("org_id", orgId).in("id", ids);
+  if (movedError) throw new Error(`Failed to load schedule items: ${movedError.message}`);
+  if ((moved ?? []).length !== ids.length) throw new Error("One or more schedule items were not found or are not accessible");
+  const projectIds = Array.from(new Set((moved ?? []).map((row) => row.project_id)));
+
+  const [items, dependencies, closingsResult, projectsResult] = await Promise.all([
+    readByProjects<PlanItemRow>(projectIds, "Failed to load schedule items", (projects, from, to) =>
+      supabase.from("schedule_items")
+        .select("id,project_id,name,item_type,status,start_date,end_date,constraint_type,updated_at")
+        .eq("org_id", orgId).in("project_id", projects).order("id").range(from, to)),
+    readByProjects<{ item_id: string; depends_on_item_id: string; dependency_type: string | null; lag_days: number | null }>(
+      projectIds, "Failed to load dependencies", (projects, from, to) =>
+        supabase.from("schedule_dependencies")
+          .select("item_id,depends_on_item_id,dependency_type,lag_days")
+          .eq("org_id", orgId).in("project_id", projects).order("id").range(from, to)),
+    supabase.from("closings").select("id,project_id,scheduled_date")
+      .eq("org_id", orgId).in("project_id", projectIds).in("status", ["scheduled", "cleared_to_close"]).not("scheduled_date", "is", null),
+    supabase.from("projects").select("id,name").eq("org_id", orgId).in("id", projectIds),
+  ]);
+  if (closingsResult.error) throw new Error(`Failed to load promised closes: ${closingsResult.error.message}`);
+  if (projectsResult.error) throw new Error(`Failed to load homes: ${projectsResult.error.message}`);
+
+  const plan = planScheduleMove(
+    items.map((item) => ({
+      id: item.id, start_date: item.start_date, end_date: item.end_date,
+      status: item.status, constraint_type: item.constraint_type,
+    })),
+    dependencies.map((dependency) => ({
+      item_id: dependency.item_id, depends_on_item_id: dependency.depends_on_item_id,
+      dependency_type: dependency.dependency_type === "SS" || dependency.dependency_type === "FF" || dependency.dependency_type === "SF" ? dependency.dependency_type : "FS",
+      lag_days: dependency.lag_days ?? 0,
+    })),
+    moves,
+  );
+  if (!plan.ok) throw new Error(plan.error);
+
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const changes: ScheduleRescheduleChange[] = plan.changes.flatMap((change) => {
+    const item = itemById.get(change.id);
+    return item ? [{
+      id: change.id, projectId: item.project_id, name: item.name, cause: change.cause,
+      oldStart: item.start_date, oldEnd: item.end_date, newStart: change.start_date, newEnd: change.end_date,
+    }] : [];
+  });
+  const overrides = new Map(plan.changes.map((change) => [change.id, { end: change.end_date }]));
+  const projectNames = new Map((projectsResult.data ?? []).map((project) => [project.id, project.name as string]));
+  const itemsByProject = new Map<string, PlanItemRow[]>();
+  for (const item of items) itemsByProject.set(item.project_id, [...(itemsByProject.get(item.project_id) ?? []), item]);
+
+  const closeImpacts: ScheduleCloseImpact[] = [];
+  for (const closing of closingsResult.data ?? []) {
+    if (!closing.scheduled_date || !changes.some((change) => change.projectId === closing.project_id)) continue;
+    const projectItems = itemsByProject.get(closing.project_id) ?? [];
+    const after = projectedFinish(projectItems, overrides);
+    const before = projectedFinish(projectItems, new Map());
+    // A house already late for its close is not made newly breached by an
+    // unrelated move; only a move that pushes the finish later needs approval.
+    if (!after || after <= closing.scheduled_date || (before !== null && after <= before)) continue;
+    closeImpacts.push({
+      projectId: closing.project_id, projectName: projectNames.get(closing.project_id) ?? "Home", closingId: closing.id,
+      scheduledDate: closing.scheduled_date, projectedFinishBefore: before, projectedFinish: after,
+      daysLate: daysBetweenDates(closing.scheduled_date, after),
+    });
+  }
+  return { projectIds, changes, closeImpacts, itemById };
+}
+
+/** What a date move would do, before anything is written. */
+export async function previewScheduleReschedule(
+  moves: DateMove[],
+  orgId?: string,
+): Promise<ScheduleReschedulePreview> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  const plan = await buildReschedulePlan(supabase, resolvedOrgId, moves);
+  for (const projectId of plan.projectIds) await requireProjectPermission(userId, projectId, "schedule.edit");
+  return {
+    changes: plan.changes,
+    closeImpacts: plan.closeImpacts,
+    canApproveCloseImpacts: plan.closeImpacts.length ? await hasPermission("start.release", { supabase, orgId: resolvedOrgId, userId }) : false,
+  };
+}
+
+/**
+ * Bulk edit: a drag, a reorder, or an approved reschedule. It lands whole or not
+ * at all (apply_schedule_reschedule locks every row and checks the version it
+ * read), fails loudly with the reason, recomputes dependents here rather than
+ * trusting the caller, and refuses a move that pushes a promised close later
+ * unless the actor holds start.release, names why, and accepts that house.
+ */
 export async function bulkUpdateScheduleItems(
   updates: ScheduleBulkUpdate,
   orgId?: string,
+  options: { tradeResponseId?: string } = {},
 ): Promise<ScheduleItem[]> {
-  const {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-    productTier,
-  } = await requireOrgContext(orgId);
-  await requirePermission("schedule.edit", {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-  });
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId);
 
-  const results: ScheduleItem[] = [];
-  const cutoffProjects = new Set<string>();
-  const dependencyMap = await loadDependencies(supabase, resolvedOrgId);
-  const itemIds = updates.items.map((item) => item.id);
-  const { data: beforeRows, error: beforeError } = itemIds.length
-    ? await supabase.from("schedule_items").select("id,project_id,start_date")
-        .eq("org_id", resolvedOrgId).in("id", itemIds)
-    : { data: [], error: null };
-  if (beforeError) throw new Error(`Failed to load schedule items: ${beforeError.message}`);
-  const beforeById = new Map((beforeRows ?? []).map((row) => [row.id, row]));
-  const scheduleChanges: Array<Promise<void>> = [];
-
+  const requested = new Map<string, ScheduleBulkUpdate["items"][number]>();
   for (const item of updates.items) {
-    const updateData: Record<string, any> = {};
-    if (item.start_date !== undefined)
-      updateData.start_date = item.start_date || null;
-    if (item.end_date !== undefined)
-      updateData.end_date = item.end_date || null;
-    if (item.sort_order !== undefined) updateData.sort_order = item.sort_order;
-    if (item.progress !== undefined) updateData.progress = item.progress;
-    if (item.status !== undefined) updateData.status = item.status;
+    if (requested.has(item.id)) throw new Error("A schedule item appears twice in this update");
+    requested.set(item.id, item);
+  }
+  const moves: DateMove[] = updates.items.flatMap((item) =>
+    item.start_date && item.end_date ? [{ id: item.id, start_date: item.start_date, end_date: item.end_date }] : []);
 
-    if (Object.keys(updateData).length > 0) {
-      const { data, error } = await supabase
-        .from("schedule_items")
-        .update(updateData)
-        .eq("org_id", resolvedOrgId)
-        .eq("id", item.id)
-        .select(
-          `
-          id, org_id, project_id, name, item_type, status, start_date, end_date,
-          progress, assigned_to, metadata, created_at, updated_at,
-          phase, trade, location, planned_hours, actual_hours,
-          constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
-          cost_code_id, budget_cents, actual_cost_cents
-        `,
-        )
-        .single();
+  const writer = createServiceSupabaseClient();
+  let changes: ScheduleRescheduleChange[] = [];
+  let closeImpacts: ScheduleCloseImpact[] = [];
+  let projectIds: string[];
+  let itemById: Map<string, { project_id: string; updated_at: string; start_date: string | null }>;
+  if (moves.length) {
+    const plan = await buildReschedulePlan(supabase, resolvedOrgId, moves);
+    ({ changes, closeImpacts, projectIds, itemById } = plan);
+    const missing = Array.from(requested.keys()).filter((id) => !itemById.has(id));
+    if (missing.length) {
+      const { data, error } = await supabase.from("schedule_items").select("id,project_id,updated_at,start_date")
+        .eq("org_id", resolvedOrgId).in("id", missing);
+      if (error) throw new Error(`Failed to load schedule items: ${error.message}`);
+      if ((data ?? []).length !== missing.length) throw new Error("One or more schedule items were not found or are not accessible");
+      for (const row of data ?? []) itemById.set(row.id, row);
+      projectIds = Array.from(new Set([...projectIds, ...(data ?? []).map((row) => row.project_id)]));
+    }
+  } else {
+    const { data, error } = await supabase.from("schedule_items").select("id,project_id,updated_at,start_date")
+      .eq("org_id", resolvedOrgId).in("id", Array.from(requested.keys()));
+    if (error) throw new Error(`Failed to load schedule items: ${error.message}`);
+    if ((data ?? []).length !== requested.size) throw new Error("One or more schedule items were not found or are not accessible");
+    itemById = new Map((data ?? []).map((row) => [row.id, row]));
+    projectIds = Array.from(new Set((data ?? []).map((row) => row.project_id)));
+  }
 
-      if (!error && data) {
-        results.push(mapScheduleItem(data, dependencyMap));
-        if (item.start_date !== undefined || item.end_date !== undefined) {
-          cutoffProjects.add(data.project_id);
-          const before = beforeById.get(item.id);
-          scheduleChanges.push(enqueueProductionScheduleChange({
-            supabase, orgId: resolvedOrgId, actorId: userId, productTier,
-            projectId: data.project_id, scheduleItemId: data.id,
-            oldStart: before?.start_date ?? null, newStart: data.start_date,
-          }));
-        }
-      }
+  for (const projectId of projectIds) await requireProjectPermission(userId, projectId, "schedule.edit");
+
+  if (closeImpacts.length) {
+    const acknowledged = new Set(updates.acknowledge_close_impacts ?? []);
+    const unacknowledged = closeImpacts.filter((impact) => !acknowledged.has(impact.projectId));
+    if (unacknowledged.length) {
+      throw new Error(`This move pushes the promised close past its date for ${unacknowledged.map((impact) => `${impact.projectName} (${impact.daysLate} days late)`).join(", ")}. Review and accept each close impact to continue.`);
+    }
+    if (!updates.reason) throw new Error("Say why the date moves past a promised close");
+    if (!await hasPermission("start.release", { supabase, orgId: resolvedOrgId, userId })) {
+      throw new Error("Moving work past a promised close needs a starts coordinator (start.release)");
     }
   }
 
-  await Promise.all([
-    ...scheduleChanges,
-    ...Array.from(cutoffProjects).map((projectId) =>
-      enqueueOutboxJob({
-        orgId: resolvedOrgId,
-        jobType: "selection_cutoff_recompute",
-        payload: { project_id: projectId },
-        dedupeByPayloadKeys: ["project_id"],
-      })),
-  ]);
+  const planned = new Map(changes.map((change) => [change.id, change]));
+  const payload = [...new Set([...requested.keys(), ...planned.keys()])].map((id) => {
+    const item = itemById.get(id);
+    if (!item) throw new Error("One or more schedule items were not found or are not accessible");
+    const asked = requested.get(id);
+    const change = planned.get(id);
+    return {
+      id,
+      expected_updated_at: item.updated_at,
+      ...(change ? { start_date: change.newStart, end_date: change.newEnd } : {}),
+      ...(asked?.sort_order !== undefined ? { sort_order: asked.sort_order } : {}),
+      ...(asked?.progress !== undefined ? { progress: asked.progress } : {}),
+      ...(asked?.status !== undefined ? { status: asked.status } : {}),
+    };
+  });
 
-  return results;
+  const { data: applied, error } = await writer.rpc("apply_schedule_reschedule", {
+    p_org_id: resolvedOrgId,
+    p_actor_id: userId,
+    p_changes: payload,
+    p_reason: updates.reason ?? null,
+    p_acknowledged: closeImpacts.length ? closeImpacts.map((impact) => impact.projectId) : [],
+    p_response_id: options.tradeResponseId ?? null,
+  });
+  if (error) throw new Error(error.message);
+  const moved = z.array(z.object({
+    id: z.string(), project_id: z.string(), old_start: z.string().nullable(), new_start: z.string().nullable(),
+  })).parse(applied);
+
+  const dateMoves = moved.filter((row) => row.old_start !== row.new_start);
+  const cutoffProjects = new Set(changes.map((change) => change.projectId));
+  try {
+    await Promise.all([
+      ...dateMoves.map((row) => enqueueProductionScheduleChange({
+        supabase, orgId: resolvedOrgId, actorId: userId, productTier,
+        projectId: row.project_id, scheduleItemId: row.id, oldStart: row.old_start, newStart: row.new_start,
+      })),
+      ...Array.from(cutoffProjects).map((projectId) =>
+        enqueueOutboxJob({
+          orgId: resolvedOrgId,
+          jobType: "selection_cutoff_recompute",
+          payload: { project_id: projectId },
+          dedupeByPayloadKeys: ["project_id"],
+        })),
+    ]);
+  } catch (noticeError) {
+    throw new Error(`The schedule moved, but trades could not be notified: ${noticeError instanceof Error ? noticeError.message : "unknown error"}`);
+  }
+
+  const [{ data: rows, error: readError }, dependencyMap] = await Promise.all([
+    supabase.from("schedule_items")
+      .select(`
+        id, org_id, project_id, name, item_type, status, start_date, end_date,
+        progress, assigned_to, metadata, created_at, updated_at,
+        phase, trade, location, planned_hours, actual_hours,
+        constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+        cost_code_id, budget_cents, actual_cost_cents
+      `)
+      .eq("org_id", resolvedOrgId).in("id", moved.map((row) => row.id)),
+    loadDependencies(supabase, resolvedOrgId, projectIds),
+  ]);
+  if (readError) throw new Error(`The schedule moved, but could not be reloaded: ${readError.message}`);
+  return (rows ?? []).map((row) => mapScheduleItem(row, dependencyMap));
 }
 
 // ============================================================================
@@ -1703,6 +1920,14 @@ function addCalendarDays(isoDate: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+const RELEASE_SCHEDULE_ITEM_SELECT = `
+  id, org_id, project_id, name, item_type, status, start_date, end_date,
+  progress, assigned_to, metadata, created_at, updated_at,
+  phase, trade, location, planned_hours, actual_hours,
+  constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+  cost_code_id, budget_cents, actual_cost_cents
+`;
+
 export async function applyScheduleTemplateSnapshot(
   projectId: string,
   rawItems: unknown,
@@ -1711,6 +1936,7 @@ export async function applyScheduleTemplateSnapshot(
   authorizationPermission:
     | "schedule.edit"
     | "plan.instantiate" = "schedule.edit",
+  { releaseKeyed = false }: { releaseKeyed?: boolean } = {},
 ): Promise<ScheduleItem[]> {
   if (authorizationPermission === "plan.instantiate") {
     const context = await requireOrgContext(orgId);
@@ -1723,8 +1949,38 @@ export async function applyScheduleTemplateSnapshot(
       )
     : [];
   const createdItems: ScheduleItem[] = [];
+  // A release builds each template item once. Item n carries the key
+  // `schedule:n`, unique per home, so replaying the step (after a crash, a
+  // cancel or a lost lease) finds the items already there and builds only the
+  // tail it is missing.
+  const placed = new Map<string, ScheduleItem>();
+  if (releaseKeyed) {
+    const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId);
+    const existing = await readAllRows(
+      (from, to) =>
+        supabase
+          .from("schedule_items")
+          .select(RELEASE_SCHEDULE_ITEM_SELECT)
+          .eq("org_id", resolvedOrgId)
+          .eq("project_id", projectId)
+          .ilike("metadata->>release_key", "schedule:%")
+          .order("id")
+          .range(from, to),
+      { cap: 20001, label: "Failed to read release schedule items" },
+    );
+    if (existing.truncated)
+      throw new Error("The release schedule has more items than a release can account for");
+    for (const row of existing.rows)
+      placed.set(String(row.metadata?.release_key), mapScheduleItem(row, {}));
+  }
 
-  for (const item of templateItems) {
+  for (const [index, item] of templateItems.entries()) {
+    const releaseKey = `schedule:${index}`;
+    const present = placed.get(releaseKey);
+    if (present) {
+      createdItems.push(present);
+      continue;
+    }
     const offset =
       typeof item.start_offset_days === "number"
         ? Math.trunc(item.start_offset_days)
@@ -1764,6 +2020,7 @@ export async function applyScheduleTemplateSnapshot(
             template_item_key: item.key ? selectionTaskKey(item.key) : selectionTaskKey(item.name ?? "Untitled"),
             template_start_offset_days: offset,
             template_duration_days: duration,
+            ...(releaseKeyed ? { release_key: releaseKey } : {}),
           },
         },
         orgId,

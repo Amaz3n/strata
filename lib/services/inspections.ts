@@ -531,6 +531,8 @@ export type InspectionSnapshotInput = {
   kind: "safety" | "quality"
   title: string
   sourceTemplateId?: string | null
+  /** A release's place for this checklist on the home (`checklist:<n>`), unique per home. */
+  releaseKey?: string
   items: Array<{
     section?: string | null
     prompt: string
@@ -563,7 +565,7 @@ export async function createInspectionFromSnapshot(
       kind: input.kind,
       title: input.title.trim(),
       status: "draft",
-      metadata: { source_template_id: input.sourceTemplateId ?? null, source: "plan_version_snapshot" },
+      metadata: { source_template_id: input.sourceTemplateId ?? null, source: "plan_version_snapshot", ...(input.releaseKey ? { release_key: input.releaseKey } : {}) },
     },
     select: INSPECTION_SELECT,
     entityLabel: "inspection",

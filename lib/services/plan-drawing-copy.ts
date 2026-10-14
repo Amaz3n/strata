@@ -1,18 +1,7 @@
 import "server-only"
 import { z } from "zod"
-import type { SupabaseClient } from "@supabase/supabase-js"
-import { FEATURE_FLAGS } from "@/lib/feature-flags/registry"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { copyFilesObject, headFilesCopySource } from "@/lib/storage/files-storage"
-
-export async function planDrawingCopyTransactionsEnabled(supabase: SupabaseClient, orgId: string) {
-  const { data, error } = await supabase.from("feature_flags").select("enabled,expires_at")
-    .eq("org_id", orgId).eq("flag_key", FEATURE_FLAGS.planDrawingCopyTransactions)
-    .order("updated_at", { ascending: false }).limit(1).maybeSingle()
-  if (error) throw new Error(`Unable to verify drawing publication controls: ${error.message}`)
-  if (data?.enabled && data.expires_at) throw new Error("Drawing publication rollout cannot use an expiring flag")
-  return data?.enabled === true
-}
 
 const receiptSchema = z.object({ file_id: z.string().uuid(), drawing_set_id: z.string().uuid(), revision_id: z.string().uuid(), job_id: z.string().regex(/^[1-9][0-9]*$/) })
 const attemptFields = {

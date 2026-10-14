@@ -10,6 +10,7 @@ import {
   createProjectScheduleItemAction,
   updateProjectScheduleItemAction,
   bulkUpdateProjectScheduleItemsAction,
+  previewProjectScheduleRescheduleAction,
   deleteProjectScheduleItemAction,
   createProjectDependencyAction,
   updateProjectDependencyAction,
@@ -48,8 +49,14 @@ export function ProjectScheduleClient({ projectId, initialItems, initialDependen
           setItems((prev) => prev.map((item) => (item.id === id ? updated : item)))
           return updated
         }}
-        onItemsBulkUpdate={async (updates) => {
-          const updatedItems = unwrapAction(await bulkUpdateProjectScheduleItemsAction(projectId, { items: updates }))
+        onPreviewReschedule={async (moves) =>
+          unwrapAction(await previewProjectScheduleRescheduleAction(projectId, { items: moves }))}
+        onItemsBulkUpdate={async (updates, approval) => {
+          const updatedItems = unwrapAction(await bulkUpdateProjectScheduleItemsAction(projectId, {
+            items: updates,
+            acknowledge_close_impacts: approval?.acknowledgeCloseImpacts,
+            reason: approval?.reason,
+          }))
           if (updatedItems.length > 0) {
             const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
             setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))

@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode, type SetStateAction } from "react"
 import { startOfDay } from "date-fns"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
+import type { ScheduleReschedulePreview } from "@/lib/services/schedule"
 import type {
   ScheduleContextValue,
   ScheduleViewState,
@@ -10,6 +11,8 @@ import type {
   GanttZoomLevel,
   GroupByOption,
   ScheduleBulkItemUpdate,
+  ScheduleBulkApproval,
+  ScheduleDateMove,
 } from "./types"
 import { addDays, parseDate } from "./types"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -83,7 +86,8 @@ interface ScheduleProviderProps {
   initialAssignments?: ScheduleAssignment[]
   initialBaselines?: ScheduleBaseline[]
   onItemUpdate?: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
-  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
+  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[], approval?: ScheduleBulkApproval) => Promise<ScheduleItem[]>
+  onPreviewReschedule?: (moves: ScheduleDateMove[]) => Promise<ScheduleReschedulePreview>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
   onDependencyCreate?: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<ScheduleDependency>
@@ -99,6 +103,7 @@ export function ScheduleProvider({
   initialBaselines = emptyBaselines,
   onItemUpdate,
   onItemsBulkUpdate,
+  onPreviewReschedule,
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
@@ -210,7 +215,7 @@ export function ScheduleProvider({
   }, [items, onItemUpdate, setItems, setPendingWrites, setError])
 
   // Handle bulk item updates
-  const handleItemsBulkUpdate = useCallback(async (updates: ScheduleBulkItemUpdate[]) => {
+  const handleItemsBulkUpdate = useCallback(async (updates: ScheduleBulkItemUpdate[], approval?: ScheduleBulkApproval) => {
     if (updates.length === 0) return []
 
     const originalItems = items
@@ -228,7 +233,7 @@ export function ScheduleProvider({
     setError(null)
     try {
       if (onItemsBulkUpdate) {
-        const updatedItems = await onItemsBulkUpdate(updates)
+        const updatedItems = await onItemsBulkUpdate(updates, approval)
         if (updatedItems.length > 0) {
           const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
           setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
@@ -362,6 +367,7 @@ export function ScheduleProvider({
     setSelectedItem,
     onItemUpdate: handleItemUpdate,
     onItemsBulkUpdate: handleItemsBulkUpdate,
+    onPreviewReschedule,
     onItemCreate: handleItemCreate,
     onItemDelete: handleItemDelete,
     onDependencyCreate: handleDependencyCreate,

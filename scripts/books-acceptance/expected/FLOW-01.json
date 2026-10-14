@@ -1,0 +1,241 @@
+{
+  "scenario": "FLOW-01",
+  "reviewedFrom": "EP07-01, EP07-02 and EP07-03 (docs/enterprise-production/completion-checklist.json) and the EP07 decisions of 2026-10-14 (a financed buyer's start needs the lender's loan approval with its document on file, a cash buyer proof of funds; throughput targets at division and org scope enforced at release with a reason; per-superintendent limits warn 10 / block 15, past the block an override needs start.release and a reason; a house releases only with a superintendent, assigned in one atomic transaction; crew calendars deferred). Code: lib/services/starts.ts (deriveAutoGate agreement_milestones_clear, assertReleaseGateCompletion, releaseStart, setProjectSuperintendent, listSuperintendentCandidates); lib/services/even-flow.ts (setThroughputTarget, getThroughputWeeks, setReleaseSlot); lib/services/superintendent-capacity.ts; lib/starts/{gate-logic,close-impact,superintendent-load}.ts; migration 20261014100000_starts_capacity_and_throughput (proof-of-funds milestone, release_throughput_targets, superintendent_capacity, assign_project_superintendent, queue_start_release replaced, community_release_slots and projects.superintendent_id locked to the server). Fixture: one production builder from production-seed whose first tranche (lots 1-10) is developed; a viewer and a project lead (project.manage, start.write, no start.release or start.slots).",
+  "subcases": {
+    "starts-financing-gate-holds-financed-sale-until-loan-approval-evidenced": {
+      "derivation": "A financed sale on lot 1: the package opens with the financing gate pending (nothing attached is absence, not a pass). The loan application satisfied (no document needed) still holds it. The loan approval satisfied with a file on the home clears it. Reopening the approval holds it again; a waiver holds it (a waiver is not a document). Satisfied again with a second file, the gate clears; archiving that file holds it again. A cash sale on lot 2 seeds one start-holding proof-of-funds milestone that needs evidence; the gate is pending until it is satisfied with a file, then passes.",
+      "inputs": {
+        "lots": [
+          1,
+          2
+        ]
+      },
+      "expected": {
+        "financedOpened": "pending",
+        "afterApplication": "pending",
+        "afterApproval": "passed",
+        "afterReopen": "pending",
+        "afterWaiver": "pending",
+        "satisfiedAgain": "passed",
+        "afterArchive": "pending",
+        "cashMilestones": [
+          {
+            "template_key": "buyer:proof_of_funds",
+            "required_before": "start",
+            "evidence_required": true
+          }
+        ],
+        "cashOpened": "pending",
+        "cashProved": "passed"
+      }
+    },
+    "starts-attested-evidence-archived-before-publication-blocks-release": {
+      "derivation": "The org defines a manual gate, Soil report on file. A spec home on lot 4 has it attested with the report as a file on the home, and the package is ready; the spec home's financing gate passed because a spec has no buyer. The report is archived before the release runs. Publication re-checks the attested file, so the home does not release (it stays held in releasing for retry) and the job's error names the soil_report gate's evidence.",
+      "inputs": {
+        "lot": 4
+      },
+      "expected": {
+        "readyWithEvidence": "ready",
+        "specFinancing": "passed",
+        "afterArchive": "held",
+        "refusal": true
+      }
+    },
+    "starts-release-without-superintendent-is-refused": {
+      "derivation": "A ready spec home on lot 5 with no superintendent: releaseStart refuses (service) and queue_start_release refuses (database); the package stays ready. With the superintendent assigned and then suspended from the org, the database refuses again (not an active member). Reinstated, the release queues.",
+      "inputs": {
+        "lot": 5
+      },
+      "expected": {
+        "service": "refused: no superintendent",
+        "database": "refused: no superintendent",
+        "packageStillReady": "ready",
+        "suspended": "refused: not active",
+        "withSuperintendent": true
+      }
+    },
+    "starts-assigning-past-capacity-is-refused-without-override": {
+      "derivation": "Relative to the houses the superintendent already runs (base): the org default is stretched at base+1 and limited at base+2. Two houses are assigned; the third answers requiresOverride (the coordinator can override, 2 houses against a limit of 2 over base) and stays unassigned. A project lead with a reason is refused (the override needs start.release), and a reason shorter than ten characters is refused. The picker reports the person 2 houses in, warned at 1, limit 2, none remaining, load over. The person's own limits (base+3 warn, base+4 limit) outrank the default, so the third house now assigns. With their limit at base+3 a fourth is refused at the limit, then a releaser assigns it with the reason; the audit records over_capacity and the reason and the house is scoped to them. A project lead cannot set limits. The org is left on the built-in ten and fifteen.",
+      "inputs": {
+        "lots": [
+          6,
+          7,
+          8
+        ]
+      },
+      "expected": {
+        "first": true,
+        "second": true,
+        "third": {
+          "assigned": false,
+          "requiresOverride": true,
+          "canOverride": true,
+          "houses": 2,
+          "limit": 2
+        },
+        "thirdStillUnassigned": true,
+        "projectLeadWithReason": "refused",
+        "shortReason": "refused",
+        "picker": {
+          "houses": 2,
+          "warnAt": 1,
+          "limit": 2,
+          "remaining": 0,
+          "load": "over"
+        },
+        "withinOwnLimit": true,
+        "atOwnLimit": false,
+        "override": {
+          "assigned": true,
+          "overCapacity": true
+        },
+        "audit": {
+          "overCapacity": "true",
+          "reason": true
+        },
+        "scoping": 1,
+        "limitsAreStartRelease": "refused"
+      }
+    },
+    "race-two-assignments-to-the-last-open-capacity-slot": {
+      "derivation": "The person runs one more house than before against a limit of two more. Two independent database sessions, released together, each assign a different house to them: the serial-equivalent outcome is exactly one assigned and one told the limit, and the person ends two houses over their starting count (the held one and the winner). Two rounds.",
+      "inputs": {
+        "rounds": 2
+      },
+      "expected": {
+        "rounds": [
+          {
+            "assigned": 1,
+            "held": 1,
+            "housesOverBase": 2
+          },
+          {
+            "assigned": 1,
+            "held": 1,
+            "housesOverBase": 2
+          }
+        ]
+      }
+    },
+    "starts-division-throughput-cap-spans-communities": {
+      "derivation": "Bayshore, a second community of the Gulf Coast division, already released one house this week (fixture). The division's target for the week is 1: a viewer cannot set it, the coordinator can. Releasing a Cypress Landing house answers that the division is over (target 1, 1 already) and changes nothing; a reason under ten characters is refused; with a real reason it releases, and the audit and the start.released_over_slot event carry it. With the division target lifted and an org-wide target of 2, the next house is held by the org cap (target 2, 2 already: Bayshore's and the first). The desk reads the org cap as 2 of 2.",
+      "inputs": {
+        "week": "current",
+        "lots": [
+          9,
+          10
+        ]
+      },
+      "expected": {
+        "targetByViewer": "refused",
+        "divisionBlocked": {
+          "limit": "division",
+          "exceeded": [
+            {
+              "limit": "division",
+              "target": 1,
+              "alreadyTargeted": 1
+            }
+          ]
+        },
+        "packageStillReady": "ready",
+        "shortReason": "refused",
+        "confirmed": true,
+        "audit": {
+          "overSlot": "true",
+          "reason": true
+        },
+        "event": 1,
+        "orgBlocked": {
+          "limit": "org",
+          "exceeded": [
+            {
+              "limit": "org",
+              "target": 2,
+              "alreadyTargeted": 2
+            }
+          ]
+        },
+        "deskCaps": [
+          {
+            "scope": "Organization",
+            "target": 2,
+            "filled": 2
+          }
+        ]
+      }
+    },
+    "race-two-releases-into-one-throughput-cap": {
+      "derivation": "Two ready houses target the same future week under a division cap of one. Two independent sessions call queue_start_release together: exactly one is queued, the other is held by the division cap, and one package is releasing. Two rounds, on different weeks.",
+      "inputs": {
+        "rounds": 2
+      },
+      "expected": {
+        "rounds": [
+          {
+            "queued": 1,
+            "held": 1,
+            "releasing": 1
+          },
+          {
+            "queued": 1,
+            "held": 1,
+            "releasing": 1
+          }
+        ]
+      }
+    },
+    "starts-viewer-cannot-write-slots-or-targets-through-the-data-api": {
+      "derivation": "The coordinator sets a community slot through the service and it is audited once. A viewer's setReleaseSlot is refused, and so are their direct REST writes: updating or inserting a community slot, inserting a throughput target or a superintendent limit, and assigning a superintendent on a project. A project lead (no start.slots, no start.release) cannot set a target or a limit. The slot stays at 3 and the house stays unassigned.",
+      "inputs": {},
+      "expected": {
+        "slotAudited": 1,
+        "viewerSlotService": "refused",
+        "viewer": {
+          "updateSlot": "refused",
+          "insertSlot": "refused",
+          "insertTarget": "refused",
+          "insertLimit": "refused",
+          "assignSuperintendent": "refused"
+        },
+        "projectLeadSetsTarget": "refused",
+        "projectLeadSetsLimit": "refused",
+        "slotUnchanged": 3,
+        "superintendentUnchanged": true
+      }
+    },
+    "starts-release-impact-preview-matches-closing-schedule": {
+      "derivation": "A sold home on lot 3 with its closing scheduled 100 days out and the default 130-day cycle (no community cycle configured): the must-start date is 30 days ago. Starting today projects a close on day 130, 30 days late; starting 30 days out, 60 days late; had it started 30 days ago, it closes on day 100 with no slack. A week four weeks out is a later start than today. One home is pushed past its closing by the 30-day start.",
+      "inputs": {
+        "closingInDays": 100,
+        "cycleDays": 130
+      },
+      "expected": {
+        "sold": true,
+        "closing": "D100",
+        "cycleDays": 130,
+        "mustStartBy": "D-30",
+        "startToday": {
+          "closing": "D100",
+          "projected": "D130",
+          "daysLate": 30,
+          "slackDays": 0
+        },
+        "startNextMonth": {
+          "closing": "D100",
+          "projected": "D160",
+          "daysLate": 60,
+          "slackDays": 0
+        },
+        "startInTheLastMonth": {
+          "closing": "D100",
+          "projected": "D100",
+          "daysLate": 0,
+          "slackDays": 0
+        },
+        "weekStartNextMonth": true,
+        "lateHomes": 1
+      }
+    }
+  }
+}

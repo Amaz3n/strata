@@ -119,6 +119,7 @@ export type NotificationType =
   | "start_released"
   | "start_release_failed"
   | "start_gate_waived"
+  | "trade_response_received"
   | "project_superintendent_assigned"
   | "purchase_agreement_executed"
   | "lead_assigned"
@@ -704,6 +705,12 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "starts",
     label: "Start release failed",
     description: "Email me when a start release fails and needs attention.",
+  },
+  {
+    key: "trade_response_received",
+    category: "starts",
+    label: "Trade answered their work",
+    description: "Email me when a trade declines work or asks for other dates on a home I coordinate.",
   },
   {
     key: "start_package_ready",

@@ -37,6 +37,10 @@ const IMPLEMENTED = {
   "SALE-01": "./scenarios/sale-01.cjs",
   "SEL-01": "./scenarios/sel-01.cjs",
   "PERMIT-01": "./scenarios/permit-01.cjs",
+  "FLOW-01": "./scenarios/flow-01.cjs",
+  "CUT-01": "./scenarios/cut-01.cjs",
+  "RELEASE-01": "./scenarios/release-01.cjs",
+  "TRADE-01": "./scenarios/trade-01.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -59,7 +63,7 @@ const NOT_IMPLEMENTED = {
  * as open with its reason, so the scenario is INCOMPLETE rather than FAILED. An
  * incomplete production scenario does not fail an all-scenarios run; a failed one does.
  */
-const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" } }
+const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" }, "FLOW-01": { checklist: "EP07-01" }, "CUT-01": { checklist: "EP07-18" }, "RELEASE-01": { checklist: "EP07-04" }, "TRADE-01": { checklist: "EP07-06" } }
 
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {

@@ -364,17 +364,47 @@ async function approvePermit(kit, org, { projectId }) {
   return applicationId
 }
 
+/**
+ * What the closing coordinator does before a sold home starts: the lender's loan
+ * application and approval (a cash buyer's proof of funds) are recorded as met,
+ * the approval with its document on the home. A spec home has no agreement and
+ * nothing to prove. The financing gate reads exactly these records.
+ */
+async function proveFinancing(kit, org, { projectId }) {
+  const milestones = app("agreement-milestones")
+  const open = () => kit.rows(`select m.id, m.version, m.template_key from public.agreement_milestones m join public.contracts c on c.id=m.contract_id and c.status='active'
+    where m.project_id=${kit.q(projectId)} and m.template_key in ('lender:loan_application','lender:loan_approval','buyer:proof_of_funds') and m.status='open' order by m.sort_order`)
+  for (const key of ["lender:loan_application", "lender:loan_approval", "buyer:proof_of_funds"]) {
+    const row = open().find((candidate) => candidate.template_key === key)
+    if (!row) continue
+    const evidenceFileId = key === "lender:loan_application" ? null : homeFile(kit, org, projectId, key === "lender:loan_approval" ? "loan-approval.pdf" : "proof-of-funds.pdf")
+    await kit.as(org.owner, () => milestones.resolveAgreementMilestone({ milestoneId: row.id, version: row.version, resolution: "satisfied", resolvedOn: isoDay(0), evidenceFileId }))
+  }
+}
+
+/** The starts coordinator hands the house to its superintendent, as the release requires; a house that already has one keeps it. */
+async function assignSuperintendent(kit, org, { projectId, user = org.team.superintendent }) {
+  const [{ superintendent_id: current }] = kit.rows(`select superintendent_id from public.projects where id=${kit.q(projectId)}`)
+  if (current) return
+  await kit.as(org.team.starts, () => app("starts").setProjectSuperintendent(projectId, user.userId))
+}
+
 /** Opens the lot's start package and clears every gate a person owns. */
-async function clearStartGates(kit, org, { lotId, projectId: known = null, spec = false }) {
+async function clearStartGates(kit, org, { lotId, projectId: known = null, spec = false, beforeApproval = null, superintendent = true }) {
   const starts = app("starts"), generation = app("po-generation")
   const pkg = await kit.as(org.team.starts, () => starts.openStartPackage(lotId, { isFinanced: false }))
   const projectId = known ?? kit.rows(`select project_id from public.start_packages where id=${kit.q(pkg.id)}`)[0].project_id
+  await proveFinancing(kit, org, { projectId })
+  // The house is handed to its superintendent before it is ready to release, as the release requires.
+  if (superintendent) await assignSuperintendent(kit, org, { projectId })
   const permitApplicationId = await approvePermit(kit, org, { projectId })
   const preview = await kit.as(org.team.starts, () => generation.generatePurchaseOrders({ projectId, mode: "dry_run" }))
   const gates = await kit.as(org.team.starts, () => starts.refreshAutoGates(pkg.id))
   const gateId = (key) => gates.find((gate) => gate.key === key).id
   // A spec home has no buyer and so no selection groups to lock; the starts desk waives that gate with its reason.
   if (spec) await kit.as(org.team.starts, () => starts.waiveGate(pkg.id, gateId("selections_locked"), { reason: "Spec home: the builder makes the selections, no buyer to lock them." }))
+  // A scenario's own gate (a custom one the org defined) is cleared by the person who owns it, before final approval.
+  if (beforeApproval) await beforeApproval({ packageId: pkg.id, projectId, gates })
   await kit.as(org.team.starts, () => starts.attestGate(pkg.id, gateId("final_approval"), { notes: "Approved for the week's release" }))
   return { packageId: pkg.id, projectId, permitApplicationId, opened: pkg, preview, ready: await kit.as(org.team.starts, () => starts.getStartPackage(pkg.id)) }
 }
@@ -404,6 +434,7 @@ async function releaseHome(kit, org, { packageId, projectId, startInDays = 0, ad
     await adopt()
   })
   const startDate = isoDay(startInDays)
+  await assignSuperintendent(kit, org, { projectId })
   const queued = await kit.as(org.team.starts, () => starts.releaseStart(packageId, { scheduledStartDate: startDate }))
   if (!queued.released) throw Error(`The release was not queued: ${JSON.stringify(queued)}`)
   if (!kit.storage) kit.sql(`update public.start_release_steps set status='completed', completed_at=now(), detail='{"harness":"no file storage on the acceptance stack"}' where start_package_id=${kit.q(packageId)} and step_key='drawings'`)
@@ -554,6 +585,6 @@ module.exports = {
   EVIDENCE, COST_CODES, TRADES, PLANS, OPTIONS, DESIGN_PICKS,
   defaultPeriods, isoDay, glId, csv, planTradeCostCents,
   productionBuilder, seedCommunity, seedProduct, takeDownTranche, registerBuyer, reserveHold, reserveLot, configuration, signAgreement,
-  agreementPacketFor, signedCopyFile, signedSelectionCopy, homeFile, permitAuthority, approvePermit,
+  agreementPacketFor, signedCopyFile, signedSelectionCopy, homeFile, permitAuthority, approvePermit, proveFinancing, assignSuperintendent,
   approveSelectionsInPerson, chooseDesign, clearStartGates, releaseHome, purchaseOrdersByVendor, buildHome, completeHome, prepareClosingGates, closeHome, presoldThroughClosing, pinSpecPlan, seedLandDeal,
 }

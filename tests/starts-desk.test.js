@@ -16,7 +16,7 @@ stubModule("@/lib/services/permissions", {
   getCurrentUserPermissions: async () => ({ permissions: ["start.read"] }),
 })
 stubModule("@/lib/services/even-flow", {
-  getCommunityReleaseSlots: async () => [],
+  getCommunityReleaseSlots: async () => [], getThroughputWeeks: async () => [],
   getMissedStarts: async () => ({ missed: 0, weeks: 4 }),
 })
 stubModule("@/lib/services/starts", {

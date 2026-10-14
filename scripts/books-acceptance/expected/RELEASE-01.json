@@ -1,0 +1,246 @@
+{
+  "scenario": "RELEASE-01",
+  "reviewedFrom": "EP07-04, EP07-11, EP07-12, EP07-13 and EP07-17 (docs/enterprise-production/completion-checklist.json) and the EP07 decisions of 2026-10-14: release handlers are idempotent per home (each generated row carries metadata.release_key, unique per home) and every step closes through one atomic settle_release_step that counts what the step left on the home against what it promised (a step that built nothing records 0); a lot with a live package cannot be detached or moved and cancelling heals a package already stranded; new and reactivated gate definitions fan out to open and ready packages; selection tables are fenced under the release claim; a second cancel is a no-op that keeps the first reason; support staff may not mutate starts. Code: lib/services/{plan-instantiation,budgets,schedule,starts-pipeline,starts,lots}.ts; migration 20261014130000_release_resume_and_fences. Values are derived from each subcase's inputs and are confirmed by the first run on the acceptance stack. The RELEASE-01 org has no price book, so purchasing is off: the budget is built from the plan and the PO step is skipped.",
+  "subcases": {
+    "release-resumes-after-injected-crash-without-duplicates": {
+      "derivation": "Policy: a release re-run after any interruption builds only what is missing. The org has no price book, so the release builds one approved budget, the plan's schedule template and its checklists. Faults are triggers that raise where a killed worker would have stopped: a second budget line, a third schedule item, the settlement of the schedule step, a second checklist item. Each run commits what precedes the fault and fails there; the job is made due again with its retries at zero (a planted fault is not a real failure). After the first fault the home holds one budget with one line and the package is still releasing; after the second, two keyed schedule items and a failed schedule step; after the third, the complete schedule but the step unsettled (the settlement transaction rolled back, so the project ledger holds no schedule mark); after the fourth, at least one checklist. Run to the end: released, one keyed budget whose lines total it, schedule items equal to the template count with no duplicate key, checklists equal to the snapshot with none empty, every step completed or skipped, one start.released event, one release_published audit, and the project ledger marking budget, schedule and checklists (drawings is settled directly on this stack).",
+      "expected": {
+        "partial": {
+          "afterBudgetFault": {
+            "package": "releasing",
+            "budgets": 1,
+            "lines": 1
+          },
+          "afterScheduleFault": {
+            "package": "releasing",
+            "items": 2,
+            "scheduleStep": "failed"
+          },
+          "afterSettlementFault": {
+            "itemsBuilt": true,
+            "scheduleStep": "failed"
+          },
+          "afterChecklistFault": {
+            "package": "releasing",
+            "inspectionsWithoutItemsOrShort": true
+          }
+        },
+        "final": {
+          "finalStatus": "released",
+          "budgets": 1,
+          "keyedBudgets": 1,
+          "budgetLinesMatchTotal": true,
+          "scheduleMatchesTemplate": true,
+          "inspectionsMatchChecklists": true,
+          "inspectionsWithoutItems": 0,
+          "duplicateScheduleKeys": 0,
+          "ledger": {
+            "package": "released",
+            "allStepsCompleted": true,
+            "releasedEvents": 1,
+            "publishAudits": 1,
+            "projectLedgerMarks": [
+              "budget",
+              "checklists",
+              "schedule"
+            ]
+          }
+        }
+      }
+    },
+    "cancel-mid-step-then-rerelease-builds-each-artifact-once": {
+      "derivation": "Policy: cancelling keeps what a release already committed and a re-release resumes. A fault stops the schedule after two items; the coordinator cancels the release: the package returns to ready, the budget step stays settled, the schedule step is reset, and the two items remain. Released again, the schedule is completed from item three on: one budget, the template's items once, the checklists once, one release event and audit.",
+      "expected": {
+        "cancelled": {
+          "package": "ready",
+          "budgetStepKept": true,
+          "scheduleStepReset": true,
+          "items": 2
+        },
+        "final": {
+          "queuedAgain": true,
+          "finalStatus": "released",
+          "budgets": 1,
+          "keyedBudgets": 1,
+          "budgetLinesMatchTotal": true,
+          "scheduleMatchesTemplate": true,
+          "inspectionsMatchChecklists": true,
+          "inspectionsWithoutItems": 0,
+          "duplicateScheduleKeys": 0,
+          "ledger": {
+            "package": "released",
+            "allStepsCompleted": true,
+            "releasedEvents": 1,
+            "publishAudits": 1,
+            "projectLedgerMarks": [
+              "budget",
+              "checklists",
+              "schedule"
+            ]
+          }
+        }
+      }
+    },
+    "incomplete-receipt-cannot-publish": {
+      "derivation": "Policy: a step that left fewer artifacts than it promised cannot count as complete. An after-insert trigger removes schedule item 1 as soon as it is built, so the handler promises the template count and the home holds one fewer. settle_release_step refuses (receipt is incomplete); the schedule step is failed, the checklists step never starts (still pending), the package is not released and no start.released event exists; publication without a live claim is refused. With the fault removed the replay builds the missing item and the release completes.",
+      "expected": {
+        "refused": {
+          "scheduleStep": "failed",
+          "error": "receipt is incomplete",
+          "package": "releasing",
+          "checklistsStarted": "pending",
+          "releasedEvents": 0,
+          "publishWithoutAClaim": "refused"
+        },
+        "final": {
+          "finalStatus": "released",
+          "scheduleMatchesTemplate": true,
+          "ledger": {
+            "package": "released",
+            "allStepsCompleted": true,
+            "releasedEvents": 1,
+            "publishAudits": 1,
+            "projectLedgerMarks": [
+              "budget",
+              "checklists",
+              "schedule"
+            ]
+          }
+        }
+      }
+    },
+    "lot-detach-while-package-active-is-refused-and-cancel-heals-strandings": {
+      "derivation": "Policy (EP07-11): a lot with an open, ready, releasing or attention package cannot be detached from its home or moved to another community. The owner's service call is refused with the Starts-desk message; an owner session writing the lot directly is refused by lots_active_start_guard; so is a community move; the lot keeps its home. A lot detached before the guard existed (planted with the trigger off) leaves a package every starts function refuses (ancestry differs). Cancelling is the repair: the coordinator cancels it, the first reason is kept when a second cancel arrives with another reason (the second call succeeds and changes nothing), exactly one cancel audit and one event exist, and the lot then opens a new package.",
+      "expected": {
+        "guard": {
+          "serviceDetach": "refused: cancel the package first",
+          "sessionDetach": "refused: cancel the package first",
+          "move": "refused: cancel the package first",
+          "stillAttached": true
+        },
+        "heal": {
+          "stranded": {
+            "lotHasHome": false,
+            "update": "refused: ancestry differs"
+          },
+          "firstCancel": {
+            "status": "cancelled",
+            "reason": "Stranded when the lot was detached"
+          },
+          "secondCancel": "allowed",
+          "afterSecond": {
+            "status": "cancelled",
+            "reason": "Stranded when the lot was detached"
+          },
+          "trail": {
+            "audits": 1,
+            "events": 1
+          },
+          "reopened": "allowed"
+        }
+      }
+    },
+    "new-gate-definition-reaches-open-packages-and-release-completes": {
+      "derivation": "Policy (EP07-17): a gate defined while packages are open reaches them in the same transaction. One package is ready and one open when the owner defines a manual gate: both gain it pending, the ready package returns to open (a not_ready event), and releasing it is refused as not ready. Attested with a file on its home the package is ready again, the release completes with the gate proven, and a sales member cannot define a gate (start.release).",
+      "expected": {
+        "reach": {
+          "before": {
+            "readyPackage": "ready",
+            "gate": 0,
+            "openPackageGate": 0
+          },
+          "reached": {
+            "readyPackage": "open",
+            "gate": [
+              "pending"
+            ],
+            "openPackageGate": [
+              "pending"
+            ],
+            "notReadyEvent": true
+          },
+          "refused": "refused: not ready"
+        },
+        "complete": {
+          "ready": "ready",
+          "finalStatus": "released",
+          "ledger": {
+            "package": "released",
+            "allStepsCompleted": true,
+            "releasedEvents": 1,
+            "publishAudits": 1,
+            "projectLedgerMarks": [
+              "budget",
+              "checklists",
+              "schedule"
+            ]
+          },
+          "salesDefinesAGate": "refused: start.release"
+        }
+      }
+    },
+    "stale-worker-selection-writes-are-refused": {
+      "derivation": "Policy (EP07-12): selection groups, choices and exceptions are fenced to the release claim like the schedule. A service-role write carrying a claim that does not exist is refused on project_selection_groups and on selection_exceptions with the worker-lease-lost refusal, and no row is left.",
+      "expected": {
+        "groups": "refused: worker lease lost",
+        "exceptions": "refused: worker lease lost",
+        "rows": 0
+      }
+    },
+    "race-desk-mutation-vs-actor-revocation": {
+      "derivation": "Policy (EP07-13): the actor is re-checked under locks, so a revocation and a desk write are serial. Three rounds; in each a service-role session runs update_start_package and holds its transaction open for two seconds, and a second real session starts 0.4 s later and revokes the coordinator (suspends the membership, or inserts a start.write deny). The revocation waits behind the open transaction (it needs the membership the RPC has locked FOR UPDATE), the edit commits with its audit, and the package notes hold the edit. The restore runs after each round.",
+      "expected": {
+        "rounds": [
+          {
+            "revocation": "membership suspended",
+            "revocationBlockedBehindTheOpenTransaction": true,
+            "holderCommitted": true,
+            "holderLeftItsAuditAndEvent": true,
+            "serialEquivalent": true
+          },
+          {
+            "revocation": "start.write denied",
+            "revocationBlockedBehindTheOpenTransaction": true,
+            "holderCommitted": true,
+            "holderLeftItsAuditAndEvent": true,
+            "serialEquivalent": true
+          },
+          {
+            "revocation": "membership suspended again",
+            "revocationBlockedBehindTheOpenTransaction": true,
+            "holderCommitted": true,
+            "holderLeftItsAuditAndEvent": true,
+            "serialEquivalent": true
+          }
+        ]
+      }
+    },
+    "race-gate-or-package-edit-vs-queue-release": {
+      "derivation": "Policy (EP07-11/13/17): one transaction at a time owns a package. Two rounds, each a ready package and two real sessions released together: queue_start_release against a financing change (which adds a pending financing gate and returns the package to open) and against a cancel. Both take the package lock first, so exactly one wins; the loser is refused because the package is no longer ready, or no longer cancellable once releasing; the package ends in the winner's state.",
+      "expected": {
+        "rounds": [
+          {
+            "action": "financing change",
+            "exactlyOneWon": true,
+            "loserRefusedCleanly": true,
+            "consistent": true
+          },
+          {
+            "action": "cancel",
+            "exactlyOneWon": true,
+            "loserRefusedCleanly": true,
+            "consistent": true
+          }
+        ]
+      }
+    },
+    "race-lot-detach-vs-desk-write": {
+      "derivation": "Policy (EP07-11): a detach cannot slip between a desk write and its commit. A session holds update_start_package open for two seconds; a second session tries to detach the lot 0.4 s later. The package is live in either order, so the detach is refused by the guard, the desk write commits, and the lot keeps its home.",
+      "expected": {
+        "deskWriteOutcome": "committed",
+        "detach": "refused: cancel the package first",
+        "lotKeepsItsHome": true
+      }
+    }
+  }
+}

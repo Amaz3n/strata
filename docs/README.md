@@ -38,6 +38,7 @@ then the reference docs below.
 | [`books-entities.md`](books-entities.md) | Legal entities as a segment of the one Books ledger: who owns a posting, intercompany legs, per-entity close and consolidation. The separate per-entity ledger was retired before release. Read before any multi-company work. |
 | [`accounting-sync.md`](accounting-sync.md) | Provider boundaries, durable delivery/import, and the gated D2 release and acceptance process. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
+| [`reference/starts-cutover.md`](reference/starts-cutover.md) | The ordered window that moves Starts release to production: readiness guard, rollback and re-activation scripts, what only the human does, and retirement of the legacy drain. |
 | [`reference/pipeline.md`](reference/pipeline.md) | The one-screen pipeline: whose move it is, price firmness, the document that hardens from budget to agreement, client questions, and Start building. |
 | [`reference/drawings-workspace.md`](reference/drawings-workspace.md) | The modeless drawings workspace: item-first measuring, one-click room fill, the takeoff ledger and estimate handoff, and the 3D model as a view of the sheets. |
 | [`reference/audit-trail.md`](reference/audit-trail.md) | Evidence rows and correlation ids, which money mutations are transactional vs critical-audited, and the separation-of-duties rules and their refusal log. |

@@ -1,0 +1,240 @@
+{
+  "scenario": "TRADE-01",
+  "reviewedFrom": "EP07-05 through EP07-09 (docs/enterprise-production/completion-checklist.json) and the EP07 owner decisions of 2026-10-14: the look-ahead excludes cancelled and completed work and includes work already under way; a single-vendor PO fallback comes only from approved or complete orders, is shown as inferred and is never emailed; notices are snapshotted with their recipients and sent under a provider idempotency key; an outcome unknown for over 24 hours is ambiguous and a coordinator resolves it; digests coalesce atomically keeping the first old date; failed digest and package notices are visible and retryable. Code: lib/services/{trade-lookahead,trade-notices}.ts, lib/starts/lookahead-rules.ts; migration 20261014110000_trade_notice_deliveries. Values are derived from each module's inputs and confirmed by the first run on the acceptance stack.",
+  "subcases": {
+    "trade-lookahead-scope": {
+      "derivation": "A framer is assigned five tasks: one next week (in), one started three days ago and running (in), one cancelled, one completed, one finished 50 days ago (all out). A second vendor holds only a draft purchase order for the cost code of an unassigned task: it is not inferred (the task stays unassigned and is in no company's rows). Once that order is approved the task appears under the vendor as inferred. Emailing the vendor finds no assigned work and sends nothing; emailing the framer sends the two assigned tasks and none of the cancelled or inferred ones.",
+      "expected": {
+        "scope": {
+          "framer": [
+            [
+              "Started last week",
+              "assigned"
+            ],
+            [
+              "Starts next week",
+              "assigned"
+            ]
+          ],
+          "draftOrderVendor": "unassigned",
+          "approvedOrderVendor": [
+            [
+              "Inferred from PO",
+              "inferred"
+            ]
+          ]
+        },
+        "email": {
+          "inferredVendorMessages": 0,
+          "framerEmailMentions": [
+            "Starts next week",
+            "Started last week"
+          ],
+          "leaksInferred": false,
+          "leaksCancelled": false
+        }
+      }
+    },
+    "trade-notice-snapshot-and-crash": {
+      "derivation": "The mail provider is in-process and honours Idempotency-Key. The first send's response is lost (the provider stored the message, the app saw a failure): the delivery is failed, not accepted. The task is renamed and a second contact added. The retry sends from the reserved content (original name, one recipient) under the same key, so the provider holds one message; two simultaneous sends afterwards both return the duplicate; exactly one event is recorded. A second company's delivery reserved and silent for 25 hours is ambiguous: sending it again is refused and nothing reaches the provider, it is listed on the desk, a resolution with a short note is refused, a role without start.release is refused, and a coordinator's 'send again' with a reason re-keys it so the next send goes out.",
+      "expected": {
+        "once": {
+          "lostResponse": "refused: not accepted",
+          "retry": "sent",
+          "doubleClickSends": 0,
+          "afterLoss": [
+            "failed"
+          ],
+          "providerMessages": 1,
+          "sameKeyEveryAttempt": true,
+          "sentOriginalContent": true,
+          "recipientsFrozen": true,
+          "finalStatus": "accepted",
+          "events": 1
+        },
+        "ambiguous": {
+          "refusedWhileUnknown": "refused: outcome unknown",
+          "status": "ambiguous",
+          "sentWhileUnknown": 0,
+          "onDesk": true,
+          "shortNote": "refused: needs a reason",
+          "sales": "refused: needs start.release",
+          "afterResend": "sent",
+          "resentUnderNewKey": true
+        }
+      }
+    },
+    "schedule-digest-coalescing": {
+      "derivation": "Six items of one trade move 3 to 6 days out at once, and the first moves again 6 to 9, all concurrently against the real database. One pending digest holds all six items; the twice-moved item reads 'from day 3 to day 9'. After a worker claims that digest (processing), a move opens a second pending digest holding only that move. An item moved 9 to 6 then 6 to 3 (back to where its last digest started) drops out of its digest.",
+      "expected": {
+        "coalesced": {
+          "digests": 1,
+          "items": 6,
+          "movedTwice": {
+            "old": true,
+            "new": true
+          }
+        },
+        "claimed": {
+          "statuses": [
+            "processing",
+            "pending"
+          ],
+          "nextHoldsOnly": true,
+          "movedBackDropped": true
+        }
+      }
+    },
+    "trade-failed-notices-visible": {
+      "derivation": "Three failed notice jobs: a schedule-change digest of this house, a package alert of this package, and a digest of another house. The package sheet lists the first two (not the third) and the Trades desk lists them. A coordinator retries the digest on the package sheet: it is requeued with its retry count cleared. Retrying another house's digest is refused as not found; a sales consultant retrying is refused for start.release.",
+      "expected": {
+        "visible": {
+          "sheet": [
+            "package:failed",
+            "schedule_change:failed"
+          ],
+          "desk": [
+            "start_package_notice:failed",
+            "trade_schedule_change_notice:failed"
+          ]
+        },
+        "retry": {
+          "retried": {
+            "status": "pending",
+            "retryCount": 0
+          },
+          "anotherHouse": "refused: not found",
+          "sales": "refused: needs start.release"
+        }
+      }
+    },
+    "trade-response-flow": {
+      "derivation": "Fixture: one production home, Foundation (days 10-12) and Framing (10-17) both feeding Roofing (17-19), which feeds a Handoff task (day 20); a close is promised on day 25; Palmetto Framing is assigned Framing. flow: the first answer confirms; answers against changed dates, another company, another home's link, or a decline without a reason are refused; a request for days 12-19 lapses the confirmation (new answer supersedes the acceptance), lands on the coordinator queue, is refused a mismatched resolution and a read by sales, and approving it (owner: start.write + schedule.edit) moves Framing to days 12-19 through the bulk move and closes the request with one resolve audit; audits on the request are its insert plus the resolution. forged: sales' direct update/insert of confirmed_at is refused by the guard trigger; the portal answer confirms; a superintendent move of Framing lapses it. contested: owner and coordinator close one decline at once, one wins, one audit. bulk: slipping Foundation to days 25-27 makes Roofing wait for the later predecessor (27-29, Framing ends 17), Handoff follows (29-29), finish day 29 is 4 days past the day-25 close; no acceptance, no reason and no start.release are each refused in that order (the superintendent holds schedule.edit but not start.release, so cannot approve); nothing moves until the owner accepts the house with a reason; then the three tasks move together with an audit row each carrying the reason and the accepted house. Offsets are days from the run date. Confirmed by the first run on the acceptance stack.",
+      "expected": {
+        "flow": {
+          "confirmed": true,
+          "stale": "dates changed",
+          "wrongCompany": "not assigned",
+          "wrongHome": "not part of link",
+          "noReason": "needs reason",
+          "confirmationLapsedOnNewRequest": true,
+          "queued": [
+            {
+              "response": "reschedule_requested",
+              "stale": false
+            }
+          ],
+          "salesReadsQueue": "refused",
+          "resolveMismatch": "refused",
+          "previewMoves": [
+            [
+              true,
+              true
+            ]
+          ],
+          "framingAfter": {
+            "start": true,
+            "end": true
+          },
+          "answers": [
+            "accepted:superseded:-",
+            "reschedule_requested:resolved:reschedule_applied"
+          ],
+          "audits": 2,
+          "events": [
+            {
+              "event_type": "trade_response.recorded",
+              "n": 2
+            },
+            {
+              "event_type": "trade_response.resolved",
+              "n": 1
+            }
+          ]
+        }
+      }
+    },
+    "forged-confirmation-refused": {
+      "derivation": "See trade-response-flow's fixture. Sales is a member without schedule.edit; the guard trigger on schedule_assignments refuses any authenticated write that sets or changes confirmed_at, while the definer path of the portal answer sets it and a date move lapses it.",
+      "expected": {
+        "forged": {
+          "forgedUpdate": "refused",
+          "forgedInsert": "refused",
+          "confirmedBefore": false,
+          "confirmedByPortal": true,
+          "lapsedAfterMove": true
+        }
+      }
+    },
+    "contested-resolve": {
+      "derivation": "Two start.write holders close the same open decline in one tick; the RPC locks the row and the second sees it closed.",
+      "expected": {
+        "contested": {
+          "winners": 1,
+          "loser": [
+            "already closed"
+          ],
+          "audits": 1
+        }
+      }
+    },
+    "bulk-reschedule-close-impact": {
+      "derivation": "See trade-response-flow's fixture; slipping Foundation to days 25-27 pushes Roofing to 27-29 and Handoff to day 29, 4 days past the day-25 close.",
+      "expected": {
+        "bulk": {
+          "plan": [
+            {
+              "name": "Foundation",
+              "cause": "requested",
+              "start": 25,
+              "end": 27
+            },
+            {
+              "name": "Roofing",
+              "cause": "dependency",
+              "start": 27,
+              "end": 29
+            },
+            {
+              "name": "Handoff",
+              "cause": "dependency",
+              "start": 29,
+              "end": 29
+            }
+          ],
+          "closeImpact": [
+            {
+              "finish": 29,
+              "daysLate": 4
+            }
+          ],
+          "unaccepted": "accept each close impact",
+          "noReason": "needs a reason",
+          "superintendentCanApprove": false,
+          "superintendentApplies": "needs start.release",
+          "refusedMovesWroteNothing": {
+            "start": 17,
+            "end": 19
+          },
+          "moved": {
+            "foundation": {
+              "start": 25,
+              "end": 27
+            },
+            "roofing": {
+              "start": 27,
+              "end": 29
+            },
+            "handoff": {
+              "start": 29,
+              "end": 29
+            }
+          },
+          "audits": 3,
+          "acknowledgedThisHome": true,
+          "reason": "Foundation crew slipped two weeks"
+        }
+      }
+    }
+  }
+}

@@ -18,6 +18,32 @@ export const SYSTEM_GATE_KEYS = new Set(["permit", "plot_plan"])
  */
 export const SQL_EVIDENCE_SOURCES = new Set(["permit_approved", "plot_plan_file"])
 
+/** The milestone each kind of buyer's financing is proved by, as the agreement seeds them. */
+export const FINANCING_MILESTONE_KEYS = { financed: "lender:loan_approval", cash: "buyer:proof_of_funds" } as const
+
+export interface FinancingMilestoneRecord {
+  templateKey: string
+  status: "open" | "satisfied" | "waived" | "failed"
+  evidenceFileId: string | null
+  /** The evidence file is still on the home and not archived. */
+  evidenceOnFile: boolean
+}
+
+/**
+ * Whether a home's financing is proved. A spec home has no buyer and nothing to
+ * prove. A sold home needs the lender's loan approval (financed) or proof of
+ * funds (cash) satisfied WITH the document on file: a missing record, an open
+ * or failed one, a waiver (no document) and an archived file all hold it.
+ * Absence is never a pass; the gate itself can still be waived by a releaser.
+ */
+export function financingGateClear(record: { agreement: { milestones: FinancingMilestoneRecord[] } | null }) {
+  if (!record.agreement) return true
+  const proofs = record.agreement.milestones.filter((milestone) =>
+    milestone.templateKey === FINANCING_MILESTONE_KEYS.financed || milestone.templateKey === FINANCING_MILESTONE_KEYS.cash)
+  return proofs.length > 0 && proofs.every((milestone) =>
+    milestone.status === "satisfied" && milestone.evidenceFileId !== null && milestone.evidenceOnFile)
+}
+
 /** A house starts on an approved permit (or the authority's letter that none is needed), never on a waiver. */
 export function canWaiveGate(gate: { autoSource: string | null }) {
   return gate.autoSource !== "permit_approved"

@@ -71,3 +71,11 @@ test("telemetry persistence failures reach runtime logs without discarding compl
   assert.equal(errors.length, 1)
   assert.match(String(errors[0][1]), /Telemetry database unavailable/)
 })
+
+test("an abandoned-copy sweep failure is a partial run even when every job succeeded", async () => {
+  const h = route({ work: async () => ({ processed: 2, failed: 0, remaining: 0, copyCleanupFailed: 1 }) })
+  await h.GET({}); await h.callbacks[0]()
+  assert.equal(h.rows[0].status, "failed")
+  assert.equal(h.rows[0].http_status, 207)
+  assert.match(h.rows[0].error, /"copyCleanupFailed":1/)
+})

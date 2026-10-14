@@ -419,6 +419,7 @@ test("the release re-reads the permit gate in its own transaction", async (t) =>
   assert.equal(await w.evidence("permit_approved"), false, "a gate cannot pass against an unknown jurisdiction")
   await w.db.query("update communities set permit_jurisdiction_company_id = $1 where id = $2", [w.authority.id, w.community.id])
   await w.db.query("update start_packages set status = 'ready' where id = $1", [w.pkg.id])
+  await w.db.query("update projects set superintendent_id = $1 where id = $2", [owner.userId, w.home.id])
   const queue = () => full.rpc(w.db, "queue_start_release", {
     p_org_id: w.orgId, p_package_id: w.pkg.id, p_actor_id: owner.userId, p_scheduled_start_date: "2026-11-02", p_target_week: "2026-11-02",
     p_slot_target: 4, p_confirm_over_slot: false,

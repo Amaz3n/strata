@@ -1,17 +1,25 @@
 import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
-import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
-import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
-import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
 import { getProjectReadScopeForUser } from "@/lib/services/authorization"
+import { deliverTradeNotice, resolveTradePortalLink, type TradeNoticeDraft } from "@/lib/services/trade-notices"
 import { readAllRowsById } from "@/lib/land/paging"
 import { SCHEDULE_DIGEST_WINDOW_MS, scheduleDigestKey } from "@/lib/starts/even-flow-math"
+import {
+  LOOKAHEAD_EXCLUDED_STATUSES, LOOKAHEAD_PO_STATUSES, lookaheadDedupeKey, lookaheadWindow, releaseNoticeDedupeKey,
+  scheduleChangeDedupeKey,
+} from "@/lib/starts/lookahead-rules"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { lookaheadSchema, tradeLookaheadWorkspaceSchema, tradeSchedulePageSchema, tradeWorkspaceReplySchema } from "@/lib/validation/starts"
+
+const scheduleDigestChangesSchema = z.array(z.object({
+  schedule_item_id: z.string(), name: z.string().default("Scheduled work"),
+  old_start: z.string().nullable(), new_start: z.string().nullable(),
+}))
 
 export interface TradeLookaheadRow {
   companyId: string | null
@@ -26,6 +34,8 @@ export interface TradeLookaheadRow {
     startDate: string
     endDate: string
     status: string
+    /** `inferred`: the only vendor with an approved purchase order for this cost code, never assigned. */
+    assignment: "assigned" | "inferred" | "unassigned"
     confirmation: "unsent" | "sent" | "confirmed" | "declined"
   }>
 }
@@ -49,7 +59,7 @@ async function companyRecipients(supabase: SupabaseClient, orgId: string, compan
 }
 
 async function loadTradeLookahead(
-  input: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string; companyId?: string; page?: number; pageSize?: number },
+  input: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string; companyId?: string; projectId?: string; page?: number; pageSize?: number },
   orgId?: string,
 ): Promise<TradeLookaheadRow[]> {
   const parsed = lookaheadSchema.parse(input)
@@ -60,10 +70,7 @@ async function loadTradeLookahead(
   if (divisions !== null && !divisions.length) return []
   const lot = `lot:lots!lots_project_id_fkey${parsed.communityId ? "!inner" : ""}(org_id,lot_number,block,community_id,community:communities${parsed.communityId ? "!inner" : ""}(org_id,name))`
   const projectSelect = `project:projects!inner(property_type,status,${lot}${access.projectMembershipRequired ? ",access:project_members!project_members_project_id_fkey!inner(id)" : ""})`
-  const start = new Date().toISOString().slice(0, 10)
-  const endDate = new Date()
-  endDate.setUTCDate(endDate.getUTCDate() + parsed.weeks * 7)
-  const end = endDate.toISOString().slice(0, 10)
+  const { start, end } = lookaheadWindow(new Date(), parsed.weeks)
   // The lot hangs off the project, not off the schedule item — there is no
   // schedule_items → lots foreign key to embed through. The project owns the
   // lot filter; its join is inner only for an explicit community lens.
@@ -75,7 +82,9 @@ async function loadTradeLookahead(
     assignments:schedule_assignments(company_id,confirmed_at,company:companies(name))
   `).eq("org_id", context.orgId).eq("project.org_id", context.orgId)
       .eq("project.property_type", "production").eq("project.status", "active")
-      .gte("start_date", start).lte("start_date", end)
+      .lte("start_date", end).or(`end_date.gte.${start},and(end_date.is.null,start_date.gte.${start})`)
+      .not("status", "in", `(${LOOKAHEAD_EXCLUDED_STATUSES.join(",")})`)
+    if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
     if (divisions !== null) query = query.in("project.division_id", divisions)
     if (access.projectMembershipRequired) query = query.eq("project.access.org_id", context.orgId).eq("project.access.user_id", context.userId).eq("project.access.status", "active")
     if (parsed.communityId) query = query.eq("project.lot.org_id", context.orgId).eq("project.lot.community.org_id", context.orgId).eq("project.lot.community_id", parsed.communityId)
@@ -103,7 +112,7 @@ async function loadTradeLookahead(
         let query = context.supabase.from("commitment_lines").select("id,cost_code_id,commitment:commitments!inner(project_id,company_id,company:companies(name),commitment_type)")
           .eq("org_id", context.orgId).eq("commitment.org_id", context.orgId)
           .in("commitment.project_id", batch).in("cost_code_id", costCodeIds.slice(costOffset, costOffset + 100))
-          .eq("commitment.commitment_type", "purchase_order")
+          .eq("commitment.commitment_type", "purchase_order").in("commitment.status", [...LOOKAHEAD_PO_STATUSES])
         if (after) query = query.gt("id", after)
         return query.order("id").limit(take)
       }, { cap: 100000, label: "Failed to load look-ahead purchase orders" })
@@ -131,6 +140,7 @@ async function loadTradeLookahead(
       const possibleVendors = item.cost_code_id ? vendorsByProjectCost.get(`${item.project_id}:${item.cost_code_id}`) : undefined
       // Multiple PO vendors are not an assignment. Keep the task unassigned so
       // the coordinator fixes its original schedule rather than emailing a guess.
+      // A single vendor is a guess too, and is marked as one.
       const fallback = possibleVendors?.size === 1 ? possibleVendors.values().next().value : undefined
       const companyId = assignment?.company_id ?? fallback?.id ?? null
       if (seenCompanies.has(companyId)) continue
@@ -146,6 +156,7 @@ async function loadTradeLookahead(
         lotLabel: lot?.block ? `${lot.block}-${lot.lot_number}` : String(lot?.lot_number ?? "Lot"),
         communityName: String(community?.name ?? "Community"), name: item.name, startDate: item.start_date,
         endDate: item.end_date ?? item.start_date, status: item.status,
+        assignment: companyId === null ? "unassigned" : assignment?.company_id ? "assigned" : "inferred",
         confirmation: assignment?.confirmed_at ? "confirmed" : "unsent",
       })
       groups.set(key, row)
@@ -172,6 +183,7 @@ export interface TradeLookaheadSummary {
   trade: string | null
   itemCount: number
   confirmedCount: number
+  inferredCount: number
   firstDate: string | null
 }
 
@@ -203,6 +215,7 @@ export async function getTradeLookaheadWorkspace(input: unknown, orgId?: string)
   const summarize = (row: TradeLookaheadRow): TradeLookaheadSummary => ({
     key: key(row), companyId: row.companyId, companyName: row.companyName, trade: row.trade,
     itemCount: row.items.length, confirmedCount: row.items.filter(item => item.confirmation === "confirmed").length,
+    inferredCount: row.items.filter(item => item.assignment === "inferred").length,
     firstDate: row.items[0]?.startDate ?? null,
   })
   const selected = parsed.group ? all.find(row => key(row) === parsed.group) : undefined
@@ -217,51 +230,93 @@ export async function getTradeLookaheadWorkspace(input: unknown, orgId?: string)
   }
 }
 
+type NoticeContext = { supabase: SupabaseClient; orgId: string }
+
+async function companyRowsFor(companyId: string, opts: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string; projectId?: string }, orgId: string) {
+  const rows = await loadTradeLookahead({ ...opts, companyId }, orgId)
+  // Only work the company was actually given goes in a notice; an item inferred
+  // from a purchase order waits for a coordinator to assign it.
+  return rows.filter((row) => row.companyId === companyId).flatMap((row) => row.items.filter((item) => item.assignment === "assigned").map((item) => ({ row, item })))
+}
+
+async function lookaheadDraft(
+  context: NoticeContext, companyId: string, opts: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string; projectId?: string },
+  entries: Awaited<ReturnType<typeof companyRowsFor>>,
+): Promise<TradeNoticeDraft> {
+  const recipients = await companyRecipients(context.supabase, context.orgId, companyId)
+  if (!recipients.length) throw new Error("This trade company has no email contacts.")
+  const projectIds = new Set(entries.map(({ item }) => item.projectId))
+  const [{ data: org, error: orgError }, link] = await Promise.all([
+    context.supabase.from("orgs").select("name,slug,logo_url").eq("id", context.orgId).maybeSingle(),
+    resolveTradePortalLink(context.supabase, context.orgId, companyId, projectIds.size === 1 ? entries[0].item.projectId : null),
+  ])
+  if (orgError) throw new Error(`Failed to load organization for trade notice: ${orgError.message}`)
+  const title = `${opts.weeks}-week trade look-ahead`
+  return {
+    subject: title, recipients,
+    snapshot: {
+      title, intro: `Upcoming scheduled work for ${entries[0].row.companyName}.`,
+      lines: entries.map(({ item }) => ({ label: `${item.lotLabel} · ${item.communityName}`, name: item.name, dates: `${item.startDate} – ${item.endDate}` })),
+      buttonText: link ? "Open trade portal" : null, buttonUrl: link,
+      org: { name: org?.name ?? null, slug: org?.slug ?? null, logoUrl: org?.logo_url ?? null },
+    },
+  }
+}
+
+/**
+ * The trade's look-ahead for the reviewed scope. One look-ahead per company,
+ * scope and UTC day: a community-scoped send does not stand in for the full
+ * one, and a second click returns the first. `sent: false` is a duplicate.
+ */
 export async function sendTradeLookahead(
   companyId: string,
-  opts: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string; releaseNoticeKey?: string },
+  opts: { weeks: 2 | 3 | 4; communityId?: string; divisionId?: string },
   orgId?: string,
 ) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  const today = new Date().toISOString().slice(0, 10)
-  let sentQuery = context.supabase.from("events").select("id", { count: "exact", head: true })
-    .eq("org_id", context.orgId).eq("event_type", "trade_lookahead.sent").eq("payload->>company_id", companyId)
-  sentQuery = opts.releaseNoticeKey
-    ? sentQuery.eq("payload->>release_notice_key", opts.releaseNoticeKey)
-    : sentQuery.gte("created_at", `${today}T00:00:00.000Z`)
-  const { count: alreadySent, error: dedupeError } = await sentQuery
-  if (dedupeError || alreadySent === null) throw new Error(`Failed to inspect sent trade notices: ${dedupeError?.message ?? "Count unavailable"}`)
-  if (alreadySent > 0) return { sent: false }
-  let row: TradeLookaheadRow | undefined
-  const rows = await loadTradeLookahead({ ...opts, companyId }, context.orgId)
-  for (const candidate of rows) {
-    if (candidate.companyId !== companyId) continue
-    if (!row) row = { ...candidate, items: [] }
-    row.items.push(...candidate.items)
-  }
-  if (!row?.items.length) throw new Error("No scheduled work is available for this trade.")
-  const recipients = await companyRecipients(context.supabase, context.orgId, companyId)
-  if (!recipients.length) throw new Error("This trade company has no email contacts.")
-  const [{ data: org }, { data: token }] = await Promise.all([
-    context.supabase.from("orgs").select("name,slug,logo_url").eq("id", context.orgId).maybeSingle(),
-    context.supabase.from("portal_access_tokens").select("token").eq("org_id", context.orgId).eq("company_id", companyId).eq("portal_type", "sub").is("revoked_at", null).limit(1).maybeSingle(),
-  ])
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")
-  const lines = row.items.map((item) => `<tr><td style="padding:6px;border-bottom:1px solid #ddd">${escapeHtml(item.lotLabel)} · ${escapeHtml(item.communityName)}</td><td style="padding:6px;border-bottom:1px solid #ddd">${escapeHtml(item.name)}</td><td style="padding:6px;border-bottom:1px solid #ddd">${escapeHtml(item.startDate)} – ${escapeHtml(item.endDate)}</td></tr>`).join("")
-  const html = renderStandardEmailLayout({
-    title: `${opts.weeks}-week trade look-ahead`,
-    messageHtml: `<p>Upcoming scheduled work for ${escapeHtml(row.companyName)}.</p><table style="width:100%;border-collapse:collapse">${lines}</table>`,
-    buttonText: token ? "Open trade portal" : undefined, buttonUrl: token ? `${appUrl}/s/${token.token}` : undefined,
-    orgName: org?.name, orgLogoUrl: org?.logo_url, showManageSettings: false,
+  const entries = await companyRowsFor(companyId, opts, context.orgId)
+  if (!entries.length) throw new Error("No scheduled work is available for this trade.")
+  const outcome = await deliverTradeNotice({
+    orgId: context.orgId, actorId: context.userId, kind: "lookahead", companyId, projectId: null,
+    dedupeKey: lookaheadDedupeKey({ companyId, weeks: opts.weeks, communityId: opts.communityId, divisionId: opts.divisionId, utcDay: new Date().toISOString().slice(0, 10) }),
+    scope: { weeks: opts.weeks, communityId: opts.communityId ?? null, divisionId: opts.divisionId ?? null },
+    build: () => lookaheadDraft(context, companyId, opts, entries),
   })
-  const accepted = await sendEmail({ to: recipients, subject: `${opts.weeks}-week trade look-ahead`, html, from: getOrgSenderEmail(org?.slug, org?.name) })
-  if (!accepted) throw new Error("Trade look-ahead email was not accepted; retry after correcting delivery settings or recipients")
-  const event = await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "trade_lookahead.sent", entityType: "company", entityId: companyId, payload: { company_id: companyId, recipients: recipients.length, item_count: row.items.length, ...(opts.releaseNoticeKey ? { release_notice_key: opts.releaseNoticeKey } : {}) } })
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "trade_notice", entityId: event.id, source: "trade_notice", after: { company_id: companyId, item_count: row.items.length } })
-  return { sent: true }
+  return { sent: outcome === "sent" }
 }
 
+/**
+ * The notice a trade gets when a house is released: its own work on that house
+ * in the next three weeks. A trade with nothing in the window yet is not a
+ * failure (the schedule digest tells it when dates arrive), so the job
+ * completes as skipped instead of failing forever.
+ */
+export async function sendReleaseTradeNotice(
+  input: { companyId: string; packageId: string; projectId: string; outboxId: number; actorId: string },
+  orgId: string,
+) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.write", context)
+  const opts = { weeks: 3 as const, projectId: input.projectId }
+  const outcome = await deliverTradeNotice({
+    orgId: context.orgId, actorId: input.actorId, kind: "release", companyId: input.companyId, projectId: input.projectId,
+    outboxId: input.outboxId, dedupeKey: releaseNoticeDedupeKey(input.packageId, input.companyId),
+    scope: { weeks: 3, startPackageId: input.packageId },
+    build: async () => {
+      const entries = await companyRowsFor(input.companyId, opts, context.orgId)
+      return entries.length ? lookaheadDraft(context, input.companyId, opts, entries) : null
+    },
+  })
+  return { sent: outcome === "sent", skipped: outcome === "skipped" }
+}
+
+/**
+ * Add one date change to the company's pending digest for this house. The
+ * merge is one database statement (`enqueue_trade_schedule_change`): concurrent
+ * moves all land, the trade is told the first date it knew and the latest one,
+ * and a move into a digest a worker already claimed opens the next.
+ */
 export async function enqueueTradeScheduleChange(input: {
   orgId: string
   actorId: string
@@ -272,44 +327,58 @@ export async function enqueueTradeScheduleChange(input: {
   newStart: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-  const dedupeKey = scheduleDigestKey(input.companyId, input.projectId, Date.now())
-  const { data: existing } = await supabase.from("outbox").select("id,payload").eq("org_id", input.orgId).eq("dedupe_key", dedupeKey).eq("status", "pending").maybeSingle()
-  const change = { schedule_item_id: input.scheduleItemId, old_start: input.oldStart, new_start: input.newStart }
-  if (existing) {
-    const payload = existing.payload && typeof existing.payload === "object" ? existing.payload as Record<string, unknown> : {}
-    const changes = Array.isArray(payload.changes) ? payload.changes.filter((item) => one(item)?.schedule_item_id !== input.scheduleItemId) : []
-    await supabase.from("outbox").update({ payload: { ...payload, actor_id: input.actorId, changes: [...changes, change] }, run_at: new Date(Date.now() + SCHEDULE_DIGEST_WINDOW_MS).toISOString() }).eq("id", existing.id)
-    return
-  }
-  await supabase.from("outbox").insert({
-    org_id: input.orgId, job_type: "trade_schedule_change_notice", dedupe_key: dedupeKey,
-    payload: { company_id: input.companyId, project_id: input.projectId, actor_id: input.actorId, changes: [change] },
-    run_at: new Date(Date.now() + SCHEDULE_DIGEST_WINDOW_MS).toISOString(),
+  const { data: item, error: itemError } = await supabase.from("schedule_items").select("name")
+    .eq("org_id", input.orgId).eq("id", input.scheduleItemId).maybeSingle()
+  if (itemError || !item) throw new Error(`Failed to load the schedule item for its trade notice: ${itemError?.message ?? "Schedule item not found"}`)
+  const { error } = await supabase.rpc("enqueue_trade_schedule_change", {
+    p_org_id: input.orgId, p_actor_id: input.actorId, p_company_id: input.companyId, p_project_id: input.projectId,
+    p_item_id: input.scheduleItemId, p_item_name: item.name, p_old_start: input.oldStart, p_new_start: input.newStart,
+    p_dedupe_key: scheduleDigestKey(input.companyId, input.projectId, Date.now()), p_delay_seconds: SCHEDULE_DIGEST_WINDOW_MS / 1000,
   })
+  if (error) throw new Error(`Failed to queue the trade schedule notice: ${error.message}`)
 }
 
-export async function sendScheduleChangeDigestJob(supabase: SupabaseClient, job: { org_id: string; payload: Record<string, unknown> }) {
+async function homeLabel(supabase: SupabaseClient, orgId: string, projectId: string) {
+  const { data, error } = await supabase.from("lots").select("lot_number,block,community:communities(name)")
+    .eq("org_id", orgId).eq("project_id", projectId).limit(1).maybeSingle()
+  if (error) throw new Error(`Failed to load the home for its trade notice: ${error.message}`)
+  if (!data) return "Home"
+  const lot = data.block ? `${data.block}-${data.lot_number}` : String(data.lot_number)
+  const community = one(data.community)
+  return community?.name ? `${String(community.name)} · ${lot}` : lot
+}
+
+/** The digest a worker claimed: what moved, as it stood when each change was queued. */
+export async function sendScheduleChangeDigestJob(supabase: SupabaseClient, job: { org_id: string; job_id: number; payload: Record<string, unknown> }) {
   const companyId = typeof job.payload.company_id === "string" ? job.payload.company_id : null
   const projectId = typeof job.payload.project_id === "string" ? job.payload.project_id : null
   if (!companyId || !projectId) throw new Error("Schedule digest is missing company or project")
-  const changes = Array.isArray(job.payload.changes) ? job.payload.changes.map(one).filter((item): item is Record<string, unknown> => Boolean(item)) : []
-  const ids = changes.flatMap((change) => typeof change.schedule_item_id === "string" ? [change.schedule_item_id] : [])
-  if (!ids.length) return
-  const [recipients, itemsResult, orgResult, companyResult, tokenResult] = await Promise.all([
-    companyRecipients(supabase, job.org_id, companyId),
-    supabase.from("schedule_items").select("id,name").eq("org_id", job.org_id).in("id", ids),
-    supabase.from("orgs").select("name,slug,logo_url").eq("id", job.org_id).maybeSingle(),
-    supabase.from("companies").select("name").eq("org_id", job.org_id).eq("id", companyId).maybeSingle(),
-    supabase.from("portal_access_tokens").select("token").eq("org_id", job.org_id).eq("project_id", projectId).eq("company_id", companyId).eq("portal_type", "sub").is("revoked_at", null).limit(1).maybeSingle(),
-  ])
-  if (!recipients.length) return
-  const names = new Map((itemsResult.data ?? []).map((item) => [item.id, item.name]))
-  const lines = changes.map((change) => `<li>${escapeHtml(names.get(String(change.schedule_item_id)) ?? "Scheduled work")}: ${escapeHtml(String(change.old_start ?? "unscheduled"))} → ${escapeHtml(String(change.new_start ?? "unscheduled"))}</li>`).join("")
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")
-  const html = renderStandardEmailLayout({ title: "Schedule dates changed", messageHtml: `<p>${escapeHtml(companyResult.data?.name ?? "Trade partner")}, these dates changed:</p><ul>${lines}</ul>`, buttonText: tokenResult.data?.token ? "Open trade portal" : undefined, buttonUrl: tokenResult.data?.token ? `${appUrl}/s/${tokenResult.data.token}` : undefined, orgName: orgResult.data?.name, orgLogoUrl: orgResult.data?.logo_url, showManageSettings: false })
-  const accepted = await sendEmail({ to: recipients, subject: "Schedule dates changed", html, from: getOrgSenderEmail(orgResult.data?.slug, orgResult.data?.name) })
-  if (!accepted) throw new Error("Schedule change email was not accepted; retry after correcting delivery settings or recipients")
+  const changes = scheduleDigestChangesSchema.parse(job.payload.changes ?? [])
+  if (!changes.length) return { sent: false, skipped: true }
   const actorId = typeof job.payload.actor_id === "string" ? job.payload.actor_id : null
-  const event = await recordEvent({ orgId: job.org_id, actorId, eventType: "trade_schedule_change_notice.sent", entityType: "project", entityId: projectId, payload: { project_id: projectId, company_id: companyId, change_count: changes.length } })
-  await recordAudit({ orgId: job.org_id, actorId: actorId ?? undefined, action: "insert", entityType: "trade_notice", entityId: event.id, source: "trade_notice", after: { project_id: projectId, company_id: companyId, change_count: changes.length } })
+  const outcome = await deliverTradeNotice({
+    orgId: job.org_id, actorId, kind: "schedule_change", companyId, projectId, outboxId: job.job_id,
+    dedupeKey: scheduleChangeDedupeKey(job.job_id), scope: { changes: changes.length },
+    build: async () => {
+      const [recipients, label, orgResult, companyResult, link] = await Promise.all([
+        companyRecipients(supabase, job.org_id, companyId),
+        homeLabel(supabase, job.org_id, projectId),
+        supabase.from("orgs").select("name,slug,logo_url").eq("id", job.org_id).maybeSingle(),
+        supabase.from("companies").select("name").eq("org_id", job.org_id).eq("id", companyId).maybeSingle(),
+        resolveTradePortalLink(supabase, job.org_id, companyId, projectId),
+      ])
+      if (!recipients.length) throw new Error("This trade company has no email contacts.")
+      if (orgResult.error || companyResult.error) throw new Error(`Failed to load the trade schedule notice: ${(orgResult.error ?? companyResult.error)?.message}`)
+      return {
+        subject: "Schedule dates changed", recipients,
+        snapshot: {
+          title: "Schedule dates changed", intro: `${companyResult.data?.name ?? "Trade partner"}, these dates changed:`,
+          lines: changes.map((change) => ({ label, name: change.name, dates: `${change.old_start ?? "unscheduled"} → ${change.new_start ?? "unscheduled"}` })),
+          buttonText: link ? "Open trade portal" : null, buttonUrl: link,
+          org: { name: orgResult.data?.name ?? null, slug: orgResult.data?.slug ?? null, logoUrl: orgResult.data?.logo_url ?? null },
+        },
+      }
+    },
+  })
+  return { sent: outcome === "sent", skipped: false }
 }

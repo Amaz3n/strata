@@ -832,6 +832,12 @@ export async function detachProjectFromLot(
   await requireCommunityScope(before.community_id, context)
   if (!before.project_id) throw new Error("This lot does not have a project attached.")
   assertLotDetachTransition({ from: before.status, force })
+  // A live start package belongs to this lot's home; detaching would strand it
+  // (nothing could cancel or release it). The database refuses too.
+  const { data: livePackage, error: livePackageError } = await context.supabase.from("start_packages").select("id")
+    .eq("org_id", context.orgId).eq("lot_id", lotId).in("status", ["open", "ready", "releasing", "attention"]).limit(1).maybeSingle()
+  if (livePackageError) throw new Error(`Failed to check the lot's start package: ${livePackageError.message}`)
+  if (livePackage) throw new Error("Cancel this lot's start package on the Starts desk before detaching its home.")
   const projectId = before.project_id
   const { data, error } = await context.supabase.from("lots").update({ project_id: null, status: DETACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to detach project: ${error.message}`)

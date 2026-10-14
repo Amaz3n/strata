@@ -34,13 +34,37 @@ export const releaseInputSchema = z.object({
     (value) => value >= new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
     "Scheduled start date cannot be in the past",
   ),
-  confirmOverSlot: z.boolean().optional().default(false),
+  // Naming why a week goes over its target is what confirms it: there is no
+  // bare yes, so "why did we exceed the target" always has an answer on record.
+  overTargetReason: z.string().trim().min(10).max(1000).optional(),
 })
 
 export const slotSchema = z.object({
   weekStart: mondayDate,
   targetStarts: z.number().int().min(0).max(20),
   notes: z.string().trim().max(1000).optional().nullable(),
+})
+
+export const throughputTargetSchema = z.object({
+  weekStart: mondayDate,
+  /** Null is the organization-wide target. */
+  divisionId: z.string().uuid().nullable(),
+  /** Null clears the target for that scope and week. */
+  targetStarts: z.number().int().min(0).max(500).nullable(),
+  notes: z.string().trim().max(1000).optional().nullable(),
+})
+
+export const superintendentLimitSchema = z.object({
+  /** Null is the organization default. */
+  userId: z.string().uuid().nullable(),
+  warnHouses: z.number().int().min(1).max(100),
+  maxHouses: z.number().int().min(1).max(100),
+  notes: z.string().trim().max(1000).optional().nullable(),
+}).refine((value) => value.warnHouses <= value.maxHouses, { message: "The warning cannot come after the limit", path: ["warnHouses"] })
+
+export const superintendentAssignmentSchema = z.object({
+  /** Past a superintendent's limit, why this house goes to them anyway. */
+  overReason: z.string().trim().min(10).max(1000).optional(),
 })
 
 export const gateDefinitionSchema = z.object({
@@ -71,6 +95,7 @@ export const lookaheadSchema = z.object({
   weeks: z.union([z.literal(2), z.literal(3), z.literal(4)]),
   communityId: z.string().uuid().optional(),
   companyId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
   page: z.number().int().positive().optional().default(1),
   pageSize: z.number().int().positive().max(100).optional().default(50),
 })
@@ -94,11 +119,11 @@ export const tradeSchedulePageSchema = z.array(z.object({
 
 const tradeSummaryReply = z.object({
   key: z.string().max(500), companyId: z.string().uuid().nullable(), companyName: z.string(), trade: z.string().nullable(),
-  itemCount: z.number().int().safe().positive(), confirmedCount: z.number().int().safe().nonnegative(), firstDate: z.string().date(),
+  itemCount: z.number().int().safe().positive(), confirmedCount: z.number().int().safe().nonnegative(), inferredCount: z.number().int().safe().nonnegative(), firstDate: z.string().date(),
 })
 const tradeTaskReply = z.object({
   scheduleItemId: z.string().uuid(), projectId: z.string().uuid(), lotLabel: z.string(), communityName: z.string(), name: z.string(),
-  startDate: z.string().date(), endDate: z.string().date(), status: z.string(), confirmation: z.enum(["confirmed", "unsent"]),
+  startDate: z.string().date(), endDate: z.string().date(), status: z.string(), assignment: z.enum(["assigned", "inferred", "unassigned"]), confirmation: z.enum(["confirmed", "unsent"]),
 })
 export const tradeWorkspaceReplySchema = z.object({
   orgId: z.string().uuid(), actorId: z.string().uuid(), divisionId: z.string().uuid().nullable(), communityId: z.string().uuid().nullable(),

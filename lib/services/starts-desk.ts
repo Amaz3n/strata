@@ -1,6 +1,6 @@
 import "server-only"
 
-import { getCommunityReleaseSlots, getMissedStarts } from "@/lib/services/even-flow"
+import { getCommunityReleaseSlots, getMissedStarts, getThroughputWeeks } from "@/lib/services/even-flow"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import {
   listStartPackageCandidates,
@@ -54,6 +54,8 @@ export interface DeskWeek {
   /** Summed across every community in scope. */
   targetStarts: number
   perCommunity: Array<{ communityId: string; communityName: string; targetStarts: number }>
+  /** Division and org caps that apply to the week, with what already fills them. */
+  throughput: Array<{ divisionId: string | null; scopeName: string; target: number; filled: number }>
 }
 
 export interface DeskCounters {
@@ -113,8 +115,9 @@ export async function getStartsDesk(
 
   const activeFilters: PackageFilters = { ...scope, status: ["open", "ready", "releasing", "attention"] }
   const releasedFilters: PackageFilters = { ...scope, status: ["released"], targetWeekFrom: windowStart }
-  const [slots, active, released, candidates, missed] = await Promise.all([
+  const [slots, throughput, active, released, candidates, missed] = await Promise.all([
     getCommunityReleaseSlots({ ...scope, weeksBack: WEEKS_BACK, weeksAhead: WEEKS_AHEAD }),
+    getThroughputWeeks({ divisionId: scope.divisionId, weeksBack: WEEKS_BACK, weeksAhead: WEEKS_AHEAD }),
     listStartPackages({ ...activeFilters, pageSize: PACKAGE_PAGE_SIZE }),
     listStartPackages({ ...releasedFilters, pageSize: PACKAGE_PAGE_SIZE }),
     canWrite ? listStartPackageCandidates(scope) : Promise.resolve([]),
@@ -136,6 +139,8 @@ export async function getStartsDesk(
       weekStart,
       targetStarts: perCommunity.reduce((sum, entry) => sum + entry.targetStarts, 0),
       perCommunity,
+      throughput: throughput.filter((entry) => entry.weekStart === weekStart)
+        .map((entry) => ({ divisionId: entry.divisionId, scopeName: entry.scopeName, target: entry.target, filled: entry.filled })),
     }
   })
 

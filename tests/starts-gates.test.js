@@ -311,33 +311,52 @@ test("an open condition required before vertical start holds the lot's phase, an
   assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "entitlements"), "passed", "phase 1's open condition does not hold phase 2")
 })
 
-test("the financing gate holds a sold house while a milestone its agreement requires before start is open", async () => {
-  const tables = gateFixture({
-    selectionGroups: [{ id: "psg-1", org_id: ORG, project_id: PROJECT, status: "locked" }],
-    poRuns: [{ id: "run-1", org_id: ORG, project_id: PROJECT, mode: "dry_run", status: "succeeded" }],
-  })
-  const definition = {
-    id: "def-financing", org_id: ORG, key: "financing", label: "Financing milestones clear", check_kind: "auto",
-    auto_source: "agreement_milestones_clear", applies_when: "always", sort_order: 80, is_active: true, requires_attestation_permission: null, description: null,
+test("the financing gate clears only on the lender's approval or a cash buyer's proof of funds, with the document on file", async () => {
+  const CONTRACT = "00000000-0000-4000-8000-0000000000c1"
+  const FILE = "00000000-0000-4000-8000-0000000000f1"
+  const setup = ({ agreement = true, milestones = [], files = [{ id: FILE, org_id: ORG, project_id: PROJECT, archived_at: null }] } = {}) => {
+    const tables = gateFixture({
+      selectionGroups: [{ id: "psg-1", org_id: ORG, project_id: PROJECT, status: "locked" }],
+      poRuns: [{ id: "run-1", org_id: ORG, project_id: PROJECT, mode: "dry_run", status: "succeeded" }],
+    })
+    const definition = {
+      id: "def-financing", org_id: ORG, key: "financing", label: "Financing milestones clear", check_kind: "auto",
+      auto_source: "agreement_milestones_clear", applies_when: "always", sort_order: 80, is_active: true, requires_attestation_permission: null, description: null,
+    }
+    tables.start_gate_definitions.push(definition)
+    tables.start_package_gates.push({
+      id: "gate-financing", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: definition.id, status: "pending",
+      passed_via: null, attested_by: null, attested_at: null, waived_reason: null, evidence_file_id: null,
+      created_at: "2026-09-01T00:09:00.000Z", definition, attested_user: null,
+    })
+    tables.contracts = [...(tables.contracts ?? []), ...(agreement ? [{ id: CONTRACT, org_id: ORG, project_id: PROJECT, contract_type: "purchase_agreement", status: "active" }] : [])]
+    tables.files = files
+    tables.agreement_milestones = milestones.map((row, index) => ({
+      id: `00000000-0000-4000-8000-0000000000a${index}`, org_id: ORG, project_id: PROJECT, contract_id: CONTRACT,
+      title: row.template_key, required_before: null, due_on: null, evidence_file_id: null, ...row,
+    }))
+    const harness = buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+    return { harness, financing: async () => statusOf(await loadStarts().refreshAutoGates(PACKAGE), "financing") }
   }
-  tables.start_gate_definitions.push(definition)
-  tables.start_package_gates.push({
-    id: "gate-financing", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: definition.id, status: "pending",
-    passed_via: null, attested_by: null, attested_at: null, waived_reason: null, evidence_file_id: null,
-    created_at: "2026-09-01T00:09:00.000Z", definition, attested_user: null,
-  })
-  tables.contracts = [...(tables.contracts ?? []), { id: "00000000-0000-4000-8000-0000000000c1", org_id: ORG, project_id: PROJECT, contract_type: "purchase_agreement", status: "active" }]
-  const milestone = (id, title, requiredBefore) => ({ id, org_id: ORG, project_id: PROJECT, contract_id: "00000000-0000-4000-8000-0000000000c1", title, status: "open", required_before: requiredBefore, due_on: null })
-  tables.agreement_milestones = [
-    milestone("00000000-0000-4000-8000-0000000000a1", "Loan approval issued", "start"),
-    milestone("00000000-0000-4000-8000-0000000000a2", "Lender clear to close", "closing"),
-  ]
-  const harness = buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+  const approval = (patch = {}) => ({ template_key: "lender:loan_approval", status: "open", ...patch })
 
-  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "financing"), "pending")
-
-  harness.store.agreement_milestones.find((row) => row.title === "Loan approval issued").status = "satisfied"
-  assert.equal(statusOf(await loadStarts().refreshAutoGates(PACKAGE), "financing"), "passed", "a milestone held for closing does not hold the start")
+  // A financed buyer with nothing attached does not pass, however quiet the agreement is.
+  assert.equal(await setup({ milestones: [approval()] }).financing(), "pending")
+  // No financing record at all on a sold home is absence, not a pass.
+  assert.equal(await setup({ milestones: [] }).financing(), "pending")
+  // Satisfied with the approval document on the home clears it.
+  assert.equal(await setup({ milestones: [approval({ status: "satisfied", evidence_file_id: FILE })] }).financing(), "passed")
+  // A waiver has no document; an archived or foreign file is no document either.
+  assert.equal(await setup({ milestones: [approval({ status: "waived" })] }).financing(), "pending")
+  assert.equal(await setup({ milestones: [approval({ status: "satisfied", evidence_file_id: FILE })], files: [{ id: FILE, org_id: ORG, project_id: PROJECT, archived_at: "2026-09-02T00:00:00.000Z" }] }).financing(), "pending")
+  // A cash buyer clears on proof of funds, and an unproved one does not.
+  const funds = (patch = {}) => ({ template_key: "buyer:proof_of_funds", status: "open", ...patch })
+  assert.equal(await setup({ milestones: [funds()] }).financing(), "pending")
+  assert.equal(await setup({ milestones: [funds({ status: "satisfied", evidence_file_id: FILE })] }).financing(), "passed")
+  // A spec home has no buyer to prove.
+  assert.equal(await setup({ agreement: false }).financing(), "passed")
+  // Anything the agreement still holds before start holds it, even with the approval on file.
+  assert.equal(await setup({ milestones: [approval({ status: "satisfied", evidence_file_id: FILE }), { template_key: "contingency:home_sale:1", status: "open", required_before: "start" }] }).financing(), "pending")
 })
 
 test("a house waits on its approved permit, which the database decides and nobody waives", async () => {
@@ -373,4 +392,68 @@ test("a manual gate is attested with a file on the home, unless it is a permissi
   assert.equal(gateRequiresEvidence({ key: "final_approval", checkKind: "manual", requiresAttestationPermission: null }), false)
   assert.equal(gateRequiresEvidence({ key: "board_signoff", checkKind: "manual", requiresAttestationPermission: "start.release" }), false)
   assert.equal(gateRequiresEvidence({ key: "plot_plan", checkKind: "auto", requiresAttestationPermission: null }), false)
+})
+
+test("a gate defined after the package opened is added to it the next time its desk is read", async () => {
+  const tables = gateFixture()
+  tables.start_gate_definitions.push({
+    id: "def-survey", org_id: ORG, key: "survey", label: "Survey", check_kind: "manual", auto_source: null, applies_when: "always",
+    is_active: true, requires_attestation_permission: null, description: null, sort_order: 95,
+  })
+  const harness = buildHarness({ tables, instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+  const healed = []
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (name, args) => { if (name === "heal_start_package_gates") healed.push(args.p_package_id); return rpc(name, args) }
+
+  const gates = await loadStarts().refreshAutoGates(PACKAGE)
+
+  assert.deepEqual(healed, [PACKAGE])
+  assert.equal(statusOf(gates, "survey"), "pending")
+  healed.length = 0
+  await loadStarts().refreshAutoGates(PACKAGE)
+  assert.deepEqual(healed, [], "a package that holds every active gate is not healed again")
+})
+
+test("a gate definition is saved in one transaction that names the communities with a price book", async () => {
+  const harness = buildHarness({ tables: gateFixture(), instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+  harness.store.start_packages[0].status = "open"
+  const saved = []
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (name, args) => {
+    if (name !== "save_start_gate_definition") return rpc(name, args)
+    saved.push(args)
+    return { data: { definition: { id: "def-new", key: args.p_key, label: args.p_label, description: null, check_kind: args.p_check_kind, auto_source: null, requires_attestation_permission: null, applies_when: args.p_applies_when, sort_order: args.p_sort_order, is_active: args.p_is_active }, packages_updated: 1 }, error: null }
+  }
+
+  const definition = await loadStarts().upsertGateDefinition({ key: "soil_report", label: "Soil report", checkKind: "manual", appliesWhen: "always", sortOrder: 70, isActive: true })
+
+  assert.equal(saved.length, 1)
+  assert.deepEqual(saved[0].p_purchasing_communities, [harness.store.start_packages[0].community_id], "the open package's community has a price book")
+  assert.equal(saved[0].p_actor_id, harness.context.userId)
+  assert.deepEqual({ id: definition.id, key: definition.key, isActive: definition.isActive }, { id: "def-new", key: "soil_report", isActive: true })
+  assert.equal(harness.store.start_gate_definitions.some((row) => row.key === "soil_report"), false, "the service writes no definition itself")
+
+  saved.length = 0
+  await loadStarts().upsertGateDefinition({ key: "soil_report", label: "Soil report", checkKind: "manual", appliesWhen: "always", sortOrder: 70, isActive: false })
+  assert.deepEqual(saved[0].p_purchasing_communities, [], "an inactive definition fans out to nothing")
+})
+
+test("Arc support standing reads the starts desk but changes nothing on it", async () => {
+  const harness = buildHarness({ tables: gateFixture(), instantiate: async () => ({ success: true, skipped: [], warnings: [], errors: [] }) })
+  require("./support/starts-harness").stubModule("@/lib/services/authorization", {
+    authorize: async () => ({ allowed: true }),
+    getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }),
+    hasPlatformOrgContext: async () => true,
+  })
+  const calls = []
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (name, args) => { calls.push(name); return rpc(name, args) }
+  const starts = loadStarts()
+
+  await assert.rejects(starts.cancelStartPackage(PACKAGE, { reason: "Support cancelled this by mistake" }), /read-only for starts/)
+  await assert.rejects(starts.updateStartPackage(PACKAGE, { notes: "support note" }), /read-only for starts/)
+  await assert.rejects(starts.reopenGate(PACKAGE, "gate-final_approval"), /read-only for starts/)
+  await assert.rejects(starts.upsertGateDefinition({ key: "soil_report", label: "Soil report", checkKind: "manual", appliesWhen: "always", sortOrder: 70, isActive: true }), /read-only for starts/)
+  assert.deepEqual(calls, [], "no mutation reaches the database")
+  assert.ok((await starts.getStartPackage(PACKAGE)).id, "the desk still reads")
 })

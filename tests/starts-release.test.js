@@ -491,7 +491,7 @@ test("rejected trade sends retry independently after release", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
   harness.store.schedule_assignments = [{ id: "assignment", org_id: ORG, project_id: PROJECT, company_id: "trade" }]
   require("./support/starts-harness").stubModule("@/lib/services/trade-lookahead", {
-    sendTradeLookahead: async () => { throw new Error("Mail provider unavailable") },
+    sendReleaseTradeNotice: async () => { throw new Error("Mail provider unavailable") },
     sendScheduleChangeDigestJob: async () => undefined,
   })
   await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
@@ -509,8 +509,9 @@ test("mail recovery completes its own job without repeating the home release", a
   harness.store.schedule_assignments = [{ id: "assignment", org_id: ORG, project_id: PROJECT, company_id: "trade" }]
   let fail = true, sent = 0
   require("./support/starts-harness").stubModule("@/lib/services/trade-lookahead", {
-    sendTradeLookahead: async (_company, opts) => {
-      assert.equal(opts.releaseNoticeKey, PACKAGE)
+    sendReleaseTradeNotice: async (input) => {
+      assert.equal(input.packageId, PACKAGE)
+      assert.equal(input.projectId, PROJECT)
       if (fail) throw new Error("Mail unavailable")
       sent += 1
       return { sent: true }
@@ -571,7 +572,7 @@ test("queued release cannot operate outside the actor's current community or lot
     harness.store.communities[0].division_id = hiddenParent === "community" ? "other" : "division"
     harness.store.start_packages[0].lot.division_id = hiddenParent === "lot" ? "other" : "division"
     require("./support/starts-harness").stubModule("@/lib/services/authorization", {
-      getDivisionAccessForUser: async () => ({ assignedOnly: true, divisionIds: ["division"] }),
+      getDivisionAccessForUser: async () => ({ assignedOnly: true, divisionIds: ["division"] }), hasPlatformOrgContext: async () => false,
       getDivisionScopedProjectIds: async () => null,
     })
     const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
@@ -639,12 +640,12 @@ test("queued trade jobs recheck current permission and source division before de
         getCurrentUserPermissions: async () => ({ permissions: [] }),
       })
       require("./support/starts-harness").stubModule("@/lib/services/authorization", {
-        getDivisionAccessForUser: async () => ({ assignedOnly: true, divisionIds: ["other"] }),
+        getDivisionAccessForUser: async () => ({ assignedOnly: true, divisionIds: ["other"] }), hasPlatformOrgContext: async () => false,
         getDivisionScopedProjectIds: async () => null,
       })
       let deliveries = 0
       require("./support/starts-harness").stubModule("@/lib/services/trade-lookahead", {
-        sendTradeLookahead: async () => { deliveries += 1; return { sent: true } },
+        sendReleaseTradeNotice: async () => { deliveries += 1; return { sent: true, skipped: false } },
         sendScheduleChangeDigestJob: async () => { deliveries += 1 },
       })
       const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
@@ -730,16 +731,11 @@ test("a previously skipped PO step is generated when purchasing becomes applicab
 })
 
 function afterFinalize(harness, mutate) {
-  const from = harness.supabase.from.bind(harness.supabase)
-  harness.supabase.from = table => {
-    const query = from(table), run = query.run.bind(query)
-    query.run = () => {
-      const result = run()
-      if (table === "start_release_steps" && query.action === "update" && query.payload?.status === "completed"
-        && query.filters.every(filter => filter(harness.store.start_release_steps.find(step => step.step_key === "finalize")))) mutate()
-      return result
-    }
-    return query
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (name, args) => {
+    const result = await rpc(name, args)
+    if (name === "settle_release_step" && args.p_step === "finalize") mutate()
+    return result
   }
 }
 
@@ -875,6 +871,19 @@ test("passed automatic gates are re-derived from current evidence before publica
   assert.match(harness.store.outbox[0].last_error, /evidence no longer satisfies.*selections_locked/)
 })
 
+test("an attested gate's evidence file must still be on the home at publication", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  afterFinalize(harness, () => {
+    harness.store.start_gate_definitions.push({ id: "def-soil", org_id: ORG, key: "soil_report", check_kind: "manual", applies_when: "always", is_active: true })
+    harness.store.start_package_gates.push({ id: "gate-soil", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: "def-soil", status: "passed", passed_via: "attested", evidence_file_id: "file-soil" })
+    harness.store.files = [{ id: "file-soil", org_id: ORG, project_id: PROJECT, archived_at: "2026-09-02T00:00:00.000Z" }]
+  })
+  const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
+  assert.equal(summary.failed, 1)
+  assert.notEqual(harness.store.start_packages[0].status, "released")
+  assert.match(harness.store.outbox[0].last_error, /soil_report gate's evidence is no longer on the home/)
+})
+
 test("a failed publication emits no release event or user notification", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
   failRpc(harness, "publish_start_release", () => true, "Publication rejected")
@@ -914,7 +923,7 @@ test("confirmation runs after publication and retries without rebuilding artifac
 test("confirmation rechecks recipient access before exposing the released home", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
   require("./support/starts-harness").stubModule("@/lib/services/authorization", {
-    getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }),
+    getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }), hasPlatformOrgContext: async () => false,
     authorize: async () => ({ allowed: false }),
   })
   const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
@@ -988,4 +997,105 @@ test("a configuration rule that rejects the home stops the release before trades
   assert.equal(steps.get("notify_trades").status, "failed")
   assert.equal(steps.get("finalize").status, "pending")
   assert.equal(harness.store.outbox[0].last_error, "Elevation B is not offered in this community")
+})
+
+test("jobs are claimed one at a time so no lease starts running before its job does", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  const past = new Date(Date.now() - 60_000).toISOString()
+  harness.store.outbox.push({
+    id: 2, org_id: harness.store.orgs[0].id, job_type: "start_package_notice", status: "pending",
+    payload: {}, retry_count: 0, run_at: past, updated_at: past,
+  })
+  const limits = []
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (fn, args) => {
+    if (fn === "claim_starts_jobs") limits.push(args.p_limit)
+    return rpc(fn, args)
+  }
+
+  await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+
+  assert.ok(limits.filter((limit) => limit === 0).length === 1, "one readiness probe")
+  assert.ok(limits.filter((limit) => limit !== 0).length >= 2, "each job has its own claim")
+  assert.ok(limits.filter((limit) => limit !== 0).every((limit) => limit === 1))
+})
+
+test("a database without the claim protocol is left alone: the worker stays inert instead of failing", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  const called = []
+  harness.supabase.rpc = async (fn, args) => {
+    called.push(fn)
+    return fn === "claim_starts_jobs" && args.p_limit === 0 ? { data: null, error: { code: "PGRST202", message: "Could not find the function" } } : rpc(fn, args)
+  }
+
+  const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+
+  assert.deepEqual(summary, { processed: 0, failed: 0, remaining: 0, notCutOver: true })
+  assert.deepEqual(called, ["claim_starts_jobs"], "nothing is claimed, recovered or swept")
+  assert.equal(harness.store.outbox[0].status, "pending")
+  assert.equal(harness.calls.instantiate.length, 0)
+})
+
+test("a database that answers the probe with an ordinary error still runs the worker", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (fn, args) => fn === "claim_starts_jobs" && args.p_limit === 0
+    ? { data: null, error: { code: "P0001", message: "Invalid starts claim limit" } } : rpc(fn, args)
+
+  const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+
+  assert.equal(summary.notCutOver, undefined)
+  assert.equal(summary.processed, 1)
+})
+
+function watchSettlements(harness, refuse = () => null) {
+  const settled = []
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (name, args) => {
+    if (name !== "settle_release_step") return rpc(name, args)
+    settled.push([args.p_step, args.p_expected_count])
+    const message = refuse(args.p_step)
+    return message ? { data: null, error: { message } } : rpc(name, args)
+  }
+  return settled
+}
+
+test("each artifact step closes through one settlement that promises the count it built", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  const settled = watchSettlements(harness)
+
+  const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
+
+  assert.equal(summary.processed, 1)
+  assert.deepEqual(settled, [["budget", 4], ["schedule", 1], ["checklists", 1], ["drawings", null], ["notify_trades", null], ["finalize", null]])
+  assert.ok(harness.calls.instantiate.every((call) => call.releaseKeyed === true), "a release builds only keyed, replay-safe artifacts")
+  assert.equal(stepsByKey(harness.store).get("schedule").status, "completed")
+})
+
+test("a step the project ledger skipped, or a budget handed to purchasing, promises no count", async () => {
+  const skipping = buildHarness({ purchasing: false, instantiate: async (input) => ({ success: true, skipped: input.steps, warnings: [], errors: [] }) })
+  const skipped = watchSettlements(skipping)
+  await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
+  assert.deepEqual(skipped.filter(([step]) => ["budget", "schedule", "checklists"].includes(step)), [["budget", null], ["schedule", null], ["checklists", null]])
+
+  const purchasing = buildHarness({ purchasing: true, instantiate: succeedingInstantiation() })
+  const delegated = watchSettlements(purchasing)
+  await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
+  assert.deepEqual(delegated.find(([step]) => step === "budget"), ["budget", null])
+})
+
+test("a step that cannot account for what it built does not complete, and the release fails on it", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  watchSettlements(harness, (step) => step === "schedule" ? "Release step schedule receipt is incomplete: 0 of 1 built" : null)
+
+  const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5000 })
+
+  assert.equal(summary.failed, 1)
+  const steps = stepsByKey(harness.store)
+  assert.equal(steps.get("budget").status, "completed")
+  assert.equal(steps.get("schedule").status, "failed")
+  assert.match(steps.get("schedule").error, /receipt is incomplete/)
+  assert.equal(steps.get("checklists").status, "pending", "nothing after the failed step ran")
+  assert.notEqual(harness.store.start_packages[0].status, "released")
 })

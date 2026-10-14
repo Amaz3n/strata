@@ -392,7 +392,13 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
         }
       }
       if (isProductionProjectPosture(posture) && superintendentId !== (project.superintendent_id ?? null)) {
-        unwrapAction(await setProjectSuperintendentAction(project.id, superintendentId))
+        const assignment = unwrapAction(await setProjectSuperintendentAction(project.id, superintendentId))
+        if (!assignment.assigned) {
+          toast.error("Superintendent not assigned", {
+            description: `They already run ${assignment.houses} houses, at their limit of ${assignment.limit}. ${assignment.canOverride ? "Assign past it with a reason from the house's start package." : "A starts coordinator can assign past it with a reason."}`,
+          })
+          return
+        }
       }
       toast.success("Project updated")
       onOpenChange(false)

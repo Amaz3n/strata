@@ -9,7 +9,8 @@ export const maxDuration = 300
 
 const runTrackedWorker = withCronRun("starts-pipeline", async () => {
   const summary = await runStartsPipeline({ deadlineMs: Date.now() + 270_000 })
-  return NextResponse.json({ ok: summary.failed === 0, ...summary }, { status: summary.failed > 0 ? 207 : 200 })
+  const partial = summary.failed > 0 || (summary.copyCleanupFailed ?? 0) > 0
+  return NextResponse.json({ ok: !partial, ...summary }, { status: partial ? 207 : 200 })
 })
 
 async function handler(request: NextRequest) {

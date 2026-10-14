@@ -60,10 +60,17 @@ test("executing an agreement seeds its lender, title and signed contingency mile
   assert.ok(history.every((row) => row.source === "materialized"))
 })
 
-test("a cash agreement owes only the title commitment", async (t) => {
+test("a cash agreement owes the title commitment and proof of funds before start", async (t) => {
   const db = await createDatabase(t)
   const home = await soldHome(db, { snapshot: { financing: "cash" } })
-  assert.deepEqual((await home.milestones()).map((row) => row.kind), ["title_commitment"])
+  assert.deepEqual((await home.milestones()).map((row) => [row.template_key, row.kind, row.required_before, row.evidence_required]), [
+    ["buyer:proof_of_funds", "financing", "start", true],
+    ["title:title_commitment", "title_commitment", "closing", true],
+  ])
+  await rpc(db, "seed_proof_of_funds_milestone", { p_contract_id: home.contract.id })
+  assert.equal((await home.milestones()).length, 2)
+  const financed = await soldHome(db, { snapshot: { financing: "financed" } })
+  assert.equal(await financed.milestone("buyer:proof_of_funds"), undefined)
 })
 
 test("a milestone is satisfied only after its prerequisites, and with evidence on its own home", async (t) => {

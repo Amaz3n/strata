@@ -163,16 +163,25 @@ export const scheduleTemplateInputSchema = z.object({
 
 export type ScheduleTemplateInput = z.infer<typeof scheduleTemplateInputSchema>
 
-// Bulk update schema for drag operations
+// Bulk update schema: a drag, a reorder, or an approved reschedule. A date move
+// carries both dates; dependents are recomputed on the server, never trusted
+// from the client. A move that pushes a promised close past its date also
+// names the houses whose breach the actor accepted, and why.
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a calendar date")
+
 export const scheduleBulkUpdateSchema = z.object({
   items: z.array(z.object({
     id: z.string().uuid(),
-    start_date: z.string().optional(),
-    end_date: z.string().optional(),
+    start_date: calendarDate.optional(),
+    end_date: calendarDate.optional(),
     sort_order: z.number().int().optional(),
     progress: z.number().int().min(0).max(100).optional(),
     status: z.enum(scheduleStatuses).optional(),
-  })),
+  }).refine((item) => (item.start_date === undefined) === (item.end_date === undefined), "A date move needs both a start and an end date")
+    .refine((item) => !item.start_date || !item.end_date || item.end_date >= item.start_date, "A task cannot end before it starts"))
+    .min(1).max(200),
+  acknowledge_close_impacts: z.array(z.string().uuid()).max(200).optional(),
+  reason: z.string().trim().min(10, "Say why the date moves (at least 10 characters)").max(2000).optional(),
 })
 
 export type ScheduleBulkUpdate = z.infer<typeof scheduleBulkUpdateSchema>

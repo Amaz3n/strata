@@ -75,6 +75,8 @@ import {
   listTemplates as listScheduleTemplates,
   applyTemplate as applyScheduleTemplate,
   bulkUpdateScheduleItems,
+  previewScheduleReschedule,
+  type ScheduleReschedulePreview,
   createDependency,
   updateDependency,
   deleteDependency,
@@ -2556,36 +2558,46 @@ export async function updateProjectScheduleItemAction(
   })
 }
 
+async function assertItemsInProject(projectId: string, itemIds: string[]) {
+  const { supabase, orgId } = await requireOrgContext()
+  const { data, error } = await supabase
+    .from("schedule_items")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .in("id", itemIds)
+  if (error) throw new Error(`Failed to validate schedule items: ${error.message}`)
+  if (new Set((data ?? []).map((item) => item.id)).size !== new Set(itemIds).size) {
+    throw new Error("One or more schedule items are not part of this project")
+  }
+  return orgId
+}
+
 export async function bulkUpdateProjectScheduleItemsAction(
   projectId: string,
   input: unknown
 ): Promise<ActionResult<ScheduleItem[]>> {
   return run(async () => {
       const parsed = scheduleBulkUpdateSchema.parse(input)
-      if (parsed.items.length === 0) return []
-
-      const { supabase, orgId } = await requireOrgContext()
-      const requestedIds = parsed.items.map((item) => item.id)
-
-      const { data: scopedItems, error } = await supabase
-        .from("schedule_items")
-        .select("id")
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .in("id", requestedIds)
-
-      if (error) {
-        throw new Error(`Failed to validate schedule items: ${error.message}`)
-      }
-
-      const scopedIdSet = new Set((scopedItems ?? []).map((item) => item.id))
-      if (scopedIdSet.size !== requestedIds.length) {
-        throw new Error("One or more schedule items are not part of this project")
-      }
-
-      const updated = await bulkUpdateScheduleItems({ items: parsed.items }, orgId)
+      const orgId = await assertItemsInProject(projectId, parsed.items.map((item) => item.id))
+      const updated = await bulkUpdateScheduleItems(parsed, orgId)
       revalidatePath(`/projects/${projectId}`)
       return updated
+  })
+}
+
+/** What a drag would move, and which promised closes it would push, before it is applied. */
+export async function previewProjectScheduleRescheduleAction(
+  projectId: string,
+  input: unknown
+): Promise<ActionResult<ScheduleReschedulePreview>> {
+  return run(async () => {
+      const parsed = scheduleBulkUpdateSchema.parse(input)
+      const moves = parsed.items.flatMap((item) =>
+        item.start_date && item.end_date ? [{ id: item.id, start_date: item.start_date, end_date: item.end_date }] : [])
+      if (!moves.length) throw new Error("Nothing to preview")
+      const orgId = await assertItemsInProject(projectId, moves.map((move) => move.id))
+      return previewScheduleReschedule(moves, orgId)
   })
 }
 
