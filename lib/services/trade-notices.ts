@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { requireOrgContext } from "@/lib/services/context"
+import { decryptPortalToken } from "@/lib/services/portal-credentials"
 import { requirePermission } from "@/lib/services/permissions"
 import { getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
@@ -31,18 +32,23 @@ export interface TradeNoticeDraft {
  * or revoked token is not a link; with none, the email carries no button.
  */
 export async function resolveTradePortalLink(supabase: SupabaseClient, orgId: string, companyId: string, projectId: string | null) {
-  const { data, error } = await supabase.from("portal_access_tokens").select("token,project_id,created_at")
+  const { data, error } = await supabase.from("portal_access_tokens").select("token_encrypted,project_id,created_at")
     .eq("org_id", orgId).eq("company_id", companyId).eq("portal_type", "sub")
     .is("revoked_at", null).is("paused_at", null)
     .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
     .order("created_at", { ascending: false }).limit(50)
   if (error) throw new Error(`Failed to load trade portal access: ${error.message}`)
-  const usable = data ?? []
-  const forHouse = projectId ? usable.find((token) => token.project_id === projectId) : undefined
-  const token = forHouse ?? usable.find((candidate) => candidate.project_id === null)
-  if (!token) return null
+  // Only the encrypted copy of a token can be turned back into a link; a token minted before
+  // encryption has none, and is skipped rather than guessed at.
+  const usable = (data ?? []).flatMap((row) => {
+    const token = decryptPortalToken(row.token_encrypted)
+    return token ? [{ token, projectId: row.project_id }] : []
+  })
+  const forHouse = projectId ? usable.find((candidate) => candidate.projectId === projectId) : undefined
+  const link = forHouse ?? usable.find((candidate) => candidate.projectId === null)
+  if (!link) return null
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")
-  return `${appUrl}/s/${token.token}`
+  return `${appUrl}/s/${link.token}`
 }
 
 function render(snapshot: TradeNoticeSnapshot) {

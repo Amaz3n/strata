@@ -143,7 +143,9 @@ test("a trade's link is its token for the house, else its vendor token, never a 
   const org = "00000000-0000-4000-8000-000000000001"
   const company = "00000000-0000-4000-8000-000000000002"
   const house = "00000000-0000-4000-8000-000000000003"
-  const token = (value, fields) => ({ id: value, org_id: org, company_id: company, portal_type: "sub", project_id: null, revoked_at: null, paused_at: null, expires_at: null, created_at: "2026-10-01T00:00:00Z", token: value, ...fields })
+  process.env.PORTAL_ACCESS_SECRET ??= "trade-notice-test-secret-with-32-plus-chars"
+  const { encryptPortalToken } = freshRequire("lib/services/portal-credentials.ts")
+  const token = (value, fields) => ({ id: value, org_id: org, company_id: company, portal_type: "sub", project_id: null, revoked_at: null, paused_at: null, expires_at: null, created_at: "2026-10-01T00:00:00Z", token_encrypted: encryptPortalToken(value), ...fields })
   const links = async (tokens, project) => {
     stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => null })
     const { resolveTradePortalLink } = freshRequire("lib/services/trade-notices.ts")
@@ -154,4 +156,5 @@ test("a trade's link is its token for the house, else its vendor token, never a 
   assert.match(await links([token("vendor"), token("paused", { project_id: house, paused_at: "2026-10-02T00:00:00Z" })], house), /\/s\/vendor$/)
   assert.match(await links([token("vendor"), token("expired", { project_id: house, expires_at: "2020-01-01T00:00:00Z" })], house), /\/s\/vendor$/)
   assert.equal(await links([token("revoked", { revoked_at: "2026-10-02T00:00:00Z" }), token("other-house", { project_id: "x" })], house), null)
+  assert.match(await links([token("vendor"), token("unreadable", { project_id: house, token_encrypted: null })], house), /\/s\/vendor$/, "a token with no stored copy cannot become a link")
 })
