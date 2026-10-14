@@ -208,12 +208,23 @@ update public.start_packages set status='cancelled' where id=${kit.q(home.packag
 
 async function assigningPastCapacity(kit, expected, check) {
   const { org } = await world(kit)
+  try {
+    return await assigningPastCapacityRun(kit, org, expected, check)
+  } finally {
+    // Leave the org as found even when a check throws: built-in limits, nobody holding these houses.
+    const capacity = app("superintendent-capacity")
+    await kit.as(org.team.starts, () => capacity.clearSuperintendentLimits(org.team.superintendent.userId))
+    await kit.as(org.team.starts, () => capacity.setSuperintendentLimits({ userId: null, warnHouses: 10, maxHouses: 15 }))
+    kit.sql(`update public.projects set superintendent_id=null where org_id=${kit.q(org.orgId)} and superintendent_id=${kit.q(org.team.superintendent.userId)}`)
+  }
+}
+
+async function assigningPastCapacityRun(kit, org, expected, check) {
   const starts = app("starts"), capacity = app("superintendent-capacity")
   const person = org.team.superintendent
   const homes = []
   for (const index of [5, 6, 7]) homes.push(await specHome(kit, org, index))
   const fourth = await houseFixture(kit, org, "capacity-fourth")
-  const everyProject = [...homes.map((home) => home.projectId), fourth.projectId]
   const base = housesOf(kit, org, person.userId)
   const limits = (userId, warnOver, maxOver) => kit.as(org.team.starts, () => capacity.setSuperintendentLimits({ userId, warnHouses: base + warnOver, maxHouses: base + maxOver }))
   const assign = (actor, home, reason) => kit.as(actor, () => starts.setProjectSuperintendent(home.projectId, person.userId, reason ? { overReason: reason } : {}))
@@ -239,14 +250,10 @@ async function assigningPastCapacity(kit, expected, check) {
   const reason = "Covering a medical leave through the month"
   const override = await assign(org.team.starts, fourth, reason)
   observed.override = { assigned: override.assigned, overCapacity: override.overCapacity }
-  const audited = one(kit, `select after_data->>'over_capacity' over, after_data->>'reason' reason from public.audit_log where entity_id=${kit.q(fourth.projectId)} and source='starts.superintendent_assigned' order by id desc limit 1`)
-  observed.audit = { overCapacity: audited.over, reason: audited.reason === reason }
+  const audited = one(kit, `select after_data->>'over_capacity' is_over, after_data->>'reason' reason from public.audit_log where entity_id=${kit.q(fourth.projectId)} and source='starts.superintendent_assigned' order by id desc limit 1`)
+  observed.audit = { overCapacity: audited.is_over, reason: audited.reason === reason }
   observed.scoping = Number(one(kit, `select count(*)::int n from public.project_members where project_id=${kit.q(fourth.projectId)} and user_id=${kit.q(person.userId)}`).n)
   observed.limitsAreStartRelease = await outcome(() => kit.as(org.projectLead, () => capacity.setSuperintendentLimits({ userId: null, warnHouses: 5, maxHouses: 6 })))
-  // Leave the org as found: built-in limits, nobody holding these houses.
-  await kit.as(org.team.starts, () => capacity.clearSuperintendentLimits(person.userId))
-  await kit.as(org.team.starts, () => capacity.setSuperintendentLimits({ userId: null, warnHouses: 10, maxHouses: 15 }))
-  unassign(kit, everyProject)
   check.equal("a superintendent is assigned only up to their limit (their own, else the org default, else ten and fifteen); the next house answers with the limit instead of assigning, a releaser goes past it with a reason that the audit keeps, and nobody else can set limits", expected.expected, observed)
   return { orgId: org.orgId, projectId: fourth.projectId }
 }
@@ -314,8 +321,8 @@ insert into public.start_packages(org_id,lot_id,community_id,project_id,status,t
   const reason = "Buyer's rate lock expires next week"
   const confirmed = await kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: day(0), overTargetReason: reason }))
   observed.confirmed = confirmed.released === true
-  const audit = one(kit, `select after_data->>'over_slot' over, after_data->>'over_reason' reason from public.audit_log where entity_id=${kit.q(first.packageId)} and source='starts.release_queued' order by id desc limit 1`)
-  observed.audit = { overSlot: audit.over, reason: audit.reason === reason }
+  const audit = one(kit, `select after_data->>'over_slot' is_over, after_data->>'over_reason' reason from public.audit_log where entity_id=${kit.q(first.packageId)} and source='starts.release_queued' order by id desc limit 1`)
+  observed.audit = { overSlot: audit.is_over, reason: audit.reason === reason }
   observed.event = Number(one(kit, `select count(*)::int n from public.events where entity_id=${kit.q(first.packageId)} and event_type='start.released_over_slot'`).n)
   kit.sql(`update public.outbox set status='completed' where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(first.packageId)}`)
   // The org-wide cap counts the same houses: lifting the division's leaves the org's.

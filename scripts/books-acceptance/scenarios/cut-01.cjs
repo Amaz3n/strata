@@ -6,7 +6,7 @@
 //   legacy-tokenless-claims-drain-after-activation     claims the previous worker held are requeued, claimed under a token and finished once
 //   legacy-release-lease-is-honoured                   a package lease held by the previous worker defers the release, then is taken over
 //   members-cannot-forge-copy-state-or-drawing-jobs    the manifest, the drawing child jobs and every claim column are server-owned
-//   activation-smoke                                   the LOT-01 claim and forgery subcases and a real release pass after activation
+//   activation-smoke                                   the LOT-01 claim subcase and a real release pass after activation (forgery is the subcase above)
 //   rollback-restores-the-old-path-and-reactivation-is-clean   scripts/starts-cutover/rollback.sql and reactivate.sql
 //   race-legacy-and-token-claim-same-job               a tokenless and a tokened claim released together: exactly one wins
 //   race-two-pipeline-runs-process-each-job-once       two overlapping cron runs release each home once
@@ -287,15 +287,17 @@ async function activationSmoke(kit, spec, check) {
   const delegated = {}
   const settle = () => kit.sql(`update public.outbox set status='completed' where status in ('pending','processing','failed') and job_type in (${inList(kit, [...STARTS_TYPES, "process_drawing_set"])})`)
   settle()
-  for (const name of ["claim-tokens-enforce-the-current-lease", "browser-clients-cannot-forge-starts-ownership"]) {
+  for (const name of ["claim-tokens-enforce-the-current-lease"]) {
     const recorded = recorder()
     await require("./lot-01-starts.cjs").subcases[name](kit, lotExpected[name], recorded)
-    delegated[name] = recorded.checks.length > 0 && recorded.checks.every((entry) => entry.pass)
+    // A failing proof names its checks, so a red smoke says what broke.
+    const failing = recorded.checks.filter((entry) => !entry.pass).map((entry) => entry.label)
+    delegated[name] = recorded.checks.length > 0 && !failing.length ? true : failing
     settle()
   }
   const home = await readyHome(kit)
   const released = await seed.releaseHome(kit, home.org, { packageId: home.packageId, projectId: home.projectId, startInDays: home.startInDays })
-  equal(check, "after activation the LOT-01 claim and forgery proofs pass and a home releases through the tokened worker, once", spec.expected, {
+  equal(check, "after activation the LOT-01 claim proof passes and a home releases through the tokened worker, once", spec.expected, {
     delegated, release: released.released.status, releasedEvents: releasedEvents(kit, home), orders: orders(kit, home) > 0 ? "generated" : "none",
   })
   return { orgId: home.org.orgId }

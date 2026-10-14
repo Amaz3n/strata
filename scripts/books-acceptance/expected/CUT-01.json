@@ -121,17 +121,15 @@
       }
     },
     "activation-smoke": {
-      "derivation": "Policy: once the forward set is on and the fences are active, the claim and forgery proofs of LOT-01 hold and a home still releases. Delegates to LOT-01 claim-tokens-enforce-the-current-lease and browser-clients-cannot-forge-starts-ownership (both pass), then releases a spec home through the tokened worker: released, one start.released event, purchase orders generated.",
+      "derivation": "Policy: once the forward set is on and the fences are active, the claim proof of LOT-01 holds and a home still releases. Delegates to LOT-01 claim-tokens-enforce-the-current-lease (passes; the browser forgery proof is the members-cannot-forge subcase of this scenario), then releases a spec home through the tokened worker: released, one start.released event, purchase orders generated.",
       "inputs": {
         "delegates": [
-          "claim-tokens-enforce-the-current-lease",
-          "browser-clients-cannot-forge-starts-ownership"
+          "claim-tokens-enforce-the-current-lease"
         ]
       },
       "expected": {
         "delegated": {
-          "claim-tokens-enforce-the-current-lease": true,
-          "browser-clients-cannot-forge-starts-ownership": true
+          "claim-tokens-enforce-the-current-lease": true
         },
         "release": "released",
         "releasedEvents": 1,
