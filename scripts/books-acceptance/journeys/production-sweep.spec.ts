@@ -37,7 +37,7 @@ const PRODUCTION_ROUTES = [
   "/projects/[id]/inspections", "/projects/[id]/financials", "/projects/[id]/financials/payables", "/projects/[id]/documents",
   "/reports", "/directory", "/payables", "/billing", "/schedule", "/tasks",
   "/pipeline", "/settings/lead-intake", "/settings/milestone-feeds", "/settings/templates",
-  "/projects/[id]/permits", "/design-studio/studios",
+  "/projects/[id]/permits", "/design-studio/studios", "/schedule/trades",
 ]
 
 // A person's own desk, from docs/production-org-playbook.md: refused there is an error.
