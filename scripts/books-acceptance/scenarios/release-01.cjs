@@ -414,19 +414,25 @@ async function raceGateOrPackageEditVsQueueRelease(kit, spec, check) {
   for (const [round, action] of actions.entries()) {
     const home = await readyHome(kit, round === 0 ? "raceQueue" : "raceDetach")
     const week = one(kit, `select coalesce(target_week, date_trunc('week', ${q(seed.isoDay(0))}::date)::date)::text w from public.start_packages where id=${q(home.packageId)}`).w
-    const queue = serviceSession(`select 'Q:'||(public.queue_start_release(${q(home.orgId)},${q(home.packageId)},${q(home.actor.userId)},${q(seed.isoDay(0))}::date,${q(week)}::date,99,true))->>'queued';`)
+    const queue = serviceSession(`select 'Q:'||((public.queue_start_release(${q(home.orgId)},${q(home.packageId)},${q(home.actor.userId)},${q(seed.isoDay(0))}::date,${q(week)}::date,99,true))->>'queued');`)
     const edit = serviceSession(`select 'E:'||(${action.call(home).replace(/;$/, "")})::text;`)
     const [a, b] = await race(kit, [queue, edit])
     const status = packageStatus(kit, home)
+    const financed = one(kit, `select is_financed from public.start_packages where id=${q(home.packageId)}`).is_financed === true
+    const [queueWon, editWon] = [a.ok, b.ok]
+    // Serial order decides who wins. A cancel excludes the queue either way. A financing change leaves a ready package
+    // ready, so edit-then-queue lets both through; queue-then-edit refuses the edit (the package is releasing).
     rounds.push({
       action: action.name,
-      exactlyOneWon: [a.ok, b.ok].filter(Boolean).length === 1,
-      loserRefusedCleanly: [a, b].filter((r) => !r.ok).every((r) => /not ready|cannot be cancelled|Only open or ready|already being released/.test(r.stderr)),
-      consistent: a.ok ? status === "releasing" : ["open", "ready", "cancelled"].includes(status),
+      atLeastOneWon: queueWon || editWon,
+      loserRefusedCleanly: [a, b].filter((r) => !r.ok).every((r) => /not ready to release|cannot be cancelled|Only open or ready|already being released/.test(r.stderr)),
+      consistent: queueWon
+        ? status === "releasing" && (action.name === "cancel" ? !editWon : financed === editWon)
+        : editWon && (action.name === "cancel" ? status === "cancelled" : ["open", "ready"].includes(status) && financed),
     })
     kit.sql(`update public.outbox set status='completed' where org_id=${q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${q(home.packageId)} and status in ('pending','processing')`)
   }
-  equal(check, "an edit or a cancel against the queue, released together: exactly one wins, the loser is a clean refusal, and the package ends in the winner's state", spec.expected, { rounds })
+  equal(check, "an edit or a cancel against the queue, released together: the outcome is one of the serial orders, any refusal is a clean one, and the package ends in the state that order leaves", spec.expected, { rounds })
   return { orgId: org.orgId }
 }
 

@@ -64,6 +64,16 @@ test("the look-ahead excludes cancelled and completed work and keeps running wor
   assert.deepEqual([...LOOKAHEAD_EXCLUDED_STATUSES], ["cancelled", "completed"])
 })
 
+test("a released presold home is still planning and its work is in the look-ahead; a completed home's is not", async (t) => {
+  const db = await createDatabase(t)
+  const h = await house(db)
+  await h.task("Rough framing", 3, 6, { assign: true })
+  await db.query("update projects set status = 'planning' where id = $1", [h.project.id])
+  assert.equal((await h.workspace()).total, 1)
+  await db.query("update projects set status = 'completed' where id = $1", [h.project.id])
+  assert.equal((await h.workspace()).total, 0)
+})
+
 test("a vendor is inferred only from an approved or complete purchase order and the work is marked inferred", async (t) => {
   const db = await createDatabase(t)
   const h = await house(db)

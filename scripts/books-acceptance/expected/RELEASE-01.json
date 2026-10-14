@@ -218,20 +218,20 @@
       }
     },
     "race-gate-or-package-edit-vs-queue-release": {
-      "derivation": "Policy (EP07-11/13/17): one transaction at a time owns a package. Two rounds, each a ready package and two real sessions released together: queue_start_release against a financing change (which adds a pending financing gate and returns the package to open) and against a cancel. Both take the package lock first, so exactly one wins; the loser is refused because the package is no longer ready, or no longer cancellable once releasing; the package ends in the winner's state.",
+      "derivation": "Policy (EP07-11/13/17): one transaction at a time owns a package. Two rounds, each a ready package and two real sessions released together: queue_start_release against a financing change (is_financed set; the package stays ready) and against a cancel. Both take the package lock first, so the outcome is a serial order. Cancel: exactly one wins, the queue is refused as not ready, or the cancel as not cancellable once releasing. Financing change: queue first refuses the edit (the package is releasing and only open or ready packages are edited); edit first lets the queue through as well, ending releasing and financed. Any refusal is one of the package's own messages; the final state is what that order leaves.",
       "expected": {
         "rounds": [
           {
             "action": "financing change",
-            "exactlyOneWon": true,
             "loserRefusedCleanly": true,
-            "consistent": true
+            "consistent": true,
+            "atLeastOneWon": true
           },
           {
             "action": "cancel",
-            "exactlyOneWon": true,
             "loserRefusedCleanly": true,
-            "consistent": true
+            "consistent": true,
+            "atLeastOneWon": true
           }
         ]
       }

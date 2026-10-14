@@ -451,7 +451,7 @@ async function browserClientsCannotForgeOwnership(kit, expected, check) {
   const forgedSchedule = Number(kit.rows(`select count(*)::int n from public.schedule_items where project_id=${sqlq(kit, projectId)} and name like 'Forged%'`)[0].n)
   await transition(live, "complete")
 
-  const BROWSER = { refused: /authorized server action|require an authorized server|Browser cannot use starts worker headers|no row visible|row-level security|permission denied/i }
+  const BROWSER = { refused: /authorized server action|require an authorized server|authorized server writers|Browser cannot use starts worker headers|no row visible|row-level security|permission denied/i }
   const label = (message) => named(message, BROWSER)
   eq(check, "a browser cannot enqueue, rewrite or delete starts jobs, nor set a claim token, and cannot reach the job RPCs", expected.expected.jobs, {
     insertReleaseJob: label(insertRelease), insertNoticeJob: label(insertNotice), insertAnyJobWithAClaimToken: label(insertTokened),
@@ -570,7 +570,7 @@ async function coreReleaseWritesValidateCurrentOwnership(kit, expected, check) {
   const untouched = kit.rows(`select (select count(*)::int from public.projects where description='intruder') homes, (select count(*)::int from public.lots where notes='intruder') lots,
     (select count(*)::int from public.start_packages where notes='intruder') packages`)[0]
   // ancestry cannot be rewritten by the owner either
-  const moveLot = named(await attempt(() => rowGuard(() => w1.from("lots").update({ project_id: other.org.projectId }).eq("org_id", org.orgId).eq("id", lot.id).select("id"))), { "ancestry immutable": /ancestry and plan are immutable/ })
+  const moveLot = named(await attempt(() => rowGuard(() => w1.from("lots").update({ project_id: other.org.projectId }).eq("org_id", org.orgId).eq("id", lot.id).select("id"))), { "ancestry immutable": /ancestry and plan are immutable|Cancel the start package before detaching or moving this lot/ })
   const movePackage = named(await attempt(() => rowGuard(() => w1.from("start_packages").update({ project_id: other.org.projectId }).eq("org_id", org.orgId).eq("id", packageId).select("id"))), { "ancestry immutable": /ancestry is immutable/ })
 
   // the reaper reclaims the job: a new worker holds a new token, and until the previous lease is stale the new one cannot take the package

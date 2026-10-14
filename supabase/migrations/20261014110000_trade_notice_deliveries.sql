@@ -22,7 +22,7 @@
 --    moves, updated a job a worker had already claimed, and reported the
 --    wrong "from" date when an item moved twice. The first old_start is kept,
 --    the latest new_start wins, and a move back to where it started drops out.
--- 4. read_trade_lookahead_workspace: work that is cancelled or completed is
+-- 4. read_trade_lookahead_workspace and its readable homes (planning homes count): work that is cancelled or completed is
 --    not in the look-ahead, work that started before the window and is still
 --    running is, and a vendor inferred from a purchase order must hold an
 --    approved or complete one (a draft or canceled order awards nothing) and
@@ -325,6 +325,35 @@ grant execute on function public.enqueue_trade_schedule_change(uuid, uuid, uuid,
 -- ---------------------------------------------------------------------------
 -- 4. The look-ahead workspace.
 -- ---------------------------------------------------------------------------
+
+-- A presold home is opened as 'planning' and stays there after release (release
+-- moves its phase to delivery, not its status), so "active only" hid the work
+-- of every released presold home. A home is in the look-ahead from planning
+-- through active; completed, cancelled and on-hold homes are not.
+create or replace function public.trade_workspace_readable_homes(p_org uuid,p_actor uuid,p_division uuid,p_community uuid)
+returns table(project_id uuid) language plpgsql stable security definer set search_path='' as $$
+declare members uuid[];base text[];grants text[];denies text[];platform text[];effective text[];
+ assigned boolean;division_assigned boolean;divisions uuid[];all_homes boolean;bypass boolean;
+begin
+ if p_actor is null or p_org is null or not exists(select 1 from public.app_users where id=p_actor) then raise exception 'Trade workspace actor is unavailable' using errcode='42501';end if;
+ if not exists(select 1 from public.permissions where key='start.read') then raise exception 'Trade workspace permission is not registered' using errcode='42501';end if;
+ select coalesce(array_agg(m.id),'{}'),coalesce(bool_or(m.project_scope='assigned'),false),coalesce(bool_or(m.division_scope='assigned'),false)
+ into members,assigned,division_assigned from public.memberships m join public.roles r on r.id=m.role_id where m.org_id=p_org and m.user_id=p_actor and m.status='active';
+ select coalesce(array_agg(distinct rp.permission_key),'{}') into base from public.memberships m join public.role_permissions rp on rp.role_id=m.role_id where m.id=any(members);
+ select coalesce(array_agg(permission_key) filter(where effect='grant'),'{}'),coalesce(array_agg(permission_key) filter(where effect='deny'),'{}') into grants,denies from public.membership_permission_overrides where membership_id=any(members);
+ select coalesce(array_agg(distinct rp.permission_key),'{}') into platform from public.platform_memberships m join public.roles r on r.id=m.role_id join public.role_permissions rp on rp.role_id=r.id where m.user_id=p_actor and m.status='active' and (m.expires_at is null or m.expires_at>statement_timestamp());
+ bypass:='*'=any(platform) or 'platform.org.access'=any(platform);
+ select coalesce(array_agg(distinct x),'{}') into effective from unnest(base||grants||platform) x where not(x=any(denies));
+ if not bypass and (cardinality(members)=0 or 'start.read'=any(denies) or not('start.read'=any(effective) or '*'=any(effective))) then raise exception 'Trade workspace read permission denied' using errcode='42501';end if;
+ all_homes:=bypass or '*'=any(base||grants) or 'org.admin'=any(base||grants) or (not assigned and ('project.read'=any(base||grants) or 'project.manage'=any(base||grants)));
+ division_assigned:=not bypass and division_assigned and not('org.admin'=any(effective));
+ select coalesce(array_agg(distinct division_id),'{}') into divisions from public.membership_divisions where membership_id=any(members);
+ return query select p.id from public.projects p where p.org_id=p_org and p.property_type='production' and p.status in('planning','active')
+ and (p_division is null or p.division_id=p_division) and (not division_assigned or p.division_id=any(divisions))
+ and (all_homes or exists(select 1 from public.project_members pm join public.roles r on r.id=pm.role_id where pm.org_id=p_org and pm.project_id=p.id and pm.user_id=p_actor and pm.status='active'))
+ and (bypass or not('project.read'=any(denies)) and ('project.read'=any(effective) or '*'=any(effective) or exists(select 1 from public.project_members pm join public.role_permissions rp on rp.role_id=pm.role_id where pm.org_id=p_org and pm.project_id=p.id and pm.user_id=p_actor and pm.status='active' and rp.permission_key in('project.read','*'))))
+ and (p_community is null or exists(select 1 from public.lots l join public.communities c on c.id=l.community_id and c.org_id=l.org_id where l.project_id=p.id and l.org_id=p_org and c.id=p_community));
+end $$;
 
 -- The look-ahead statuses and purchase-order statuses are restated here
 -- literally (lib/starts/lookahead-rules.ts is the twin; a test compares them).

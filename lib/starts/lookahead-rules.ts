@@ -8,6 +8,8 @@ import { createHash } from "node:crypto"
 
 /** Work in these states is not "what you owe us next". */
 export const LOOKAHEAD_EXCLUDED_STATUSES = ["cancelled", "completed"] as const
+/** Homes whose work is looked ahead: a presold home is "planning" until it is completed, even after release. */
+export const LOOKAHEAD_HOME_STATUSES = ["planning", "active"] as const
 /** A purchase order awards its vendor the work only once it is approved. */
 export const LOOKAHEAD_PO_STATUSES = ["approved", "complete"] as const
 /** The provider remembers an idempotency key for a day; past it a send is unknowable. */

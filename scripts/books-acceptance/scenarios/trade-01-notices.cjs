@@ -178,7 +178,7 @@ async function scheduleDigestCoalescing(kit, expected, check) {
   const move = (id, from, to) => app("trade-lookahead").enqueueTradeScheduleChange({ orgId: h.org.orgId, actorId: h.coordinator.userId, companyId: framer, projectId: h.projectId, scheduleItemId: id, oldStart: day(from), newStart: day(to) })
   const digests = () => kit.rows(`select id::text, status, payload from public.outbox where org_id=${kit.q(h.org.orgId)} and job_type='trade_schedule_change_notice' and payload->>'company_id'=${kit.q(framer)} order by id`)
   // Six concurrent moves, one of them twice (3 -> 5, then 5 -> 8).
-  await Promise.all([...items.map((id) => move(id, 3, 6)), move(items[0], 6, 9)])
+  await Promise.all([...items.slice(1).map((id) => move(id, 3, 6)), move(items[0], 3, 6).then(() => move(items[0], 6, 9))])
   const first = digests()
   const changes = first.flatMap((row) => row.payload.changes)
   const moved = changes.find((change) => change.schedule_item_id === items[0])
@@ -187,7 +187,7 @@ async function scheduleDigestCoalescing(kit, expected, check) {
   await move(items[1], 6, 12)
   const second = digests()
   // Moving an item back to where it was drops it from its digest.
-  await move(items[2], 9, 6)
+  await move(items[2], 3, 6)
   await move(items[2], 6, 3)
   const settled = digests().at(-1).payload.changes.map((change) => change.schedule_item_id)
   kit.sql(`update public.outbox set status='completed' where org_id=${kit.q(h.org.orgId)} and job_type='trade_schedule_change_notice' and payload->>'company_id'=${kit.q(framer)}`)

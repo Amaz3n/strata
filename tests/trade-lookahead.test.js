@@ -106,6 +106,13 @@ test("cancelled and completed work is left out and work already under way is kep
   assert.deepEqual([...LOOKAHEAD_EXCLUDED_STATUSES], ["cancelled", "completed"])
 })
 
+test("a planning home's work is included and a completed home's is not", async () => {
+  const h = harness({ count: 2 })
+  h.store.schedule_items[0]["project.status"] = "planning"
+  h.store.schedule_items[1]["project.status"] = "completed"
+  assert.deepEqual((await h.getTradeLookahead({ weeks: 3 })).rows[0].items.map((item) => item.name), ["Task 0"])
+})
+
 test("a purchase-order vendor is an inference, only from an awarded order, and never an assignment", async () => {
   const h = harness({ count: 1, unresolved: true })
   const inferred = await h.getTradeLookahead({ weeks: 3 })

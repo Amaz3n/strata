@@ -10,7 +10,7 @@ import { deliverTradeNotice, resolveTradePortalLink, type TradeNoticeDraft } fro
 import { readAllRowsById } from "@/lib/land/paging"
 import { SCHEDULE_DIGEST_WINDOW_MS, scheduleDigestKey } from "@/lib/starts/even-flow-math"
 import {
-  LOOKAHEAD_EXCLUDED_STATUSES, LOOKAHEAD_PO_STATUSES, lookaheadDedupeKey, lookaheadWindow, releaseNoticeDedupeKey,
+  LOOKAHEAD_EXCLUDED_STATUSES, LOOKAHEAD_HOME_STATUSES, LOOKAHEAD_PO_STATUSES, lookaheadDedupeKey, lookaheadWindow, releaseNoticeDedupeKey,
   scheduleChangeDedupeKey,
 } from "@/lib/starts/lookahead-rules"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -86,7 +86,7 @@ async function loadTradeLookahead(
     ${projectSelect},
     assignments:schedule_assignments(company_id,confirmed_at,company:companies(name))
   `).eq("org_id", context.orgId).eq("project.org_id", context.orgId)
-      .eq("project.property_type", "production").eq("project.status", "active")
+      .eq("project.property_type", "production").in("project.status", [...LOOKAHEAD_HOME_STATUSES])
       .lte("start_date", end).or(`end_date.gte.${start},and(end_date.is.null,start_date.gte.${start})`)
       .not("status", "in", `(${LOOKAHEAD_EXCLUDED_STATUSES.join(",")})`)
     if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
