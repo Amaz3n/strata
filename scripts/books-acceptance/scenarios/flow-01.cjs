@@ -302,24 +302,26 @@ async function houseFixture(kit, org, name) {
 async function divisionCapSpansCommunities(kit, expected, check) {
   const { org } = await world(kit)
   const starts = app("starts"), flow = app("even-flow")
-  const week = math().mondayOfIsoWeek(day(0))
+  // A week no earlier run on this stack has released into: scenario orgs are reused, and the caps count what is already there.
+  const weeksOut = 30 + Math.floor(Math.random() * 60)
+  const week = math().addWeeks(math().mondayOfIsoWeek(day(0)), weeksOut)
   // Fixture: a second community of the division that already released a house this week.
   const bayshore = randomUUID(), lot = randomUUID(), home = randomUUID()
   kit.sql(`insert into public.communities(id,org_id,name,code,division_id,status) values(${kit.q(bayshore)},${kit.q(org.orgId)},'Bayshore','BAY',${kit.q(org.divisionId)},'active');
 insert into public.lots(id,org_id,community_id,division_id,lot_number,status) values(${kit.q(lot)},${kit.q(org.orgId)},${kit.q(bayshore)},${kit.q(org.divisionId)},'1','developed');
 insert into public.projects(id,org_id,name,status,phase,property_type,created_by) values(${kit.q(home)},${kit.q(org.orgId)},'Bayshore 1','active','delivery','production',${kit.q(org.owner.userId)});
-insert into public.start_packages(org_id,lot_id,community_id,project_id,status,target_week,scheduled_start_date,released_at,actual_start_date,released_by) values(${kit.q(org.orgId)},${kit.q(lot)},${kit.q(bayshore)},${kit.q(home)},'released',${kit.q(week)},${kit.q(day(0))},now(),${kit.q(day(0))},${kit.q(org.owner.userId)})`)
+insert into public.start_packages(org_id,lot_id,community_id,project_id,status,target_week,scheduled_start_date,released_at,actual_start_date,released_by) values(${kit.q(org.orgId)},${kit.q(lot)},${kit.q(bayshore)},${kit.q(home)},'released',${kit.q(week)},${kit.q(week)},now(),${kit.q(week)},${kit.q(org.owner.userId)})`)
   const first = await specHome(kit, org, 8)
   await seed.assignSuperintendent(kit, org, { projectId: first.projectId })
   const observed = {}
   observed.targetByViewer = await outcome(() => kit.as(org.viewer, () => flow.setThroughputTarget({ weekStart: week, divisionId: org.divisionId, targetStarts: 1 })))
   await kit.as(org.team.starts, () => flow.setThroughputTarget({ weekStart: week, divisionId: org.divisionId, targetStarts: 1 }))
-  const blocked = await kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: day(0) }))
+  const blocked = await kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: week }))
   observed.divisionBlocked = blocked.requiresConfirm ? { limit: blocked.slot.limit, exceeded: blocked.slot.exceeded } : blocked
   observed.packageStillReady = one(kit, `select status from public.start_packages where id=${kit.q(first.packageId)}`).status
-  observed.shortReason = await outcome(() => kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: day(0), overTargetReason: "short" })))
+  observed.shortReason = await outcome(() => kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: week, overTargetReason: "short" })))
   const reason = "Buyer's rate lock expires next week"
-  const confirmed = await kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: day(0), overTargetReason: reason }))
+  const confirmed = await kit.as(org.team.starts, () => starts.releaseStart(first.packageId, { scheduledStartDate: week, overTargetReason: reason }))
   observed.confirmed = confirmed.released === true
   const audit = one(kit, `select after_data->>'over_slot' is_over, after_data->>'over_reason' reason from public.audit_log where entity_id=${kit.q(first.packageId)} and source='starts.release_queued' order by id desc limit 1`)
   observed.audit = { overSlot: audit.is_over, reason: audit.reason === reason }
@@ -330,9 +332,9 @@ insert into public.start_packages(org_id,lot_id,community_id,project_id,status,t
   await kit.as(org.team.starts, () => flow.setThroughputTarget({ weekStart: week, divisionId: null, targetStarts: 2 }))
   const second = await specHome(kit, org, 9)
   await seed.assignSuperintendent(kit, org, { projectId: second.projectId })
-  const orgBlocked = await kit.as(org.team.starts, () => starts.releaseStart(second.packageId, { scheduledStartDate: day(0) }))
+  const orgBlocked = await kit.as(org.team.starts, () => starts.releaseStart(second.packageId, { scheduledStartDate: week }))
   observed.orgBlocked = orgBlocked.requiresConfirm ? { limit: orgBlocked.slot.limit, exceeded: orgBlocked.slot.exceeded } : orgBlocked
-  observed.deskCaps = (await kit.as(org.team.starts, () => flow.getThroughputWeeks({ weeksBack: 0, weeksAhead: 1 }))).filter((entry) => entry.weekStart === week).map((entry) => ({ scope: entry.scopeName, target: entry.target, filled: entry.filled }))
+  observed.deskCaps = (await kit.as(org.team.starts, () => flow.getThroughputWeeks({ weeksBack: 0, weeksAhead: weeksOut + 1 }))).filter((entry) => entry.weekStart === week).map((entry) => ({ scope: entry.scopeName, target: entry.target, filled: entry.filled }))
   await kit.as(org.team.starts, () => flow.setThroughputTarget({ weekStart: week, divisionId: null, targetStarts: null }))
   kit.sql(`update public.start_packages set status='cancelled' where id=${kit.q(first.packageId)};
 update public.projects set superintendent_id=null where id in (${kit.q(first.projectId)},${kit.q(second.projectId)})`)
@@ -385,8 +387,10 @@ async function dataApiLockdown(kit, expected, check) {
   const home = await houseFixture(kit, org, "lockdown")
   const observed = {}
   // The coordinator sets a slot through the service, and it is audited; the viewer's attempts all refuse.
+  const audited = () => Number(one(kit, `select count(*)::int n from public.audit_log where org_id=${kit.q(org.orgId)} and entity_type='community_release_slot' and after_data->>'week_start'=${kit.q(week)}`).n)
+  const auditedBefore = audited()
   await kit.as(org.team.starts, () => flow.setReleaseSlot(org.communityId, week, { targetStarts: 3 }))
-  observed.slotAudited = Number(one(kit, `select count(*)::int n from public.audit_log where org_id=${kit.q(org.orgId)} and entity_type='community_release_slot' and after_data->>'week_start'=${kit.q(week)}`).n)
+  observed.slotAudited = audited() - auditedBefore
   observed.viewerSlotService = await outcome(() => kit.as(org.viewer, () => flow.setReleaseSlot(org.communityId, week, { targetStarts: 99 })))
   const viewerRest = {
     updateSlot: await rest(kit, org.viewer, (supabase) => supabase.from("community_release_slots").update({ target_starts: 99 }).eq("community_id", org.communityId).eq("week_start", week).select("id")),
