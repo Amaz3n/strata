@@ -347,6 +347,13 @@ function permitAuthority(kit, org) {
 async function approvePermit(kit, org, { projectId }) {
   const permits = app("permits")
   const as = (operation) => kit.as(org.team.starts, operation)
+  // The community names its permitting authority once, as a community manager does in its settings.
+  const [{ community_id: communityId }] = kit.rows(`select community_id from public.lots where org_id=${kit.q(org.orgId)} and project_id=${kit.q(projectId)}`)
+  org.permitCommunities ??= new Set()
+  if (!org.permitCommunities.has(communityId)) {
+    await kit.as(org.owner, () => permits.setCommunityPermitAuthority({ communityId, companyId: permitAuthority(kit, org) }))
+    org.permitCommunities.add(communityId)
+  }
   const { applicationId } = await as(() => permits.createPermitApplication({ projectId, jurisdictionCompanyId: permitAuthority(kit, org), permitType: "building" }))
   await as(() => permits.setPermitDocument({ applicationId, documentKind: "plot_plan", fileId: homeFile(kit, org, projectId, "plot-plan.pdf") }))
   await as(() => permits.recordPermitSubmission({ applicationId, submittedOn: isoDay(-30), reference: "CYP-PLAN-REVIEW" }))

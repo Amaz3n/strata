@@ -392,30 +392,24 @@ export async function readMilestoneDeskSignals(projectIds: string[], orgId?: str
   return result
 }
 
-/**
- * The daily reminder sweep: each open dated milestone is announced once at each
- * threshold (7, 3, 1 days out, then due or late) to its owner, or to whoever
- * runs closings on the home when nobody owns it.
- */
-export async function sweepAgreementMilestoneDeadlines(now: Date = new Date()) {
-  const service = createServiceSupabaseClient()
-  const today = isoToday(now)
-  const horizon = new Date(now.getTime() + Math.max(...MILESTONE_REMINDER_DAYS) * 86_400_000).toISOString().slice(0, 10)
-  const { data, error } = await service.from("agreement_milestones")
-    .select("id,org_id,project_id,contract_id,title,due_on,owner_user_id,required_before,metadata,contract:contracts!inner(status)")
-    .eq("status", "open").eq("contract.status", "active").not("due_on", "is", null).lte("due_on", horizon)
-    .order("due_on").order("id").limit(500)
-  if (error) throw new Error(`Failed to load due milestones: ${error.message}`)
+const SWEEP_PAGE = 500
+
+type DueMilestoneRow = {
+  id: string; org_id: string; project_id: string; contract_id: string; title: string; due_on: string | null
+  owner_user_id: string | null; required_before: string | null; metadata: unknown
+}
+
+async function announceMilestonePage(service: ReturnType<typeof createServiceSupabaseClient>, page: DueMilestoneRow[], today: string, now: Date) {
   // A home that has closed owes nothing more; its leftover tracked rows stay quiet.
   // Batched: a sweep across every org's homes would overflow one request's URL.
-  const homeIds = [...new Set((data ?? []).map((row) => String(row.project_id)))]
+  const homeIds = [...new Set(page.map((row) => String(row.project_id)))]
   const closed = await Promise.all(chunk(homeIds, 100).map((batch) =>
     service.from("closings").select("project_id").in("project_id", batch).eq("status", "closed")))
   const closedError = closed.find((result) => result.error)?.error
   if (closedError) throw new Error(`Failed to read closed homes: ${closedError.message}`)
   const closedHomes = new Set(closed.flatMap((result) => (result.data ?? []).map((row) => String(row.project_id))))
   let announced = 0
-  for (const row of data ?? []) {
+  for (const row of page) {
     if (closedHomes.has(String(row.project_id))) continue
     const metadata = z.record(z.string(), z.unknown()).parse(row.metadata ?? {})
     const dueOn = z.string().parse(row.due_on)
@@ -429,6 +423,35 @@ export async function sweepAgreementMilestoneDeadlines(now: Date = new Date()) {
       .eq("org_id", row.org_id).eq("id", row.id)
     if (markError) throw new Error(`Failed to record the milestone reminder: ${markError.message}`)
     announced += 1
+  }
+  return announced
+}
+
+/**
+ * The daily reminder sweep: each open dated milestone is announced once at each
+ * threshold (7, 3, 1 days out, then due or late) to its owner, or to whoever
+ * runs closings on the home when nobody owns it.
+ */
+export async function sweepAgreementMilestoneDeadlines(now: Date = new Date()) {
+  const service = createServiceSupabaseClient()
+  const today = isoToday(now)
+  const horizon = new Date(now.getTime() + Math.max(...MILESTONE_REMINDER_DAYS) * 86_400_000).toISOString().slice(0, 10)
+  // Paged by (due_on, id): a fixed cap would let a backlog of long-late rows
+  // crowd every newly late milestone out of the sweep for good.
+  let announced = 0
+  let after: { dueOn: string; id: string } | null = null
+  for (;;) {
+    let query = service.from("agreement_milestones")
+      .select("id,org_id,project_id,contract_id,title,due_on,owner_user_id,required_before,metadata,contract:contracts!inner(status)")
+      .eq("status", "open").eq("contract.status", "active").not("due_on", "is", null).lte("due_on", horizon)
+    if (after) query = query.or(`due_on.gt.${after.dueOn},and(due_on.eq.${after.dueOn},id.gt.${after.id})`)
+    const { data, error } = await query.order("due_on").order("id").limit(SWEEP_PAGE)
+    if (error) throw new Error(`Failed to load due milestones: ${error.message}`)
+    const page = data ?? []
+    announced += await announceMilestonePage(service, page, today, now)
+    if (page.length < SWEEP_PAGE) break
+    const last = page[page.length - 1]
+    after = { dueOn: z.string().parse(last.due_on), id: String(last.id) }
   }
   return { announced }
 }
