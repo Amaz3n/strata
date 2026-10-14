@@ -602,8 +602,8 @@ async function discardUnlinkedPayable(context: OrgServiceContext, created: { kin
 /**
  * Pay a fee: payables stays the one home for creating a bill or an expense.
  * A bill from the authority is for whoever enters payables (bill.write); a
- * counter payment already made is an expense with its receipt, entered by
- * whoever may enter expenses on the home. Either is created for what remains
+ * counter payment already made is an expense with its receipt, recorded by
+ * a permit holder (permit.write): the catalog has no separate expense key. Either is created for what remains
  * of the fee, on the home's job cost, to the authority, then linked to the
  * fee. The fee is claimed first, so two payers cannot each create a payable
  * for the same remainder, and a payable that cannot be linked is removed.
@@ -832,6 +832,8 @@ const SWEEP_CAP = 2000
  * The daily reminder sweep: a correction response coming due or late is
  * announced to the round's owner, and a decision past the authority's review
  * clock to the application's owner — once per threshold, marked on the row.
+ * The mark is written before the event: a failed mark stops the run before
+ * anything is announced, so a retry never sends the same reminder twice.
  */
 export async function sweepPermitDeadlines(now: Date = new Date()) {
   const service = createServiceSupabaseClient()
@@ -864,13 +866,13 @@ export async function sweepPermitDeadlines(now: Date = new Date()) {
     const today = localDates.get(row.application_id) ?? now.toISOString().slice(0, 10)
     const reminder = permitReminderDue(row.due_on, today, row.metadata)
     if (!reminder) continue
-    await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_correction.due", entityType: "permit_correction_round", entityId: row.id,
-      payload: { project_id: row.project_id, application_id: row.application_id, round_no: row.round_no, due_on: row.due_on,
-        days_out: daysBetween(today, row.due_on), owner_user_id: row.owner_user_id } })
     const { error } = await service.rpc("mark_permit_reminder", {
       p_entity: "permit_correction_round", p_org_id: row.org_id, p_id: row.id, p_key: permitReminderKey(reminder), p_at: now.toISOString(),
     })
     if (error) throw new Error(`Failed to record the correction reminder: ${error.message}`)
+    await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_correction.due", entityType: "permit_correction_round", entityId: row.id,
+      payload: { project_id: row.project_id, application_id: row.application_id, round_no: row.round_no, due_on: row.due_on,
+        days_out: daysBetween(today, row.due_on), owner_user_id: row.owner_user_id } })
     corrections += 1
   }
   const overdueRows = positions.rows.map((raw) => z.object({
@@ -890,13 +892,13 @@ export async function sweepPermitDeadlines(now: Date = new Date()) {
     const metadata = markers.get(row.id) ?? {}
     const scope = `decision_${row.submission_count}`
     if (permitReminderDue(row.expected_decision_on, row.today_local, metadata, scope) !== "overdue") continue
-    await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_application.decision_overdue", entityType: "permit_application", entityId: row.id,
-      payload: { project_id: row.project_id, permit_type: row.permit_type, expected_decision_on: row.expected_decision_on,
-        days_overdue: daysBetween(row.expected_decision_on, row.today_local), owner_user_id: row.owner_user_id } })
     const { error } = await service.rpc("mark_permit_reminder", {
       p_entity: "permit_application", p_org_id: row.org_id, p_id: row.id, p_key: permitReminderKey("overdue", scope), p_at: now.toISOString(),
     })
     if (error) throw new Error(`Failed to record the decision reminder: ${error.message}`)
+    await recordEvent({ orgId: row.org_id, actorId: null, eventType: "permit_application.decision_overdue", entityType: "permit_application", entityId: row.id,
+      payload: { project_id: row.project_id, permit_type: row.permit_type, expected_decision_on: row.expected_decision_on,
+        days_overdue: daysBetween(row.expected_decision_on, row.today_local), owner_user_id: row.owner_user_id } })
     decisions += 1
   }
   return { corrections, decisions, truncated: rounds.truncated || positions.truncated }

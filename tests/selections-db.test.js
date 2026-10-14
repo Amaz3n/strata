@@ -667,3 +667,28 @@ test("a change order's metadata is merged by patch, keeping what a job stamped s
   assert.deepEqual(rows[0].metadata, { selection_change_follow_up: { event_recorded: true }, envelope_effects_completed: true })
   assert.equal(await refusalCode(rpc(db, "merge_change_order_metadata", { p_org_id: orgId, p_change_order_id: uuid(), p_patch: "{}" })), "Change order not found")
 })
+
+test("a member cannot re-point a selection, void an applied selection change order, or probe another org's group", async (t) => {
+  const home = await soldSupplyHome(t)
+  const owner = { role: "authenticated", userId: home.owner.userId }
+  const outsider = await seedMember(home.db)
+  const otherCategory = await insert(home.db, "selection_categories", { org_id: home.orgId, name: "Flooring" })
+  await assert.rejects(
+    asRole(home.db, owner, (tx) => tx.query("update project_selections set category_id = $2 where id = $1", [home.selection.id, otherCategory.id])),
+    /stays in its category/,
+  )
+
+  const raised = await home.changeOrder()
+  await home.attach(raised.id)
+  await home.approve(raised.id)
+  await assert.rejects(
+    home.db.query("update change_orders set lifecycle = 'void', status = 'cancelled' where id = $1", [raised.id]),
+    /cannot be voided/,
+  )
+  assert.equal((await home.db.query("select lifecycle from change_orders where id = $1", [raised.id])).rows[0].lifecycle, "approved")
+
+  const isOpen = (db, who, orgId) => asRole(db, who, (tx) => tx.query("select public.project_selection_group_is_open($1, $2, $3) open", [orgId, home.project.id, home.group.id]))
+  await home.setCutoff(await home.day(10), "open")
+  assert.equal((await isOpen(home.db, owner, home.orgId)).rows[0].open, true)
+  assert.equal((await isOpen(home.db, { role: "authenticated", userId: outsider.userId }, home.orgId)).rows[0].open, false)
+})

@@ -16,7 +16,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { lockDueGroups, overrideGroupCutoff, recomputeProjectSelectionCutoffs, revertCutoffToSchedule } = freshRequire("lib/services/selection-cutoffs.ts")
+const { lockDueGroups, overrideGroupCutoff, runSelectionCutoffSweep, recomputeProjectSelectionCutoffs, revertCutoffToSchedule } = freshRequire("lib/services/selection-cutoffs.ts")
 
 const HOME = id(1)
 const GROUP = id(2)
@@ -204,5 +204,28 @@ describe("lockDueGroups", () => {
     assert.deepEqual(await service.run(() => lockDueGroups(ORG)), { locked: 1 })
     assert.equal(batches, 1)
     assert.deepEqual(service.events.map((event) => [event.eventType, event.entityId]), [["selection_group_locked", INSTANCE]])
+  })
+})
+
+describe("runSelectionCutoffSweep", () => {
+  test("a reminder failure still locks groups and expires approvals, and is reported", async () => {
+    const called = []
+    const { service } = harness({
+      rpc: {
+        selection_cutoff_reminder_groups: () => ({ data: null, error: { message: "stamp broke" } }),
+        lock_due_selection_groups: () => {
+          called.push("lock")
+          return { data: [], error: null }
+        },
+        expire_selection_approvals: () => {
+          called.push("expire")
+          return { data: [{}, {}], error: null }
+        },
+      },
+    })
+    const result = await service.run(() => runSelectionCutoffSweep())
+    assert.deepEqual(called, ["lock", "expire"])
+    assert.equal(result.expired, 2)
+    assert.deepEqual(result.failures, ["reminders: Failed to load selection reminders: stamp broke"])
   })
 })

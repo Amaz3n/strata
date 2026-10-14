@@ -14,6 +14,7 @@ import {
   type SelectionTermsSummary,
 } from "@/lib/selections/approval-state"
 import { recordAudit } from "@/lib/services/audit"
+import { isPlaceholderEmail } from "@/lib/emails/recipient-policy"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { requireOrgContext } from "@/lib/services/context"
@@ -288,7 +289,7 @@ async function publishSigningDocument(context: OrgContext, db: SupabaseClient, a
     db.from("selection_approval_lines").select("selection_id, category_name, option_name, package_name, price_cents").eq("org_id", context.orgId).eq("approval_id", approval.id).order("category_name"),
   ])
   if (linesResult.error) throw new Error(`Failed to load the approval's lines: ${linesResult.error.message}`)
-  if (!facts.buyer?.email) throw new SelectionApprovalRefusedError("The home's buyer needs an email address before selections can be sent for signature", "SELECTION_BUYER_EMAIL")
+  if (!facts.buyer?.email || isPlaceholderEmail(facts.buyer.email)) throw new SelectionApprovalRefusedError("The home's buyer needs a real email address before selections can be sent for signature", "SELECTION_BUYER_EMAIL")
   const pdf = await renderSelectionApprovalPdf({
     orgName: branding.name, orgLogoUrl: branding.logoUrl, orgAddress: branding.address,
     homeName: facts.homeName, buyerName: facts.buyer.name, buyerEmail: facts.buyer.email, groupName: facts.groupName,
@@ -328,7 +329,8 @@ async function emailPortalRequest(
   const lines = await db.from("selection_approval_lines").select("selection_id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("approval_id", approval.id)
   const lineCount = lines.count ?? 0
   const facts = await homeFacts(db, context.orgId, approval.project_id, approval.group_id)
-  if (!facts.buyer?.email) return "no_email"
+  // A reserved placeholder address can never receive the request; a resend cannot fix it.
+  if (!facts.buyer?.email || isPlaceholderEmail(facts.buyer.email)) return "no_email"
   const [portal, org] = await Promise.all([
     ensurePortalLink({ supabase: db, orgId: context.orgId, projectId: approval.project_id, portalType: "client", contactId: facts.buyer.id, createdBy: context.userId, capabilities: { can_submit_selections: true }, fallbackPath: "/" }),
     db.from("orgs").select("name, slug, logo_url").eq("id", context.orgId).maybeSingle(),

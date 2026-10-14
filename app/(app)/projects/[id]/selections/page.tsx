@@ -16,11 +16,12 @@ import { getSelectionExceptionAbilities } from "@/lib/services/selection-excepti
 
 interface PageProps {
   params: Promise<{ id: string }>
+  searchParams: Promise<{ approval?: string | string[] }>
 }
 
-async function ProjectSelectionsPageContent({ params }: PageProps) {
+async function ProjectSelectionsPageContent({ params, searchParams }: PageProps) {
   await connection()
-  const { id } = await params
+  const [{ id }, { approval }] = await Promise.all([params, searchParams])
   const project = await getProjectAction(id)
   if (!project) notFound()
   const context = await requireOrgContext()
@@ -43,6 +44,7 @@ async function ProjectSelectionsPageContent({ params }: PageProps) {
         projects={[project]}
         approvals={approvals}
         canManageApprovals={canManageApprovals}
+        focusApprovalId={typeof approval === "string" ? approval : undefined}
         exceptions={
           <SelectionExceptionsBand
             key="exceptions"

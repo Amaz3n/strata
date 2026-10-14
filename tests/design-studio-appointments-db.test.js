@@ -260,3 +260,19 @@ test("a studio's rooms are replaced whole: names swap, a failure changes nothing
   const after = await db.query("select name, is_active from design_studio_rooms where location_id = $1 order by name", [location.id])
   assert.deepEqual(after.rows, [{ name: "Gallery", is_active: true }, { name: "Room 1", is_active: false }, { name: "Room 2", is_active: true }])
 })
+
+test("a consultant's hours cannot be replaced to strand a session still ahead", async (t) => {
+  const fixture = await studio(t)
+  const { db, orgId, consultant, location } = fixture
+  await book(db, fixture, { project_id: (await fixture.home("Lot 1")).id, scheduled_at: "2099-11-03T15:00:00Z" })
+  const replace = (windows) => rpc(db, "replace_consultant_hours", { p_org_id: orgId, p_location_id: location.id, p_user_id: consultant, p_windows: JSON.stringify(windows) })
+  const count = async () => Number((await db.query("select count(*) as n from design_studio_consultant_hours where user_id = $1 and location_id = $2", [consultant, location.id])).rows[0].n)
+
+  await assert.rejects(replace([]), refused("DESIGN_STUDIO_HOURS_BOOKED"))
+  assert.equal(await count(), 7)
+  const afternoon = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startMinute: 13 * 60, endMinute: 17 * 60 }))
+  await assert.rejects(replace(afternoon), refused("DESIGN_STUDIO_HOURS_BOOKED"))
+  const covering = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startMinute: 8 * 60, endMinute: 18 * 60 }))
+  await replace(covering)
+  assert.equal(await count(), 7)
+})

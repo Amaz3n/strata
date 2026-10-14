@@ -24,6 +24,7 @@ import { requireCommunityScope } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   bulkLotPatchSchema,
   createLotsInputSchema,
@@ -482,6 +483,19 @@ export async function setLotStatus(
  * gate re-derives at release.
  */
 type PinClient = { supabase: SupabaseClient; orgId: string }
+/**
+ * A home whose building permit was approved was reviewed for the plan, version
+ * and elevation it carries; changing any of them is a new permit revision, never
+ * a re-pin. The database refuses a member's direct write for the same reason.
+ */
+export async function assertHomePlanNotPermitted(db: PinClient, projectId: string | null) {
+  if (!projectId) return
+  const { data, error } = await db.supabase.from("permit_applications").select("id")
+    .eq("org_id", db.orgId).eq("project_id", projectId).eq("permit_type", "building").eq("decision", "approved").is("superseded_at", null).limit(1)
+  if (error) throw new Error(`Failed to check the home's permit: ${error.message}`)
+  if ((data ?? []).length > 0) throw new Error("This home's building permit is approved for its current plan. Revise the permit before changing the plan.")
+}
+
 type PinnedLotFacts = { id: string; community_id: string; metadata: unknown; dimensions: Record<string, unknown> | null; swing: LotSwing | null }
 
 /**
@@ -514,13 +528,14 @@ async function assertLotTakesPlan(db: PinClient, lot: PinnedLotFacts, pin: { pla
  */
 export async function assertLotCanAdoptPlanVersion(db: PinClient, input: { lotId: string; fromVersionId: string; toVersionId: string }) {
   const [lotResult, versionResult] = await Promise.all([
-    db.supabase.from("lots").select("id, community_id, metadata, dimensions, swing, house_plan_id, house_plan_version_id, house_plan_elevation_id")
+    db.supabase.from("lots").select("id, community_id, project_id, metadata, dimensions, swing, house_plan_id, house_plan_version_id, house_plan_elevation_id")
       .eq("org_id", db.orgId).eq("id", input.lotId).maybeSingle(),
     db.supabase.from("house_plan_versions").select("id, house_plan_id, status").eq("org_id", db.orgId).eq("id", input.toVersionId).maybeSingle(),
   ])
   if (lotResult.error || !lotResult.data) throw new Error("Lot not found")
   if (versionResult.error || !versionResult.data) throw new Error("Plan version not found")
   const lot = lotResult.data
+  await assertHomePlanNotPermitted(db, lotResult.data.project_id)
   if (lot.house_plan_version_id !== input.fromVersionId) throw new Error("This home's plan changed since the review opened. Reopen the review.")
   if (versionResult.data.house_plan_id !== lot.house_plan_id) throw new Error("That version belongs to another plan.")
   if (versionResult.data.status !== "released") throw new Error("Only a released plan version can be pinned to a lot.")
@@ -536,7 +551,9 @@ export async function assertLotCanAdoptPlanVersion(db: PinClient, input: { lotId
  * decided; an adoption that waited on a buyer's signature is applied as signed.
  */
 export async function writeLotPlanVersion(db: PinClient & { actorId: string | null }, input: { lotId: string; fromVersionId: string; toVersionId: string; source: string }) {
-  const { data, error } = await db.supabase.from("lots")
+  // The reviewer holds plan.adopt, not lot.write: the pin is written as the
+  // service after that check, since members cannot rewrite a lot's plan directly.
+  const { data, error } = await createServiceSupabaseClient().from("lots")
     .update({ house_plan_version_id: input.toVersionId })
     .eq("org_id", db.orgId).eq("id", input.lotId).eq("house_plan_version_id", input.fromVersionId)
     .select("id, community_id, house_plan_id").maybeSingle()

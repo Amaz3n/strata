@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
@@ -24,6 +24,8 @@ import { Edit, Plus } from "@/components/icons"
 interface Props {
   directory: StudioDirectory
   canManage: boolean
+  /** The studio a deep link (`?location=`) names: scrolled to and marked. */
+  focusLocationId?: string
 }
 
 type Editing =
@@ -53,9 +55,12 @@ function windowText(windows: HoursWindow[], weekday: number) {
  * rooms in service), and when each consultant works there. Booking reads all
  * three; the database enforces all three.
  */
-export function StudiosWorkbench({ directory, canManage }: Props) {
+export function StudiosWorkbench({ directory, canManage, focusLocationId }: Props) {
   const router = useRouter()
   const [editing, setEditing] = useState<Editing | null>(null)
+  useEffect(() => {
+    if (focusLocationId) document.getElementById(focusLocationId)?.scrollIntoView({ block: "start" })
+  }, [focusLocationId])
   const close = () => setEditing(null)
   const saved = () => {
     close()
@@ -89,7 +94,7 @@ export function StudiosWorkbench({ directory, canManage }: Props) {
       ) : (
         <div className="flex flex-col desk-rise">
           {directory.locations.map((studio) => (
-            <section key={studio.id} id={studio.id} className="border-b border-border px-5 py-4">
+            <section key={studio.id} id={studio.id} className={`border-b border-border px-5 py-4${studio.id === focusLocationId ? " bg-primary/5" : ""}`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">

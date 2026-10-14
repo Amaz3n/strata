@@ -429,3 +429,46 @@ test("the release re-reads the permit gate in its own transaction", async (t) =>
   await w.db.query("update permit_applications set expires_on = null where id = $1", [applicationId])
   assert.equal((await queue()).queued, true)
 })
+
+test("a lot's plan pin, which the permit gate compares, is a lot.write holder's to move and never under an approved permit", async (t) => {
+  const w = await permitWorld(t)
+  const admin = await full.seedMember(w.db, { orgId: w.orgId, role: "org_admin" })
+  const superintendent = await full.seedMember(w.db, { orgId: w.orgId, role: "org_superintendent" })
+  const free = await full.insert(w.db, "lots", { org_id: w.orgId, community_id: w.community.id, lot_number: "9", status: "developed" })
+  const other = await full.insert(w.db, "house_plan_elevations", { org_id: w.orgId, house_plan_id: w.plan.id, code: "B" })
+  const pin = (userId, lotId, column, value) => member(w, userId, `update lots set ${column} = $2 where id = $1`, [lotId, value])
+
+  for (const [column, value] of [["house_plan_version_id", w.nextVersion.id], ["house_plan_elevation_id", other.id]]) {
+    await assert.rejects(pin(w.viewer.userId, w.lot.id, column, value), /takes lot\.write/)
+    await assert.rejects(pin(superintendent.userId, free.id, column, value), /takes lot\.write/)
+  }
+  await pin(admin.userId, free.id, "house_plan_version_id", w.nextVersion.id)
+  await pin(admin.userId, free.id, "house_plan_elevation_id", other.id)
+
+  await w.approvedApplication()
+  assert.equal(await w.evidence("permit_approved"), true)
+  await assert.rejects(pin(admin.userId, w.lot.id, "house_plan_version_id", w.nextVersion.id), /approved building permit/)
+  await assert.rejects(pin(admin.userId, w.lot.id, "house_plan_elevation_id", other.id), /approved building permit/)
+  await pin(admin.userId, w.lot.id, "house_plan_version_id", w.version.id)
+  assert.equal(await w.evidence("permit_approved"), true, "writing the same pin back changes nothing")
+  await w.db.query("update lots set house_plan_version_id = $2 where id = $1", [w.lot.id, w.nextVersion.id])
+  assert.equal(await w.evidence("permit_approved"), false, "the service re-plans a permitted home, and the gate then asks for a revised permit")
+})
+
+test("a decision is not dated before its submission, a permit is not issued in the future, and a denial closes its correction rounds", async (t) => {
+  const w = await permitWorld(t)
+  const applicationId = await w.open()
+  await w.attach(applicationId, "plot_plan", await w.file("plot-plan.pdf"))
+  await w.submit(applicationId, { p_submitted_on: "2026-09-10" })
+  const round = await w.call("record_permit_correction_round", {
+    p_application_id: applicationId, p_received_on: "2026-09-12", p_comments: "Show the setbacks", p_comment_file_id: null, p_owner_user_id: null, p_due_on: "2026-09-20",
+  })
+  const evidence = { p_issued_permit_file_id: await w.file("permit.pdf"), p_approved_plans_file_id: await w.file("approved-plans.pdf") }
+  await assert.rejects(w.decide(applicationId, { ...evidence, p_decided_on: "2026-09-09" }), /before the application was submitted/)
+  await assert.rejects(w.decide(applicationId, { ...evidence, p_issued_on: "2999-01-01" }), /cannot be issued in the future/)
+
+  await w.decide(applicationId, { p_decision: "denied", p_decided_on: "2026-09-15", p_permit_number: null, p_note: "Setbacks do not clear" })
+  assert.equal((await w.row("select status from permit_correction_rounds where id = $1", [round])).status, "withdrawn")
+  const history = await w.row("select count(*)::int as n from permit_correction_round_history where round_id = $1 and note like 'Closed with the application%'", [round])
+  assert.equal(history.n, 1)
+})

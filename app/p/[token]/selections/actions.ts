@@ -208,8 +208,12 @@ export async function loadApprovalsAction(token: string) {
   })
 }
 
-function buyerOf(access: { contact_id?: string | null }) {
+/** Only the home's current buyer approves or declines; a stale link or another contact's link cannot bind the home. */
+async function buyerOf(access: { org_id: string; project_id: string; contact_id?: string | null }) {
   if (!access.contact_id) throw new Error("This link is not tied to a buyer. Ask your builder for your own link to approve selections.")
+  const { data, error } = await createServiceSupabaseClient().rpc("selection_home_buyer", { p_org_id: access.org_id, p_project_id: access.project_id })
+  if (error) throw new Error(`Failed to check the home's buyer: ${error.message}`)
+  if (data !== access.contact_id) throw new Error("Only the home's buyer can approve or decline selections. Ask your builder for your own link.")
   return access.contact_id
 }
 
@@ -217,7 +221,7 @@ function buyerOf(access: { contact_id?: string | null }) {
 export async function approveGroupAction(input: { token: string; groupId: string | null; termsHash: string }) {
   return run(async () => {
     const access = await assertPortalActionAccess(input.token, { portalType: "client", requireProject: true, permission: "can_submit_selections" })
-    await approveSelectionsFromPortal({ orgId: access.org_id, projectId: access.project_id, contactId: buyerOf(access), groupId: input.groupId, termsHash: input.termsHash })
+    await approveSelectionsFromPortal({ orgId: access.org_id, projectId: access.project_id, contactId: await buyerOf(access), groupId: input.groupId, termsHash: input.termsHash })
     return portalApprovals(access.org_id, access.project_id)
   })
 }
@@ -225,7 +229,7 @@ export async function approveGroupAction(input: { token: string; groupId: string
 export async function declineApprovalAction(input: { token: string; approvalId: string; reason?: string }) {
   return run(async () => {
     const access = await assertPortalActionAccess(input.token, { portalType: "client", requireProject: true, permission: "can_submit_selections" })
-    await declineSelectionsFromPortal({ orgId: access.org_id, projectId: access.project_id, contactId: buyerOf(access), approvalId: input.approvalId, reason: input.reason })
+    await declineSelectionsFromPortal({ orgId: access.org_id, projectId: access.project_id, contactId: await buyerOf(access), approvalId: input.approvalId, reason: input.reason })
     return portalApprovals(access.org_id, access.project_id)
   })
 }

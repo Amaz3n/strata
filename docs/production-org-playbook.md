@@ -292,9 +292,10 @@ each home's Permits workbench (`/projects/[id]/permits`)
 5. Issue POs and manage vendor pricing.
 
 **Mutates:** start packages, gate definitions, permit applications, rounds and fee
-assessments (and links fee payables), purchase orders. Fee bills and counter
-expenses are entered by whoever holds bill rights (the office); the coordinator
-links them.
+assessments (and links fee payables), purchase orders. Fee bills are entered by
+whoever holds bill rights (the office); counter-paid fees are recorded by
+permit holders (permit.write: the catalog has no separate expense key), and the
+coordinator links payables.
 
 **Reads:** backlog and the sales pipeline as the input to the release schedule.
 

@@ -509,9 +509,22 @@ async function sendReminderPage(supabase: SupabaseClient, groups: Array<z.infer<
   return sent
 }
 
+type SweepStep = "locks" | "approvals" | "reminders"
+
+async function settleSweepStep<T>(step: SweepStep, run: () => Promise<T>): Promise<{ value: T | null; failure: string | null }> {
+  try {
+    return { value: await run(), failure: null }
+  } catch (error) {
+    return { value: null, failure: `${step}: ${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
+// Each step settles on its own: a reminder that cannot stamp must not leave
+// groups unlocked and approvals unexpired, and the caller reports every failure.
 export async function runSelectionCutoffSweep() {
-  const reminders = await sendSelectionCutoffReminders()
-  const locks = await lockDueGroups()
-  const approvals = await expireSelectionApprovals()
-  return { reminders, ...locks, ...approvals }
+  const locks = await settleSweepStep("locks", lockDueGroups)
+  const approvals = await settleSweepStep("approvals", expireSelectionApprovals)
+  const reminders = await settleSweepStep("reminders", sendSelectionCutoffReminders)
+  const failures = [locks.failure, approvals.failure, reminders.failure].filter((failure): failure is string => failure !== null)
+  return { reminders: reminders.value, ...(locks.value ?? { locked: 0 }), ...(approvals.value ?? { expired: 0 }), failures }
 }

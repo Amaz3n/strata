@@ -24,6 +24,7 @@ import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { createInspectionFromSnapshot } from "@/lib/services/inspections";
 import { checkLotFits } from "@/lib/services/lot-fit";
+import { assertHomePlanNotPermitted } from "@/lib/services/lots";
 import { requirePermission } from "@/lib/services/permissions";
 import { isPlanOffered, offeringOverrideFor, MIN_OFFERING_OVERRIDE_REASON_LENGTH, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering";
 import { applyScheduleTemplateSnapshot } from "@/lib/services/schedule";
@@ -150,6 +151,7 @@ type InstantiationContext = Awaited<ReturnType<typeof requireOrgContext>> & {
     community_id: string;
     project_id: string | null;
     house_plan_version_id: string | null;
+    house_plan_elevation_id: string | null;
     swing: string;
   };
   version: {
@@ -439,7 +441,7 @@ async function loadInstantiationContext(
         .maybeSingle(),
       context.supabase
         .from("lots")
-        .select("id, community_id, project_id, house_plan_version_id, swing, dimensions, metadata")
+        .select("id, community_id, project_id, house_plan_version_id, house_plan_elevation_id, swing, dimensions, metadata")
         .eq("org_id", context.orgId)
         .eq("id", input.lotId)
         .maybeSingle(),
@@ -1107,13 +1109,21 @@ export async function instantiatePlanForProject(
     errors: [],
   };
   if (!parsed.dryRun) {
+    if (
+      context.lot.house_plan_version_id !== context.version.id ||
+      context.lot.house_plan_elevation_id !== (parsed.elevationId ?? null)
+    ) {
+      await assertHomePlanNotPermitted(context, context.lot.project_id);
+    }
     const lotPatch: Record<string, unknown> = {
       house_plan_id: context.version.house_plan_id,
       house_plan_version_id: context.version.id,
       house_plan_elevation_id: parsed.elevationId ?? null,
     };
     if (parsed.swing) lotPatch.swing = parsed.swing;
-    const { error } = await context.supabase
+    // plan.instantiate was checked on load; members cannot rewrite a lot's plan
+    // pin directly, so the pin is written as the service.
+    const { error } = await createServiceSupabaseClient()
       .from("lots")
       .update(lotPatch)
       .eq("org_id", context.orgId)

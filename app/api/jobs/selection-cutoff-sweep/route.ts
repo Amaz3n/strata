@@ -10,7 +10,9 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  return NextResponse.json(await runSelectionCutoffSweep())
+  const result = await runSelectionCutoffSweep()
+  // 207 files a partial failure as failed telemetry; the steps that ran still ran.
+  return NextResponse.json(result, { status: result.failures.length ? 207 : 200 })
 }
 
 export const POST = withCronRun("selection-cutoff-sweep", handler)

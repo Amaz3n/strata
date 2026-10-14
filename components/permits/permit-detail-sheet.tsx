@@ -580,7 +580,7 @@ function PayFeeForm({ data, application, paying, pending, act, onDone }: {
   return (
     <div className="mt-2 grid gap-2 border bg-muted/30 p-3 sm:grid-cols-2">
       <p className="text-xs sm:col-span-2">
-        {paying.via === "bill" ? "A bill from the authority enters payables for approval and payment" : paying.via === "expense" ? "A payment already made at the counter, with its receipt" : "A payable already entered for this authority on this home"}
+        {paying.via === "bill" ? "A bill from the authority enters payables for approval and payment" : paying.via === "expense" ? "A payment already made at the counter, with its receipt, recorded by permit holders" : "A payable already entered for this authority on this home"}
         {" — "}<span className="tabular-nums">{formatMoneyCentsExact(fee.remainingToLinkCents)}</span> remains on the {fee.kindLabel.toLowerCase()} fee.
       </p>
       {paying.via === "bill" ? (

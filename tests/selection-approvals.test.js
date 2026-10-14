@@ -89,7 +89,7 @@ const approvalRow = (overrides = {}) => ({
   ...overrides,
 })
 
-function harness({ approvals = [], rpc = {}, buyerEmail = "dana@example.test", permissions = ["selections.read", "selections.write", "project.read"] } = {}) {
+function harness({ approvals = [], rpc = {}, buyerEmail = "dana@buyer.dev", permissions = ["selections.read", "selections.write", "project.read"] } = {}) {
   catalog = { [OPTION]: { available: true, optionId: OPTION, priceCents: 4_500_00, categoryIds: [CATEGORY] } }
   configurationFailure = null
   emails.length = 0
@@ -127,7 +127,7 @@ describe("sendSelectionApproval", () => {
     assert.deepEqual(result, { approvalId: APPROVAL, envelopeId: null, buyerEmail: "sent" })
     assert.equal(calls[0].args.p_expected_terms_hash, HASH)
     assert.equal(calls[0].args.p_actor_id, service.userId)
-    assert.deepEqual(emails.map((email) => email.to), [["dana@example.test"]])
+    assert.deepEqual(emails.map((email) => email.to), [["dana@buyer.dev"]])
     assert.match(emails[0].subject, /approve your interior selections/)
     assert.equal(service.audits.length, 1)
   })
@@ -142,6 +142,11 @@ describe("sendSelectionApproval", () => {
     const noEmail = harness({ buyerEmail: null, rpc: { send_selection_approval: () => ({ data: approvalRow(), error: null }) } })
     const missing = await noEmail.service.run(() => sendSelectionApproval({ projectId: HOME, groupId: GROUP, channel: "portal", termsHash: HASH }))
     assert.equal(missing.buyerEmail, "no_email")
+
+    const placeholder = harness({ buyerEmail: "dana@example.com", rpc: { send_selection_approval: () => ({ data: approvalRow(), error: null }) } })
+    const unusable = await placeholder.service.run(() => sendSelectionApproval({ projectId: HOME, groupId: GROUP, channel: "portal", termsHash: HASH }))
+    assert.equal(unusable.buyerEmail, "no_email")
+    assert.deepEqual(emails, [])
   })
 
   test("an option no longer sold for the home is refused before anything is sent", async () => {
@@ -249,7 +254,7 @@ describe("an answer to a request that is out", () => {
 })
 
 describe("executeSelectionApprovalFromEnvelope", () => {
-  const signed = { orgId: ORG, approvalId: APPROVAL, envelopeId: ENVELOPE, executedFileId: id(11), signerEmail: "dana@example.test" }
+  const signed = { orgId: ORG, approvalId: APPROVAL, envelopeId: ENVELOPE, executedFileId: id(11), signerEmail: "dana@buyer.dev" }
 
   test("a signature on the terms that were sent approves them once", async () => {
     const outcome = { outcome: "approved", idempotent: false, project_id: HOME, group_id: GROUP }

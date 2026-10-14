@@ -278,6 +278,8 @@ export async function reindexEntity(
         ? `${projectName ?? "Home"} — ${String(row.permit_type ?? "building").replace(/_/g, " ")} permit${typeof row.permit_number === "string" ? ` ${row.permit_number}` : ""}`
       : entityType === "selection_exception"
         ? `${projectName ?? "Home"} — selection exception: ${String(row.reason ?? "supply").replace(/_/g, " ")}`
+      : entityType === "selection_approval"
+        ? `${projectName ?? "Home"} — selections approval (${String(row.status ?? "sent").replace(/_/g, " ")})`
       : entityType === "closing"
         ? `Closing — ${projectName ?? "Home"}`
       : entityType === "warranty_request"

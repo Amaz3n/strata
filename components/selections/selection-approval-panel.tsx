@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
@@ -67,6 +67,8 @@ interface Props {
   canManage: boolean
   /** "bar" sits under a group header; "stack" fills the selection sheet's side panel. */
   layout?: "bar" | "stack"
+  /** A deep link (`?approval=`) named this group's request: bring it into view and mark it. */
+  focused?: boolean
 }
 
 /**
@@ -74,10 +76,14 @@ interface Props {
  * selections exactly as shown (e-signature or the buyer portal), record the
  * buyer's signed paper copy, or void a request that is still out.
  */
-export function SelectionApprovalPanel({ projectId, approval, canManage, layout = "bar" }: Props) {
+export function SelectionApprovalPanel({ projectId, approval, canManage, layout = "bar", focused = false }: Props) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [dialog, setDialog] = useState<"void" | "in_person" | null>(null)
+  const root = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (focused) root.current?.scrollIntoView({ block: "center" })
+  }, [focused])
 
   if (!approval) return null
   const current = approval
@@ -89,7 +95,7 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
       try {
         const result = unwrapAction(await sendSelectionApprovalAction({ projectId, groupId: current.groupId, channel, termsHash: current.terms.termsHash }))
         const description =
-          result.buyerEmail === "no_email" ? "The buyer has no email on file. Add one on the home's contact, then mail the request again."
+          result.buyerEmail === "no_email" ? "The buyer has no usable email address on file (missing or a placeholder). Correct it on the home's contact, then mail the request again."
           : result.buyerEmail === "failed" ? "The request is out, but the email to the buyer did not send. Use Resend email to try again."
           : undefined
         const title = channel === "esign" ? "Sent for e-signature" : "Sent to the buyer portal"
@@ -110,7 +116,7 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
         const result = unwrapAction(await resendSelectionApprovalRequestAction({ projectId, approvalId }))
         if (result.buyerEmail === "sent") toast.success("Request emailed to the buyer")
         else toast.warning("The email did not go out", {
-          description: result.buyerEmail === "no_email" ? "The buyer has no email on file." : "The email service did not accept it. Try again shortly.",
+          description: result.buyerEmail === "no_email" ? "The buyer has no usable email address on file; correct it on the home's contact first." : "The email service did not accept it. Try again shortly.",
         })
       } catch (error) {
         toast.error("Could not resend the email", { description: error instanceof Error ? error.message : undefined })
@@ -158,7 +164,7 @@ export function SelectionApprovalPanel({ projectId, approval, canManage, layout 
   const stacked = layout === "stack"
 
   return (
-    <div className={stacked ? "flex flex-col gap-2" : "flex flex-wrap items-center justify-between gap-3 border-b px-3 py-2"}>
+    <div ref={root} className={`${stacked ? "flex flex-col gap-2" : "flex flex-wrap items-center justify-between gap-3 border-b px-3 py-2"}${focused ? " bg-primary/5 ring-1 ring-inset ring-primary/40" : ""}`}>
       <div className={stacked ? "flex flex-col gap-1" : "flex min-w-0 items-center gap-2"}>
         <span className="flex items-center gap-2">
           <Badge variant="outline" className={`rounded-full px-2 text-[11px] ${STATE_TONE[current.state]}`}>

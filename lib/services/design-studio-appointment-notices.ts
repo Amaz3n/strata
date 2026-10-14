@@ -41,7 +41,7 @@ const studioSchema = z.object({ name: z.string(), address: z.string().nullable()
 const appointmentSchema = z.object({
   id: uuid,
   project_id: uuid,
-  contact_id: uuid.nullable(),
+  location_id: uuid.nullable(),
   coordinator_user_id: uuid.nullable(),
   scheduled_at: z.string(),
   ends_at: z.string(),
@@ -86,7 +86,7 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
   const supabase = createServiceSupabaseClient()
   const { data: appointmentRow, error } = await supabase
     .from("design_studio_appointments")
-    .select("id, project_id, contact_id, coordinator_user_id, scheduled_at, ends_at, status, revision, group_ids, cancel_reason, location:design_studio_locations(name, address, time_zone)")
+    .select("id, project_id, location_id, coordinator_user_id, scheduled_at, ends_at, status, revision, group_ids, cancel_reason, location:design_studio_locations(name, address, time_zone)")
     .eq("org_id", orgId)
     .eq("id", job.appointment_id)
     .maybeSingle()
@@ -102,32 +102,44 @@ export async function sendDesignStudioAppointmentNotice(orgId: string, rawPayloa
   if (!location) throw new Error("The session has no studio")
   const groupIds = appointment.group_ids ?? []
   const consultantIds = Array.from(new Set([appointment.coordinator_user_id, job.previous?.coordinator_user_id].filter((value): value is string => Boolean(value))))
-  const [orgResult, projectResult, groupsResult, consultantsResult] = await Promise.all([
+  const previousLocationId = job.kind === "rescheduled" ? job.previous?.location_id ?? null : null
+  const [orgResult, projectResult, groupsResult, consultantsResult, buyerResult, previousStudioResult] = await Promise.all([
     supabase.from("orgs").select("name, slug, logo_url").eq("id", orgId).maybeSingle(),
     supabase.from("projects").select("name").eq("org_id", orgId).eq("id", appointment.project_id).maybeSingle(),
     groupIds.length
       ? supabase.from("project_selection_groups").select("cutoff_date, group:selection_groups(name)").eq("org_id", orgId).eq("project_id", appointment.project_id).in("group_id", groupIds)
       : Promise.resolve({ data: [], error: null }),
     consultantIds.length ? supabase.from("app_users").select("id, full_name").in("id", consultantIds) : Promise.resolve({ data: [], error: null }),
+    // The buyer is whoever holds the home now, not whoever held it when the session was booked.
+    supabase.rpc("selection_home_buyer", { p_org_id: orgId, p_project_id: appointment.project_id }),
+    previousLocationId && previousLocationId !== appointment.location_id
+      ? supabase.from("design_studio_locations").select("name, time_zone").eq("org_id", orgId).eq("id", previousLocationId).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
   ])
   if (groupsResult.error) throw new Error(`Failed to load the covered groups: ${groupsResult.error.message}`)
+  if (buyerResult.error) throw new Error(`Failed to resolve the home's buyer: ${buyerResult.error.message}`)
+  if (previousStudioResult.error) throw new Error(`Failed to load the previous studio: ${previousStudioResult.error.message}`)
+  const buyerContactId = typeof buyerResult.data === "string" ? buyerResult.data : null
+  const previousStudio = previousStudioResult.data ? studioSchema.pick({ name: true, time_zone: true }).parse(previousStudioResult.data) : null
   const org = orgResult.data
   const homeName = z.object({ name: z.string().nullable() }).nullable().parse(projectResult.data)?.name ?? null
   const consultantName = (consultantsResult.data ?? []).find((row) => row.id === appointment.coordinator_user_id)?.full_name ?? null
   const windowText = formatWarrantyVisitWindow(appointment.scheduled_at, appointment.ends_at, location.time_zone)
-  const previousWindowText = job.kind === "rescheduled" && job.previous ? formatWarrantyVisitWindow(job.previous.scheduled_at, job.previous.ends_at, location.time_zone) : null
+  const previousWindowText = job.kind === "rescheduled" && job.previous
+    ? `${formatWarrantyVisitWindow(job.previous.scheduled_at, job.previous.ends_at, previousStudio?.time_zone ?? location.time_zone)}${previousStudio ? ` at ${previousStudio.name}` : ""}`
+    : null
   const deadlines = z.array(groupCutoffSchema).parse(groupsResult.data ?? []).map((row) => ({
     name: relation(row.group)?.name ?? "Selections",
     cutoffText: row.cutoff_date ? formatCutoff(row.cutoff_date) : null,
   }))
 
   const emailBuyer = async (): Promise<DesignStudioNoticeResult["buyer"]> => {
-    if (!appointment.contact_id) return "no_buyer"
-    const contact = await fetchContactEmail(supabase, appointment.contact_id)
+    if (!buyerContactId) return "no_buyer"
+    const contact = await fetchContactEmail(supabase, buyerContactId)
     // A reserved placeholder address can never be delivered; retrying it would only stall the job.
     if (!contact?.email || isPlaceholderEmail(contact.email)) return "no_email"
     const portal = await ensurePortalLink({
-      supabase, orgId, projectId: appointment.project_id, portalType: "client", contactId: appointment.contact_id,
+      supabase, orgId, projectId: appointment.project_id, portalType: "client", contactId: buyerContactId,
       createdBy: null, capabilities: { can_submit_selections: true }, fallbackPath: "/",
     })
     const html = await renderEmailTemplate(DesignStudioAppointmentEmail({

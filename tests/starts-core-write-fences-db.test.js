@@ -724,7 +724,7 @@ test("the permit gate passes only on an approved permit for the lot's pinned pla
   const revision = await w.open({ p_supersedes_id: applicationId })
   await w.attach(revision, "plot_plan", await w.file("plot-plan-r2.pdf"))
   await w.submit(revision, { p_submitted_on: "2026-09-25" })
-  await w.decide(revision, { p_permit_number: "BLD-26-0412-R1", p_issued_permit_file_id: await w.file("permit-r1.pdf"), p_approved_plans_file_id: await w.file("plans-r1.pdf") })
+  await w.decide(revision, { p_decided_on: "2026-09-26", p_permit_number: "BLD-26-0412-R1", p_issued_permit_file_id: await w.file("permit-r1.pdf"), p_approved_plans_file_id: await w.file("plans-r1.pdf") })
   await desk.refresh()
   assert.equal(await desk.status(w.gates.permit), "passed")
 })
