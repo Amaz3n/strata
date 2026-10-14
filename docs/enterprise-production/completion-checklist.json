@@ -13687,12 +13687,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Basic appointment booking and the design-studio runway exist (lib/services/design-studio.ts). Booking and rescheduling are now authorized on the target home's project and division scope and the calendar shows only visible homes (5dc16e16). Capacity, conflict detection and buyer notifications are absent. Appointments have no dedicated test.",
       "remainingWork": [
-        "Consultant/location capacity and a DB-enforced overlap check (exclusion constraint on time range per coordinator/location) - migration needs approval.",
-        "Buyer notifications on book/reschedule/cancel (EMAIL_NOTIFICATION_TYPES + template).",
-        "Tests for upsert/competing bookings; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/option-catalog.ts",
@@ -13753,7 +13751,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -13774,6 +13772,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEL-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "SEL-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEL-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "migrations 20261013100000/130000/160000/190000 (consultant overlap + room capacity + hours in studio tz, DB-enforced); notices in lib/services/design-studio-appointment-notices.ts; tests/design-studio-appointments-db.test.js passes"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "reschedule keeps cutoffs and notifies the buyer (test passes); hours cannot strand a session (190000)"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -13790,14 +13834,17 @@
       ],
       "plain": {
         "title": "Design studio appointments",
-        "description": "Staff can book and reschedule design-studio appointments and see which homes still need one, and can only book against homes they're allowed to see. Arc doesn't check consultant or room availability, so double-bookings are possible, and buyers get no confirmation or reschedule notice."
+        "description": "Buyer sessions are booked against each consultant's working hours and the studio's rooms; the database refuses a double-booked consultant, a full studio or a session past a selection cutoff. Moving or cancelling a session keeps the deadlines and emails the buyer once."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "The division-scope authorization gap is a security issue, and double-booked consultants hurt every buyer appointment.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEL-01"
+      ]
     },
     {
       "id": "EP06-02",
@@ -13818,12 +13865,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Confirming or signing now keeps the price the option was chosen at rather than re-pricing from the live catalog (5dc16e16). Approval is still not bound to the exact signed option, and approval states (declined/expired) are not modelled. A design coordinator outside the project can now confirm a selection group (12c622af).",
       "remainingWork": [
-        "Persist option id + price/cost snapshot in the approval document at send; on execution confirm only if the selection still matches, otherwise flag for re-approval.",
-        "Model approval state (unsigned/sent/declined/expired/approved) synced from e-sign status.",
-        "Tests for option change between send and sign, decline and expiry; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/selections.ts",
@@ -13901,7 +13946,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -13941,6 +13986,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEL-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "SEL-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEL-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "selection approval binds hash of options+prices (20261013100000, selection-approvals-db tests pass)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "unsigned/sent/declined/expired/approved distinct states (selection-approvals tests pass)"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -13957,15 +14048,18 @@
         "A design coordinator outside the project could not confirm a selection group; confirming now checks selections.write and reads through the service client (D2) (found by LOT-01/sweep) — fixed in 12c622af"
       ],
       "plain": {
-        "title": "Buyer sign-off on selections",
-        "description": "Buyers can sign to approve their selections and Arc now keeps the price the buyer chose rather than today's catalog price. It still doesn't check that the option itself is unchanged since sending, and declined or expired approvals aren't shown differently from unsigned ones."
+        "title": "Buyer selection approval",
+        "description": "A buyer approves the exact options and prices sent — by e-signature, in the buyer portal, or in person with a signed copy. Any change after sending voids the request, and declined, expired and voided requests stay distinct from approved ones."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Charging a buyer a price different from the one they signed is a money-integrity defect.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "SEL-01"
+      ]
     },
     {
       "id": "EP06-03",
@@ -13989,9 +14083,7 @@
       "status": "verified",
       "implementationNotes": "Cutoff enforcement and override governance are implemented; undoing a manual cutoff now needs a reason and is audited with an event (5dc16e16). Weaknesses unchanged: not race-safe at the DB, overrides authorized at org level only, and agreement execution locks every selection on the home. Signing now locks only confirmed, ordered or received selections; design rows stay open to their cutoff (4158415c). Found by LOT-01.",
       "remainingWork": [
-        "Authorize overrides against the project/division.",
-        "Make the cutoff check atomic (conditional update or trigger).",
-        "QA cutoff/override walkthrough."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/selection-cutoffs.ts",
@@ -14234,7 +14326,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -14262,7 +14354,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -14271,6 +14363,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEL-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "SEL-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEL-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "cutoffs enforced on mutations in DB + selection-cutoffs service; tests pass"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "override needs authority+reason, audited; selection_exceptions not member-writable (RLS DB-proved)"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -14280,26 +14418,25 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): extending-a-swept-cutoff-reopens-the-choices"
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "revertCutoffToSchedule (lib/services/selection-cutoffs.ts:247-258) clears an override without reason, audit or event. — fixed in 5dc16e16",
         "Signing the purchase agreement locked every selection, so pre-cutoff design selections were blocked; signing now locks only confirmed, ordered or received selections (D1) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
-        "title": "Selection deadlines and overrides",
-        "description": "Selection deadlines are set from the build schedule and enforced on every change, and pushing a deadline back or undoing that needs permission, a reason and leaves a record. Signing the purchase agreement now locks only choices already confirmed or ordered; design choices stay open until their deadline."
+        "title": "Selection cutoffs",
+        "description": "Cutoffs follow the schedule and are enforced in the database on the community's own calendar day. Moving one needs override authority on that home, a reason, and leaves an audit trail."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Cutoffs gate every buyer selection, and the lock-everything-at-signing behavior would block normal design-studio work.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S",
       "scenarioIds": [
-        "LOT-01"
+        "LOT-01",
+        "SEL-01"
       ]
     },
     {
@@ -14321,13 +14458,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Unchanged. Lead time is display-only; no enforcement against supplier lead times or released procurement and no alternate/exception workflow.",
       "remainingWork": [
-        "Per-option effective cutoff = schedule needed-by date minus lead_time_days, enforced in assertSelectionMutable.",
-        "Block or route substitutions once the owning PO is released (variance orders).",
-        "Offer eligible alternates or open an exception when a selection becomes unavailable.",
-        "Tests; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/selections.ts",
@@ -14365,7 +14499,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -14385,6 +14519,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEL-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "SEL-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEL-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "20261013110000 supply/lead-time eligibility; project_selection_group_is_open now org-checked (200000)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "selection_exceptions record + alternate/exception surface; tests pass"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -14398,15 +14578,18 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Supplier lead times on options",
-        "description": "Not built. Arc shows each option's supplier lead time but doesn't use it to stop late choices or changes after the purchase order is released, and when an option becomes unavailable it just shows an error instead of offering an alternative."
+        "title": "Supplier lead times",
+        "description": "An option must be chosen before its supplier lead time runs out and can't change once its purchase order is released. When a choice isn't possible, Arc offers alternates or opens an exception the studio resolves or expedites with a reason."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Group-level schedule cutoffs already stop late selections for a first builder; per-option lead-time enforcement is a refinement for larger supply chains.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP06 batch by the owner on 2026-10-12.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SEL-01"
+      ]
     },
     {
       "id": "EP06-05",
@@ -14432,13 +14615,10 @@
         "EP03-04",
         "EP08-07"
       ],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Selection changes from an approved change order now apply all-or-nothing (5dc16e16, migration 20261010120200 pending approval). Variance orders on the trade side still use a compensating delete, and neither schedule nor agreement is updated. Depends on EP03-04 and EP08-07. Structural options in a signed agreement become confirmed selections at the agreed price and reach the POs (4158415c; found by LOT-01). A quote with two structural options in one category is refused.",
       "remainingWork": [
-        "Apply migration 20261010120200_apply_project_selection_writes (pending approval).",
-        "Move variance-order creation into the same transaction or a receipt-keyed resumable job, idempotent per change order.",
-        "Propagate schedule impact and budget lines; define how the agreement reflects approved changes (ties to EP05-07).",
-        "Full-schema and multi-session tests; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/selection-change-orders.ts",
@@ -14532,7 +14712,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06",
             "FIX-20261010-W1"
@@ -14573,6 +14753,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SEL-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "SEL-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SEL-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "selection CO propagation atomic; applied selection CO void refused by row trigger (200000)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "revision/claim fences; selection-change-orders tests pass"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -14584,24 +14810,24 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "Variance orders still use a manual compensating delete (lib/services/selection-change-orders.ts:354); the selection writes themselves now land in one transaction (apply_project_selection_writes, fixed in 5dc16e16, migration pending).",
-        "A quote with two structural options in one category is now refused (lib/sales/agreement-selections.ts); no way yet to represent or choose between them — open."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "Structural options in a signed agreement never reached the POs; they now become confirmed selections at the agreed price and flow to POs (D7) (found by LOT-01/sweep) — fixed in 4158415c"
       ],
       "plain": {
-        "title": "Selection changes flow to costs",
-        "description": "An approved late selection change updates the home's selections as one unit and creates matching purchase-order revisions, and the price change carries into the closing. It doesn't update the schedule or the agreement, and the purchase-order side can still get out of step if it fails halfway."
+        "title": "Selection change propagation",
+        "description": "An approved selection change updates the agreement, the budget, the purchase orders and records the schedule impact in one step — or nothing changes. Two changes to the same selection can't both land, and an applied change can't be quietly voided."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Mismatched selections, POs and buyer price after a failed change is a money-integrity gap.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "SEL-01"
+      ]
     },
     {
       "id": "EP06-06",
@@ -14622,12 +14848,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Unchanged. Permit lifecycle (applications, submissions, revisions, required documents, decisions) is not implemented; the only permit concept is a manual start gate.",
       "remainingWork": [
-        "Model permit applications per home/jurisdiction with submissions, revisions, required-document checklist and decisions (new entity: RLS, RBAC seed, search index, events).",
-        "Drive the starts permit gate from an approved permit with issued evidence; require evidence for manual attestation meanwhile.",
-        "Tests; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/starts.ts",
@@ -14665,7 +14889,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -14685,6 +14909,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PERMIT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "PERMIT-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PERMIT-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "permits.sql: submissions, documents, decisions via record_permit_* definers with permit_lock_authorized; permit tables not writable by authenticated (DB-proved)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "approval requires every document + files (record_permit_decision 210000:~L215-260)"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -14698,15 +14968,18 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Permit applications per home",
-        "description": "Not built. A permit is just a 'Permit approved' checkbox before a start, which can be ticked without attaching the permit. Arc doesn't track applications, resubmissions, required documents or the jurisdiction's decision."
+        "title": "Permit applications",
+        "description": "Each home's permit is tracked from application through submissions and revisions to a decision, with its required documents. It can't be approved without the issued permit and stamped plans, or marked not required without the authority's letter."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Every production start needs a permit, and a first builder needs at least an evidence-backed permit record per home before releasing starts.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "PERMIT-01"
+      ]
     },
     {
       "id": "EP06-07",
@@ -14727,11 +15000,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Unchanged; nothing implements permit corrections or aging. Depends on EP06-06.",
       "remainingWork": [
-        "After EP06-06, add correction rounds (owner, due date, history) and an overdue/unresolved queue on the Starts desk.",
-        "Tests; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/starts/gate-logic.ts",
@@ -14769,7 +15041,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -14789,6 +15061,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PERMIT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "PERMIT-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PERMIT-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "correction rounds with owner/due, history; denied/withdrawn now withdraw open rounds (210000)"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "permit-reminders sweep + coordinator queue; permits tests pass"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -14804,15 +15122,18 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Permit corrections and aging queue",
-        "description": "Not built. There's no record of plan-review correction rounds, who owns them or when they're due, and no queue showing overdue permits for the coordinator."
+        "title": "Permit corrections and aging",
+        "description": "Plan-review corrections are tracked in rounds with an owner, a due date and full history. Late decisions and unresolved corrections show on the Starts desk and send reminders."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Once permits exist per home (EP06-06), a first builder can track corrections in notes; round-by-round history and an aging queue matter at higher volume.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "Pulled into the EP06 batch by the owner on 2026-10-12.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "PERMIT-01"
+      ]
     },
     {
       "id": "EP06-08",
@@ -14833,12 +15154,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Starts gating plumbing is solid and tested (70 cases), but the permit gate is not evidence-backed and permit fees don't exist. Unchanged since Oct 5.",
       "remainingWork": [
-        "Require evidence when attesting the permit gate; derive it from an approved permit with issued plans once EP06-06 lands.",
-        "Permit fee obligations linked to payables/expenses and reconciled to actual payments.",
-        "Tests; QA."
+        "Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval)."
       ],
       "sources": [
         "lib/services/starts.ts",
@@ -14919,7 +15238,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP05-EP06"
           ],
@@ -14960,6 +15279,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "PERMIT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-14",
+          "runIds": [
+            "PERMIT-01-ep06final"
+          ],
+          "head": "d2b8f09e",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "PERMIT-01 as real roles through the services on the acceptance stack (SEL-01 24/24, PERMIT-01 5/5); regression on the same stack: LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, RACE-02 16/16, LOT-01 81 passed + 10 not implemented (baseline), the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP06-FINAL"
+          ],
+          "date": "2026-10-14",
+          "head": "d2b8f09e",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "fees reconcile via permit_fee_payments; pre-issuance unpaid fees block approval"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "start_gate_sql_evidence requires approved permit + issued/stamped files + plan pin match; lots plan/version/elevation pin now guarded (210000), DB-proved"
+            }
+          ],
+          "scope": "Independent reviews of the EP06 batch (d645c1eb..d2b8f09e): three rounds per area (studio/approval, selections supply, permits) with fixes between, then a final confirmation review that found every criterion met. Run on Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -14975,15 +15340,18 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Permit fees and start release",
-        "description": "A start can't be released until every gate, including permit approved and the pinned plan version, is cleared. But the permit gate can be ticked without attaching the permit, and permit fees aren't tracked or matched to what was paid."
+        "title": "Permit fees and the start gate",
+        "description": "Permit fees reconcile to the bills or counter payments made to the jurisdiction on the home's job cost. A start can't be released without the approved building permit for the lot's exact plan; the gate can't be waived or forged."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Releasing starts without permit evidence is a compliance risk for the first builder; fee tracking is small once permits exist.",
-        "status": "proposed_awaiting_user_approval"
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "PERMIT-01"
+      ]
     },
     {
       "id": "EP07-01",
@@ -35909,6 +36277,12 @@
       "approvedBy": "owner",
       "change": "EP05-01 (Arc's pipeline is the CRM), EP05-05 (tracked lender/title milestones, no partner integration) and EP05-06 (co-op and internal commissions) brought into the first batch with the rest of EP05.",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-14",
+      "approvedBy": "owner",
+      "change": "EP06-04 (supplier lead times) and EP06-07 (permit corrections and aging) pulled into the first batch with the rest of EP06.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -40174,13 +40548,19 @@
       },
       {
         "id": "SEL-01",
-        "story": "Selections and cutoffs: buyer picks options from the published catalog, a late change after cutoff becomes a priced change order/VPO, and option balances reconcile.",
-        "harness": "partial",
+        "story": "Selections: design studio sessions respect consultant hours and room capacity and tell the buyer once per move; buyer approval (e-sign, portal or in person with a signed copy) binds the exact options and prices sent, and declined, expired and voided stay distinct; cutoffs and supplier lead times are enforced in the database on the community's day, with exceptions and alternates; an approved selection change lands on the agreement, budget, purchase orders and schedule together or not at all.",
+        "harness": "exists",
         "covers": [
+          "EP06-01",
+          "EP06-02",
+          "EP06-03",
+          "EP06-04",
+          "EP06-05",
           "EP14-01",
           "EP12-05"
         ],
-        "existingSupport": "configuration-rules-db, selection-variance-orders, catalog publication suites (PGlite only)"
+        "existingSupport": "scripts/books-acceptance/scenarios/sel-01.cjs (sel-01-studio + sel-01-supply; 24 subcases)",
+        "result": "passed"
       },
       {
         "id": "START-01",
@@ -40367,6 +40747,18 @@
           "EP05-01"
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/lead-01.cjs (7 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "PERMIT-01",
+        "story": "Permits: a home's building permit is applied for with its required documents, submitted, corrected in rounds with owners and due dates, and decided with the issued permit and stamped plans; fees reconcile to bills and expenses paid to the jurisdiction; the start gate needs that approved permit for the lot's exact plan and can't be waived or forged.",
+        "harness": "exists",
+        "covers": [
+          "EP06-06",
+          "EP06-07",
+          "EP06-08"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/permit-01.cjs (5 subcases)",
         "result": "passed"
       }
     ]

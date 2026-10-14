@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 45.3% — a documented lower bound, not an ETA |
-| Fully verified | 43.9% |
+| Implemented | 50.5% — a documented lower bound, not an ETA |
+| Fully verified | 49.1% |
 | Release ready | 0% |
 | Code implemented | 2 items |
-| Partially implemented | 52 items |
-| Known pending tasks | 18 items |
+| Partially implemented | 48 items |
+| Known pending tasks | 15 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
 
@@ -123,14 +123,14 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP06-01 | Selection appointments | partial | Consultant/location capacity and a DB-enforced overlap check (exclusion constraint on time range per coordinator/location) - migration needs approval. |
-| EP06-02 | Buyer selection approval | partial | Persist option id + price/cost snapshot in the approval document at send; on execution confirm only if the selection still matches, otherwise flag for re-approval. |
-| EP06-03 | Cutoff enforcement | verified | Authorize overrides against the project/division. |
-| EP06-04 | Supply lead-time eligibility | pending | Per-option effective cutoff = schedule needed-by date minus lead_time_days, enforced in assertSelectionMutable. |
-| EP06-05 | Selection change propagation | partial | Apply migration 20261010120200_apply_project_selection_writes (pending approval). |
-| EP06-06 | Permit submission lifecycle | pending | Model permit applications per home/jurisdiction with submissions, revisions, required-document checklist and decisions (new entity: RLS, RBAC seed, search index, events). |
-| EP06-07 | Permit corrections and aging | pending | After EP06-06, add correction rounds (owner, due date, history) and an overdue/unresolved queue on the Starts desk. |
-| EP06-08 | Permit fees and release gate | partial | Require evidence when attesting the permit gate; derive it from an approved permit with issued plans once EP06-06 lands. |
+| EP06-01 | Selection appointments | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-02 | Buyer selection approval | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-03 | Cutoff enforcement | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-04 | Supply lead-time eligibility | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-05 | Selection change propagation | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-06 | Permit submission lifecycle | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-07 | Permit corrections and aging | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
+| EP06-08 | Permit fees and release gate | verified | Apply the EP06 migrations (20261013100000, 20261013110000, 20261013120000, 20261013130000, 20261013140000, 20261013150000, 20261013160000, 20261013170000, 20261013180000, 20261013190000, 20261013200000, 20261013210000; the free-text appointment location drop waits in supabase/pending-migrations/20261013100001) with the code (pending approval). |
 
 ### EP07: Starts and trade coordination
 
@@ -280,9 +280,12 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - EP05-08: verified without a current passing LOT-01 run.
 - EP05-09: verified without a current passing LOT-01 run.
 - EP05-09: verified without a current passing RACE-02 run.
+- EP06-03: verified without a current passing LOT-01 run.
 - EP09-04: missing source tests/inspection-completion-handoff.test.js.
 - EP13-07: missing source tests/agreement-quote-concurrency.test.js.
 - EP14-06: missing source tests/agreement-quote-concurrency.test.js.
+- surfaceInventory: app/(app)/design-studio/studios/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
+- surfaceInventory: app/(app)/projects/[id]/permits/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - surfaceInventory: app/(app)/settings/lead-intake/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - surfaceInventory: app/(app)/settings/milestone-feeds/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/layout/app-sidebar.tsx
@@ -321,7 +324,9 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/communities.test.js
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/schedule/gantt-chart.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/product-tier.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: lib/project-modules.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-house-overview.ts
+- AUDIT-20261009-EP01-EP02: source changed since proof: components/layout/project-nav-items.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/starts/launch-lane.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: app/(app)/contacts/actions.ts
 - AUDIT-20261009-EP01-EP02: source changed since proof: tests/product-posture-terminology.test.js
@@ -452,6 +457,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/change-orders.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: lib/services/selections.ts
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261007220000_books_home_closing_reversal.sql
+- AUDIT-20261009-EP05-EP06: source changed since proof: tests/selection-variance-orders.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: supabase/migrations/20261003050000_closing_evidence_guards.sql
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/purchase-agreement-pricing.test.js
 - AUDIT-20261009-EP05-EP06: source changed since proof: tests/closing-evidence-guards-db.test.js
@@ -538,6 +544,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/commitment-change-orders.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/validation/commitment-change-orders.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/mobile/purchasing.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/selection-variance-orders.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/mobile-purchasing.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/purchasing-queue-scope.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/reports/variance-analysis.ts
@@ -554,6 +561,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/inspections.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/inspections/lifecycle.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/closing-readiness.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/project-modules.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: app/(app)/projects/[id]/inspections/page.tsx
 - AUDIT-20261009-EP08-EP09: source changed since proof: docs/enterprise-production/inspection-obligation-lifecycle.md
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/inspection-lifecycle-workbench.test.js
@@ -630,12 +638,14 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/runtime.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: app/api/jobs/process-outbox/route.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-job-leases-db.test.js
+- AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/job-runs.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: docs/books-operations.md
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release-actor-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-drawing-fences-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-core-write-fences-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/agreement-quote-concurrency.test.js
+- AUDIT-20261009-EP12-EP14: source changed since proof: vercel.json
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/scenario-runner.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/scenarios/home-01.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/catalog.cjs
@@ -665,6 +675,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/closing-readiness.test.js
 - VERIFY-20261010: source changed since proof: tests/closings-db.test.js
 - VERIFY-20261010: source changed since proof: tests/selection-cutoffs.test.js
+- VERIFY-20261010: source changed since proof: tests/selection-variance-orders.test.js
 - VERIFY-20261010: source changed since proof: tests/imports-open-wip.test.js
 - VERIFY-20261010: source changed since proof: tests/start-trade-notices.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release-actor-db.test.js
