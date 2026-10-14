@@ -3,33 +3,38 @@
   "reviewedFrom": "EP07-04, EP07-11, EP07-12, EP07-13 and EP07-17 (docs/enterprise-production/completion-checklist.json) and the EP07 decisions of 2026-10-14: release handlers are idempotent per home (each generated row carries metadata.release_key, unique per home) and every step closes through one atomic settle_release_step that counts what the step left on the home against what it promised (a step that built nothing records 0); a lot with a live package cannot be detached or moved and cancelling heals a package already stranded; new and reactivated gate definitions fan out to open and ready packages; selection tables are fenced under the release claim; a second cancel is a no-op that keeps the first reason; support staff may not mutate starts. Code: lib/services/{plan-instantiation,budgets,schedule,starts-pipeline,starts,lots}.ts; migration 20261014130000_release_resume_and_fences. Values are derived from each subcase's inputs and are confirmed by the first run on the acceptance stack. The RELEASE-01 org has no price book, so purchasing is off: the budget is built from the plan and the PO step is skipped.",
   "subcases": {
     "release-resumes-after-injected-crash-without-duplicates": {
-      "derivation": "Policy: a release re-run after any interruption builds only what is missing. The org has no price book, so the release builds one approved budget, the plan's schedule template and its checklists. Faults are triggers that raise where a killed worker would have stopped: a second budget line, a third schedule item, the settlement of the schedule step, a second checklist item. Each run commits what precedes the fault and fails there; the job is made due again with its retries at zero (a planted fault is not a real failure). After the first fault the home holds one budget with one line and the package is still releasing; after the second, two keyed schedule items and a failed schedule step; after the third, the complete schedule but the step unsettled (the settlement transaction rolled back, so the project ledger holds no schedule mark); after the fourth, at least one checklist. Run to the end: released, one keyed budget whose lines total it, schedule items equal to the template count with no duplicate key, checklists equal to the snapshot with none empty, every step completed or skipped, one start.released event, one release_published audit, and the project ledger marking budget, schedule and checklists (drawings is settled directly on this stack).",
+      "derivation": "Policy: a release re-run after any interruption builds only what is missing. This subcase has its own builder (RELEASE-01 plan-built releases): its price book is voided before any package opens, so the release builds the budget from the plan's takeoff itself (it is not delegated to purchase orders), and its released plan version carries two checklists of two items each, authored through the checklist and plan services; the plan's schedule template has 8 items (read from the first run). Faults are triggers that raise where a killed worker would have stopped, each planted before the run that meets it (queueing a release wakes the worker at once). (1) A second budget line: the budget row and no lines are committed (the lines go in one statement), the budget step fails, the package stays releasing. (2) Schedule item 3: the replay finds the keyed budget, adds its lines and settles the budget step, the schedule step fails with two keyed items. (3) The settlement of the schedule step: the replay completes the schedule but the step stays unsettled and the project ledger holds no schedule mark (the settlement transaction rolled back). (4) A second checklist item: the replay settles the schedule, builds an inspection whose items then fail, so an inspection without items exists and the checklists step fails. Run to the end: released, one keyed budget whose lines total it, the schedule equal to the template once with no duplicate key, both checklists once each with all their items, every step completed (the PO step skipped, purchasing being off), one start.released event, one release_published audit, and the project ledger marking budget, checklists and schedule (drawings is settled directly on this stack).",
       "expected": {
         "partial": {
           "afterBudgetFault": {
             "package": "releasing",
             "budgets": 1,
-            "lines": 1
+            "lines": 0,
+            "budgetStep": "failed"
           },
           "afterScheduleFault": {
             "package": "releasing",
+            "budgetStep": "completed",
+            "keyedBudgets": 1,
+            "budgetLinesMatchTotal": true,
             "items": 2,
             "scheduleStep": "failed"
           },
           "afterSettlementFault": {
             "itemsBuilt": true,
-            "scheduleStep": "failed"
+            "scheduleStep": "failed",
+            "projectLedgerMarksSchedule": false
           },
           "afterChecklistFault": {
             "package": "releasing",
-            "inspectionsWithoutItemsOrShort": true
+            "scheduleStep": "completed",
+            "checklistStep": "failed",
+            "inspectionBuiltWithoutItems": true
           }
         },
         "final": {
           "finalStatus": "released",
           "budgets": 1,
-          "keyedBudgets": 1,
-          "budgetLinesMatchTotal": true,
           "scheduleMatchesTemplate": true,
           "inspectionsMatchChecklists": true,
           "inspectionsWithoutItems": 0,
@@ -44,12 +49,14 @@
               "checklists",
               "schedule"
             ]
-          }
+          },
+          "keyedBudgets": 1,
+          "budgetLinesMatchTotal": true
         }
       }
     },
     "cancel-mid-step-then-rerelease-builds-each-artifact-once": {
-      "derivation": "Policy: cancelling keeps what a release already committed and a re-release resumes. A fault stops the schedule after two items; the coordinator cancels the release: the package returns to ready, the budget step stays settled, the schedule step is reset, and the two items remain. Released again, the schedule is completed from item three on: one budget, the template's items once, the checklists once, one release event and audit.",
+      "derivation": "Policy: cancelling keeps what a release already committed and a re-release resumes. A fault stops the schedule after two items; the coordinator cancels the release: the package returns to ready, the budget step stays settled, the schedule step is reset, and the two items remain. Released again, the schedule is completed from item three on: one budget, the template's items once, the checklists once, one release event and audit. The release's budget comes from its purchase orders (price book present), so the project ledger marks checklists and schedule only.",
       "expected": {
         "cancelled": {
           "package": "ready",
@@ -61,8 +68,6 @@
           "queuedAgain": true,
           "finalStatus": "released",
           "budgets": 1,
-          "keyedBudgets": 1,
-          "budgetLinesMatchTotal": true,
           "scheduleMatchesTemplate": true,
           "inspectionsMatchChecklists": true,
           "inspectionsWithoutItems": 0,
@@ -73,7 +78,6 @@
             "releasedEvents": 1,
             "publishAudits": 1,
             "projectLedgerMarks": [
-              "budget",
               "checklists",
               "schedule"
             ]
@@ -82,7 +86,7 @@
       }
     },
     "incomplete-receipt-cannot-publish": {
-      "derivation": "Policy: a step that left fewer artifacts than it promised cannot count as complete. An after-insert trigger removes schedule item 1 as soon as it is built, so the handler promises the template count and the home holds one fewer. settle_release_step refuses (receipt is incomplete); the schedule step is failed, the checklists step never starts (still pending), the package is not released and no start.released event exists; publication without a live claim is refused. With the fault removed the replay builds the missing item and the release completes.",
+      "derivation": "Policy: a step that left fewer artifacts than it promised cannot count as complete. An after-insert trigger removes schedule item 1 as soon as it is built, so the handler promises the template count and the home holds one fewer. settle_release_step refuses (receipt is incomplete); the schedule step is failed, the checklists step never starts (still pending), the package is not released and no start.released event exists; publication without a live claim is refused. With the fault removed the replay builds the missing item and the release completes. The release's budget comes from its purchase orders (price book present), so the project ledger marks checklists and schedule only.",
       "expected": {
         "refused": {
           "scheduleStep": "failed",
@@ -101,7 +105,6 @@
             "releasedEvents": 1,
             "publishAudits": 1,
             "projectLedgerMarks": [
-              "budget",
               "checklists",
               "schedule"
             ]
@@ -141,7 +144,7 @@
       }
     },
     "new-gate-definition-reaches-open-packages-and-release-completes": {
-      "derivation": "Policy (EP07-17): a gate defined while packages are open reaches them in the same transaction. One package is ready and one open when the owner defines a manual gate: both gain it pending, the ready package returns to open (a not_ready event), and releasing it is refused as not ready. Attested with a file on its home the package is ready again, the release completes with the gate proven, and a sales member cannot define a gate (start.release).",
+      "derivation": "Policy (EP07-17): a gate defined while packages are open reaches them in the same transaction. One package is ready and one open when the owner defines a manual gate: both gain it pending, the ready package returns to open (a not_ready event), and releasing it is refused as not ready. Attested with a file on its home the package is ready again, the release completes with the gate proven, and a sales member cannot define a gate (start.release). The release's budget comes from its purchase orders (price book present), so the project ledger marks checklists and schedule only.",
       "expected": {
         "reach": {
           "before": {
@@ -170,7 +173,6 @@
             "releasedEvents": 1,
             "publishAudits": 1,
             "projectLedgerMarks": [
-              "budget",
               "checklists",
               "schedule"
             ]

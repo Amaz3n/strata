@@ -51,6 +51,35 @@ function releaseOrg(kit) {
   return ORGS.get(kit)
 }
 
+const BUILT_ORGS = new WeakMap()
+/**
+ * A builder whose releases build the budget and the checklists themselves: no price book (the price book the product
+ * seed imports is voided before any package opens, so the budget step is not delegated to purchase orders) and a
+ * released plan version carrying two checklists of two items each, authored through the checklist and plan services.
+ */
+function planBuiltOrg(kit) {
+  if (!BUILT_ORGS.has(kit)) BUILT_ORGS.set(kit, (async () => {
+    const org = await seed.productionBuilder(kit, { name: "RELEASE-01 plan-built releases" })
+    await seed.seedCommunity(kit, org)
+    await seed.seedProduct(kit, org)
+    await seed.takeDownTranche(kit, org)
+    kit.sql(`update public.vendor_price_agreements set status='void' where org_id=${kit.q(org.orgId)}`)
+    const inspections = app("inspections"), plans = app("house-plans")
+    const templateIds = []
+    for (const name of ["Framing walk", "Slab pour"]) {
+      const template = await kit.as(org.owner, () => inspections.createChecklistTemplate({ name, kind: "quality", items: [{ prompt: `${name}: layout matches the plan`, response_type: "pass_fail" }, { prompt: `${name}: work is clean and complete`, response_type: "pass_fail" }] }))
+      templateIds.push(template.id)
+    }
+    const plan = org.plans[1]
+    const version = await kit.as(org.owner, () => plans.createPlanVersion(plan.id, { copyFromVersionId: plan.versionId, label: "With checklists" }))
+    await kit.as(org.owner, () => plans.updatePlanVersion(version.id, { label: "With checklists", scheduleTemplateId: org.scheduleTemplateId, checklistTemplateIds: templateIds, selectionCategoryIds: [] }))
+    await kit.as(org.owner, () => plans.releasePlanVersion(version.id))
+    org.planBuilt = { ...plan, versionId: version.id }
+    return org
+  })())
+  return BUILT_ORGS.get(kit)
+}
+
 const one = (kit, sql) => kit.rows(sql)[0]
 const count = (kit, from) => Number(one(kit, `select count(*)::int n from ${from}`).n)
 const svc = (kit, body) => kit.sql(`set role service_role;\n${body}`)
@@ -64,11 +93,13 @@ function readyHome(kit, key) {
   return homes.get(key)
 }
 async function buildReadyHome(kit, key) {
-  const org = await releaseOrg(kit)
+  const built = key === "crash"
+  const org = built ? await planBuiltOrg(kit) : await releaseOrg(kit)
+  const plan = built ? org.planBuilt : org.plans[1]
   const lot = org.lots[LOTS[key]]
-  seed.pinSpecPlan(kit, { lot, plan: org.plans[1] })
+  seed.pinSpecPlan(kit, { lot, plan })
   const gates = await seed.clearStartGates(kit, org, { lotId: lot.id, spec: true })
-  return { org, orgId: org.orgId, lot, lotId: lot.id, projectId: gates.projectId, packageId: gates.packageId, planVersionId: org.plans[1].versionId, actor: org.team.starts }
+  return { org, orgId: org.orgId, lot, lotId: lot.id, projectId: gates.projectId, packageId: gates.packageId, planVersionId: plan.versionId, actor: org.team.starts }
 }
 
 /** The released home's owned-inventory accounting, which the finalize step's land transfer needs. */
@@ -90,7 +121,18 @@ async function runPipeline(kit) {
   }
 }
 /** One more go at this home's release: its job is due now, with its retries back at zero (a planted fault is not a real failure). */
-const dueNow = (kit, home) => kit.sql(`update public.outbox set status='pending', retry_count=0, run_at=now(), start_claim_token=null, start_job_lease_expires_at=null, priority=1000000 where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} and status in ('pending','failed')`)
+const dueNow = (kit, home) => kit.sql(`update public.outbox set status='pending', retry_count=0, run_at=now(), start_claim_token=null, start_job_lease_expires_at=null, priority=1000000 where id=(select max(id) from public.outbox where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)}) and status in ('pending','failed')`)
+/**
+ * Queueing a release also wakes the worker, which starts at once; a subcase that needs a fault in place plants it
+ * BEFORE it queues, and waits here for that first run to stop before it looks at the home.
+ */
+async function quiesce(kit, home) {
+  let quiet = 0
+  for (let tries = 0; tries < 80 && quiet < 3; tries += 1) {
+    await sleep(500)
+    quiet = count(kit, `public.outbox where org_id=${kit.q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} and status='processing'`) === 0 ? quiet + 1 : 0
+  }
+}
 async function runUntilSettled(kit, home) {
   for (let tries = 0; tries < 6; tries += 1) {
     dueNow(kit, home)
@@ -124,8 +166,6 @@ function artifacts(kit, home) {
   const snapshot = one(kit, `select jsonb_array_length(coalesce(bundle_snapshot->'schedule_template'->'items','[]')) schedule, jsonb_array_length(coalesce(bundle_snapshot->'checklists','[]')) checklists from public.house_plan_versions where id=${v}`)
   return {
     budgets: count(kit, `public.budgets where project_id=${p}`),
-    keyedBudgets: count(kit, `public.budgets where project_id=${p} and metadata->>'release_key'='budget'`),
-    budgetLinesMatchTotal: one(kit, `select coalesce((select sum(l.amount_cents) from public.budget_lines l where l.budget_id=b.id),0)=coalesce(b.total_cents,0) ok from public.budgets b where b.project_id=${p} and b.metadata->>'release_key'='budget'`)?.ok === true,
     scheduleMatchesTemplate: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`) === Number(snapshot.schedule),
     inspectionsMatchChecklists: count(kit, `public.inspections where project_id=${p} and metadata->>'release_key' like 'checklist:%'`) === Number(snapshot.checklists),
     inspectionsWithoutItems: count(kit, `public.inspections i where i.project_id=${p} and i.metadata->>'release_key' like 'checklist:%' and not exists(select 1 from public.inspection_items n where n.inspection_id=i.id)`),
@@ -149,44 +189,52 @@ const ledger = (kit, home) => {
 async function releaseResumesAfterInjectedCrash(kit, spec, check) {
   const home = await readyHome(kit, "crash")
   await adoptInventory(kit, home)
-  await queueRelease(kit, home)
-  settleDrawings(kit, home)
   const p = kit.q(home.projectId)
   const partial = {}
-
-  await withFault(kit, "budget", { table: "budget_lines", when: `(select count(*) from public.budget_lines where budget_id=new.budget_id)>=1` }, async () => {
-    dueNow(kit, home); await runPipeline(kit)
-    partial.afterBudgetFault = { package: packageStatus(kit, home), budgets: count(kit, `public.budgets where project_id=${p}`), lines: count(kit, `public.budget_lines where budget_id in (select id from public.budgets where project_id=${p})`) }
+  const stepStatus = (step) => one(kit, `select status from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key=${kit.q(step)}`).status
+  const keyedItems = () => count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`)
+  const budgetState = () => ({ budgets: count(kit, `public.budgets where project_id=${p}`), lines: count(kit, `public.budget_lines where budget_id in (select id from public.budgets where project_id=${p})`) })
+  const budgetBuilt = () => ({
+    keyedBudgets: count(kit, `public.budgets where project_id=${p} and metadata->>'release_key'='budget'`),
+    budgetLinesMatchTotal: one(kit, `select coalesce((select sum(l.amount_cents) from public.budget_lines l where l.budget_id=b.id),0)=coalesce(b.total_cents,0) and exists(select 1 from public.budget_lines l where l.budget_id=b.id) ok from public.budgets b where b.project_id=${p} and b.metadata->>'release_key'='budget'`)?.ok === true,
   })
-  await withFault(kit, "schedule", { table: "schedule_items", when: `new.project_id=${p} and (select count(*) from public.schedule_items where project_id=new.project_id and metadata->>'release_key' like 'schedule:%')>=2` }, async () => {
-    dueNow(kit, home); await runPipeline(kit)
-    partial.afterScheduleFault = { package: packageStatus(kit, home), items: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`), scheduleStep: one(kit, `select status from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key='schedule'`).status }
+
+  // The first run starts as the release is queued, so each fault is planted before the run that meets it.
+  await withFault(kit, "budget", { table: "budget_lines", when: `new.sort_order>=1 and (select project_id from public.budgets where id=new.budget_id)=${p}` }, async () => {
+    await queueRelease(kit, home)
+    settleDrawings(kit, home)
+    await quiesce(kit, home)
+    partial.afterBudgetFault = { package: packageStatus(kit, home), ...budgetState(), budgetStep: stepStatus("budget") }
+  })
+  await withFault(kit, "schedule", { table: "schedule_items", when: `new.project_id=${p} and new.metadata->>'release_key'='schedule:2'` }, async () => {
+    dueNow(kit, home); await runPipeline(kit); await quiesce(kit, home)
+    partial.afterScheduleFault = { package: packageStatus(kit, home), budgetStep: stepStatus("budget"), ...budgetBuilt(), items: keyedItems(), scheduleStep: stepStatus("schedule") }
   })
   await withFault(kit, "settle_schedule", { table: "start_release_steps", event: "update", when: `new.step_key='schedule' and new.status='completed'` }, async () => {
-    dueNow(kit, home); await runPipeline(kit)
-    partial.afterSettlementFault = { itemsBuilt: artifacts(kit, home).scheduleMatchesTemplate, scheduleStep: one(kit, `select status from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key='schedule'`).status }
+    dueNow(kit, home); await runPipeline(kit); await quiesce(kit, home)
+    partial.afterSettlementFault = { itemsBuilt: artifacts(kit, home).scheduleMatchesTemplate, scheduleStep: stepStatus("schedule"), projectLedgerMarksSchedule: ledger(kit, home).projectLedgerMarks.includes("schedule") }
   })
-  await withFault(kit, "checklist", { table: "inspection_items", when: `(select count(*) from public.inspection_items where inspection_id=new.inspection_id)>=1` }, async () => {
-    dueNow(kit, home); await runPipeline(kit)
-    partial.afterChecklistFault = { package: packageStatus(kit, home), inspectionsWithoutItemsOrShort: count(kit, `public.inspections where project_id=${p} and metadata->>'release_key' like 'checklist:%'`) >= 1 }
+  await withFault(kit, "checklist", { table: "inspection_items", when: `new.sort_order>=1 and (select project_id from public.inspections where id=new.inspection_id)=${p}` }, async () => {
+    dueNow(kit, home); await runPipeline(kit); await quiesce(kit, home)
+    partial.afterChecklistFault = { package: packageStatus(kit, home), scheduleStep: stepStatus("schedule"), checklistStep: stepStatus("checklists"), inspectionBuiltWithoutItems: artifacts(kit, home).inspectionsWithoutItems >= 1 }
   })
 
   const finalStatus = await runUntilSettled(kit, home)
   await kit.drainOutbox(home.orgId)
-  equal(check, "a release killed after the first budget line, after the second schedule item, between the schedule handler and its settlement and after the first checklist item leaves a partial home each time and no failure is final", spec.expected.partial, partial)
-  equal(check, "run again to the end, the home holds one approved budget whose lines total it, the template's schedule and checklists once each with no duplicate key, and one release event and one audit", spec.expected.final, { finalStatus, ...artifacts(kit, home), ledger: ledger(kit, home) })
+  equal(check, "a release killed at the second budget line, the third schedule item, the settlement of the schedule step and the second checklist item leaves a partial home each time and no failure is final", spec.expected.partial, partial)
+  equal(check, "run again to the end, the home holds one approved budget whose lines total it, the template's schedule and both checklists once each with no duplicate key, one release event and one audit", spec.expected.final, { finalStatus, ...artifacts(kit, home), ...budgetBuilt(), ledger: ledger(kit, home) })
   return { orgId: home.orgId, packageId: home.packageId }
 }
 
 async function cancelMidStepThenRereleaseBuildsEachArtifactOnce(kit, spec, check) {
   const home = await readyHome(kit, "cancel")
   await adoptInventory(kit, home)
-  await queueRelease(kit, home)
-  settleDrawings(kit, home)
   const p = kit.q(home.projectId)
   let midway
   await withFault(kit, "cancel_schedule", { table: "schedule_items", when: `new.project_id=${p} and (select count(*) from public.schedule_items where project_id=new.project_id and metadata->>'release_key' like 'schedule:%')>=2` }, async () => {
-    dueNow(kit, home); await runPipeline(kit)
+    await queueRelease(kit, home)
+    settleDrawings(kit, home)
+    await quiesce(kit, home)
     midway = { items: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`) }
   })
   const cancelled = await kit.as(home.actor, () => app("starts").cancelRelease(home.packageId))
@@ -203,8 +251,6 @@ async function cancelMidStepThenRereleaseBuildsEachArtifactOnce(kit, spec, check
 async function incompleteReceiptCannotPublish(kit, spec, check) {
   const home = await readyHome(kit, "receipt")
   await adoptInventory(kit, home)
-  await queueRelease(kit, home)
-  settleDrawings(kit, home)
   const p = kit.q(home.projectId)
   let refused
   // The step "builds" its items and one of them is gone before the step closes: fewer than it promised.
@@ -213,7 +259,9 @@ async function incompleteReceiptCannotPublish(kit, spec, check) {
     drop trigger if exists qa_fault_lose_item on public.schedule_items;
     create trigger qa_fault_lose_item after insert on public.schedule_items for each row when (new.project_id='${home.projectId}') execute function public.qa_fault_lose_item();`)
   try {
-    dueNow(kit, home); await runPipeline(kit)
+    await queueRelease(kit, home)
+    settleDrawings(kit, home)
+    await quiesce(kit, home)
     const step = one(kit, `select status, error from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key='schedule'`)
     refused = { scheduleStep: step.status, error: /receipt is incomplete/.test(step.error ?? "") ? "receipt is incomplete" : step.error, package: packageStatus(kit, home), checklistsStarted: one(kit, `select status from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key='checklists'`).status, releasedEvents: count(kit, `public.events where entity_id=${kit.q(home.packageId)} and event_type='start.released'`) }
   } finally { kit.sql(`drop trigger if exists qa_fault_lose_item on public.schedule_items; drop function if exists public.qa_fault_lose_item();`) }
@@ -238,7 +286,7 @@ async function lotDetachWhilePackageActiveIsRefusedAndCancelHealsStrandings(kit,
   const serviceDetach = labelled(await attempt(() => kit.as(org.owner, () => lots.detachProjectFromLot(lot.id))), /Cancel this lot's start package/, "refused: cancel the package first")
   const sql = (statement) => { try { kit.sql(`${asMember(org.owner)}\n${statement}`); return "allowed" } catch (error) { return error.message } }
   const sessionDetach = labelled(sql(`update public.lots set project_id=null, status='assigned' where id=${kit.q(lot.id)};`), /Cancel the start package before detaching/, "refused: cancel the package first")
-  const other = one(kit, `select id::text from public.communities where org_id=${kit.q(org.orgId)} and id<>${kit.q(lot.community_id)} limit 1`)
+  const other = one(kit, `insert into public.communities(org_id,name) values(${kit.q(org.orgId)},'RELEASE-01 Inland') returning id::text`)
   const move = other ? labelled(sql(`update public.lots set community_id=${kit.q(other.id)} where id=${kit.q(lot.id)};`), /Cancel the start package before detaching or moving/, "refused: cancel the package first") : "no other community"
   const stillAttached = JSON.stringify(lotRow()) === JSON.stringify(before)
 
