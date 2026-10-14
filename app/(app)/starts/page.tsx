@@ -3,7 +3,7 @@ import { StartsSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { LaunchLane } from "@/components/starts/launch-lane"
-import { PermitsBand, PermitsBandSkeleton } from "@/components/permits/permits-band"
+import { PermitsBand, readPermitsBand } from "@/components/permits/permits-band"
 import { getStartsDesk } from "@/lib/services/starts-desk"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
@@ -16,14 +16,13 @@ async function StartsPageContent({
   await connection()
   const params = await searchParams
   const scope = await resolveProductionDeskScope({ communityId: params.community })
-  const desk = await getStartsDesk({ communityId: scope.communityId, divisionId: scope.divisionId, refused: scope.refused })
+  const [desk, permits] = await Promise.all([
+    getStartsDesk({ communityId: scope.communityId, divisionId: scope.divisionId, refused: scope.refused }),
+    scope.refused ? null : readPermitsBand({ communityId: scope.communityId, divisionId: scope.divisionId }),
+  ])
   return (
     <PageLayout title="Starts" fullBleed>
-      {scope.refused ? null : (
-        <Suspense fallback={<PermitsBandSkeleton />}>
-          <PermitsBand communityId={scope.communityId} divisionId={scope.divisionId} />
-        </Suspense>
-      )}
+      {permits ? <PermitsBand queue={permits} /> : null}
       <LaunchLane
         desk={desk}
         communities={scope.communities}

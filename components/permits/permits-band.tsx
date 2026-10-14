@@ -1,7 +1,6 @@
 import Link from "next/link"
 
 import { AGING_CLASS, dueLabel, formatDay } from "@/components/permits/permit-format"
-import { Skeleton } from "@/components/ui/skeleton"
 import { hasPermission } from "@/lib/services/permissions"
 import { PERMIT_QUEUE_CAP, listPermitQueue, type PermitQueueRow } from "@/lib/services/permits"
 import { cn } from "@/lib/utils"
@@ -13,17 +12,25 @@ function chase(row: PermitQueueRow) {
   return { text: `${unresolvedRounds} ${unresolvedRounds === 1 ? "round" : "rounds"} with the reviewer`, className: "text-muted-foreground" }
 }
 
+export type PermitsBandState =
+  | { ok: true; data: Awaited<ReturnType<typeof listPermitQueue>> }
+  | { ok: false; error: string }
+
+/** The band's data, read with the desk so the band paints with the page (null without permit.read). */
+export async function readPermitsBand({ communityId, divisionId }: { communityId?: string; divisionId?: string }): Promise<PermitsBandState | null> {
+  if (!await hasPermission("permit.read")) return null
+  return listPermitQueue({ communityId, divisionId }).then(
+    (data) => ({ ok: true as const, data }),
+    (error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : "Permits are unavailable" }),
+  )
+}
+
 /**
  * The coordinator's permit chase list on the Starts desk: applications whose
  * decision is late or coming due, and correction rounds still unresolved, in the
  * desk's community lens. Read-only; every row opens the home's permit.
  */
-export async function PermitsBand({ communityId, divisionId }: { communityId?: string; divisionId?: string }) {
-  if (!await hasPermission("permit.read")) return null
-  const queue = await listPermitQueue({ communityId, divisionId }).then(
-    (data) => ({ ok: true as const, data }),
-    (error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : "Permits are unavailable" }),
-  )
+export function PermitsBand({ queue }: { queue: PermitsBandState }) {
   if (!queue.ok) {
     return <p className="border-b px-4 py-2 text-xs text-destructive" role="alert">Permits could not load: {queue.error}</p>
   }
@@ -79,14 +86,5 @@ export async function PermitsBand({ communityId, divisionId }: { communityId?: s
         {truncated ? <p className="border-t px-4 py-1.5 text-xs text-muted-foreground">Showing {Math.min(PERMIT_QUEUE_CAP, rows.length)} of {total} applications in flight; narrow the desk by community.</p> : null}
       </div>
     </details>
-  )
-}
-
-export function PermitsBandSkeleton() {
-  return (
-    <div className="flex items-center gap-3 border-b px-4 py-2" role="status" aria-label="Loading permits">
-      <Skeleton className="h-3 w-14" />
-      <Skeleton className="h-3 w-48" />
-    </div>
   )
 }

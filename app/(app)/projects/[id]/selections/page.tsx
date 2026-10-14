@@ -43,6 +43,7 @@ async function ProjectSelectionsPageContent({ params }: PageProps) {
         canManageApprovals={canManageApprovals}
         exceptions={
           <SelectionExceptionsBand
+            key="exceptions"
             projectId={project.id}
             exceptions={exceptions.success ? exceptions.data.exceptions : []}
             truncated={exceptions.success ? exceptions.data.truncated : false}
