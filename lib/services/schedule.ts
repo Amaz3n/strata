@@ -1057,7 +1057,10 @@ export async function previewScheduleReschedule(
   orgId?: string,
 ): Promise<ScheduleReschedulePreview> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
-  const plan = await buildReschedulePlan(supabase, resolvedOrgId, moves);
+  // Read with the service client, scoped by org: row security on schedule_items
+  // follows project membership, while authority here is schedule.edit per project
+  // (role, scope and division), checked before anything is returned.
+  const plan = await buildReschedulePlan(createServiceSupabaseClient(), resolvedOrgId, moves);
   for (const projectId of plan.projectIds) await requireProjectPermission(userId, projectId, "schedule.edit");
   return {
     changes: plan.changes,
@@ -1079,6 +1082,8 @@ export async function bulkUpdateScheduleItems(
   options: { tradeResponseId?: string } = {},
 ): Promise<ScheduleItem[]> {
   const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId);
+  // See previewScheduleReschedule: authority is checked per project below.
+  const writer = createServiceSupabaseClient();
 
   const requested = new Map<string, ScheduleBulkUpdate["items"][number]>();
   for (const item of updates.items) {
@@ -1088,17 +1093,16 @@ export async function bulkUpdateScheduleItems(
   const moves: DateMove[] = updates.items.flatMap((item) =>
     item.start_date && item.end_date ? [{ id: item.id, start_date: item.start_date, end_date: item.end_date }] : []);
 
-  const writer = createServiceSupabaseClient();
   let changes: ScheduleRescheduleChange[] = [];
   let closeImpacts: ScheduleCloseImpact[] = [];
   let projectIds: string[];
   let itemById: Map<string, { project_id: string; updated_at: string; start_date: string | null }>;
   if (moves.length) {
-    const plan = await buildReschedulePlan(supabase, resolvedOrgId, moves);
+    const plan = await buildReschedulePlan(writer, resolvedOrgId, moves);
     ({ changes, closeImpacts, projectIds, itemById } = plan);
     const missing = Array.from(requested.keys()).filter((id) => !itemById.has(id));
     if (missing.length) {
-      const { data, error } = await supabase.from("schedule_items").select("id,project_id,updated_at,start_date")
+      const { data, error } = await writer.from("schedule_items").select("id,project_id,updated_at,start_date")
         .eq("org_id", resolvedOrgId).in("id", missing);
       if (error) throw new Error(`Failed to load schedule items: ${error.message}`);
       if ((data ?? []).length !== missing.length) throw new Error("One or more schedule items were not found or are not accessible");
@@ -1106,7 +1110,7 @@ export async function bulkUpdateScheduleItems(
       projectIds = Array.from(new Set([...projectIds, ...(data ?? []).map((row) => row.project_id)]));
     }
   } else {
-    const { data, error } = await supabase.from("schedule_items").select("id,project_id,updated_at,start_date")
+    const { data, error } = await writer.from("schedule_items").select("id,project_id,updated_at,start_date")
       .eq("org_id", resolvedOrgId).in("id", Array.from(requested.keys()));
     if (error) throw new Error(`Failed to load schedule items: ${error.message}`);
     if ((data ?? []).length !== requested.size) throw new Error("One or more schedule items were not found or are not accessible");
@@ -1162,7 +1166,7 @@ export async function bulkUpdateScheduleItems(
   try {
     await Promise.all([
       ...dateMoves.map((row) => enqueueProductionScheduleChange({
-        supabase, orgId: resolvedOrgId, actorId: userId, productTier,
+        supabase: writer, orgId: resolvedOrgId, actorId: userId, productTier,
         projectId: row.project_id, scheduleItemId: row.id, oldStart: row.old_start, newStart: row.new_start,
       })),
       ...Array.from(cutoffProjects).map((projectId) =>
@@ -1178,7 +1182,7 @@ export async function bulkUpdateScheduleItems(
   }
 
   const [{ data: rows, error: readError }, dependencyMap] = await Promise.all([
-    supabase.from("schedule_items")
+    writer.from("schedule_items")
       .select(`
         id, org_id, project_id, name, item_type, status, start_date, end_date,
         progress, assigned_to, metadata, created_at, updated_at,
@@ -1187,7 +1191,7 @@ export async function bulkUpdateScheduleItems(
         cost_code_id, budget_cents, actual_cost_cents
       `)
       .eq("org_id", resolvedOrgId).in("id", moved.map((row) => row.id)),
-    loadDependencies(supabase, resolvedOrgId, projectIds),
+    loadDependencies(writer, resolvedOrgId, projectIds),
   ]);
   if (readError) throw new Error(`The schedule moved, but could not be reloaded: ${readError.message}`);
   return (rows ?? []).map((row) => mapScheduleItem(row, dependencyMap));

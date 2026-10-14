@@ -386,7 +386,8 @@ async function proveFinancing(kit, org, { projectId }) {
 async function assignSuperintendent(kit, org, { projectId, user = org.team.superintendent }) {
   const [{ superintendent_id: current }] = kit.rows(`select superintendent_id from public.projects where id=${kit.q(projectId)}`)
   if (current) return
-  await kit.as(org.team.starts, () => app("starts").setProjectSuperintendent(projectId, user.userId))
+  const result = await kit.as(org.team.starts, () => app("starts").setProjectSuperintendent(projectId, user.userId))
+  if (!result.assigned) throw Error(`The superintendent could not be assigned: at their limit of ${result.limit} houses`)
 }
 
 /** Opens the lot's start package and clears every gate a person owns. */

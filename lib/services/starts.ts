@@ -613,9 +613,13 @@ async function deriveAutoGate(
     // lender's loan approval (financed) or proof of funds (cash), satisfied
     // with its document on file, and with nothing the agreement holds before
     // start still open. Records that are absent, waived or archived never pass.
+    // Read as the server: agreement milestones are readable with sales.read, which the
+    // starts coordinator does not hold, and a read that sees nothing is not evidence of
+    // nothing. The package was already authorized by the caller.
+    const reader = startsWriter()
     const [blockers, financing] = await Promise.all([
-      readAgreementMilestoneBlockers(supabase, orgId, projectId, "start"),
-      readStartFinancingRecord(supabase, orgId, projectId),
+      readAgreementMilestoneBlockers(reader, orgId, projectId, "start"),
+      readStartFinancingRecord(reader, orgId, projectId),
     ])
     return blockers.length === 0 && financingGateClear(financing)
   }
@@ -1300,7 +1304,8 @@ export async function listSuperintendentCandidates(
   if (houses.truncated) throw new Error("Too many active houses to count superintendent load")
   const roleIds = Array.from(new Set(members.rows.map((row) => row.role_id)))
   const grants = roleIds.length
-    ? await context.supabase.from("role_permissions").select("role_id").in("role_id", roleIds).eq("permission_key", FIELD_ROLE_PERMISSION)
+    // The role catalog is service-role only; read on the caller's session it comes back empty and nobody qualifies.
+    ? await startsWriter().from("role_permissions").select("role_id").in("role_id", roleIds).eq("permission_key", FIELD_ROLE_PERMISSION)
     : { data: [], error: null }
   if (grants.error) throw new Error(`Failed to load field roles: ${grants.error.message}`)
   const fieldRoles = new Set((grants.data ?? []).map((row) => row.role_id))

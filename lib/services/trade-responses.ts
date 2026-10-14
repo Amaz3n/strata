@@ -248,7 +248,6 @@ const queueRowSchema = z.object({
   reason: z.string().nullable(),
   responded_at: z.string(),
   project: z.object({ name: z.string() }).nullable(),
-  item: z.object({ name: z.string(), status: z.string(), start_date: z.string().nullable(), end_date: z.string().nullable() }).nullable(),
   company: z.object({ name: z.string() }).nullable(),
 })
 
@@ -267,25 +266,38 @@ export async function listOpenTradeResponses(
   const lot = `lot:lots!lots_project_id_fkey${input.communityId ? "!inner" : ""}(community_id)`
   let query = context.supabase.from("trade_work_responses")
     .select(`id,response,project_id,schedule_item_id,issued_start,issued_end,proposed_start,proposed_end,reason,responded_at,
-      project:projects!inner(name,${lot}),item:schedule_items(name,status,start_date,end_date),company:companies(name)`, { count: "exact" })
+      project:projects!inner(name,${lot}),company:companies(name)`, { count: "exact" })
     .eq("org_id", context.orgId).eq("status", "open").in("response", ["declined", "reschedule_requested"])
   if (input.communityId) query = query.eq("project.lot.community_id", input.communityId)
   const from = (page - 1) * TRADE_RESPONSE_PAGE_SIZE
   const { data, error, count } = await query.order("responded_at").order("id").range(from, from + TRADE_RESPONSE_PAGE_SIZE - 1)
   if (error) throw new Error(`Failed to load trade responses: ${error.message}`)
   const rows = z.array(queueRowSchema).parse(data ?? [])
+  // Row security on schedule_items follows project membership, which a coordinator
+  // need not hold; the answers above already passed the permission and division wall.
+  const { data: itemRows, error: itemError } = rows.length
+    ? await createServiceSupabaseClient().from("schedule_items").select("id,name,status,start_date,end_date")
+      .eq("org_id", context.orgId).in("id", rows.map((row) => row.schedule_item_id))
+    : { data: [], error: null }
+  if (itemError) throw new Error(`Failed to load the tasks: ${itemError.message}`)
+  const itemById = new Map(z.array(z.object({
+    id: z.string(), name: z.string(), status: z.string(), start_date: z.string().nullable(), end_date: z.string().nullable(),
+  })).parse(itemRows ?? []).map((row) => [row.id, row]))
   return {
     total: count ?? rows.length,
     pageSize: TRADE_RESPONSE_PAGE_SIZE,
-    rows: rows.map((row) => ({
+    rows: rows.map((row) => {
+      const item = itemById.get(row.schedule_item_id)
+      return {
       id: row.id, response: row.response, projectId: row.project_id, projectName: row.project?.name ?? "Home",
-      scheduleItemId: row.schedule_item_id, itemName: row.item?.name ?? "Task", itemStatus: row.item?.status ?? "planned",
+      scheduleItemId: row.schedule_item_id, itemName: item?.name ?? "Task", itemStatus: item?.status ?? "planned",
       companyName: row.company?.name ?? "Trade",
       issuedStart: row.issued_start, issuedEnd: row.issued_end,
-      currentStart: row.item?.start_date ?? null, currentEnd: row.item?.end_date ?? row.item?.start_date ?? null,
+      currentStart: item?.start_date ?? null, currentEnd: item?.end_date ?? item?.start_date ?? null,
       proposedStart: row.proposed_start, proposedEnd: row.proposed_end, reason: row.reason, respondedAt: row.responded_at,
-      stale: row.item?.start_date !== row.issued_start || (row.item?.end_date ?? row.item?.start_date) !== row.issued_end,
-    })),
+      stale: item?.start_date !== row.issued_start || (item?.end_date ?? item?.start_date) !== row.issued_end,
+      }
+    }),
   }
 }
 
@@ -321,7 +333,7 @@ async function loadOpenRescheduleRequest(context: Awaited<ReturnType<typeof requ
   if (request.status !== "open" || request.response !== "reschedule_requested" || !request.proposed_start || !request.proposed_end) {
     throw new Error("This request was already closed")
   }
-  const { data: item, error: itemError } = await context.supabase.from("schedule_items")
+  const { data: item, error: itemError } = await createServiceSupabaseClient().from("schedule_items")
     .select("start_date,end_date").eq("org_id", context.orgId).eq("id", request.schedule_item_id).maybeSingle()
   if (itemError || !item) throw new Error("The task is no longer available")
   if (item.start_date !== request.issued_start || (item.end_date ?? item.start_date) !== request.issued_end) {

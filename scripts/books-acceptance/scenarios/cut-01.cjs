@@ -86,10 +86,14 @@ const releasedEvents = (kit, home) => count(kit, `public.events where org_id=${k
 const packageStatus = (kit, home) => one(kit, `select status from public.start_packages where id=${kit.q(home.packageId)}`).status
 
 /** A previous-worker claim: this org's pending jobs, held without a token and last touched `minutes` ago. */
-const legacyClaim = (kit, ids, minutes) => kit.sql(`update public.outbox set status='processing', start_claim_token=null, start_job_lease_expires_at=null, updated_at=now()-interval '${minutes} minutes' where id in (${ids.join(",")}) and status='pending'`)
+const legacyClaim = (kit, ids, minutes) => backdate(kit, `update public.outbox set status='processing', start_claim_token=null, start_job_lease_expires_at=null, updated_at=now()-interval '${minutes} minutes' where id in (${ids.join(",")}) and status='pending'`)
+/** `outbox_set_updated_at` stamps every update with now(); a claim last touched minutes ago needs it off for the one statement. */
+const backdate = (kit, statement) => kit.sql(`begin;\nalter table public.outbox disable trigger outbox_set_updated_at;\n${statement};\nalter table public.outbox enable trigger outbox_set_updated_at;\ncommit;`)
 
 /** The coordinator queues the release; the drawings step is settled directly because storage has its own subcases. */
 async function queueRelease(kit, home) {
+  // An owned lot's basis moves into construction at release, which needs the home's inventory policy adopted first.
+  await kit.as(home.org.owner, () => app("books/inventory").enableProjectInventory({ projectId: home.projectId, effectiveOn: "2026-06-01", evidenceUrl: `${seed.EVIDENCE}/ownership` }))
   const queued = await kit.as(home.org.team.starts, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(home.startInDays) }))
   if (!queued.released) throw Error(`The release was not queued: ${JSON.stringify(queued)}`)
   kit.sql(`update public.start_release_steps set status='completed', completed_at=now(), detail='{"harness":"drawings copy is proven by the LOT-01 storage subcases"}' where start_package_id=${kit.q(home.packageId)} and step_key='drawings'`)
@@ -181,7 +185,7 @@ async function legacyTokenlessClaimsDrain(kit, spec, check) {
   const stable = aged.map((home) => notifications(kit, home)).every((value, index) => value === afterFirst[index])
 
   // The fresh claim goes quiet too; now it is drained like the rest.
-  kit.sql(`update public.outbox set updated_at=now()-interval '4 minutes' where id in (${ids[fresh.packageId].join(",")}) and status='processing'`)
+  backdate(kit, `update public.outbox set updated_at=now()-interval '4 minutes' where id in (${ids[fresh.packageId].join(",")}) and status='processing'`)
   await runPipeline(kit)
   const drained = { jobs: ids[fresh.packageId].map((id) => job(kit, id)), notified: notifications(kit, fresh) > 0 }
 
@@ -281,13 +285,16 @@ async function membersCannotForgeCopyState(kit, spec, check) {
 async function activationSmoke(kit, spec, check) {
   const lotExpected = loadExpected("LOT-01").subcases
   const delegated = {}
+  const settle = () => kit.sql(`update public.outbox set status='completed' where status in ('pending','processing','failed') and job_type in (${inList(kit, [...STARTS_TYPES, "process_drawing_set"])})`)
+  settle()
   for (const name of ["claim-tokens-enforce-the-current-lease", "browser-clients-cannot-forge-starts-ownership"]) {
     const recorded = recorder()
     await require("./lot-01-starts.cjs").subcases[name](kit, lotExpected[name], recorded)
     delegated[name] = recorded.checks.length > 0 && recorded.checks.every((entry) => entry.pass)
+    settle()
   }
   const home = await readyHome(kit)
-  const released = await seed.releaseHome(kit, home.org, { packageId: home.packageId, projectId: home.projectId, startInDays: home.startInDays, adoptInventory: false })
+  const released = await seed.releaseHome(kit, home.org, { packageId: home.packageId, projectId: home.projectId, startInDays: home.startInDays })
   equal(check, "after activation the LOT-01 claim and forgery proofs pass and a home releases through the tokened worker, once", spec.expected, {
     delegated, release: released.released.status, releasedEvents: releasedEvents(kit, home), orders: orders(kit, home) > 0 ? "generated" : "none",
   })
@@ -301,7 +308,7 @@ async function rollbackRestoresOldPathAndReactivationIsClean(kit, spec, check) {
   const home = await readyHome(kit), next = await readyHome(kit), { org } = home
   const coordinator = org.team.starts
   const tables = ["start_packages", "start_release_steps", "start_package_gates"]
-  const fingerprint = () => Object.fromEntries(tables.map((table) => [table, one(kit, `select md5(coalesce(string_agg(t::text, '|' order by t.id::text), '')) h from public.${table} t where org_id=${kit.q(org.orgId)}`).h]))
+  const fingerprint = () => Object.fromEntries(tables.map((table) => [table, one(kit, `select md5(coalesce(string_agg(((to_jsonb(t) - 'updated_at') #- '{metadata,release_lease_token}' #- '{metadata,release_lease_at}')::text, '|' order by t.id::text), '')) h from public.${table} t where org_id=${kit.q(org.orgId)}`).h]))
   const memberWrites = async () => ({
     startPackage: labelled(await rest(kit, coordinator, (supabase) => supabase.from("start_packages").update({ notes: "written by the previous code" }).eq("org_id", org.orgId).eq("id", home.packageId)), /Starts|server|authorized|worker|row-level/),
     drawingJob: labelled(await rest(kit, coordinator, (supabase) => supabase.from("outbox").insert({ org_id: org.orgId, job_type: "process_drawing_set", payload: {} })), /server writers|authorized/),
@@ -320,7 +327,7 @@ async function rollbackRestoresOldPathAndReactivationIsClean(kit, spec, check) {
   kit.sql(`update public.start_packages set notes=null where id=${kit.q(home.packageId)}`)
   runScript(kit, "reactivate.sql")
   const reactivated = { verify: verify(kit), writes: await memberWrites() }
-  const released = await seed.releaseHome(kit, org, { packageId: next.packageId, projectId: next.projectId, startInDays: next.startInDays, adoptInventory: false })
+  const released = await seed.releaseHome(kit, org, { packageId: next.packageId, projectId: next.projectId, startInDays: next.startInDays })
   const fences = (snapshot) => snapshot.verify["fences enabled"].n
 
   equal(check, "rollback turns every starts and drawing fence off, requeues tokened work as tokenless and loses no row; the previous path writes again; re-activation restores the same fences, refuses those writes and a release finishes", spec.expected, {

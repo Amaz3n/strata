@@ -162,7 +162,7 @@ async function attestedEvidenceArchived(kit, expected, check) {
   await seed.assignSuperintendent(kit, org, { projectId: home.projectId })
   // The report is withdrawn from the home between readiness and publication.
   kit.sql(`update public.files set archived_at=now() where id=${kit.q(evidenceId)}`)
-  const released = await seed.releaseHome(kit, org, { packageId: home.packageId, projectId: home.projectId, adoptInventory: false })
+  const released = await seed.releaseHome(kit, org, { packageId: home.packageId, projectId: home.projectId })
   observed.afterArchive = released.released.status === "released" ? "released" : "held"
   observed.refusal = /soil_report gate's evidence is no longer on the home/.test(one(kit, `select coalesce(last_error,'') e from public.outbox where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} order by id desc limit 1`).e)
   // The release stays parked; its job is settled and the custom gate retired so no later subcase meets either.
