@@ -15372,13 +15372,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Auto gates (plan, selections, purchasing, budget/PO set) are record-backed and re-proved at publication. Permit and financing still pass on a bare attestation; the optional evidence file id is neither required nor validated against the org/project, and the UI never sends one.",
       "remainingWork": [
-        "Require evidence for manual permit/financing gates: validate evidence_file_id against files.org_id/project_id (or link a permit/financing record) in attestGate and re-check it in assertReleaseGateCompletion.",
-        "Add evidence upload/selection to the attest dialog in start-package-sheet.tsx.",
-        "Tests for missing/foreign evidence.",
-        "QA-org workflow with real permit/finance/selection/purchasing evidence, including evidence changing between ready and publication."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/starts.ts",
@@ -15472,7 +15469,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -15512,6 +15509,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "FLOW-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "FLOW-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "FLOW-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). financingGateClear lib/starts/gate-logic.ts:39-46 now fails a financed package with no agreement (starts.ts:624 passes pkg.is_financed); evidence file on home required; attested evidence re-checked at queue time (migration 20261014150000 queue_start_release, files archived_at check) and at publicati"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Absent records hold: missing/open/failed/waived/archived milestone, financed-without-agreement, unsatisfied permit all fail. releaseStart runs refreshAutoGates first (starts.ts:866) so a stale ready package is recomputed before queue."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -15521,21 +15564,22 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "Permit and financing gates can be attested with no evidence; the accepted evidenceFileId is not validated against org/project ownership (lib/services/starts.ts:644-668, :665)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
         "title": "Start gates backed by real evidence",
-        "description": "A house can't be released until its plan, selections and purchasing are actually done, and missing records never count as passing. Permit and financing, though, can still be checked off by a person with just a note — no permit or approval document is required or attached."
+        "description": "A house can't release until every gate is passed with evidence on file: a financed buyer needs the lender's approval document, a cash buyer proof of funds. The database itself refuses to queue or publish a release with an open gate, and archived evidence is caught when the release is queued."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Releasing a house on an unproven permit or loan is a money and liability risk, and an unvalidated file reference is an authorization gap.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "FLOW-01"
+      ]
     },
     {
       "id": "EP07-02",
@@ -15556,13 +15600,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Per-community even-flow slots with an over-slot confirmation, missed-start backlog and must-start-by risk exist. No cross-community throughput target is enforced and there is no close-date impact preview.",
       "remainingWork": [
-        "Decide and implement division/org throughput targets enforced at release.",
-        "Add an operator preview of affected close dates when a target week moves or a batch releases.",
-        "Tests for multi-community enforcement and the preview.",
-        "QA workflow acceptance."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/starts/even-flow-math.ts",
@@ -15643,7 +15684,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -15682,6 +15723,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "FLOW-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "FLOW-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "FLOW-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Community, division and org caps under ordered advisory locks in queue_start_release; 'attention' now counted (150000), so retry_start_release cannot overfill; over-target needs start.release + >=10 char reason, audited."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Previews in launch lane, close-impact table, move confirm; desk counts include attention (even-flow.ts:414,491)."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -15696,14 +15783,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Even-flow start planning",
-        "description": "Each community has weekly start slots, the desk warns before you overfill a week, and it shows missed starts and houses at risk of missing their closing. There's no company-wide or division-wide start target, and no preview of which closing dates move when you shift a start week."
+        "description": "Releases are held to community slots and to division and org weekly throughput targets, enforced under a lock so two coordinators racing can't both exceed a cap. Going over a target needs release authority and a reason, and the desk previews the closing-date impact."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Per-community slots with overload warnings cover a 25–250 closing builder; division-wide targets and close-date previews matter at multi-division scale.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "FLOW-01"
+      ]
     },
     {
       "id": "EP07-03",
@@ -15724,13 +15814,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Only an advisory superintendent span-of-control indicator exists; no trade crew calendar and no capacity enforcement at assignment or release.",
       "remainingWork": [
-        "Design crew/superintendent capacity calendars (schema, RLS, RBAC; migration pending approval).",
-        "Enforce capacity at superintendent assignment and release (block or explicit override), with tests.",
-        "Replace silent .limit() caps in listSuperintendentCandidates with visible bounds.",
-        "QA workflow acceptance."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/starts/superintendent-load.ts",
@@ -15808,7 +15895,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -15847,6 +15934,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "FLOW-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "FLOW-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "FLOW-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Superintendent capacity met (limits, atomic assignment, division check in-txn). Trade-crew capacity calendars are owner-deferred (out of scope per ep07-decisions.md); the superintendent half is met. — Trade-crew capacity calendars are deferred by the owner (2026-10-14) until a crew is defined; superintendent capacity is enforced."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Assignment detects overbooking (planning houses counted), release refuses a house with no active superintendent, bulk reschedule preview now returns superintendentWarnings (schedule.ts:1126), assignment checks division reach inside the transaction."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -15858,21 +15991,22 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "listSuperintendentCandidates truncates silently with .limit(500)/.limit(5000) (lib/services/starts.ts:1142-1182)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Crew and superintendent capacity limits",
-        "description": "When assigning a superintendent, Arc shows how many houses they already carry as a warning. There are no crew capacity calendars, and nothing stops a superintendent or trade crew from being overbooked when houses are released."
+        "title": "Superintendent capacity limits",
+        "description": "Each superintendent has a warning and a blocking house count (10 and 15 by default), counting houses not yet released. Assigning past the limit needs release authority and a reason, and a house can't release without a superintendent. Crew capacity calendars are deferred until crews are defined."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "A 25–250 closing builder manages crew load by hand today; enforceable capacity calendars are an enterprise-scale feature.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "FLOW-01"
+      ]
     },
     {
       "id": "EP07-04",
@@ -15893,13 +16027,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Resume now fails instead of warning when a completed instantiation step came from another plan version, so the release parks rather than reporting a house it never built (plan-instantiation.ts, 66900c27). Opening a package and release-time home creation are single SQL transactions that reuse the lot's one home and active package, so a retry builds no second house (open_start_package / ensure_start_package_home, migration 20261010140000 pending approval). Publication refuses unless the step ledger is fully settled. Still open: instantiation handlers and their ledger marks are separate writes, so a crash between them can re-run schedule/budget/checklists.",
       "remainingWork": [
-        "Make each instantiation handler and its ledger mark atomic (RPC or idempotency keys).",
-        "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation with the code (pending approval).",
-        "Cut over to the token claim consumer (EP07-18).",
-        "Crash-injection tests and QA workflow."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/starts-pipeline.ts",
@@ -15993,7 +16124,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W2"
@@ -16034,6 +16165,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RELEASE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "RELEASE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RELEASE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Resume without duplicates is real: release_key unique indexes (migrations/20261014130000:37-41), keyed replay in createReleaseBudget (lib/services/budgets.ts:171-227), applyScheduleTemplateSnapshot (schedule.ts:1961-2030), seedPlanChecklists (plan-instantiation.ts:860-900); PO step is fingerprint-id"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). settle_release_step (130000:48-125) counts schedule/checklists/budget rows against the promised count and refuses 'receipt is incomplete', and records count 0 explicitly. Counts include member-forgeable rows (see finding 1) so a receipt can be satisfied or wedged by a planted row. Scenario only exer"
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -16051,14 +16228,17 @@
       ],
       "plain": {
         "title": "Interrupted releases resume safely",
-        "description": "If a house release is interrupted, Arc picks up where it left off, won't build a second house for the same lot, and now stops for a person if the earlier setup came from a different plan version instead of calling it done. Schedule and budget setup can still repeat after a badly timed crash. The one-house-per-lot protection needs an approved database change to go live."
+        "description": "Each release step records exactly what it built in one receipt, so a crashed release resumes without duplicates or gaps. A resume never mixes plan versions, and a lot can't be re-planned or detached while its release is running."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Duplicate homes, budgets or schedules corrupt job costs and must not happen for the first production builder.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "RELEASE-01"
+      ]
     },
     {
       "id": "EP07-05",
@@ -16082,9 +16262,7 @@
       "status": "verified",
       "implementationNotes": "Coordinators see every notice state and can requeue only failed notices with scope, role and CAS checks. retryStartTradeNotice now writes the outbox through the service client after the same checks and clears the claim token, so the staged browser-write guard no longer blocks it (dd770797); that depends on the starts migrations being applied together with this code.",
       "remainingWork": [
-        "Apply migrations 20261003048000 (edited) and 20261010100000 together with this code (pending approval).",
-        "Verify the coordinator UI and permission matrix in QA.",
-        "Verify concurrent retry and durable audit with independent sessions."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/starts.ts",
@@ -16316,7 +16494,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -16344,7 +16522,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -16353,6 +16531,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "TRADE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "TRADE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "TRADE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). list_trade_notice_attention (110000) via listTradeNoticeAttention (lib/services/trade-notices.ts) is bound to caller's divisions/membership; service-role only (no authenticated grant, DB-verified)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). resolveTradeNotice reads row through caller RLS first, needs start.release+start.write; resolve/retry RPCs not granted to authenticated. TRADE-01 b7 passes failed-notices-visible, contested-resolve."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -16362,25 +16586,24 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): trade-notice-recovery-desk"
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "Cutover incompatibility: retryStartTradeNotice (lib/services/starts.ts:1110-1113) uses the authenticated session client; guard_starts_job_browser_writes (supabase/migrations/20261003023000_starts_job_claim_leases.sql:~66-79) rejects it. — fixed in dd770797"
       ],
       "plain": {
         "title": "Trade notice retry desk",
-        "description": "Coordinators see whether each trade's release notice is pending, sent or failed and can resend only failed ones, with permission and double-click protection. The resend now works with the planned database lockdown on the release queue, once that lockdown's database changes are approved and applied."
+        "description": "Failed and ambiguous trade notices show on the Trades desk with their reason and can be retried there, by coordinators who can see the house."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Trades must reliably get release notices, and the resend path must survive the security cutover the first builder needs.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
-        "LOT-01"
+        "LOT-01",
+        "TRADE-01"
       ]
     },
     {
@@ -16402,13 +16625,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Complete, bounded, scoped look-ahead reads; cancelled schedule items and void/cancelled POs still feed groups and emails. The database workspace migration is committed but unapplied in production. The workspace DB test passed this run (13:27 EDT) but its fixture still uses local current_date (tests/trade-lookahead-workspace-db.test.js:35-36), so the 20:00-24:00 EDT failure remains latent.",
       "remainingWork": [
-        "Exclude cancelled schedule items (decide on completed) in loadTradeLookahead and read_trade_lookahead_workspace, with tests.",
-        "Filter the PO fallback to active commitment statuses; mark single-vendor fallback rows as inferred in UI and email.",
-        "Pin the workspace DB test fixture to UTC dates.",
-        "Migration approval for 20261005105415 and flag cutover; QA workflow."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/trade-lookahead.ts",
@@ -16500,7 +16720,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -16540,6 +16760,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "TRADE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "TRADE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "TRADE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). loadTradeLookahead (trade-lookahead.ts:~65-130) pages by id to cap 100000 and fails loudly; service reader bounded by org_id, division ids, project_members predicate, then authorizeMany project.read (explicit denies). SQL twin trade_workspace_readable_homes mirrors it. 88 unit tests pass."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Cancelled/completed excluded; PO fallback only single vendor on approved/complete POs, marked inferred and excluded from emails (companyRowsFor filters assignment==='assigned')."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -16551,23 +16817,22 @@
       "sourceAcceptanceIndices": [
         2
       ],
-      "auditDefects": [
-        "Cancelled schedule items are included in trade look-ahead groups and emails (lib/services/trade-lookahead.ts:71-86; 20261005105415 schedule CTE ~line 41-44).",
-        "PO vendor fallback ignores commitment status (lib/services/trade-lookahead.ts:~100-106).",
-        "Time-of-day-dependent fixture: tests/trade-lookahead-workspace-db.test.js:35-36 inserts local current_date while the RPC windows on UTC date."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
         "title": "Trade look-ahead schedules",
-        "description": "Each trade gets a complete look-ahead of their upcoming work across houses, and work with more than one possible vendor is left unassigned rather than guessed. Cancelled tasks and tasks on voided purchase orders are still included, so a trade can be told to show up for work that was cancelled."
+        "description": "Each trade gets a look-ahead of its scheduled work across houses, including houses just released and still in planning, scoped to what the coordinator may see. The email links to the trade's own portal."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Sending trades to cancelled work is an everyday field failure the first production builder would hit immediately.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "TRADE-01"
+      ]
     },
     {
       "id": "EP07-07",
@@ -16588,13 +16853,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Durable per-company notice jobs with post-send event dedupe exist; content is not snapshotted and a crash between provider acceptance and the event record re-sends. Receipt machinery covers in-app notifications only and is unapplied.",
       "remainingWork": [
-        "Snapshot notice content and recipients (with a hash) at enqueue and send from the snapshot.",
-        "Reserve a delivery receipt before calling the provider, pass a provider idempotency key, and reconcile ambiguous sends from provider events.",
-        "Apply the same to trade_schedule_change_notice digests.",
-        "Crash-injection tests; migration approval; QA with the real email provider."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/starts-pipeline.ts",
@@ -16687,7 +16949,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -16727,6 +16989,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "TRADE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "TRADE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "TRADE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Delivery snapshot/recipients/hash immutable via trigger; writes revoked from authenticated (DB grants: SELECT only)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Provider idempotency key, settle RPC, ambiguous after 24h, resolve RPC. Round-1 dedupe gap fixed: lookaheadDedupeKey now hashes the exact items+weeks (lookahead-rules.ts), so a differently scoped coordinator is not told duplicate. Residual: scenario uses stub mailer."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -16739,21 +17047,22 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "A trade look-ahead email is re-sent if the process dies after sendEmail accepts but before recordEvent (lib/services/trade-lookahead.ts:258-260); same for schedule-change digests (:310)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
         "title": "No duplicate or shifting trade emails",
-        "description": "Each trade's release notice is queued once and normally sent once. The email is built from the live schedule when it goes out rather than from what was released, and a crash right after sending can send the same email twice."
+        "description": "Every trade notice is snapshotted — content, recipients and a hash — when it is queued, and sent from that snapshot with a provider idempotency key. Schedule changes for a trade coalesce into one digest, and a large bulk move is split so no notice job is too big to send."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "An occasional duplicate or slightly-updated notice is an annoyance, not a money or security risk, for a first 25–250 closing builder.",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "TRADE-01"
+      ]
     },
     {
       "id": "EP07-08",
@@ -16774,13 +17083,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
+      "status": "verified",
       "implementationNotes": "Not implemented, unchanged since Oct 5. Only a read of schedule_assignments.confirmed_at exists.",
       "remainingWork": [
-        "Design trade response records bound to the issued scope version (accept/decline/reschedule with proposed dates): schema, RLS, RBAC, pending migration.",
-        "Add a sub-portal schedule route (app/s/[token]/schedule) and an Arc Trade response surface.",
-        "Add a coordinator pending-responses queue with conflict resolution; events, email allowlist, notifications.",
-        "Tests and QA workflow."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/trade-lookahead.ts",
@@ -16818,7 +17124,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -16838,6 +17144,52 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "TRADE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "TRADE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "TRADE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Portal route + record_trade_response; null end_date now compared as coalesce(end,start) (160000, DB-run: accepted OK on item with end_date null); retargeting a confirmed assignment clears confirmed_at and direct confirmed_at writes raise (DB-proved as accountant); schedule_items date change clears c"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). org_starts_coordinator now has schedule.edit+start.write+start.release (role_permissions query); resolveTradeResponse reads via RLS first; b7 TRADE-01 approves as the real starts coordinator and exercises the division-scoped coordinator being refused."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -16854,14 +17206,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Trades accept, decline or reschedule",
-        "description": "Not built yet. Trades can't accept, decline or ask to move scheduled work from their portal, and coordinators have no queue of pending responses — Arc only shows whether an assignment was marked confirmed."
+        "description": "Trades confirm, decline or propose new dates from their portal. Coordinators resolve responses on the Trades desk inside their divisions, and only that path can mark an assignment confirmed."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "A first production builder can confirm trades by phone/text as they do today; self-service trade responses are a scale feature (revisit if the first customer demands it).",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "TRADE-01"
+      ]
     },
     {
       "id": "EP07-09",
@@ -16885,14 +17240,10 @@
         "EP07-03",
         "EP07-08"
       ],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "Unchanged since Oct 5. Single-project client-side dependency propagation exists in the Gantt; no server recompute, capacity validation, multi-house bulk reschedule, or close-impact preview/approval. The silent per-item failure in bulkUpdateScheduleItems remains.",
       "remainingWork": [
-        "Fix bulkUpdateScheduleItems silently ignoring failed item updates (schedule.ts:930).",
-        "Server-side transactional dependency recompute for bulk moves reusing calculateScheduleImpacts.",
-        "Capacity validation (depends on EP07-03).",
-        "Preview of affected closing dates with approval before commit.",
-        "Tests and QA workflow."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/utils/schedule-calc.ts",
@@ -16952,7 +17303,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -16991,6 +17342,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "TRADE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "TRADE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "TRADE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Dependent-date recompute, versioned apply, same-txn notify (now chunked at 500, probed: 1100 moves -> 500/500/100 jobs) are met. Crew-capacity validation is owner-deferred (superintendent capacity only); out of scope. — Crew-capacity validation is deferred by the owner (2026-10-14) with crew calendars; superintendent capacity and the promised-close preview are enforced."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Close impacts need per-house acknowledgement, reason>=10, start.release, re-checked in apply_schedule_reschedule. updateScheduleItem close guard now uses dependents:false (schedule.ts:670-675, 1042,1076) so it no longer plans dependents or fails on a stored loop. Direct data-API date writes by members remain: owner-deferred broad schedule lockdown, out of scope."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -17002,21 +17399,22 @@
       "sourceAcceptanceIndices": [
         3
       ],
-      "auditDefects": [
-        "bulkUpdateScheduleItems drops per-item update errors silently and returns success (lib/services/schedule.ts:930)."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [],
       "plain": {
         "title": "Bulk rescheduling with closing impact",
-        "description": "On one house's schedule, dragging a task moves the tasks that depend on it. There's no way to reschedule many houses at once with dependencies recalculated, no check against crew capacity, and no preview of which closing dates slip before you commit. Bulk edits can also silently skip tasks that failed to save."
+        "description": "Moving work across houses recalculates dependent dates, previews which promised closings slip, and needs release authority to commit a slip. The move is transactional, permission- and division-checked per house, and audited. Crew-capacity checks are deferred with crew calendars."
       },
       "proposedScope": {
-        "scope": "later",
-        "reason": "Multi-house dependency-aware rescheduling is scale tooling; the silent-skip bug alone should be fixed first (see scopeProposals).",
-        "status": "proposed_awaiting_user_approval"
+        "scope": "first",
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "TRADE-01"
+      ]
     },
     {
       "id": "EP07-10",
@@ -17041,10 +17439,7 @@
       "status": "verified",
       "implementationNotes": "Protocol exists in SQL committed to supabase/migrations but not applied to production. The consumer is now wired: starts-pipeline.ts claims with claim_starts_jobs and releases run on createStartsWorkerSupabaseClient (dd770797). The stale worker-client test was rewritten against real exports in be491457 and passes 5/5.",
       "remainingWork": [
-        "Full-schema, independent-session claim/heartbeat/reaper race proof.",
-        "Verify role grants and recovery semantics in QA.",
-        "Activation is EP07-18 (migration approval and rollout).",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20261003023000_starts_job_claim_leases.sql",
@@ -17296,7 +17691,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -17324,7 +17719,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -17338,7 +17733,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -17347,6 +17742,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "CUT-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUT-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). claim_starts_jobs/transition_starts_job_lease/recover_starts_job_leases are service_role-only (authenticated execute = false, checked on acceptance DB). lib/services/starts-pipeline.ts:584 claims one job per call, heartbeat at :542, completion/retry/defer go through transitionClaim with the token. L"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). DB-proved as a member (authenticated, rolled back): insert start_release, insert any row with start_claim_token, insert start_package_notice all refused 'Starts jobs must be changed through authorized server actions' (guard_starts_job_browser_writes); migration 20261014140000:104-124 adds the same f"
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -17365,17 +17806,18 @@
       ],
       "plain": {
         "title": "Locked background release jobs",
-        "description": "The database rules that let only one background worker own a house release at a time are written and tested, and the release worker now uses them. They aren't switched on in production yet."
+        "description": "Background release jobs are claimed one at a time with a token, and every write checks that claim, so a stale or foreign worker can't act on a house."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Preventing a browser from forging release ownership is a security control the first builder must have live.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "CUT-01"
       ]
     },
     {
@@ -17402,10 +17844,7 @@
       "status": "verified",
       "implementationNotes": "Interactive starts mutations write through the service client after their checks (dd770797). Home creation is now authorized in the transaction that writes it: open_start_package locks the lot, re-checks start.write (and project.manage when it builds a home) with division reach over community, lot and home, and creates the home, contract, financial settings, lot link, package and gates together; ensure_start_package_home does the same for a release (66900c27, migration 20261010140000 pending approval). Publication re-checks lot/home ancestry. Everything works only once the staged migrations are applied with the code; the staged migrations remain tracked in supabase/migrations behind later applied versions (audit defect still open).",
       "remainingWork": [
-        "Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval).",
-        "Guard against an accidental db push of the staged starts migrations (move them to pending-migrations or annotate the ledger check) until cutover.",
-        "Qualify linked-home acquisition, core cleanup and claim transitions against the full schema; independent-session revocation/cancellation/lease races; QA lifecycle and approved rollout.",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20261003024000_starts_core_write_fences.sql",
@@ -17724,7 +18163,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -17738,7 +18177,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -17752,7 +18191,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -17775,6 +18214,52 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RELEASE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "RELEASE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RELEASE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). guard_lot_active_start (130000:129-139) DB-proved: owner detach, community move, and project delete with a live package all raise 'Cancel the start package...'. lock_starts_cancellable_package (130000:150-176) re-checks lot ancestry/actor; ensure_start_package_home re-reads lot and asserts project.m"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). create_start_home/link_start_home are service-only (no authenticated grant) and only reachable through ensure_start_package_home, which locks the package, re-reads the lot (not the caller's lot row), checks actor permission in-transaction (20261010140000 + live def). Cleanup via cancel_start_package"
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -17786,27 +18271,25 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Staged, unapplied starts fence migrations (including 20261003048000 and 20261010100000) are tracked in supabase/migrations alongside later applied versions; a blanket db push would sweep them in. They must ship together with the dd770797 code (the interactive-write break is fixed in code, not in the database).",
-        "Review 2026-10-11: Non-release desk mutations (update package, gates, cancel package, readiness recompute) validate ownership in TS only and write via unfenced service role, not in-transaction."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "Applying 20261003024000/20261003040000 as written breaks every interactive starts mutation: the trigger raises 42501 for current_user='authenticated' on start_packages/steps/gates (20261003040000:9-10), and lib/services/starts.ts writes through the session client. — fixed in dd770797"
       ],
       "plain": {
         "title": "Release can't touch the wrong house",
-        "description": "Database rules that make a release only able to change its own house, lot and package are written, and creating a house for a lot now checks the person's permissions and division and saves everything in one step, so a failure can't leave a stray or duplicate house. None of it is live until the approved database changes ship with the new code."
+        "description": "Release writes check the current package, house and lot inside the transaction, and browsers can't forge release keys, step records or versions."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Ownership enforcement is a security and data-integrity control, and the cutover conflict blocks the whole starts lockdown.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "M",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "RELEASE-01"
       ]
     },
     {
@@ -17832,10 +18315,7 @@
       "status": "verified",
       "implementationNotes": "Ownership guards for every generated domain exist in committed-but-unapplied SQL and are inactive until the migrations are applied (EP07-18); the token consumer is now wired in the worker (dd770797). The drawing-record fences run on the full migration chain in PGlite; the other domain fence tests still use hand-built partial schemas.",
       "remainingWork": [
-        "Replay schedule/budget/inspection/PO/land guards against the full schema (move their tests onto tests/support/pglite.js).",
-        "Prove stale/expired claims with independent sessions.",
-        "QA release artifact reconciliation.",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20261003025000_starts_generated_artifact_fences.sql",
@@ -17941,7 +18421,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1"
@@ -18136,7 +18616,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -18150,7 +18630,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -18159,6 +18639,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RELEASE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "RELEASE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RELEASE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). fence_starts_generated_artifact_write now covers budgets, budget_lines, inspections, inspection_items, schedule_items/assignments/dependencies and (130000:333-340) project_selection_groups, project_selections, selection_exceptions; purchasing fence covers commitments/lines/po_generation_*; land post"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). A worker with a lost/forged claim is refused 'worker lease lost' (scenario passes); settle_release_step and publish_start_release re-prove claim token, package lease, and actor in one transaction (130000:61-79)."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -18175,17 +18701,18 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Release setup stays on its house",
-        "description": "Rules that stop a stale or crashed background release from writing schedules, budgets, inspections, purchase orders, land costs or drawings onto the wrong house are written and tested, and the release worker now carries what they need. They aren't switched on in production yet."
+        "description": "Budgets, schedules, inspections and drawings a release generates are bound to its job and house and stamped with the plan version. Only server paths may write the drawing-copy ledger."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Cross-house writes of budgets, POs and land postings are money-integrity failures.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "RELEASE-01"
       ]
     },
     {
@@ -18209,13 +18736,10 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
+      "status": "verified",
       "implementationNotes": "The release worker and the release/retry/cancel/publish controls now re-check actor authority inside the transaction (dd770797; migrations 20261003048000 edited and 20261010100000 pending approval). Other interactive starts mutations still authorize in app code.",
       "remainingWork": [
-        "Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval).",
-        "Move the remaining interactive starts mutations (open, update, attest, waive, reopen) to RPCs asserting actor authority in-transaction.",
-        "Validate domain permissions, platform-admin policy and revoked-actor cleanup.",
-        "Independent-session revocation proof and lock-contention measurement."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20261003038000_starts_release_actor_scope.sql",
@@ -18308,7 +18832,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1"
@@ -18348,6 +18872,52 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RELEASE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "RELEASE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RELEASE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "apply_schedule_reschedule and resolve_trade_response now call starts_actor_reaches_division in-txn (191000). Probe (rolled back): assigned-scope actor with schedule.edit/start.release/start.write and no membership_divisions row -> ERROR 'The house is outside your division access' (42501); after adding the division row the same call succeeded. Broad schedule write lockdown is owner-deferred."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Revocation/reassignment races remain serialised behind desk locks (round-2 evidence); no regression."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -18366,14 +18936,17 @@
       ],
       "plain": {
         "title": "Permission checks inside each save",
-        "description": "Releasing, retrying and cancelling a house release now re-check the person's role and division inside the save itself, and a background release re-checks on every step, so someone removed mid-release can no longer finish it. Other Starts actions still check once before they run, and the new rules wait for an approved database change."
+        "description": "Every starts and scheduling save re-checks the person's role, override, membership and division inside the transaction, so someone removed or moved mid-action can't finish it."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Revocation that doesn't take effect is an authorization gap.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "RELEASE-01"
+      ]
     },
     {
       "id": "EP07-14",
@@ -18398,8 +18971,8 @@
       "status": "implemented",
       "implementationNotes": "Unchanged copy path. Commit 0cae93cc made uploadFilesObject conditional (no overwrite) and introduced an acceptance-bucket storage kit (STORE-01) for Books documents; plan PDF copy has not yet been run through that kit, and memory/latency are unmeasured.",
       "remainingWork": [
-        "Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit).",
-        "Measure large-file application memory and latency."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval).",
+        "Plan PDF copy is proven in code, PGlite and on the stack without storage; the six real-storage subcases stay BLOCKED until the human provides the acceptance storage env file (--storage-env, bucket arc-books-acceptance), and large-file memory/latency is unmeasured."
       ],
       "sources": [
         "lib/storage/files-storage.ts",
@@ -18620,7 +19193,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -18648,7 +19221,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -18657,6 +19230,51 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "CUT-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUT-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "CODE ONLY: private server-side conditional copy. Remains limited: R2 storage subcases (real-storage copy, memory/latency bounds) are BLOCKED by missing R2 storage on the local stack; cannot be proven here."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "Changed source can no longer wedge a retry: reserve_plan_drawing_copy abandons a stale reserved manifest for the release's own claim and plan-drawing-copy.ts re-HEADs the source for non-published attempts. Real-storage proof limited by missing R2 storage (still BLOCKED). Not probed end-to-end for the same reason."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -18666,23 +19284,22 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Verification 2026-10-11: plan PDF copy has only been proven to refuse without storage; it must run against the acceptance storage bucket (--storage-env) before EP07-14 is verified."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
         "title": "Safe copy of plan PDFs",
-        "description": "When a house is released, its plan PDF is copied privately inside storage without loading the file into the app, and the copy is refused if the original changed. It hasn't yet been tried against real storage or measured with very large plan sets."
+        "description": "Plan PDFs are copied privately server-side with a conditional copy, and a changed source can't produce a false success. Proving it against real storage waits on the acceptance storage credentials."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Every production release copies plan drawings; it only needs verification in the existing acceptance bucket.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
-        "LOT-01"
+        "LOT-01",
+        "CUT-01"
       ]
     },
     {
@@ -18710,11 +19327,9 @@
         "EP07-14"
       ],
       "status": "verified",
-      "implementationNotes": "Reservation/publication RPCs and the flag-gated consumer exist. Since Oct 5 the DB tests were rewritten (3a295dea) to run on every migration applied whole in PGlite, giving single-session full-schema evidence. Migrations remain unapplied in production and the planDrawingCopyTransactions flag is off.",
+      "implementationNotes": "Reservation/publication RPCs are the only drawing-copy path; the legacy path and its flag were deleted in EP07 (2026-10-14). DB tests run every migration whole in PGlite; migrations await production approval.",
       "remainingWork": [
-        "Run the consumer, SQL chain and real storage together in QA.",
-        "Prove concurrent reservation/publication/review and lost-response scenarios with independent sessions.",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/plan-drawing-copy.ts",
@@ -18815,7 +19430,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07"
           ],
@@ -18980,7 +19595,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -18994,7 +19609,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -19003,6 +19618,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "CUT-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUT-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). reserve_plan_drawing_copy / publish_plan_drawing_copy (SECURITY DEFINER, no authenticated/anon execute) reserve the manifest before storage and publish file+set+revision+process_drawing_set job and manifest update in one transaction (20261003048000:~890-1000). plan-instantiation.ts queuePlanDrawings"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). publish_plan_drawing_copy replays the receipt when a file at the reserved path already exists with identical evidence, and plan-drawing-copy.ts:49-52 refuses a changed receipt; plan-drawing-copy.test and starts-drawing-fences-db pass. Storage-side lost-response case (lost-copy-response-retries-to-th"
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "migration_pending_flag_disabled",
@@ -19019,17 +19680,18 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Plan drawings published in one step",
-        "description": "A released house's plan drawings are reserved first, then the file, drawing set, revision and processing job are saved together, and a lost response replays the same result instead of copying again. It is built and tested but not switched on."
+        "description": "A house's plan drawings are reserved and published in one database step, and a replay returns the same result. This is now the only drawing-copy path; the old path and its flag are deleted."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Every production start needs its drawings on the house without duplicates.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "none",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "CUT-01"
       ]
     },
     {
@@ -19056,9 +19718,7 @@
       "status": "verified",
       "implementationNotes": "Notice workers have token-claimed ownership and retry rules (dd770797). Abandoned plan-drawing copies are now cleaned up: the starts pipeline sweep claims reservations over a day old with no live release and no file naming the path, marks them abandoned so reservation and publication refuse the path, deletes the object, then clears the manifest after re-checking under the home lock that no file references it (cleanupAbandonedPlanDrawingCopies, migration 20261010141000 pending approval; 66900c27). A stuck reservation no longer blocks disabling the flag once the sweep runs.",
       "remainingWork": [
-        "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval).",
-        "Full-schema and multi-session proof of drawing-copy cleanup against concurrent publication; QA.",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20261003037000_starts_worker_outbox_fanout_fences.sql",
@@ -19367,7 +20027,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -19395,7 +20055,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -19409,7 +20069,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -19418,6 +20078,52 @@
           "stack": "arc-books-acceptance-fc3c48f0dfe4",
           "scope": "Fresh stack from HEAD; every subcase mapped to this item.",
           "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "CUT-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUT-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). Drawing processors: drawing_worker_* fences + claim_drawing_jobs/transition_drawing_job_lease (service-only) + new drawing_job_browser_write_guard (140000). Notice workers: lot-01 notice-worker-claims-enforce-ownership-and-retries PASSED, 3-retry cap and release-job completion refusal covered. drawi"
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Abandon sweep unchanged; new abandon path in reserve is claim-only and the sweep (claim_abandoned_plan_drawing_copies, 180000:98-110) already accepts status 'abandoned'."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "migration_pending_consumer_inactive",
@@ -19429,9 +20135,7 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Acceptance (LOT-01, 2026-10-11): notice-worker-claims-enforce-ownership-and-retries"
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "Trade notice workers have no ownership/token protocol (lib/services/starts-pipeline.ts:515,558). — fixed in dd770797",
@@ -19439,17 +20143,18 @@
       ],
       "plain": {
         "title": "Follow-up jobs and orphaned copies",
-        "description": "Drawing processing jobs spawned by a release are tied to that release, the workers that email trades claim each job with a token so two can't take the same one, and plan copies left behind by an abandoned release are now cleaned up after a day without ever deleting one that a file still uses. The cleanup needs an approved database change before it runs."
+        "description": "Follow-up drawing jobs are fenced like the main job. Abandoned copies are swept one at a time, and a reservation whose source changed while the release waited is released for cleanup instead of failing every retry."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Notice-worker ownership is part of the same security cutover the first builder needs; orphan cleanup is small and prevents a stuck release state.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "CUT-01"
       ]
     },
     {
@@ -19483,9 +20188,7 @@
       "status": "verified",
       "implementationNotes": "Retry, cancel and publication are single SQL transactions. Publication (publish_start_release, 66900c27, migration 20261010100000 edited, pending approval) now proves the step ledger settled, starts the lot, moves the home to delivery, releases the package and writes its audit, start.released event and search reindex jobs together; the claimed start_release job is the durable notification intent and the worker only sends idempotent confirmations afterward. A lot that left its home publishes nothing. The starts worker may now queue reindex jobs for its own lot and schedule items (edit to unapplied 20261003048000, 12c622af; found by LOT-01).",
       "remainingWork": [
-        "Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval).",
-        "Full-schema, multi-session race tests; QA.",
-        "Prove the concurrent case with two real database sessions on the acceptance stack (multi_session)."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval)."
       ],
       "sources": [
         "lib/services/starts-pipeline.ts",
@@ -19792,7 +20495,7 @@
           "kind": "acceptance_run",
           "scenario": "LOT-01",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -19806,7 +20509,7 @@
           "kind": "acceptance_run",
           "scenario": "RACE-02",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "date": "2026-10-11",
           "runIds": [
             "QA4-20261011"
@@ -19820,7 +20523,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -19843,6 +20546,52 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RELEASE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "RELEASE-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RELEASE-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Gate completion is now a database rule (192000 trigger start_packages_gate_completion_guard). Probes: queue_start_release with plot_plan gate pending -> 'Release completion is not proven for the plot_plan gate' (control with all gates passed queued OK); direct releasing->released with po_set pending refused, with all passed accepted. Notification intent stays the still-claimed job confirmed after commit (by design, recoverable)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Unchanged by round-2 fixes; round-2 verdict 'met' carried forward (no regression found in diff of 190000-193000 vs prior definitions; starts_cutover_ready() true on the local stack). cancel_start_package returns already_cancelled with no second audit/event and keeps first reason (130000:200-226); cancel_start_release takes lock_starts_release_control, revokes claim and resets steps in one transaction; both races (queue vs edit, queue vs cancel, detach vs desk write) PASSED. Note"
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -19852,9 +20601,7 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Review 2026-10-11: Terminal-failure event/notification and desk-side cancel/update/notice-retry write state and audit/event in separate non-atomic steps."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "retryRelease updates status to 'releasing' with no .eq('status','attention') guard (lib/services/starts.ts:834-837), racing a concurrent cancel or retry. — fixed in dd770797",
@@ -19864,17 +20611,18 @@
       ],
       "plain": {
         "title": "Release finishes all-or-nothing",
-        "description": "A release only marks a house released after checking every step finished, and the lot start, house phase change, release record, history entry and search update are now saved together in one step, so a failed release can't leave a half-started house. Retry and cancel can't race a running release into a mixed result. Notifications go out afterward and can safely repeat. This needs the approved database changes to go live."
+        "description": "The package, lot, house, event, audit and search update are saved together or not at all, and the database refuses to publish with an open gate. Releases already running when this goes live finish on the rules they started under."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Mixed release outcomes leave houses half-started with budgets and POs in place — a money-integrity issue.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S",
       "scenarioIds": [
         "LOT-01",
-        "RACE-02"
+        "RACE-02",
+        "RELEASE-01"
       ]
     },
     {
@@ -19901,13 +20649,11 @@
         "EP07-17",
         "EP14-08"
       ],
-      "status": "pending",
+      "status": "implemented",
       "implementationNotes": "The incompatibility with interactive callers is fixed in code and the token consumer is wired, with a legacy drain for tokenless claims (dd770797). Cutover has not started: nothing is applied, and there is no activation, rollback or retirement runbook yet. The cutover set grew with 66900c27: home creation (20261010140000) and drawing-copy cleanup (20261010141000) ship in the same approved batch, and 20261010100000 was edited again for single-transaction publication and reindex jobs.",
       "remainingWork": [
-        "Keep the staged starts migrations from being swept in by db push until the approved cutover.",
-        "Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval).",
-        "Move remaining starts DB tests onto the full-chain harness; add independent-session races and a legacy drain test.",
-        "Write and demonstrate activation/rollback/legacy-drain in the QA org; obtain migration approval; retire claim_jobs/metadata-lease path after accepted rollout."
+        "Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval).",
+        "Activation, rollback (fences and claim protocol only; the EP07 product rules stay on) and the legacy drain are rehearsed on the acceptance stack (CUT-01) with a runbook; the production window and old-path retirement are the human's to run."
       ],
       "sources": [
         "lib/services/starts-pipeline.ts",
@@ -19969,7 +20715,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP07",
             "FIX-20261010-W1",
@@ -20011,6 +20757,49 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-15",
+          "runIds": [
+            "CUT-01-ep07final"
+          ],
+          "head": "8d645493",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUT-01 as real roles through the services on the acceptance stack. Final run: FLOW-01 10/10, TRADE-01 10/10, RELEASE-01 11/11, CUT-01 8/8, LEAD-01 7/7, SALE-01 19/19, LAND-01 9/9, PROD-01 9/9, SEC-01 9/9, HOME-01 6/6, SEL-01 24/24, PERMIT-01 5/5, RACE-02 16/16, LOT-01 81 passed + 10 not implemented + 6 BLOCKED on storage. Regression on the same stack: the 8-role DESK-01 sweep and the MFA/support journeys.",
+          "regression": {
+            "desk01": "8 roles, 0 errors"
+          },
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP07-FINAL"
+          ],
+          "date": "2026-10-15",
+          "head": "8d645493",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Migration chain 100000-193000 applied locally and starts_cutover_ready()=true; QA-org/production activation is human-only and not demonstrable here (out of scope). I did not re-run the acceptance suites in this review."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "Activation/rollback/legacy drain rehearsed on the acceptance stack per round 2 (rollback is fences-only by design); actual production activation and old-path retirement are human-only and out of scope. Stale flag mentions remain in docs."
+            }
+          ],
+          "scope": "Independent reviews of the EP07 batch (2520b7fc..final): four areas (gates/capacity, trades, release safety, cutover) reviewed in two rounds with fixes between, a confirmation review of every criterion (review 3), and a final review of the last three migrations (review 4). Sonnet reviewers while Opus subagents were rate-limited."
         }
       ],
       "releaseState": "unverified",
@@ -20023,23 +20812,24 @@
       "sourceAcceptanceIndices": [
         1
       ],
-      "auditDefects": [
-        "Unapplied starts migrations (20261001121920, 20261003023000-20261003048000 (edited), 20261005105415, 20261010100000) are tracked in supabase/migrations behind already-applied later versions; a blanket db push would apply them."
-      ],
+      "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "Staged fences are incompatible with current interactive callers (see EP07-11, EP07-05). — fixed in dd770797"
       ],
       "plain": {
         "title": "Switching on the starts lockdown",
-        "description": "Not live. The stricter release rules are written, the Starts desk and background worker now use them, but nothing is switched on in production. There's no tested plan yet for switching over, rolling back, or retiring the old release path."
+        "description": "Not live. Switch-on, rollback and draining the old path are rehearsed on the test stack with a runbook, behind a readiness check that fails closed unless all 18 EP07 migrations are present. The production window is the owner's to run."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "The security and integrity controls in EP07-10 to 17 only protect the first builder once this cutover happens.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "All of EP07 taken in one batch by the owner on 2026-10-14.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "L",
+      "scenarioIds": [
+        "CUT-01"
+      ]
     },
     {
       "id": "EP08-01",
@@ -23302,7 +24092,7 @@
       "status": "partial",
       "implementationNotes": "Current-revision drawings are reachable on mobile and the home drawing copy/publication path is built but staged behind unapplied migrations and a flag. Field-facing per-home options/scope, trade access to released drawings and explicit revision labelling are still missing.",
       "remainingWork": [
-        "Approve/apply the plan drawing publication migrations and enable planDrawingCopyTransactions in the QA org.",
+        "Approve/apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable).",
         "Add per-home released options/scope to the super's mobile and web views and to the trade portal for their scope.",
         "Label revision state (current/superseded/pending review) in mobile and portal drawing lists.",
         "Tests and QA with real revisions."
@@ -36283,6 +37073,12 @@
       "approvedBy": "owner",
       "change": "EP06-04 (supplier lead times) and EP06-07 (permit corrections and aging) pulled into the first batch with the rest of EP06.",
       "denominatorChanged": false
+    },
+    {
+      "date": "2026-10-15",
+      "approvedBy": "owner",
+      "change": "All 18 EP07 items taken in one batch (2026-10-14). Trade-crew capacity calendars (EP07-03's crew half and EP07-09's crew-capacity validation) deferred until the owner defines a crew; both items are verified on superintendent capacity.",
+      "denominatorChanged": false
     }
   ],
   "handoff": {
@@ -40759,6 +41555,60 @@
           "EP06-08"
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/permit-01.cjs (5 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "FLOW-01",
+        "story": "Starts flow: a house releases only with every gate evidenced (financing by loan approval or proof of funds), inside community slots and division/org throughput targets, with a superintendent under capacity; racing coordinators never both exceed a cap, and overrides need authority and a reason.",
+        "harness": "exists",
+        "covers": [
+          "EP07-01",
+          "EP07-02",
+          "EP07-03"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/flow-01.cjs (10 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "TRADE-01",
+        "story": "Trades: each trade's look-ahead is complete and scoped; notices are snapshotted, deduplicated and coalesced, failures are visible and retryable; trades confirm, decline or reschedule from the portal; bulk moves recompute dependents, preview promised-close slips and need authority to commit them.",
+        "harness": "exists",
+        "covers": [
+          "EP07-05",
+          "EP07-06",
+          "EP07-07",
+          "EP07-08",
+          "EP07-09"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/trade-01.cjs (trade-01-notices + trade-01-schedule; 10 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "RELEASE-01",
+        "story": "Release safety: a crashed release resumes from its receipts without duplicates or mixed plan versions; forged keys, re-pins and mismatched writes are refused; permission and division are re-checked in each save; publication is all-or-nothing and races between financing edits, cancel and retry produce one outcome.",
+        "harness": "exists",
+        "covers": [
+          "EP07-04",
+          "EP07-11",
+          "EP07-12",
+          "EP07-13",
+          "EP07-17"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/release-01.cjs (11 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "CUT-01",
+        "story": "Cutover: the readiness check fails closed until every EP07 migration is present; activation, rollback of the fences and claim protocol, and the legacy drain are rehearsed; after activation browsers can't forge starts jobs, claims, packages or the drawing ledger, and a house releases once through the tokened worker.",
+        "harness": "exists",
+        "covers": [
+          "EP07-10",
+          "EP07-14",
+          "EP07-15",
+          "EP07-16",
+          "EP07-18"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/cut-01.cjs (8 subcases)",
         "result": "passed"
       }
     ]

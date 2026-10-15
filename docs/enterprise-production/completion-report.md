@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 50.5% — a documented lower bound, not an ETA |
-| Fully verified | 49.1% |
+| Implemented | 58.8% — a documented lower bound, not an ETA |
+| Fully verified | 56.4% |
 | Release ready | 0% |
-| Code implemented | 2 items |
-| Partially implemented | 48 items |
-| Known pending tasks | 15 items |
+| Code implemented | 3 items |
+| Partially implemented | 40 items |
+| Known pending tasks | 13 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
 
@@ -136,24 +136,24 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP07-01 | Evidence-backed release gates | partial | Require evidence for manual permit/financing gates: validate evidence_file_id against files.org_id/project_id (or link a permit/financing record) in attestGate and re-check it in assertReleaseGateCompletion. |
-| EP07-02 | Even-flow release planning | partial | Decide and implement division/org throughput targets enforced at release. |
-| EP07-03 | Crew and superintendent capacity | partial | Design crew/superintendent capacity calendars (schema, RLS, RBAC; migration pending approval). |
-| EP07-04 | Resumable artifact steps | partial | Make each instantiation handler and its ledger mark atomic (RPC or idempotency keys). |
-| EP07-05 | Trade notice recovery desk | verified | Apply migrations 20261003048000 (edited) and 20261010100000 together with this code (pending approval). |
-| EP07-06 | Complete trade look-ahead | partial | Exclude cancelled schedule items (decide on completed) in loadTradeLookahead and read_trade_lookahead_workspace, with tests. |
-| EP07-07 | Delivery idempotency and reconciliation | partial | Snapshot notice content and recipients (with a hash) at enqueue and send from the snapshot. |
-| EP07-08 | Trade acceptance workflow | pending | Design trade response records bound to the issued scope version (accept/decline/reschedule with proposed dates): schema, RLS, RBAC, pending migration. |
-| EP07-09 | Dependency-aware bulk rescheduling | partial | Fix bulkUpdateScheduleItems silently ignoring failed item updates (schedule.ts:930). |
-| EP07-10 | Tokenized job claim protocol | verified | Full-schema, independent-session claim/heartbeat/reaper race proof. |
-| EP07-11 | Core release ownership | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited), 20261010140000_starts_home_creation and 20261010141000_abandoned_plan_drawing_copy_cleanup together with the code (pending approval). |
-| EP07-12 | Generated artifact ownership | verified | Replay schedule/budget/inspection/PO/land guards against the full schema (move their tests onto tests/support/pglite.js). |
-| EP07-13 | Transactional actor authority | partial | Apply migrations 20261003048000 (edited) and 20261010100000 (pending approval). |
-| EP07-14 | Bounded storage copy | implemented | Run plan-copy private copy, changed-source and destination receipt scenarios against the acceptance bucket (extend the STORE-01 kit). |
-| EP07-15 | Durable drawing publication | verified | Run the consumer, SQL chain and real storage together in QA. |
-| EP07-16 | Child worker and orphan recovery | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010141000_abandoned_plan_drawing_copy_cleanup (pending approval). |
-| EP07-17 | Atomic release finalization | verified | Apply migrations 20261003048000 (edited), 20261010100000 (edited) and 20261010140000_starts_home_creation (pending approval). |
-| EP07-18 | Starts cutover and rollback | pending | Keep the staged starts migrations from being swept in by db push until the approved cutover. |
+| EP07-01 | Evidence-backed release gates | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-02 | Even-flow release planning | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-03 | Crew and superintendent capacity | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-04 | Resumable artifact steps | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-05 | Trade notice recovery desk | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-06 | Complete trade look-ahead | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-07 | Delivery idempotency and reconciliation | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-08 | Trade acceptance workflow | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-09 | Dependency-aware bulk rescheduling | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-10 | Tokenized job claim protocol | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-11 | Core release ownership | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-12 | Generated artifact ownership | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-13 | Transactional actor authority | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-14 | Bounded storage copy | implemented | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-15 | Durable drawing publication | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-16 | Child worker and orphan recovery | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-17 | Atomic release finalization | verified | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
+| EP07-18 | Starts cutover and rollback | implemented | Apply the EP07 migrations (20261014100000, 110000, 120000, 130000, 140000, 150000, 160000, 165000, 170000, 180000, 190000, 191000, 192000, 193000, 194000, 195000, 196000, 197000 (18 files, all 20261014*)) with the code in one window per docs/reference/starts-cutover.md (pending approval). |
 
 ### EP08: Purchasing and supply chain
 
@@ -178,7 +178,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | --- | --- | --- | --- |
 | EP09-01 | Assigned-home mobile access | partial | Replace per-request listProjects scans with a single-project check (lib/mobile/field.ts and sibling requireProject helpers). |
 | EP09-02 | Offline conflict recovery | partial | Apply migration 20261010170000_mobile_idempotency_receipts (pending approval). |
-| EP09-03 | Released field documents | partial | Approve/apply the plan drawing publication migrations and enable planDrawingCopyTransactions in the QA org. |
+| EP09-03 | Released field documents | partial | Approve/apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable). |
 | EP09-04 | Inspection failure lifecycle | implemented | Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write). |
 | EP09-05 | Punch and close readiness | verified | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
 | EP09-06 | Cross-home daily records | partial | Add a cross-home review band (logs missing today, new photos) for assigned homes on the super's Home/My Work. |
@@ -281,6 +281,20 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - EP05-09: verified without a current passing LOT-01 run.
 - EP05-09: verified without a current passing RACE-02 run.
 - EP06-03: verified without a current passing LOT-01 run.
+- EP07-05: verified without a current passing LOT-01 run.
+- EP07-06: missing source tests/trade-lookahead-scale.test.js.
+- EP07-10: verified without a current passing LOT-01 run.
+- EP07-10: verified without a current passing RACE-02 run.
+- EP07-11: verified without a current passing LOT-01 run.
+- EP07-11: verified without a current passing RACE-02 run.
+- EP07-12: verified without a current passing LOT-01 run.
+- EP07-12: verified without a current passing RACE-02 run.
+- EP07-15: verified without a current passing LOT-01 run.
+- EP07-15: verified without a current passing RACE-02 run.
+- EP07-16: verified without a current passing LOT-01 run.
+- EP07-16: verified without a current passing RACE-02 run.
+- EP07-17: verified without a current passing LOT-01 run.
+- EP07-17: verified without a current passing RACE-02 run.
 - EP09-04: missing source tests/inspection-completion-handoff.test.js.
 - EP13-07: missing source tests/agreement-quote-concurrency.test.js.
 - EP14-06: missing source tests/agreement-quote-concurrency.test.js.
@@ -288,6 +302,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - surfaceInventory: app/(app)/projects/[id]/permits/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - surfaceInventory: app/(app)/settings/lead-intake/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - surfaceInventory: app/(app)/settings/milestone-feeds/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
+- surfaceInventory: app/s/[token]/schedule/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/layout/app-sidebar.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: components/home/production-home.tsx
 - AUDIT-20261009-EP01-EP02: source changed since proof: lib/services/production-home.ts
@@ -490,16 +505,23 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-desk.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/services/even-flow.ts
 - AUDIT-20261009-EP07: source changed since proof: components/starts/launch-lane.tsx
+- AUDIT-20261009-EP07: source changed since proof: components/starts/slot-meter.tsx
+- AUDIT-20261009-EP07: source changed since proof: lib/starts/superintendent-load.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/services/starts-pipeline.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/services/plan-instantiation.ts
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP07: source changed since proof: tests/plan-instantiation-ledger.test.js
+- AUDIT-20261009-EP07: source changed since proof: app/(app)/starts/actions.ts
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003023000_starts_job_claim_leases.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/start-trade-notices.test.js
+- AUDIT-20261009-EP07: source changed since proof: lib/services/trade-lookahead.ts
 - AUDIT-20261009-EP07: source changed since proof: lib/land/paging.ts
+- AUDIT-20261009-EP07: source changed since proof: tests/trade-lookahead-scale.test.js
 - AUDIT-20261009-EP07: source changed since proof: tests/trade-lookahead-workspace-db.test.js
 - AUDIT-20261009-EP07: source changed since proof: lib/services/schedule.ts
+- AUDIT-20261009-EP07: source changed since proof: lib/utils/schedule-calc.ts
 - AUDIT-20261009-EP07: source changed since proof: components/schedule/gantt-chart.tsx
+- AUDIT-20261009-EP07: source changed since proof: tests/schedule-calc.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003041000_starts_claim_actor_transitions.sql
 - AUDIT-20261009-EP07: source changed since proof: lib/supabase/server.ts
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-job-leases-db.test.js
@@ -519,9 +541,11 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003038000_starts_release_actor_scope.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003046000_starts_notification_delivery_recovery.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/starts-release-actor-db.test.js
+- AUDIT-20261009-EP07: source changed since proof: lib/services/plan-drawing-copy.ts
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003035000_plan_drawing_publication_transaction.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003033500_starts_release_lot_plan_scope.sql
+- AUDIT-20261009-EP07: source changed since proof: tests/plan-drawing-copy.test.js
 - AUDIT-20261009-EP07: source changed since proof: supabase/migrations/20261003037000_starts_worker_outbox_fanout_fences.sql
 - AUDIT-20261009-EP07: source changed since proof: tests/support/pglite.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/bids.ts
@@ -555,9 +579,11 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/projects.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/mobile/daily-logs.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/plan-instantiation.ts
+- AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/plan-drawing-copy.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: supabase/migrations/20261003035000_plan_drawing_publication_transaction.sql
 - AUDIT-20261009-EP08-EP09: source changed since proof: supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql
 - AUDIT-20261009-EP08-EP09: source changed since proof: tests/plan-instantiation-ledger.test.js
+- AUDIT-20261009-EP08-EP09: source changed since proof: tests/plan-drawing-copy.test.js
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/inspections.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/inspections/lifecycle.ts
 - AUDIT-20261009-EP08-EP09: source changed since proof: lib/services/closing-readiness.ts
@@ -637,8 +663,10 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/auth-rate-limit.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: scripts/books-acceptance/runtime.cjs
 - AUDIT-20261009-EP12-EP14: source changed since proof: app/api/jobs/process-outbox/route.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: app/api/jobs/starts-pipeline/route.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-job-leases-db.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/job-runs.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-pipeline-route.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: docs/books-operations.md
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release.test.js
 - AUDIT-20261009-EP12-EP14: source changed since proof: tests/starts-release-actor-db.test.js
@@ -657,6 +685,7 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/community-sales.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/reservation-conversion.ts
 - AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/catalog-group-publication.ts
+- AUDIT-20261009-EP12-EP14: source changed since proof: lib/services/trade-lookahead.ts
 - VERIFY-20261010: source changed since proof: tests/selections.test.js
 - VERIFY-20261010: source changed since proof: tests/agreement-configuration-eligibility.test.js
 - VERIFY-20261010: source changed since proof: tests/catalog-eligibility.test.js
@@ -677,11 +706,13 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - VERIFY-20261010: source changed since proof: tests/selection-cutoffs.test.js
 - VERIFY-20261010: source changed since proof: tests/selection-variance-orders.test.js
 - VERIFY-20261010: source changed since proof: tests/imports-open-wip.test.js
+- VERIFY-20261010: source changed since proof: tests/starts-pipeline-route.test.js
 - VERIFY-20261010: source changed since proof: tests/start-trade-notices.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release-actor-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-core-write-fences-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-generated-fences-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-drawing-fences-db.test.js
+- VERIFY-20261010: source changed since proof: tests/plan-drawing-copy.test.js
 - VERIFY-20261010: source changed since proof: tests/drawings-pipeline-db.test.js
 - VERIFY-20261010: source changed since proof: tests/starts-release.test.js
 - VERIFY-20261010: source changed since proof: tests/plan-instantiation-ledger.test.js
