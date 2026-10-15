@@ -32,7 +32,13 @@ const SCHEDULE_ORGS = new WeakMap()
 async function scheduleOrg(kit) {
   if (!SCHEDULE_ORGS.has(kit)) SCHEDULE_ORGS.set(kit, (async () => {
     const org = await seed.productionBuilder(kit, { name: "TRADE-01 schedule" })
-    org.homes = []
+    // Two divisions: every home is in A; a coordinator scoped to B must not reach it.
+    org.divisions = { a: randomUUID(), b: randomUUID() }
+    kit.sql(`insert into public.divisions(id,org_id,name) values(${kit.q(org.divisions.a)},${kit.q(org.orgId)},'TRADE-01 A'),(${kit.q(org.divisions.b)},${kit.q(org.orgId)},'TRADE-01 B');`)
+    const scoped = kit.addMember(org, "org_starts_coordinator", {})
+    const membership = kit.rows(`select id from public.memberships where org_id=${kit.q(org.orgId)} and user_id=${kit.q(scoped.userId)}`)[0].id
+    kit.sql(`update public.memberships set division_scope='assigned' where id=${kit.q(membership)}; insert into public.membership_divisions(membership_id,division_id) values(${kit.q(membership)},${kit.q(org.divisions.b)});`)
+    org.divisionBCoordinator = scoped
     return org
   })())
   return SCHEDULE_ORGS.get(kit)
@@ -52,7 +58,7 @@ async function scheduleHome(kit, label) {
   const company = org.vendorIds["Palmetto Framing"]
   kit.sql([
     "begin;",
-    `insert into public.projects(id,org_id,name,property_type,status) values(${q(projectId)},${q(org.orgId)},${q(label)},'production','active');`,
+    `insert into public.projects(id,org_id,name,property_type,status,division_id) values(${q(projectId)},${q(org.orgId)},${q(label)},'production','active',${q(org.divisions.a)});`,
     item("foundation", "Foundation", "task", 10, 12), item("framing", "Framing", "task", 10, 17),
     item("roofing", "Roofing", "task", 17, 19), item("handoff", "Handoff", "handoff", 20, 20),
     dependency("foundation", "roofing"), dependency("framing", "roofing"), dependency("roofing", "handoff"),
@@ -98,16 +104,24 @@ async function tradeResponseFlow(kit, expected, check) {
   const queued = queue.rows.filter((row) => row.projectId === home.projectId).map((row) => ({ response: row.response, stale: row.stale }))
   const salesReads = await attempt(() => kit.as(home.org.team.sales, () => trades.listOpenTradeResponses({})))
 
-  const declineTwice = await attempt(() => kit.as(coordinator, () => trades.resolveTradeResponse({ responseId: openAnswers(kit, home).find((row) => row.status === "open").id, resolution: "acknowledged" })))
+  // A coordinator scoped to another division cannot see, close or approve this home's answers.
+  const scopedCoordinator = home.org.divisionBCoordinator
+  const scopedQueue = (await kit.as(scopedCoordinator, () => trades.listOpenTradeResponses({}))).rows.filter((row) => row.projectId === home.projectId).length
+  const requestForScope = openAnswers(kit, home).find((row) => row.status === "open")
+  const scopedResolve = await attempt(() => kit.as(scopedCoordinator, () => trades.resolveTradeResponse({ responseId: requestForScope.id, resolution: "reschedule_declined" })))
+  const scopedApprove = await attempt(() => kit.as(scopedCoordinator, () => trades.approveTradeReschedule({ responseId: requestForScope.id })))
+
+  const declineTwice = await attempt(() => kit.as(coordinator, () => trades.resolveTradeResponse({ responseId: requestForScope.id, resolution: "acknowledged" })))
   const request = openAnswers(kit, home).find((row) => row.status === "open")
-  const preview = await kit.as(home.org.owner, () => trades.previewTradeReschedule(request.id))
-  await kit.as(home.org.owner, () => trades.approveTradeReschedule({ responseId: request.id }))
+  const preview = await kit.as(coordinator, () => trades.previewTradeReschedule(request.id))
+  await kit.as(coordinator, () => trades.approveTradeReschedule({ responseId: request.id }))
   const after = datesOf(kit, home.ids.framing)
   const audits = Number(kit.rows(`select count(*)::int n from public.audit_log where entity_type='trade_work_response' and entity_id=${kit.q(request.id)}`)[0].n)
   const events = kit.rows(`select event_type, count(*)::int n from public.events where entity_id in (${openAnswers(kit, home).map((row) => kit.q(row.id)).join(",")}) group by 1 order by 1`)
   equal(check, "a trade's answers are bound to the dates it was given; the coordinator's approval moves the task through the bulk move and closes the request once", expected.expected.flow, {
     confirmed, stale, wrongCompany, wrongHome, noReason, confirmationLapsedOnNewRequest: lapsed, queued,
     salesReadsQueue: /start\.write|Missing permission/.test(salesReads) ? "refused" : salesReads,
+    divisionScopedCoordinator: { queued: scopedQueue, resolve: /not found/.test(scopedResolve) ? "refused" : scopedResolve, approve: /not found/.test(scopedApprove) ? "refused" : scopedApprove },
     resolveMismatch: /resolution_kind_check/.test(declineTwice) ? "refused" : declineTwice,
     previewMoves: preview.changes.filter((change) => change.cause === "requested").map((change) => [change.newStart === seed.isoDay(12), change.newEnd === seed.isoDay(19)]),
     framingAfter: { start: after.s === seed.isoDay(12), end: after.e === seed.isoDay(19) },
@@ -122,14 +136,20 @@ async function forgedConfirmationRefused(kit, expected, check) {
   const run = (sql) => race(kit, [`${asMember(sales)} ${sql}`])
   const forgedUpdate = (await run(`update public.schedule_assignments set confirmed_at=now() where schedule_item_id='${home.ids.framing}';`))[0]
   const forgedInsert = (await run(`insert into public.schedule_assignments(org_id,project_id,schedule_item_id,company_id,confirmed_at) values('${home.org.orgId}','${home.projectId}','${home.ids.roofing}','${home.company}',now());`))[0]
+  const mismatch = (await run(`insert into public.schedule_assignments(org_id,project_id,schedule_item_id,company_id) values('${home.org.orgId}','${randomUUID()}','${home.ids.roofing}','${home.company}');`))[0]
   const confirmedBefore = kit.rows(`select confirmed_at is not null c from public.schedule_assignments where schedule_item_id=${kit.q(home.ids.framing)}`)[0].c
   await answer(home, {})
   const confirmedByPortal = kit.rows(`select confirmed_at is not null c from public.schedule_assignments where schedule_item_id=${kit.q(home.ids.framing)}`)[0].c
+  // A member re-points the confirmed assignment to another company: the confirmation does not transfer.
+  const repoint = (await run(`update public.schedule_assignments set company_id='${home.org.vendorIds["Gulf Concrete"]}' where schedule_item_id='${home.ids.framing}';`))[0]
+  const confirmationAfterRepoint = kit.rows(`select confirmed_at is not null c from public.schedule_assignments where schedule_item_id=${kit.q(home.ids.framing)}`)[0].c
+  kit.sql(`update public.schedule_assignments set company_id=${kit.q(home.company)} where schedule_item_id=${kit.q(home.ids.framing)}`)
+  await answer(home, {})
   await kit.as(home.org.team.superintendent, () => app("schedule").bulkUpdateScheduleItems({ items: [{ id: home.ids.framing, start_date: seed.isoDay(11), end_date: seed.isoDay(18) }] }, home.org.orgId))
   const lapsed = kit.rows(`select confirmed_at is null l from public.schedule_assignments where schedule_item_id=${kit.q(home.ids.framing)}`)[0].l
   const refused = (result) => (!result.ok && /confirms its own work/.test(result.stderr) ? "refused" : result.ok ? "allowed" : result.stderr)
   equal(check, "a member cannot write a trade's confirmation over the data API; only the portal answer confirms, and moving the dates lapses it", expected.expected.forged, {
-    forgedUpdate: refused(forgedUpdate), forgedInsert: refused(forgedInsert), confirmedBefore, confirmedByPortal, lapsedAfterMove: lapsed,
+    forgedUpdate: refused(forgedUpdate), forgedInsert: refused(forgedInsert), mismatchedHome: /does not belong to this home/.test(mismatch.stderr) ? "refused" : "allowed", repointAllowed: repoint.ok, confirmationAfterRepoint, confirmedBefore, confirmedByPortal, lapsedAfterMove: lapsed,
   })
   return { orgId: home.org.orgId, projectId: home.projectId }
 }
@@ -157,8 +177,8 @@ async function bulkRescheduleCloseImpact(kit, expected, check) {
   const home = await scheduleHome(kit, "TRADE-01 bulk reschedule")
   const schedule = app("schedule"), orgId = home.org.orgId
   const superintendent = home.org.team.superintendent
-  // The owner holds both schedule.edit and start.release; the starts coordinator has no schedule.edit.
-  const coordinator = home.org.owner
+  // The starts coordinator holds schedule.edit, start.write and start.release.
+  const coordinator = home.org.team.starts
   const slip = { items: [{ id: home.ids.foundation, start_date: seed.isoDay(25), end_date: seed.isoDay(27) }] }
   const REFUSALS = { "accept each close impact": /accept each close impact/, "needs a reason": /why the date moves past a promised close/, "needs start.release": /start\.release/, "changed by someone else": /changed by someone else/ }
 

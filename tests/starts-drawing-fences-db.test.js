@@ -288,7 +288,10 @@ test("plan copies follow the lot's pinned plan, not one remembered by the packag
   const repinned = await releasedPlanVersion(h.db, h.orgId, h.actorId, h.source, 2)
   const pin = async (versionId) => {
     await h.asWorker(false)
+    // The pin guard refuses this while the release runs; the case is a pin moved by a path that bypassed it.
+    await h.db.exec("alter table lots disable trigger lots_release_pin_guard")
     await h.db.query("update lots set house_plan_version_id = $1 where id = $2", [versionId, h.lot.id])
+    await h.db.exec("alter table lots enable trigger lots_release_pin_guard")
     await h.asWorker(true)
   }
 
@@ -727,6 +730,7 @@ test("an abandoned drawing copy is claimed only once it is old, unclaimed and un
   assert.deepEqual(await claim(), [], "a live release of the home may resume it")
 
   await h.expireLease()
+  await h.db.query("update start_packages set status = 'ready' where id = $1", [h.pkg.id])
   const file = await insert(h.db, "files", { org_id: h.orgId, project_id: h.home.id, file_name: "plan.pdf", storage_path: h.copy.storage_path })
   assert.deepEqual(await claim(), [], "a file naming the path is a published copy")
   await h.db.query("update files set storage_path = $1 where id = $2", [`${h.orgId}/elsewhere.pdf`, file.id])
@@ -742,6 +746,7 @@ test("clearing an abandoned copy frees the home for a new reservation, unless a 
   const h = await publication(t)
   await h.asWorker(false)
   await h.expireLease()
+  await h.db.query("update start_packages set status = 'ready' where id = $1", [h.pkg.id])
   await h.db.query(
     "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - interval '2 days')) where id = $1",
     [h.home.id],
@@ -765,29 +770,70 @@ test("clearing an abandoned copy frees the home for a new reservation, unless a 
 // client can neither forge a copy for the sweep to delete nor rewrite a job.
 // ---------------------------------------------------------------------------
 
-test("a member cannot write the drawing copy manifest, but still writes the rest of the instantiation ledger", async (t) => {
+test("a member cannot write any part of the instantiation ledger, and the server still can", async (t) => {
   const h = await publication(t)
   await h.asWorker(false)
   const member = (sql, params) => asRole(h.db, { role: "authenticated", userId: h.actorId }, (tx) => tx.query(sql, params))
-  const forged = JSON.stringify({ plan_instantiation: { drawing_copy_attempt: { status: "reserved", storage_path: `${h.orgId}/books-exports/close.json.gz` } } })
+  const forged = (state) => JSON.stringify({ plan_instantiation: state })
+  const refused = /server-owned/
 
-  await assert.rejects(member("update projects set metadata = metadata || $2::jsonb where id = $1", [h.home.id, forged]), /server-owned/)
-  await assert.rejects(member("update projects set metadata = '{}' where id = $1", [h.home.id]), /server-owned/)
-  await assert.rejects(member("insert into projects(org_id, name, metadata) values ($1, 'Lot 9', $2::jsonb)", [h.orgId, forged]), /server-owned/)
+  await assert.rejects(member("update projects set metadata = metadata || $2::jsonb where id = $1", [h.home.id, forged({ drawing_copy_attempt: { status: "reserved" } })]), refused)
+  // Forged steps would make a release skip schedule, checklists and drawings; a huge seq would wedge the reservation.
+  await assert.rejects(member("update projects set metadata = $2::jsonb where id = $1", [h.home.id, forged({ version_id: h.version.id, steps: { schedule: { at: "2026-10-14T00:00:00Z" } } })]), refused)
+  await assert.rejects(member("update projects set metadata = metadata || $2::jsonb where id = $1", [h.home.id, forged({ seq: 9007199254740991 })]), refused)
+  await assert.rejects(member("update projects set metadata = jsonb_set(metadata, '{plan_instantiation}', '\"x\"') where id = $1", [h.home.id]), refused)
+  await assert.rejects(member("update projects set metadata = '{}' where id = $1", [h.home.id]), refused)
+  await assert.rejects(member("insert into projects(org_id, name, metadata) values ($1, 'Lot 9', $2::jsonb)", [h.orgId, forged({ seq: 1 })]), refused)
   assert.equal((await h.ledger()).plan_instantiation.drawing_copy_attempt.storage_path, h.copy.storage_path)
 
-  // markStep rewrites the whole metadata but leaves the manifest as it found it.
-  const ledger = await h.ledger()
-  const next = { ...ledger, plan_instantiation: { ...ledger.plan_instantiation, steps: { budget: { at: "2026-10-14T00:00:00Z" } }, seq: 9 } }
-  const marked = await member("update projects set metadata = $2::jsonb where id = $1 returning id", [h.home.id, JSON.stringify(next)])
-  assert.equal(marked.rows.length, 1)
+  // Everything else on the project is still the member's, and a metadata write that leaves the ledger alone passes.
+  const ledger = (await h.ledger()).plan_instantiation
   await member("update projects set metadata = metadata || '{\"note\": 1}'::jsonb where id = $1", [h.home.id])
+  assert.deepEqual((await h.ledger()).plan_instantiation, ledger)
+  // The service writes the ledger (the interactive instantiation and the worker do).
+  await h.service((tx) => tx.query("update projects set metadata = jsonb_set(metadata, '{plan_instantiation,steps}', '{\"budget\": {}}') where id = $1", [h.home.id]))
+  assert.deepEqual(Object.keys((await h.ledger()).plan_instantiation.steps), ["budget"])
+})
+
+test("a published copy of another release is superseded, not a permanent wedge; a reserved copy that differs still is", async (t) => {
+  const h = await publication(t)
+  await h.publish()
+  const otherActor = (await seedMember(h.db, { orgId: h.orgId })).userId
+  const reserve = (actorId) => rpc(h.db, "reserve_plan_drawing_copy", { p_org_id: h.orgId, p_project_id: h.home.id, p_plan_version_id: h.version.id, p_actor_id: actorId, p_source_evidence: SOURCE_EVIDENCE })
+  await h.asWorker(false)
+  // The previous revision still processes, so a new reservation is refused for that reason, not as a wedge.
+  await assert.rejects(reserve(otherActor), /already pending review/)
+  await h.db.query("update drawing_revisions set status = 'published' where project_id = $1", [h.home.id])
+  const next = await reserve(otherActor)
+  assert.equal(next.status, "reserved")
+  assert.equal(next.actor_id, otherActor)
+  assert.notEqual(next.attempt_id, h.copy.attempt_id)
+  assert.equal(await h.count("audit_log where entity_id = $1 and source = 'plan_drawing_copy.superseded'", [h.home.id]), 1)
+  await assert.rejects(reserve(h.actorId), /Existing drawing copy attempt differs/)
+})
+
+test("a package releasing or parked in attention keeps its reservation out of the sweep", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  await h.expireLease()
+  await h.db.query(
+    "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - interval '2 days')) where id = $1",
+    [h.home.id],
+  )
+  const claim = () => rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 25 })
+  for (const status of ["releasing", "attention"]) {
+    await h.db.query("update start_packages set status = $2 where id = $1", [h.pkg.id, status])
+    assert.deepEqual(await claim(), [], `a package ${status} may retry the copy`)
+  }
+  await h.db.query("update start_packages set status = 'ready' where id = $1", [h.pkg.id])
+  assert.equal((await claim()).length, 1)
 })
 
 test("the sweep hands out only the path the home's own reservation built", async (t) => {
   const h = await publication(t)
   await h.asWorker(false)
   await h.expireLease()
+  await h.db.query("update start_packages set status = 'ready' where id = $1", [h.pkg.id])
   const claim = () => rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 25 })
   const age = (days) => h.db.query(
     "update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - make_interval(days => $2))) where id = $1",
@@ -818,6 +864,7 @@ test("young manifests and file-named manifests do not take the sweep's window", 
   const h = await publication(t)
   await h.asWorker(false)
   await h.expireLease()
+  await h.db.query("update start_packages set status = 'ready' where id = $1", [h.pkg.id])
   const young = await insert(h.db, "projects", { org_id: h.orgId, name: "Lot 11" })
   await h.db.query(
     "update projects set metadata = jsonb_build_object('plan_instantiation', jsonb_build_object('drawing_copy_attempt', jsonb_build_object('status','reserved','reserved_at',now(),'attempt_id',gen_random_uuid()))) where id = $1",
@@ -900,4 +947,22 @@ test("the rollback script lets the previous path write again and re-activation c
   await h.db.exec(cutoverScript("rollback.sql", "rollback"))
   await h.db.exec(cutoverScript("reactivate.sql", "reactivate"))
   assert.equal(await fences(), enabledBefore, "rolling back and forward twice leaves the same fences")
+})
+
+test("the schema marker fails closed: it is true on the full chain and false when any migration's object is missing", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  const ready = async () => (await rpc(h.db, "starts_cutover_ready", {}))
+  assert.equal(await ready(), true)
+  for (const drop of [
+    "drop trigger start_packages_financing_flip on start_packages",
+    "drop trigger schedule_assignments_consistency on schedule_assignments",
+    "drop table trade_work_responses cascade",
+    "drop function guard_release_key_browser_writes() cascade",
+    "drop function read_trade_lookahead_workspace(uuid,uuid,integer,uuid,uuid,text,integer,text,integer)",
+  ]) {
+    const db = await createDatabase(t)
+    await db.exec(drop)
+    assert.equal(await rpc(db, "starts_cutover_ready", {}), false, drop)
+  }
 })

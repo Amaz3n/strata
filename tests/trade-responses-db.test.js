@@ -17,6 +17,7 @@ async function fixture(t) {
   const owner = await seedMember(db, { role: "org_owner" })
   const sales = await seedMember(db, { orgId: owner.orgId, role: "org_sales_agent" })
   const coordinator = await seedMember(db, { orgId: owner.orgId, role: "org_starts_coordinator" })
+  const superintendent = await seedMember(db, { orgId: owner.orgId, role: "org_superintendent" })
   const project = await insert(db, "projects", { org_id: owner.orgId, name: "Lot 12" })
   const company = await insert(db, "companies", { org_id: owner.orgId, name: "Frame Co" })
   const other = await insert(db, "companies", { org_id: owner.orgId, name: "Other Co" })
@@ -29,7 +30,7 @@ async function fixture(t) {
   const assignment = await insert(db, "schedule_assignments", {
     org_id: owner.orgId, project_id: project.id, schedule_item_id: framing.id, company_id: company.id,
   })
-  return { db, orgId: owner.orgId, owner, sales, coordinator, project, company, other, framing, roofing, assignment }
+  return { db, orgId: owner.orgId, owner, sales, coordinator, superintendent, project, company, other, framing, roofing, assignment }
 }
 
 const respond = (f, overrides = {}) => rpc(f.db, "record_trade_response", {
@@ -160,4 +161,71 @@ test("an answer is closed once, by one resolution that matches what it asked", a
   await assert.rejects(resolve("reschedule_declined"), /trade_work_responses_resolution_kind_check/)
   await resolve("acknowledged")
   await assert.rejects(resolve("acknowledged"), /already closed/)
+})
+
+test("re-pointing a confirmed assignment drops the confirmation instead of transferring it", async (t) => {
+  const f = await fixture(t)
+  await respond(f)
+  await asRole(f.db, { role: "authenticated", userId: f.sales.userId }, (tx) =>
+    tx.query("update schedule_assignments set company_id = $2 where id = $1", [f.assignment.id, f.other.id]))
+  assert.equal(await confirmedAt(f), null)
+})
+
+test("an assignment must name a task on its own home and a company of its own organization", async (t) => {
+  const f = await fixture(t)
+  const elsewhere = await insert(f.db, "projects", { org_id: f.orgId, name: "Lot 99" })
+  const member = (sql, params) => asRole(f.db, { role: "authenticated", userId: f.sales.userId }, (tx) => tx.query(sql, params))
+  await assert.rejects(
+    member("insert into schedule_assignments (org_id, project_id, schedule_item_id, company_id) values ($1, $2, $3, $4)",
+      [f.orgId, elsewhere.id, f.roofing.id, f.company.id]),
+    /does not belong to this home/,
+  )
+  const foreign = await seedMember(f.db)
+  const stranger = await insert(f.db, "companies", { org_id: foreign.orgId, name: "Stranger Co" })
+  await assert.rejects(
+    member("insert into schedule_assignments (org_id, project_id, schedule_item_id, company_id) values ($1, $2, $3, $4)",
+      [f.orgId, f.project.id, f.roofing.id, stranger.id]),
+    /does not belong to this organization/,
+  )
+})
+
+test("a task with no end date is answered against its start date", async (t) => {
+  const f = await fixture(t)
+  await f.db.query("update schedule_items set end_date = null where id = $1", [f.framing.id])
+  await respond(f, { p_issued_end: "2026-11-02" })
+  assert.notEqual(await confirmedAt(f), null)
+})
+
+test("the starts coordinator can apply a move; applying is checked against the actor inside the transaction", async (t) => {
+  const f = await fixture(t)
+  const move = [change(f.framing, "2026-11-04", "2026-11-08")]
+  await assert.rejects(apply(f, move, { p_actor_id: f.sales.userId }), /no longer has schedule\.edit/)
+  await assert.rejects(
+    apply(f, move, { p_actor_id: f.superintendent.userId, p_acknowledged: [f.project.id], p_reason: "Rain delay on the slab" }),
+    /no longer has start\.release/,
+  )
+  await assert.rejects(
+    apply(f, move, { p_actor_id: f.coordinator.userId, p_acknowledged: [f.project.id], p_reason: "short" }),
+    /why the date moves past a promised close/,
+  )
+  await apply(f, move, { p_actor_id: f.coordinator.userId })
+  assert.deepEqual(await dates(f, f.framing.id), { s: "2026-11-04", e: "2026-11-08" })
+})
+
+test("a committed date move queues its notice job in the same transaction", async (t) => {
+  const f = await fixture(t)
+  await apply(f, [change(f.framing, "2026-11-04", "2026-11-08")])
+  await apply(f, [{ id: f.roofing.id, expected_updated_at: f.roofing.updated_at, sort_order: 2 }])
+  const { rows } = await f.db.query("select payload from outbox where job_type = 'schedule_reschedule_notify' and org_id = $1", [f.orgId])
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].payload.moves[0].new_start, "2026-11-04")
+})
+
+test("closing an answer needs start.write from the actor", async (t) => {
+  const f = await fixture(t)
+  await respond(f, { p_response: "declined", p_reason: "Crew is on another job" })
+  const { rows: [decline] } = await f.db.query("select id from trade_work_responses where status = 'open'")
+  await assert.rejects(rpc(f.db, "resolve_trade_response", {
+    p_org_id: f.orgId, p_actor_id: f.sales.userId, p_response_id: decline.id, p_resolution: "acknowledged", p_note: null,
+  }), /no longer has start\.write/)
 })

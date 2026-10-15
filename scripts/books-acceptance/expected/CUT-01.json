@@ -94,7 +94,7 @@
       }
     },
     "members-cannot-forge-copy-state-or-drawing-jobs": {
-      "derivation": "Policy: the drawing copy manifest, the eight drawing job types and every claim or lease column are server-owned. A sales agent, through the real PostgREST API with their own session, tries: writing a reserved manifest naming a Books archive object onto a home; inserting, rewriting, completing and deleting a drawing tile job; setting a drawing lease ten years out and a drawing claim token on an ordinary job. Every one is refused (the manifest with 'Drawing copy state is server-owned', the jobs with 'Drawing jobs require authorized server writers'); an ordinary write to an ordinary job (its priority) still works; afterwards the home has no manifest, the tile job is untouched and pending, and the ordinary job holds no claim.",
+      "derivation": "Policy: the drawing copy manifest, the eight drawing job types and every claim or lease column are server-owned. A sales agent, through the real PostgREST API with their own session, tries: writing a reserved manifest naming a Books archive object onto a home; writing forged ledger steps (schedule, checklists, drawings), a seq at the safe-integer limit and a non-object ledger; inserting, rewriting, completing and deleting a drawing tile job; setting a drawing lease ten years out and a drawing claim token on an ordinary job. Every one is refused (the manifest with 'Drawing copy state is server-owned', the jobs with 'Drawing jobs require authorized server writers'); an ordinary write to an ordinary job (its priority) still works; afterwards the home has no instantiation ledger, the tile job is untouched and pending, and the ordinary job holds no claim.",
       "inputs": {
         "actor": "sales agent"
       },
@@ -117,11 +117,14 @@
             "status": "pending",
             "unclaimed": true
           }
-        }
+        },
+        "ledgerSteps": "refused",
+        "ledgerSeq": "refused",
+        "ledgerNotAnObject": "refused"
       }
     },
     "activation-smoke": {
-      "derivation": "Policy: once the forward set is on and the fences are active, the claim proof of LOT-01 holds and a home still releases. Delegates to LOT-01 claim-tokens-enforce-the-current-lease (passes; the browser forgery proof is the members-cannot-forge subcase of this scenario), then releases a spec home through the tokened worker: released, one start.released event, purchase orders generated.",
+      "derivation": "Policy: once the forward set is on and the fences are active, the claim proof of LOT-01 holds and a home still releases. Delegates to LOT-01 claim-tokens-enforce-the-current-lease (passes; the browser forgery proof is the members-cannot-forge subcase of this scenario), then real browser sessions try to enqueue a release job, set a claim token, rewrite or delete a claimed job, write the package and its release steps (also posing as a worker with a job's headers) and call the claim RPC: all refused, the job and the package unchanged; then a spec home is released through the tokened worker: released, one start.released event, purchase orders generated.",
       "inputs": {
         "delegates": [
           "claim-tokens-enforce-the-current-lease"
@@ -133,11 +136,23 @@
         },
         "release": "released",
         "releasedEvents": 1,
-        "orders": "generated"
+        "orders": "generated",
+        "forgeries": {
+          "insertReleaseJob": "refused",
+          "insertJobWithAClaimToken": "refused",
+          "rewriteClaimedJob": "refused",
+          "deleteClaimedJob": "refused",
+          "updatePackage": "refused",
+          "updateReleaseStep": "refused",
+          "packageWriteWithWorkerHeaders": "refused",
+          "claimRpc": "refused",
+          "jobUnchanged": true,
+          "packageUnchanged": true
+        }
       }
     },
     "rollback-restores-the-old-path-and-reactivation-is-clean": {
-      "derivation": "Policy: rollback relaxes only the starts and drawing fences, loses no data, and is reversible. Before: the starts and drawing fences are enabled; the starts coordinator's own client cannot update a start package or insert a drawing job. A tokened starts job and a tokened drawing job are in flight. scripts/starts-cutover/rollback.sql runs: no starts or drawing fence is enabled, both in-flight jobs are pending with no token and no lease, and the start packages, release steps and gates are byte-identical (hash per table). The previous path now works: the coordinator's client updates the package and inserts a drawing job. scripts/starts-cutover/reactivate.sql runs: the same number of fences are enabled as before, the same two writes are refused, and a spec home releases through the worker.",
+      "derivation": "Policy: rollback relaxes only the starts and drawing fences, loses no data, and is reversible. Before: the starts and drawing fences are enabled; the starts coordinator's own client cannot update a start package or insert a drawing job. A tokened starts job and a tokened drawing job are in flight. scripts/starts-cutover/rollback.sql runs: no starts or drawing fence is enabled, both in-flight jobs are pending with no token and no lease, and the start packages, release steps and gates are byte-identical (hash per table). The previous path now works: the coordinator's client updates the package and inserts a drawing job, and on a house that satisfies today's rules (EP07's rules, such as the superintendent before release, stay on) a release queues, is claimed by the generic claimer with no token, and the previous worker's ledger write through the coordinator's own session is allowed. scripts/starts-cutover/reactivate.sql runs: the same number of fences are enabled as before, the same two writes are refused, and a spec home releases through the worker.",
       "inputs": {
         "scripts": [
           "rollback.sql",
@@ -170,6 +185,11 @@
           "previousPathWrites": {
             "startPackage": "allowed",
             "drawingJob": "allowed"
+          },
+          "previousWorkerRelease": {
+            "queuedUnderTodaysRules": true,
+            "claimedWithoutAToken": true,
+            "ledgerWriteByThePreviousWorker": "allowed"
           }
         },
         "afterReactivation": {

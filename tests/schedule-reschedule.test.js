@@ -99,6 +99,23 @@ describe("planning", () => {
   })
 })
 
+describe("the item editor", () => {
+  test("a date edit that pushes a promised close is sent to the schedule view's review", async () => {
+    const service = harness(["schedule.edit"])
+    await assert.rejects(
+      service.run(() => schedule.updateScheduleItem({ itemId: FOUNDATION, input: { start_date: "2026-11-16", end_date: "2026-11-23" } })),
+      /promised close/,
+    )
+    assert.deepEqual(service.writes("schedule_items"), [])
+  })
+
+  test("a date edit inside the promised close is written", async () => {
+    const service = harness(["schedule.edit"])
+    await service.run(() => schedule.updateScheduleItem({ itemId: FOUNDATION, input: { start_date: "2026-11-03", end_date: "2026-11-05" } }))
+    assert.equal(service.writes("schedule_items").length, 1)
+  })
+})
+
 describe("applying", () => {
   test("a task past the project's schedule.edit is refused before anything is written", async () => {
     const service = harness(["project.read"])

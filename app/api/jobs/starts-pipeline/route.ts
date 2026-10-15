@@ -9,6 +9,8 @@ export const maxDuration = 300
 
 const runTrackedWorker = withCronRun("starts-pipeline", async () => {
   const summary = await runStartsPipeline({ deadlineMs: Date.now() + 270_000 })
+  // A worker that found the schema missing did no work: that is a failed run, never a green one.
+  if (summary.notCutOver) return NextResponse.json({ ok: false, ...summary }, { status: 503 })
   const partial = summary.failed > 0 || (summary.copyCleanupFailed ?? 0) > 0
   return NextResponse.json({ ok: !partial, ...summary }, { status: partial ? 207 : 200 })
 })

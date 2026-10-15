@@ -164,17 +164,21 @@ export const RELEASE_BUDGET_KEY = "budget"
  * middle of the step and a worker that lost its lease all end the same way.
  */
 export async function createReleaseBudget(
-  input: { project_id: string; lines: z.infer<typeof budgetLineSchema>[] },
+  input: { project_id: string; lines: z.infer<typeof budgetLineSchema>[]; plan_version_id: string },
   orgId?: string,
 ) {
-  const parsed = createBudgetSchema.pick({ project_id: true, lines: true }).parse(input)
+  const parsed = createBudgetSchema.pick({ project_id: true, lines: true }).extend({ plan_version_id: z.string().uuid() }).parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("plan.instantiate", { supabase, orgId: resolvedOrgId, userId })
 
   const findBudget = async () => {
-    const { data, error } = await supabase.from("budgets").select("id, total_cents")
+    const { data, error } = await supabase.from("budgets").select("id, total_cents, metadata")
       .eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("metadata->>release_key", RELEASE_BUDGET_KEY).maybeSingle()
     if (error) throw new Error(`Failed to look up the release budget: ${error.message}`)
+    // The release builds from one plan version. A budget it began from another is not this release's to finish.
+    if (data && data.metadata?.release_version !== parsed.plan_version_id) {
+      throw new Error("The release budget was begun from a different plan version; cancel the release and decide what to do with it.")
+    }
     return data
   }
   let budget = await findBudget()
@@ -185,8 +189,9 @@ export async function createReleaseBudget(
     if (latestError) throw new Error(`Failed to determine next budget version: ${latestError.message}`)
     const { data: inserted, error: insertError } = await supabase.from("budgets").insert({
       org_id: resolvedOrgId, project_id: parsed.project_id, version: (latestBudget?.version ?? 0) + 1, status: "approved",
-      total_cents: parsed.lines.reduce((sum, line) => sum + line.amount_cents, 0), metadata: { release_key: RELEASE_BUDGET_KEY },
-    }).select("id, total_cents").single()
+      total_cents: parsed.lines.reduce((sum, line) => sum + line.amount_cents, 0),
+      metadata: { release_key: RELEASE_BUDGET_KEY, release_version: parsed.plan_version_id },
+    }).select("id, total_cents, metadata").single()
     if (insertError?.code === "23505") {
       budget = await findBudget()
     } else if (insertError || !inserted) {

@@ -411,7 +411,7 @@ export async function getMissedStarts(
       .eq("org_id", context.orgId).in("community_id", communityIds).gte("week_start", from).lte("week_start", to)
       .order("id").range(rangeFrom, rangeTo), "Failed to load release slots"),
     readReportRows((rangeFrom, rangeTo) => context.supabase.from("start_packages").select("id,community_id,target_week")
-      .eq("org_id", context.orgId).in("community_id", communityIds).in("status", ["releasing", "released"])
+      .eq("org_id", context.orgId).in("community_id", communityIds).in("status", ["releasing", "released", "attention"])
       .gte("target_week", from).lte("target_week", to)
       .order("id").range(rangeFrom, rangeTo), "Failed to load released starts"),
   ])
@@ -488,7 +488,7 @@ export async function getThroughputWeeks(
   if (!visible.length) return []
   const packages = await readReportRows((rangeFrom, rangeTo) => context.supabase.from("start_packages")
     .select("id,target_week,community:communities!inner(division_id)")
-    .eq("org_id", context.orgId).in("status", ["releasing", "released"]).gte("target_week", from).lte("target_week", to)
+    .eq("org_id", context.orgId).in("status", ["releasing", "released", "attention"]).gte("target_week", from).lte("target_week", to)
     .order("id").range(rangeFrom, rangeTo), "Failed to count throughput")
   const names = new Map(divisions.map((division) => [division.id, division.name]))
   const filled = (weekStart: string, divisionId: string | null) => packages.filter((row) => {

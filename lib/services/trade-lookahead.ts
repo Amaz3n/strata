@@ -5,7 +5,7 @@ import { z } from "zod"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { getProjectReadScopeForUser } from "@/lib/services/authorization"
+import { authorizeMany, getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { deliverTradeNotice, resolveTradePortalLink, type TradeNoticeDraft } from "@/lib/services/trade-notices"
 import { readAllRowsById } from "@/lib/land/paging"
 import { SCHEDULE_DIGEST_WINDOW_MS, scheduleDigestKey } from "@/lib/starts/even-flow-math"
@@ -85,7 +85,7 @@ async function loadTradeLookahead(
   // schedule_items → lots foreign key to embed through. The project owns the
   // lot filter; its join is inner only for an explicit community lens.
   // Unscoped work keeps projects without lots, while scoped queries narrow early.
-  const items = await readAllRowsById(async (after, take) => {
+  const candidates = await readAllRowsById(async (after, take) => {
     let query = reader.from("schedule_items").select(`
     id,project_id,name,trade,status,start_date,end_date,cost_code_id,
     ${projectSelect},
@@ -103,6 +103,14 @@ async function loadTradeLookahead(
     if (result.error) return { data: null, error: result.error }
     return { data: tradeSchedulePageSchema.parse(result.data), error: null }
   }, { cap: 100000, label: "Failed to load trade look-ahead; narrow the community or schedule window" })
+  // The reads above run unscoped by row security, so project.read is decided
+  // here by the same policy as authorize(): explicit denies, division and
+  // project-member scope, and per-house grants all apply, as in the SQL twin.
+  const verdicts = await authorizeMany({
+    permission: "project.read", userId: context.userId, orgId: context.orgId,
+    projectIds: Array.from(new Set(candidates.map((item) => item.project_id))),
+  })
+  const items = candidates.filter((item) => verdicts.get(item.project_id) === true)
   items.sort((a, b) => a.start_date.localeCompare(b.start_date) || a.id.localeCompare(b.id))
   const unresolved = items.filter((item) => !(item.assignments ?? []).some((assignment: { company_id?: string | null }) => assignment.company_id) && item.cost_code_id)
   const projectIds = Array.from(new Set(unresolved.map((item) => item.project_id)))
@@ -290,7 +298,10 @@ export async function sendTradeLookahead(
   if (!entries.length) throw new Error("No scheduled work is available for this trade.")
   const outcome = await deliverTradeNotice({
     orgId: context.orgId, actorId: authorized.userId, kind: "lookahead", companyId, projectId: null,
-    dedupeKey: lookaheadDedupeKey({ companyId, weeks: opts.weeks, communityId: opts.communityId, divisionId: opts.divisionId, utcDay: new Date().toISOString().slice(0, 10) }),
+    dedupeKey: lookaheadDedupeKey({
+      companyId, weeks: opts.weeks, utcDay: new Date().toISOString().slice(0, 10),
+      items: entries.map(({ item }) => ({ id: item.scheduleItemId, startDate: item.startDate, endDate: item.endDate })),
+    }),
     scope: { weeks: opts.weeks, communityId: opts.communityId ?? null, divisionId: opts.divisionId ?? null },
     build: () => lookaheadDraft(context, companyId, opts, entries),
   })

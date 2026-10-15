@@ -1,3 +1,4 @@
+import { getProjectSuperintendentLoads, type ProjectSuperintendentLoad } from "@/lib/services/superintendent-capacity";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
@@ -38,7 +39,7 @@ import { planScheduleMove, wouldCreateDependencyCycle } from "@/lib/utils/schedu
 import { readAllRows } from "@/lib/land/paging";
 import { enqueueOutboxJob } from "@/lib/services/outbox";
 import { normalizeScheduleTemplateItems, selectionTaskKey } from "@/lib/selections/cutoff-math";
-import { getProjectPosture } from "@/lib/product-tier";
+import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier";
 import { enqueueTradeScheduleChange } from "@/lib/services/trade-lookahead";
 import { scheduleChangeIsNotifiable } from "@/lib/starts/lookahead-rules";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -109,6 +110,36 @@ async function enqueueProductionScheduleChange(input: {
     projectId: input.projectId, scheduleItemId: input.scheduleItemId,
     oldStart: input.oldStart, newStart: input.newStart,
   })));
+}
+
+async function requireEditOnProjects(userId: string, projectIds: string[]) {
+  for (const projectId of projectIds) await requireProjectPermission(userId, projectId, "schedule.edit");
+}
+
+/**
+ * Tells trades and recomputes selection cutoffs for a committed bulk move. Run
+ * from the outbox job apply_schedule_reschedule wrote in its own transaction, so
+ * a failure here retries instead of vanishing.
+ */
+export async function processScheduleRescheduleNotice(orgId: string, payload: unknown) {
+  const parsed = z.object({
+    actor_id: z.string().uuid(),
+    moves: z.array(z.object({
+      id: z.string().uuid(), project_id: z.string().uuid(), old_start: z.string().nullable(), new_start: z.string().nullable(),
+    })).max(1000),
+  }).parse(payload);
+  const supabase = createServiceSupabaseClient();
+  const { data: org, error: orgError } = await supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle();
+  if (orgError) throw new Error(`Failed to read the organization: ${orgError.message}`);
+  const productTier = normalizeProductTier(org?.product_tier);
+  await Promise.all([
+    ...parsed.moves.filter((move) => move.old_start !== move.new_start).map((move) => enqueueProductionScheduleChange({
+      supabase, orgId, actorId: parsed.actor_id, productTier,
+      projectId: move.project_id, scheduleItemId: move.id, oldStart: move.old_start, newStart: move.new_start,
+    })),
+    ...Array.from(new Set(parsed.moves.map((move) => move.project_id))).map((projectId) =>
+      enqueueOutboxJob({ orgId, jobType: "selection_cutoff_recompute", payload: { project_id: projectId }, dedupeByPayloadKeys: ["project_id"] })),
+  ]);
 }
 
 async function loadDependencies(
@@ -629,6 +660,23 @@ export async function updateScheduleItem({
     "schedule.edit",
   );
 
+  // A date edited here skips the schedule view's review. It may not push a
+  // promised close past its date: that move needs the review's acceptance,
+  // reason and start.release, so it is refused here and made there.
+  if (parsed.start_date !== undefined || parsed.end_date !== undefined) {
+    const start = parsed.start_date === undefined ? existing.data.start_date : parsed.start_date || null;
+    const end = parsed.end_date === undefined ? existing.data.end_date : parsed.end_date || null;
+    if (start && (end ?? start) >= start && (start !== existing.data.start_date || end !== existing.data.end_date)) {
+      const plan = await buildReschedulePlan(
+        createServiceSupabaseClient(), resolvedOrgId, [{ id: itemId, start_date: start, end_date: end ?? start }],
+        async () => undefined,
+      );
+      if (plan.closeImpacts.length) {
+        throw new Error(`This date pushes the promised close past its date (${plan.closeImpacts.map((impact) => `${impact.projectName}, ${impact.daysLate} days late`).join("; ")}). Move it from the schedule view, which reviews and approves the impact.`);
+      }
+    }
+  }
+
   const updateData: Record<string, any> = {};
 
   // Basic fields
@@ -922,6 +970,8 @@ export interface ScheduleReschedulePreview {
   closeImpacts: ScheduleCloseImpact[];
   /** Whether the viewer may accept a breach of a promised close (start.release). */
   canApproveCloseImpacts: boolean;
+  /** Houses in the move whose superintendent is stretched or at their limit. A warning, not a block. */
+  superintendentWarnings: ProjectSuperintendentLoad[];
 }
 
 type DateMove = { id: string; start_date: string; end_date: string };
@@ -981,13 +1031,21 @@ async function readByProjects<Row>(
  * closes that end up later than their date. The client never supplies dependent
  * dates.
  */
-async function buildReschedulePlan(supabase: SupabaseClient, orgId: string, moves: DateMove[]) {
+async function buildReschedulePlan(
+  supabase: SupabaseClient,
+  orgId: string,
+  moves: DateMove[],
+  authorize: (projectIds: string[]) => Promise<void>,
+) {
   const ids = Array.from(new Set(moves.map((move) => move.id)));
   const { data: moved, error: movedError } = await supabase
     .from("schedule_items").select("id,project_id").eq("org_id", orgId).in("id", ids);
   if (movedError) throw new Error(`Failed to load schedule items: ${movedError.message}`);
   if ((moved ?? []).length !== ids.length) throw new Error("One or more schedule items were not found or are not accessible");
   const projectIds = Array.from(new Set((moved ?? []).map((row) => row.project_id)));
+  // Nothing about the homes (dates, loops, closes) is read, let alone reported,
+  // until the caller is known to be allowed to edit each of them.
+  await authorize(projectIds);
 
   const [items, dependencies, closingsResult, projectsResult] = await Promise.all([
     readByProjects<PlanItemRow>(projectIds, "Failed to load schedule items", (projects, from, to) =>
@@ -1060,12 +1118,12 @@ export async function previewScheduleReschedule(
   // Read with the service client, scoped by org: row security on schedule_items
   // follows project membership, while authority here is schedule.edit per project
   // (role, scope and division), checked before anything is returned.
-  const plan = await buildReschedulePlan(createServiceSupabaseClient(), resolvedOrgId, moves);
-  for (const projectId of plan.projectIds) await requireProjectPermission(userId, projectId, "schedule.edit");
+  const plan = await buildReschedulePlan(createServiceSupabaseClient(), resolvedOrgId, moves, (projectIds) => requireEditOnProjects(userId, projectIds));
   return {
     changes: plan.changes,
     closeImpacts: plan.closeImpacts,
     canApproveCloseImpacts: plan.closeImpacts.length ? await hasPermission("start.release", { supabase, orgId: resolvedOrgId, userId }) : false,
+    superintendentWarnings: (await getProjectSuperintendentLoads(plan.projectIds, resolvedOrgId)).filter((load) => load.load !== "clear"),
   };
 }
 
@@ -1081,7 +1139,7 @@ export async function bulkUpdateScheduleItems(
   orgId?: string,
   options: { tradeResponseId?: string } = {},
 ): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId);
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
   // See previewScheduleReschedule: authority is checked per project below.
   const writer = createServiceSupabaseClient();
 
@@ -1098,7 +1156,7 @@ export async function bulkUpdateScheduleItems(
   let projectIds: string[];
   let itemById: Map<string, { project_id: string; updated_at: string; start_date: string | null }>;
   if (moves.length) {
-    const plan = await buildReschedulePlan(writer, resolvedOrgId, moves);
+    const plan = await buildReschedulePlan(writer, resolvedOrgId, moves, (ids) => requireEditOnProjects(userId, ids));
     ({ changes, closeImpacts, projectIds, itemById } = plan);
     const missing = Array.from(requested.keys()).filter((id) => !itemById.has(id));
     if (missing.length) {
@@ -1157,29 +1215,9 @@ export async function bulkUpdateScheduleItems(
     p_response_id: options.tradeResponseId ?? null,
   });
   if (error) throw new Error(error.message);
-  const moved = z.array(z.object({
-    id: z.string(), project_id: z.string(), old_start: z.string().nullable(), new_start: z.string().nullable(),
-  })).parse(applied);
-
-  const dateMoves = moved.filter((row) => row.old_start !== row.new_start);
-  const cutoffProjects = new Set(changes.map((change) => change.projectId));
-  try {
-    await Promise.all([
-      ...dateMoves.map((row) => enqueueProductionScheduleChange({
-        supabase: writer, orgId: resolvedOrgId, actorId: userId, productTier,
-        projectId: row.project_id, scheduleItemId: row.id, oldStart: row.old_start, newStart: row.new_start,
-      })),
-      ...Array.from(cutoffProjects).map((projectId) =>
-        enqueueOutboxJob({
-          orgId: resolvedOrgId,
-          jobType: "selection_cutoff_recompute",
-          payload: { project_id: projectId },
-          dedupeByPayloadKeys: ["project_id"],
-        })),
-    ]);
-  } catch (noticeError) {
-    throw new Error(`The schedule moved, but trades could not be notified: ${noticeError instanceof Error ? noticeError.message : "unknown error"}`);
-  }
+  // Trades and selection cutoffs are told by an outbox job the same transaction
+  // wrote, so a move that committed cannot lose its notices.
+  const moved = z.array(z.object({ id: z.string() })).parse(applied);
 
   const [{ data: rows, error: readError }, dependencyMap] = await Promise.all([
     writer.from("schedule_items")
@@ -1940,7 +1978,7 @@ export async function applyScheduleTemplateSnapshot(
   authorizationPermission:
     | "schedule.edit"
     | "plan.instantiate" = "schedule.edit",
-  { releaseKeyed = false }: { releaseKeyed?: boolean } = {},
+  { releaseKeyed = false, releaseVersionId }: { releaseKeyed?: boolean; releaseVersionId?: string } = {},
 ): Promise<ScheduleItem[]> {
   if (authorizationPermission === "plan.instantiate") {
     const context = await requireOrgContext(orgId);
@@ -1959,6 +1997,7 @@ export async function applyScheduleTemplateSnapshot(
   // tail it is missing.
   const placed = new Map<string, ScheduleItem>();
   if (releaseKeyed) {
+    if (!releaseVersionId) throw new Error("A release schedule is built from a plan version");
     const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId);
     const existing = await readAllRows(
       (from, to) =>
@@ -1974,8 +2013,11 @@ export async function applyScheduleTemplateSnapshot(
     );
     if (existing.truncated)
       throw new Error("The release schedule has more items than a release can account for");
-    for (const row of existing.rows)
+    for (const row of existing.rows) {
+      if (row.metadata?.release_version !== releaseVersionId)
+        throw new Error("A release schedule item was begun from a different plan version; cancel the release and decide what to do with it.");
       placed.set(String(row.metadata?.release_key), mapScheduleItem(row, {}));
+    }
   }
 
   for (const [index, item] of templateItems.entries()) {
@@ -2024,7 +2066,7 @@ export async function applyScheduleTemplateSnapshot(
             template_item_key: item.key ? selectionTaskKey(item.key) : selectionTaskKey(item.name ?? "Untitled"),
             template_start_offset_days: offset,
             template_duration_days: duration,
-            ...(releaseKeyed ? { release_key: releaseKey } : {}),
+            ...(releaseKeyed ? { release_key: releaseKey, release_version: releaseVersionId } : {}),
           },
         },
         orgId,

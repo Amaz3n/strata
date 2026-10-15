@@ -109,7 +109,7 @@
       }
     },
     "trade-response-flow": {
-      "derivation": "Fixture: one production home, Foundation (days 10-12) and Framing (10-17) both feeding Roofing (17-19), which feeds a Handoff task (day 20); a close is promised on day 25; Palmetto Framing is assigned Framing. flow: the first answer confirms; answers against changed dates, another company, another home's link, or a decline without a reason are refused; a request for days 12-19 lapses the confirmation (new answer supersedes the acceptance), lands on the coordinator queue, is refused a mismatched resolution and a read by sales, and approving it (owner: start.write + schedule.edit) moves Framing to days 12-19 through the bulk move and closes the request with one resolve audit; audits on the request are its insert plus the resolution. forged: sales' direct update/insert of confirmed_at is refused by the guard trigger; the portal answer confirms; a superintendent move of Framing lapses it. contested: owner and coordinator close one decline at once, one wins, one audit. bulk: slipping Foundation to days 25-27 makes Roofing wait for the later predecessor (27-29, Framing ends 17), Handoff follows (29-29), finish day 29 is 4 days past the day-25 close; no acceptance, no reason and no start.release are each refused in that order (the superintendent holds schedule.edit but not start.release, so cannot approve); nothing moves until the owner accepts the house with a reason; then the three tasks move together with an audit row each carrying the reason and the accepted house. Offsets are days from the run date. Confirmed by the first run on the acceptance stack.",
+      "derivation": "Fixture: one production home, Foundation (days 10-12) and Framing (10-17) both feeding Roofing (17-19), which feeds a Handoff task (day 20); a close is promised on day 25; Palmetto Framing is assigned Framing. flow: the first answer confirms; answers against changed dates, another company, another home's link, or a decline without a reason are refused; a request for days 12-19 lapses the confirmation (new answer supersedes the acceptance), lands on the coordinator queue, is refused a mismatched resolution and a read by sales, and approving it (owner: start.write + schedule.edit) moves Framing to days 12-19 through the bulk move and closes the request with one resolve audit; audits on the request are its insert plus the resolution. forged: sales' direct update/insert of confirmed_at is refused by the guard trigger; the portal answer confirms; a superintendent move of Framing lapses it. contested: owner and coordinator close one decline at once, one wins, one audit. bulk: slipping Foundation to days 25-27 makes Roofing wait for the later predecessor (27-29, Framing ends 17), Handoff follows (29-29), finish day 29 is 4 days past the day-25 close; no acceptance, no reason and no start.release are each refused in that order (the superintendent holds schedule.edit but not start.release, so cannot approve); nothing moves until the owner accepts the house with a reason; then the three tasks move together with an audit row each carrying the reason and the accepted house. Offsets are days from the run date. Confirmed by the first run on the acceptance stack. Review round 1: approval is by the starts coordinator (schedule.edit seeded by 20261014160000); a coordinator scoped to division B (the home is in A) sees none of the answers and is told 'not found' on resolve and approve.",
       "expected": {
         "flow": {
           "confirmed": true,
@@ -150,19 +150,27 @@
               "event_type": "trade_response.resolved",
               "n": 1
             }
-          ]
+          ],
+          "divisionScopedCoordinator": {
+            "queued": 0,
+            "resolve": "refused",
+            "approve": "refused"
+          }
         }
       }
     },
     "forged-confirmation-refused": {
-      "derivation": "See trade-response-flow's fixture. Sales is a member without schedule.edit; the guard trigger on schedule_assignments refuses any authenticated write that sets or changes confirmed_at, while the definer path of the portal answer sets it and a date move lapses it.",
+      "derivation": "See trade-response-flow's fixture. Sales is a member without schedule.edit; the guard trigger on schedule_assignments refuses any authenticated write that sets or changes confirmed_at, while the definer path of the portal answer sets it and a date move lapses it. A member's insert naming a different home for the task is refused by the consistency trigger; a member may re-point the assignment (the data API still allows the write) but the confirmation is dropped, not transferred.",
       "expected": {
         "forged": {
           "forgedUpdate": "refused",
           "forgedInsert": "refused",
           "confirmedBefore": false,
           "confirmedByPortal": true,
-          "lapsedAfterMove": true
+          "lapsedAfterMove": true,
+          "mismatchedHome": "refused",
+          "repointAllowed": true,
+          "confirmationAfterRepoint": false
         }
       }
     },
@@ -233,6 +241,39 @@
           "audits": 3,
           "acknowledgedThisHome": true,
           "reason": "Foundation crew slipped two weeks"
+        }
+      }
+    },
+    "trade-lookahead-dedupe-follows-content": {
+      "derivation": "A framer has one task in the window. The first look-ahead is sent; asking again the same day is a duplicate (same listed work). A second task is added for the framer; the same-day look-ahead now lists different work, so it is sent (the old key, company plus scope plus day, called it a duplicate), and asking once more is a duplicate again. The provider holds two messages; the second lists both tasks, the first only the first.",
+      "expected": {
+        "dedupe": {
+          "first": "sent",
+          "again": "duplicate",
+          "widerSameDay": "sent",
+          "widerAgain": "duplicate",
+          "providerMessages": 2,
+          "secondListsBoth": true,
+          "firstListsOnlyTheFirst": true
+        }
+      }
+    },
+    "trade-lookahead-respects-scope": {
+      "derivation": "One framer has a task on a house in division A and a task on a second house of the same builder in division B. A starts coordinator whose membership is limited to division A sees only the division A task, and the look-ahead notice they send lists only it; the unlimited coordinator sees both. A coordinator with an explicit project.read deny override sees none (the TS look-ahead decides project.read with the same authorizeMany policy as authorize(), as the database workspace does).",
+      "expected": {
+        "division": {
+          "divisionLimited": [
+            "Division A work"
+          ],
+          "unlimited": [
+            "Division A work",
+            "Division B work"
+          ],
+          "noticeListsB": false,
+          "noticeListsA": true
+        },
+        "denied": {
+          "deniedView": []
         }
       }
     }

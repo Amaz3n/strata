@@ -255,6 +255,9 @@ async function membersCannotForgeCopyState(kit, spec, check) {
   const was = one(kit, `select metadata from public.projects where id=${kit.q(home.projectId)}`).metadata
   const refusal = (outcome, pattern) => labelled(outcome, pattern)
   const manifestOutcome = await rest(kit, sales, (supabase) => supabase.from("projects").update({ metadata: { ...was, ...manifest } }).eq("org_id", org.orgId).eq("id", home.projectId))
+  const ledgerSteps = await rest(kit, sales, (supabase) => supabase.from("projects").update({ metadata: { ...was, plan_instantiation: { version_id: randomUUID(), steps: { schedule: { at: "2026-10-14T00:00:00Z" }, checklists: { at: "2026-10-14T00:00:00Z" }, drawings: { at: "2026-10-14T00:00:00Z" } } } } }).eq("org_id", org.orgId).eq("id", home.projectId))
+  const ledgerSeq = await rest(kit, sales, (supabase) => supabase.from("projects").update({ metadata: { ...was, plan_instantiation: { seq: 9007199254740991 } } }).eq("org_id", org.orgId).eq("id", home.projectId))
+  const ledgerNotAnObject = await rest(kit, sales, (supabase) => supabase.from("projects").update({ metadata: { ...was, plan_instantiation: "x" } }).eq("org_id", org.orgId).eq("id", home.projectId))
   const drawingInsert = await rest(kit, sales, (supabase) => supabase.from("outbox").insert({ org_id: org.orgId, job_type: "generate_drawing_tiles", payload: {} }))
   const drawingRewrite = await rest(kit, sales, (supabase) => supabase.from("outbox").update({ payload: { storagePath: "FORGED" } }).eq("org_id", org.orgId).eq("id", Number(tiles)))
   const drawingComplete = await rest(kit, sales, (supabase) => supabase.from("outbox").update({ status: "completed" }).eq("org_id", org.orgId).eq("id", Number(tiles)))
@@ -263,13 +266,14 @@ async function membersCannotForgeCopyState(kit, spec, check) {
   const tokenOnOrdinary = await rest(kit, sales, (supabase) => supabase.from("outbox").update({ drawing_claim_token: "00000000-0000-4000-8000-0000000000f1", status: "processing" }).eq("org_id", org.orgId).eq("id", Number(ordinary)))
   const ordinaryWrite = await rest(kit, sales, (supabase) => supabase.from("outbox").update({ priority: 5 }).eq("org_id", org.orgId).eq("id", Number(ordinary)))
   const after = {
-    manifest: one(kit, `select metadata->'plan_instantiation'->'drawing_copy_attempt' is null as absent from public.projects where id=${kit.q(home.projectId)}`).absent,
+    manifest: one(kit, `select metadata->'plan_instantiation' is null as absent from public.projects where id=${kit.q(home.projectId)}`).absent,
     drawingJob: one(kit, `select status, payload->>'storagePath' is null untouched from public.outbox where id=${tiles}`),
     ordinaryRow: one(kit, `select status, drawing_claim_token is null no_token from public.outbox where id=${ordinary}`),
   }
   kit.sql(`update public.outbox set status='completed' where id in (${tiles}, ${ordinary})`)
-  equal(check, "a member's own client cannot write the drawing copy manifest, insert, rewrite, complete or delete a drawing job, or set a claim or lease on any row; ordinary job writes still work", spec.expected, {
+  equal(check, "a member's own client cannot write any part of the instantiation ledger (manifest, steps, produced, seq), insert, rewrite, complete or delete a drawing job, or set a claim or lease on any row; ordinary job writes still work", spec.expected, {
     manifest: refusal(manifestOutcome, /server-owned/),
+    ledgerSteps: refusal(ledgerSteps, /server-owned/), ledgerSeq: refusal(ledgerSeq, /server-owned/), ledgerNotAnObject: refusal(ledgerNotAnObject, /server-owned/),
     drawingJobInsert: refusal(drawingInsert, /server writers/), drawingJobRewrite: refusal(drawingRewrite, /server writers/),
     drawingJobComplete: refusal(drawingComplete, /server writers/), drawingJobDelete: refusal(drawingDelete, /server writers/),
     leaseOnAnyRow: refusal(leaseOnOrdinary, /server writers/), claimOnAnyRow: refusal(tokenOnOrdinary, /server writers/),
@@ -281,6 +285,37 @@ async function membersCannotForgeCopyState(kit, spec, check) {
 
 // ---------------------------------------------------------------------------
 // 5. Activation smoke.
+
+/** The starts-ownership forgeries of LOT-01, attempted by real browser sessions against this org's own package and a tokened job. */
+async function startsOwnershipForgeries(kit, home) {
+  const { createClient } = require("@supabase/supabase-js")
+  const { org } = home
+  const refused = /authorized server action|require an authorized server|Browser cannot use starts worker headers|row-level security|permission denied/i
+  const named = (outcome) => labelled(outcome, refused)
+  const tokened = kit.sql(`insert into public.outbox(org_id, job_type, payload, status, start_claim_token, start_job_lease_expires_at) values (${kit.q(org.orgId)}, 'start_package_notice', '{}', 'processing', gen_random_uuid(), now() + interval '3 minutes') returning id`).split("\n")[0]
+  const packageBefore = one(kit, `select status, notes from public.start_packages where id=${kit.q(home.packageId)}`)
+  const jobBefore = job(kit, tokened)
+  const browser = (actor, headers = {}) => createClient(kit.apiUrl, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${kit.localJwt({ sub: actor.userId, role: "authenticated", aud: "authenticated" })}`, ...headers } },
+  })
+  const result = async (work) => { const { error } = await work(); return error ? error.message : "allowed" }
+  const owner = browser(org.owner)
+  const posing = browser(org.team.starts, { "x-starts-job-id": tokened, "x-starts-claim-token": randomUUID() })
+  const observed = {
+    insertReleaseJob: named(await result(() => owner.from("outbox").insert({ org_id: org.orgId, job_type: "start_release", payload: { start_package_id: home.packageId, actor_id: org.owner.userId } }))),
+    insertJobWithAClaimToken: named(await result(() => owner.from("outbox").insert({ org_id: org.orgId, job_type: "reindex_search", payload: {}, start_claim_token: randomUUID() }))),
+    rewriteClaimedJob: named(await result(() => owner.from("outbox").update({ status: "pending", start_claim_token: null }).eq("id", Number(tokened)))),
+    deleteClaimedJob: named(await result(() => owner.from("outbox").delete().eq("id", Number(tokened)))),
+    updatePackage: named(await result(() => owner.from("start_packages").update({ status: "ready", notes: "forged" }).eq("id", home.packageId))),
+    updateReleaseStep: named(await result(() => owner.from("start_release_steps").update({ status: "completed" }).eq("start_package_id", home.packageId))),
+    packageWriteWithWorkerHeaders: named(await result(() => posing.from("start_packages").update({ notes: "forged" }).eq("id", home.packageId))),
+    claimRpc: named(await result(() => owner.rpc("claim_starts_jobs", { p_limit: 1 }))),
+  }
+  const jobAfter = job(kit, tokened), packageAfter = one(kit, `select status, notes from public.start_packages where id=${kit.q(home.packageId)}`)
+  kit.sql(`update public.outbox set status='completed' where id=${tokened}`)
+  return { ...observed, jobUnchanged: jobAfter.status === jobBefore.status && jobAfter.tokened === jobBefore.tokened, packageUnchanged: JSON.stringify(packageAfter) === JSON.stringify(packageBefore) }
+}
 
 async function activationSmoke(kit, spec, check) {
   const lotExpected = loadExpected("LOT-01").subcases
@@ -296,15 +331,34 @@ async function activationSmoke(kit, spec, check) {
     settle()
   }
   const home = await readyHome(kit)
+  const forgeries = await startsOwnershipForgeries(kit, home)
   const released = await seed.releaseHome(kit, home.org, { packageId: home.packageId, projectId: home.projectId, startInDays: home.startInDays })
-  equal(check, "after activation the LOT-01 claim proof passes and a home releases through the tokened worker, once", spec.expected, {
-    delegated, release: released.released.status, releasedEvents: releasedEvents(kit, home), orders: orders(kit, home) > 0 ? "generated" : "none",
+  equal(check, "after activation the LOT-01 claim proof passes, browsers cannot forge starts jobs, claims, the package or its ledger, and a home releases through the tokened worker, once", spec.expected, {
+    delegated, forgeries, release: released.released.status, releasedEvents: releasedEvents(kit, home), orders: orders(kit, home) > 0 ? "generated" : "none",
   })
   return { orgId: home.org.orgId }
 }
 
 // ---------------------------------------------------------------------------
 // 6. Rollback and re-activation.
+
+/**
+ * What the previous worker does with a release, on a house that satisfies today's rules (it has its
+ * superintendent and gates; those rules stay on after a rollback): the coordinator's release queues,
+ * the previous worker claims it with the generic claimer (no token), and writes the release ledger
+ * with the coordinator's own session, which the fences refused. The release is then cancelled so the
+ * house is free again.
+ */
+async function previousWorkerRelease(kit, home, coordinator) {
+  kit.sql(`update public.outbox set status='completed' where status in ('pending','processing','failed') and job_type in (${inList(kit, STARTS_TYPES)})`)
+  const jobId = await queueRelease(kit, home)
+  const claimed = kit.sql(`set role service_role; select job_id from public.claim_jobs(array['start_release'], 1)`).split("\n").filter(Boolean)
+  const row = job(kit, jobId)
+  const stepWrite = labelled(await rest(kit, coordinator, (supabase) => supabase.from("start_release_steps").update({ status: "completed" }).eq("org_id", home.org.orgId).eq("start_package_id", home.packageId).eq("step_key", "project")), /Starts|server|authorized|worker|row-level/)
+  kit.sql(`update public.outbox set status='completed' where id=${jobId}`)
+  await kit.as(coordinator, () => app("starts").cancelRelease(home.packageId))
+  return { queuedUnderTodaysRules: true, claimedWithoutAToken: claimed.includes(jobId) && row.status === "processing" && !row.tokened, ledgerWriteByThePreviousWorker: stepWrite }
+}
 
 async function rollbackRestoresOldPathAndReactivationIsClean(kit, spec, check) {
   const home = await readyHome(kit), next = await readyHome(kit), { org } = home
@@ -325,21 +379,23 @@ async function rollbackRestoresOldPathAndReactivationIsClean(kit, spec, check) {
   const rolledBack = { verify: verify(kit), data: fingerprint(), startsJob: job(kit, startsJob), drawingJob: job(kit, drawingJob) }
   const previousPath = await memberWrites()
   completeProbes(startsJob, drawingJob)
+  const oldPathRelease = await previousWorkerRelease(kit, home, coordinator)
   kit.sql(`delete from public.outbox where org_id=${kit.q(org.orgId)} and job_type='process_drawing_set' and payload='{}'::jsonb and status='pending'`)
   kit.sql(`update public.start_packages set notes=null where id=${kit.q(home.packageId)}`)
   runScript(kit, "reactivate.sql")
   const reactivated = { verify: verify(kit), writes: await memberWrites() }
   const released = await seed.releaseHome(kit, org, { packageId: next.packageId, projectId: next.projectId, startInDays: next.startInDays })
-  const fences = (snapshot) => snapshot.verify["fences enabled"].n
+  const fences = (snapshot) => snapshot.verify["fences enabled (none disabled)"].n
 
   equal(check, "rollback turns every starts and drawing fence off, requeues tokened work as tokenless and loses no row; the previous path writes again; re-activation restores the same fences, refuses those writes and a release finishes", spec.expected, {
-    beforeRollback: { fences: before.verify["fences enabled"].ok ? "enabled" : "missing", memberWrites: before.writes },
+    beforeRollback: { fences: before.verify["fences enabled (none disabled)"].ok ? "enabled" : "missing", memberWrites: before.writes },
     afterRollback: {
       fencesEnabled: fences(rolledBack), fencesDisabled: rolledBack.verify["fences disabled (nonzero only after a rollback)"].n > 0,
       inFlightStartsJob: { status: rolledBack.startsJob.status, tokened: rolledBack.startsJob.tokened, leased: rolledBack.startsJob.leased },
       inFlightDrawingJob: { status: rolledBack.drawingJob.status, tokened: rolledBack.drawingJob.tokened, leased: rolledBack.drawingJob.leased },
       startsDataUntouched: JSON.stringify(rolledBack.data) === JSON.stringify(before.data),
       previousPathWrites: previousPath,
+      previousWorkerRelease: oldPathRelease,
     },
     afterReactivation: { sameFences: fences(reactivated) === fences(before), memberWrites: reactivated.writes, release: released.released.status },
   })

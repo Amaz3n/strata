@@ -4,8 +4,8 @@ import { hasTitleBlockEvidence, needsNumberVerification } from "@/lib/drawings/n
 /**
  * Vercel-native drawings processing pipeline.
  *
- * Jobs flow through the existing `outbox` table (claimed atomically via the
- * `claim_jobs` RPC) and are processed inside the Next.js app:
+ * Jobs flow through the existing `outbox` table (claimed atomically, each under
+ * its own token, via the `claim_drawing_jobs` RPC) and are processed inside the Next.js app:
  *
  *   process_drawing_set     -> coordinator: count pages, fan out chunk jobs
  *                              (small sets split inline to skip a queue hop)
@@ -502,7 +502,7 @@ export interface PipelineRunSummary {
 
 /**
  * Claim and process drawing jobs until the queue is drained or the deadline
- * passes. Safe to run concurrently across invocations (claim_jobs uses
+ * passes. Safe to run concurrently across invocations (claim_drawing_jobs uses
  * FOR UPDATE SKIP LOCKED).
  */
 export async function runDrawingsPipeline(options: { deadlineMs?: number; lane?: DrawingLane } = {}): Promise<PipelineRunSummary> {

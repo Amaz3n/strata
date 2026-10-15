@@ -31,6 +31,7 @@ import { executePurchaseAgreementFromEnvelopeExecution } from "@/lib/services/co
 import { executeSelectionApprovalFromEnvelope, notifySelectionApprovalOutcome, SELECTION_APPROVAL_OUTCOME_JOB_TYPE } from "@/lib/services/selection-approvals"
 import { DESIGN_STUDIO_NOTICE_JOB_TYPE, sendDesignStudioAppointmentNotice } from "@/lib/services/design-studio-appointment-notices"
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
+import { processScheduleRescheduleNotice } from "@/lib/services/schedule"
 import { processSelectionChangeApplied, SELECTION_CHANGE_APPLIED_JOB_TYPE } from "@/lib/services/selection-change-orders"
 import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
 import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
@@ -157,6 +158,7 @@ const OUTBOX_JOB_TYPES = [
   "remove_search_index",
   "process_inbound_bill_email",
   "selection_cutoff_recompute",
+  "schedule_reschedule_notify",
   SELECTION_CHANGE_APPLIED_JOB_TYPE,
   "warranty_enroll_coverage",
   "reanchor_takeoff_markups",
@@ -596,6 +598,8 @@ async function processOutboxQueue(request: NextRequest) {
           const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
           if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
           await recomputeProjectSelectionCutoffs(projectId, job.org_id)
+        } else if (job.job_type === "schedule_reschedule_notify") {
+          await processScheduleRescheduleNotice(job.org_id, job.payload)
         } else if (job.job_type === SELECTION_CHANGE_APPLIED_JOB_TYPE) {
           await processSelectionChangeApplied(job.org_id, job.payload)
         } else if (job.job_type === "warranty_enroll_coverage") {

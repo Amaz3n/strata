@@ -753,7 +753,7 @@ export async function generatePlanBudget(
     };
   if (input.releaseKeyed) {
     const budget = await createReleaseBudget(
-      { project_id: input.projectId, lines },
+      { project_id: input.projectId, lines, plan_version_id: context.version.id },
       context.orgId,
     );
     return {
@@ -801,7 +801,7 @@ export async function applyPlanSchedule(
     input.startDate,
     context.orgId,
     "plan.instantiate",
-    { releaseKeyed: input.releaseKeyed },
+    { releaseKeyed: input.releaseKeyed, releaseVersionId: context.version.id },
   );
   return {
     item_ids: created.map((item) => item.id),
@@ -811,7 +811,7 @@ export async function applyPlanSchedule(
 }
 
 /** The checklists a release already put on the home, with the item positions each holds. */
-async function loadReleaseChecklists(context: InstantiationContext, projectId: string) {
+async function loadReleaseChecklists(context: InstantiationContext, projectId: string, versionId: string) {
   const inspections = await readAllRows(
     (from, to) =>
       context.supabase
@@ -827,8 +827,11 @@ async function loadReleaseChecklists(context: InstantiationContext, projectId: s
   if (inspections.truncated)
     throw new Error("The release has more checklists than a release can account for");
   const placed = new Map<string, { id: string; items: Set<number> }>();
-  for (const row of inspections.rows)
+  for (const row of inspections.rows) {
+    if (asRecord(row.metadata).release_version !== versionId)
+      throw new Error("A release checklist was begun from a different plan version; cancel the release and decide what to do with it.");
     placed.set(String(asRecord(row.metadata).release_key), { id: row.id, items: new Set() });
+  }
   const ids = Array.from(placed.values(), (entry) => entry.id);
   for (let offset = 0; offset < ids.length; offset += 100) {
     const slice = ids.slice(offset, offset + 100);
@@ -858,7 +861,7 @@ export async function seedPlanChecklists(
 ) {
   if (input.dryRun) return { inspection_ids: [] };
   const placed = input.releaseKeyed
-    ? await loadReleaseChecklists(context, input.projectId)
+    ? await loadReleaseChecklists(context, input.projectId, context.version.id)
     : new Map<string, { id: string; items: Set<number> }>();
   const inspectionIds: string[] = [];
   for (const [index, checklist] of context.snapshot.checklists.entries()) {
@@ -893,7 +896,7 @@ export async function seedPlanChecklists(
         kind: checklist.kind,
         title: checklist.name,
         sourceTemplateId: checklist.id ?? null,
-        ...(input.releaseKeyed ? { releaseKey } : {}),
+        ...(input.releaseKeyed ? { releaseKey, releaseVersionId: context.version.id } : {}),
         items,
       },
       context.orgId,
@@ -982,8 +985,11 @@ async function markStep(
   context: InstantiationContext,
   step: PlanInstantiationStep,
 ) {
+  // The ledger is server-owned: the caller's permission was checked when the
+  // instantiation began, and a member's own client may not write the key.
+  const supabase = createServiceSupabaseClient();
   for (let attempt = 0; attempt < MARK_STEP_ATTEMPTS; attempt += 1) {
-    const { data, error } = await context.supabase
+    const { data, error } = await supabase
       .from("projects")
       .select("metadata")
       .eq("org_id", context.orgId)
@@ -1011,7 +1017,7 @@ async function markStep(
         at,
       },
     };
-    let update = context.supabase
+    let update = supabase
       .from("projects")
       .update({ metadata: nextMetadata })
       .eq("org_id", context.orgId)

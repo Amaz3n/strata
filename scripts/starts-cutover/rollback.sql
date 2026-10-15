@@ -11,10 +11,13 @@
 --      queue with no claim, which is the shape the previous worker claims.
 --   3. Clears the lease a release holds on a package that is still releasing,
 --      so the previous worker can take it.
--- It does NOT touch the fences other workstreams added around purchase
--- agreements, closings, permits, selections or sales: those are not starts
--- fences and the previous code is not safe against them either (see
--- docs/reference/starts-cutover.md, "Rollback").
+-- It does NOT touch the product rules EP07 added, which stay on: a house needs
+-- a superintendent before it releases (queue_start_release), superintendent
+-- and release-slot writes are locked to the new assignment path, a lot cannot
+-- be re-pinned or detached under a release, and the financing-evidence and
+-- throughput checks apply. Nor does it touch the fences other workstreams added
+-- around purchase agreements, closings, permits, selections or sales. See
+-- docs/reference/starts-cutover.md, "Rollback".
 --
 -- Reverse with reactivate.sql. Check with verify.sql.
 

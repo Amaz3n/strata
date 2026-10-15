@@ -142,6 +142,15 @@ describe("a coordinator closes an answer", () => {
     assert.deepEqual(rpcCalls(service, "resolve_trade_response"), [])
   })
 
+  test("an answer the coordinator's session cannot see is not closed", async () => {
+    const service = harness()
+    await assert.rejects(
+      service.run(() => responses.resolveTradeResponse({ responseId: id(77), resolution: "acknowledged" })),
+      /not found/,
+    )
+    assert.deepEqual(rpcCalls(service, "resolve_trade_response"), [])
+  })
+
   test("approving new dates applies them through the bulk move and closes the request with it", async () => {
     const service = harness()
     await service.run(() => responses.approveTradeReschedule({ responseId: REQUEST }))

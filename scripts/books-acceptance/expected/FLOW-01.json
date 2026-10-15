@@ -185,6 +185,19 @@
         ]
       }
     },
+    "starts-division-scoped-coordinator-cannot-assign-or-set-org-defaults": {
+      "derivation": "A starts coordinator limited to the Treasure Coast division, with a planning house in Gulf Coast and one in Treasure Coast. Assigning the Gulf Coast house is refused by the service (the house is not in their division), and the assignment function refuses it on its own when called with their id. The house stays unassigned. Assigning the Treasure Coast house works. Setting the org default superintendent limits and the org-wide throughput target are refused (they need reach over the whole organization). With the person also holding the Gulf Coast house, the picker the coordinator sees counts the same houses the assignment does.",
+      "inputs": {},
+      "expected": {
+        "outsideService": "refused",
+        "outsideTransaction": "refused: outside division",
+        "outsideUnassigned": true,
+        "insideService": true,
+        "orgDefault": "refused",
+        "orgTarget": "refused",
+        "pickerSeesOtherDivisionsHouses": true
+      }
+    },
     "starts-viewer-cannot-write-slots-or-targets-through-the-data-api": {
       "derivation": "The coordinator sets a community slot through the service and it is audited once. A viewer's setReleaseSlot is refused, and so are their direct REST writes: updating or inserting a community slot, inserting a throughput target or a superintendent limit, and assigning a superintendent on a project. A project lead (no start.slots, no start.release) cannot set a target or a limit. The slot stays at 3 and the house stays unassigned.",
       "inputs": {},

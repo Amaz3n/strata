@@ -51,7 +51,7 @@ const rest = (kit, actor, write) => attempt(() => kit.as(actor, async () => {
   if (Array.isArray(data) && data.length === 0) throw new Error("no row changed")
 }))
 /** Houses a person runs now, so a subcase sets its limits relative to it. */
-const housesOf = (kit, org, userId) => Number(one(kit, `select count(*)::int n from public.projects where org_id=${kit.q(org.orgId)} and superintendent_id=${kit.q(userId)} and status='active'`).n)
+const housesOf = (kit, org, userId) => Number(one(kit, `select count(*)::int n from public.projects where org_id=${kit.q(org.orgId)} and superintendent_id=${kit.q(userId)} and status not in ('completed','cancelled')`).n)
 const unassign = (kit, projectIds) => kit.sql(`update public.projects set superintendent_id=null where id in (${projectIds.map((id) => kit.q(id)).join(",")})`)
 
 // ---------------------------------------------------------------------------
@@ -290,9 +290,10 @@ async function raceAssignments(kit, expected, check) {
 }
 
 /** A bare production house for capacity fixtures: a project with no package, opened as the starts desk would not. */
-async function houseFixture(kit, org, name) {
+async function houseFixture(kit, org, name, divisionId = null) {
   const projectId = randomUUID()
-  kit.sql(`insert into public.projects(id,org_id,name,status,phase,property_type,created_by) values(${kit.q(projectId)},${kit.q(org.orgId)},${kit.q(name)},'active','precon','production',${kit.q(org.owner.userId)})`)
+  // Planning, as every house is until it releases: it counts against its superintendent from the day it is assigned.
+  kit.sql(`insert into public.projects(id,org_id,name,status,phase,property_type,division_id,created_by) values(${kit.q(projectId)},${kit.q(org.orgId)},${kit.q(name)},'planning','precon','production',${divisionId ? kit.q(divisionId) : "null"},${kit.q(org.owner.userId)})`)
   return { projectId }
 }
 
@@ -303,8 +304,10 @@ async function divisionCapSpansCommunities(kit, expected, check) {
   const { org } = await world(kit)
   const starts = app("starts"), flow = app("even-flow")
   // A week no earlier run on this stack has released into: scenario orgs are reused, and the caps count what is already there.
-  const weeksOut = 30 + Math.floor(Math.random() * 60)
-  const week = math().addWeeks(math().mondayOfIsoWeek(day(0)), weeksOut)
+  // The week after every start this org has ever targeted: deterministic, and never one an earlier run released into.
+  const latest = one(kit, `select coalesce(max(target_week), current_date)::text m from public.start_packages where org_id=${kit.q(org.orgId)}`).m
+  const week = math().addWeeks(math().mondayOfIsoWeek(latest), 2)
+  const weeksOut = Math.round((Date.parse(`${week}T00:00:00Z`) - Date.parse(`${math().mondayOfIsoWeek(day(0))}T00:00:00Z`)) / (7 * 86400000))
   // Fixture: a second community of the division that already released a house this week.
   const bayshore = randomUUID(), lot = randomUUID(), home = randomUUID()
   kit.sql(`insert into public.communities(id,org_id,name,code,division_id,status) values(${kit.q(bayshore)},${kit.q(org.orgId)},'Bayshore','BAY',${kit.q(org.divisionId)},'active');
@@ -409,6 +412,37 @@ async function dataApiLockdown(kit, expected, check) {
 }
 
 // ---------------------------------------------------------------------------
+// 8b. EP07-03 / EP07-13: a coordinator limited to one division.
+
+async function divisionScopedCoordinator(kit, expected, check) {
+  const { org } = await world(kit)
+  const starts = app("starts"), capacity = app("superintendent-capacity"), flow = app("even-flow")
+  const treasure = (await kit.as(org.owner, () => app("divisions").createDivision({ name: `Treasure Coast ${Date.now()}`, code: `T${String(Date.now()).slice(-5)}`, region: "Southeast Florida" }))).id
+  const limited = kit.addMember(org, "org_starts_coordinator")
+  const membershipId = one(kit, `select id from public.memberships where org_id=${kit.q(org.orgId)} and user_id=${kit.q(limited.userId)}`).id
+  await kit.as(org.owner, () => app("team").updateMemberRole({ membershipId, role: "org_starts_coordinator", divisionScope: "assigned", divisionIds: [treasure] }))
+  const gulfHouse = await houseFixture(kit, org, "scoped-gulf", org.divisionId)
+  const treasureHouse = await houseFixture(kit, org, "scoped-treasure", treasure)
+  const person = org.team.superintendent
+  const observed = {}
+  observed.outsideService = await outcome(() => kit.as(limited, () => starts.setProjectSuperintendent(gulfHouse.projectId, person.userId)))
+  // The transaction refuses on its own, whatever the service read first.
+  const direct = sqlAttempt(kit, `select public.assign_project_superintendent(${kit.q(org.orgId)},${kit.q(gulfHouse.projectId)},${kit.q(person.userId)},${kit.q(limited.userId)},null)`)
+  observed.outsideTransaction = /outside your division access/.test(direct) ? "refused: outside division" : direct
+  observed.outsideUnassigned = one(kit, `select superintendent_id is null n from public.projects where id=${kit.q(gulfHouse.projectId)}`).n
+  observed.insideService = (await kit.as(limited, () => starts.setProjectSuperintendent(treasureHouse.projectId, person.userId))).assigned
+  observed.orgDefault = await outcome(() => kit.as(limited, () => capacity.setSuperintendentLimits({ userId: null, warnHouses: 2, maxHouses: 3 })))
+  observed.orgTarget = await outcome(() => kit.as(limited, () => flow.setThroughputTarget({ weekStart: math().addWeeks(math().mondayOfIsoWeek(day(0)), 8), divisionId: null, targetStarts: 4 })))
+  // The picker counts the person's houses across every division, as the assignment does.
+  kit.sql(`update public.projects set superintendent_id=${kit.q(person.userId)} where id=${kit.q(gulfHouse.projectId)}`)
+  const listed = (await kit.as(limited, () => starts.listSuperintendentCandidates())).find((row) => row.id === person.userId)
+  observed.pickerSeesOtherDivisionsHouses = listed.activeHouses === housesOf(kit, org, person.userId)
+  unassign(kit, [gulfHouse.projectId, treasureHouse.projectId])
+  check.equal("a coordinator limited to one division cannot assign a superintendent to another division's house (the service and the transaction both refuse), cannot set the org default limits or the org-wide throughput target, and sees the same house count the assignment enforces, across every division", expected.expected, observed)
+  return { orgId: org.orgId }
+}
+
+// ---------------------------------------------------------------------------
 // 9. EP07-02: a start date's effect on a promised closing.
 
 async function releaseImpactPreview(kit, expected, check) {
@@ -445,6 +479,7 @@ module.exports = {
     "race-two-assignments-to-the-last-open-capacity-slot": raceAssignments,
     "starts-division-throughput-cap-spans-communities": divisionCapSpansCommunities,
     "race-two-releases-into-one-throughput-cap": raceReleasesIntoCap,
+    "starts-division-scoped-coordinator-cannot-assign-or-set-org-defaults": divisionScopedCoordinator,
     "starts-viewer-cannot-write-slots-or-targets-through-the-data-api": dataApiLockdown,
     "starts-release-impact-preview-matches-closing-schedule": releaseImpactPreview,
   },

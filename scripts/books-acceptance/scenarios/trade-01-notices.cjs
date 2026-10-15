@@ -230,7 +230,73 @@ async function tradeFailedNoticesVisible(kit, expected, check) {
   return { orgId: h.org.orgId, projectId: h.projectId }
 }
 
+async function tradeLookaheadDedupeFollowsContent(kit, expected, check) {
+  const h = await house(kit)
+  const framer = h.company("Framer")
+  h.task("Rough framing", 4, 6, { company: framer })
+  const lookahead = app("trade-lookahead")
+  const send = () => kit.as(h.coordinator, () => lookahead.sendTradeLookahead(framer, { weeks: 4 })).then((r) => (r.sent ? "sent" : "duplicate"))
+  const mail = provider()
+  const result = {}
+  try {
+    result.first = await send()
+    result.again = await send()
+    // Work the first notice did not list (what a coordinator with wider scope, or a later schedule, would see).
+    h.task("Trusses", 8, 9, { company: framer })
+    result.widerSameDay = await send()
+    result.widerAgain = await send()
+  } finally { mail.restore() }
+  const bodies = [...mail.messages.values()].map((message) => message.html)
+  eq(check, "the look-ahead's duplicate key follows what it lists: the same notice is sent once, a notice with other work the same day is sent", expected.expected.dedupe, {
+    ...result, providerMessages: mail.messages.size,
+    secondListsBoth: bodies.length === 2 && bodies[1].includes("Rough framing") && bodies[1].includes("Trusses"),
+    firstListsOnlyTheFirst: bodies[0].includes("Rough framing") && !bodies[0].includes("Trusses"),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function tradeLookaheadRespectsScope(kit, expected, check) {
+  const h = await house(kit)
+  const framer = h.company("Framer")
+  h.task("Division A work", 4, 6, { company: framer })
+  // A second house of the same builder in another division, with work for the same trade.
+  const divisionB = randomUUID(), projectB = randomUUID(), itemB = randomUUID()
+  const divisionA = kit.rows(`select division_id from public.projects where id=${kit.q(h.projectId)}`)[0].division_id
+  kit.sql(`insert into public.divisions(id,org_id,name) values(${kit.q(divisionB)},${kit.q(h.org.orgId)},${kit.q(`QA-${h.tag} Division B`)});
+    insert into public.projects(id,org_id,name,property_type,status,division_id,created_by) values(${kit.q(projectB)},${kit.q(h.org.orgId)},${kit.q(`QA-${h.tag} house B`)},'production','active',${kit.q(divisionB)},${kit.q(h.org.owner.userId)});
+    insert into public.schedule_items(id,org_id,project_id,name,trade,status,start_date,end_date) values(${kit.q(itemB)},${kit.q(h.org.orgId)},${kit.q(projectB)},${kit.q(`QA-${h.tag} Division B work`)},${kit.q(`QA-${h.tag}`)},'planned',${kit.q(day(4))},${kit.q(day(6))});
+    insert into public.schedule_assignments(org_id,project_id,schedule_item_id,company_id) values(${kit.q(h.org.orgId)},${kit.q(projectB)},${kit.q(itemB)},${kit.q(framer)})`)
+  const lookahead = app("trade-lookahead")
+  const names = async (actor) => (await kit.as(actor, () => lookahead.getTradeLookahead({ weeks: 4, companyId: framer }))).rows
+    .flatMap((row) => row.items).filter((item) => item.name.startsWith(`QA-${h.tag} `)).map((item) => item.name.slice(`QA-${h.tag} `.length)).sort()
+  const scoped = kit.addMember(h.org, "org_starts_coordinator")
+  const membership = kit.rows(`select id from public.memberships where org_id=${kit.q(h.org.orgId)} and user_id=${kit.q(scoped.userId)}`)[0].id
+  kit.sql(`update public.memberships set division_scope='assigned' where id=${kit.q(membership)};
+    insert into public.membership_divisions(membership_id,division_id) values(${kit.q(membership)},${kit.q(divisionA)})`)
+  const divisionLimited = await names(scoped)
+  const whole = await names(h.coordinator)
+  const mail = provider()
+  let emailed
+  try {
+    await kit.as(scoped, () => lookahead.sendTradeLookahead(framer, { weeks: 4 }))
+    emailed = [...mail.messages.values()].map((message) => message.html).join("")
+  } finally { mail.restore() }
+  // An explicit project.read deny removes every house, in the look-ahead as in the database workspace.
+  const denied = kit.addMember(h.org, "org_starts_coordinator")
+  const deniedMembership = kit.rows(`select id from public.memberships where org_id=${kit.q(h.org.orgId)} and user_id=${kit.q(denied.userId)}`)[0].id
+  kit.sql(`insert into public.membership_permission_overrides(membership_id,permission_key,effect) values(${kit.q(deniedMembership)},'project.read','deny')`)
+  const deniedView = await names(denied)
+  eq(check, "a coordinator limited to division A sees division A's work only, in the look-ahead and in the notice they send; the unlimited coordinator sees both", expected.expected.division, {
+    divisionLimited, unlimited: whole,
+    noticeListsB: emailed.includes("Division B work"), noticeListsA: emailed.includes("Division A work"),
+  })
+  eq(check, "a coordinator denied project.read sees none of the work", expected.expected.denied, { deniedView })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
 const subcases = {
+  "trade-lookahead-respects-scope": tradeLookaheadRespectsScope,
+  "trade-lookahead-dedupe-follows-content": tradeLookaheadDedupeFollowsContent,
   "trade-lookahead-scope": tradeLookaheadScope,
   "trade-notice-snapshot-and-crash": tradeNoticeSnapshotAndCrash,
   "schedule-digest-coalescing": scheduleDigestCoalescing,

@@ -66,10 +66,16 @@ export function noticeContentHash(parts: { snapshot: unknown; recipients: string
   return createHash("sha256").update(canonicalJson({ ...parts, recipients: [...parts.recipients].sort() })).digest("hex")
 }
 
-/** Same scope and same day is one look-ahead; a community-scoped one never blocks the full one. */
-export function lookaheadDedupeKey(input: { companyId: string; weeks: number; communityId?: string; divisionId?: string; utcDay: string }) {
-  const scope = createHash("sha256").update(canonicalJson({ weeks: input.weeks, communityId: input.communityId ?? null, divisionId: input.divisionId ?? null })).digest("hex").slice(0, 16)
-  return `lookahead:${input.companyId}:${scope}:${input.utcDay}`
+/**
+ * One look-ahead per company, per UTC day, per CONTENT: the key hashes the exact
+ * tasks and dates the notice lists (and its window), so a coordinator whose scope
+ * yields different work is never told "already sent" for work nobody sent, and
+ * the same notice asked twice stays one.
+ */
+export function lookaheadDedupeKey(input: { companyId: string; weeks: number; items: Array<{ id: string; startDate: string; endDate: string }>; utcDay: string }) {
+  const items = [...input.items].sort((a, b) => a.id.localeCompare(b.id))
+  const content = createHash("sha256").update(canonicalJson({ weeks: input.weeks, items })).digest("hex").slice(0, 24)
+  return `lookahead:${input.companyId}:${content}:${input.utcDay}`
 }
 
 export function releaseNoticeDedupeKey(packageId: string, companyId: string) {

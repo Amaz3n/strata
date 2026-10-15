@@ -79,3 +79,11 @@ test("an abandoned-copy sweep failure is a partial run even when every job succe
   assert.equal(h.rows[0].http_status, 207)
   assert.match(h.rows[0].error, /"copyCleanupFailed":1/)
 })
+
+test("an inert worker that found no schema is a failed run, not a green one", async () => {
+  const h = route({ work: async () => ({ processed: 0, failed: 0, remaining: 0, notCutOver: true }) })
+  await h.GET({}); await h.callbacks[0]()
+  assert.equal(h.rows[0].status, "failed")
+  assert.equal(h.rows[0].http_status, 503)
+  assert.match(h.rows[0].error, /"notCutOver":true/)
+})

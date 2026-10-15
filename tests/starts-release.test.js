@@ -1099,3 +1099,14 @@ test("a step that cannot account for what it built does not complete, and the re
   assert.equal(steps.get("checklists").status, "pending", "nothing after the failed step ran")
   assert.notEqual(harness.store.start_packages[0].status, "released")
 })
+
+test("a marker that exists but answers false is an incomplete chain: the worker stays inert", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  const rpc = harness.supabase.rpc.bind(harness.supabase)
+  harness.supabase.rpc = async (fn, args) => fn === "starts_cutover_ready" ? { data: false, error: null } : rpc(fn, args)
+
+  const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+
+  assert.equal(summary.notCutOver, true)
+  assert.equal(harness.store.outbox[0].status, "pending")
+})

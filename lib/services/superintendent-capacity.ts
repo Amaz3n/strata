@@ -4,7 +4,8 @@ import { readAllRows } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
-import { requirePermission } from "@/lib/services/permissions"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { DEFAULT_SUPERINTENDENT_LIMITS, resolveSuperintendentLimits, superintendentLoad, type SuperintendentLimits, type SuperintendentLoad } from "@/lib/starts/superintendent-load"
 import { superintendentLimitSchema } from "@/lib/validation/starts"
@@ -32,6 +33,10 @@ export async function setSuperintendentLimits(
   const parsed = superintendentLimitSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
+  // The org default is every division's superintendents' limit: only someone whose reach is the whole org sets it.
+  if (parsed.userId === null && (await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })).assignedOnly) {
+    throw new Error("The organization default is set by someone whose reach is the whole organization")
+  }
   if (parsed.userId) {
     const { data: member } = await context.supabase.from("memberships").select("id")
       .eq("org_id", context.orgId).eq("user_id", parsed.userId).eq("status", "active").maybeSingle()
@@ -86,23 +91,25 @@ const LOAD_CAP = 50_000
  * Where each house's superintendent stands against their limit, for callers
  * that move work on those houses (a bulk reschedule) and must say when it lands
  * on someone at or past their limit. A house with no superintendent reports
- * `superintendentId: null`. Read on the caller's session, so the division wall
- * decides which houses they see.
+ * `superintendentId: null`. Counts are org-wide and read by the server, like the
+ * assignment's, so they agree with it; the caller has already authorized the
+ * houses it asks about.
  */
 export async function getProjectSuperintendentLoads(projectIds: string[], orgId?: string): Promise<ProjectSuperintendentLoad[]> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("start.read", context)
+  await requireAnyPermission(["start.read", "schedule.edit"], context)
+  const service = createServiceSupabaseClient()
   const ids = Array.from(new Set(projectIds))
   if (!ids.length) return []
   const [projects, capacities, assigned] = await Promise.all([
     // A hundred houses per request keeps the id list inside the request URL.
-    Promise.all(Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => readAllRows((from, to) => context.supabase.from("projects").select("id,superintendent_id")
+    Promise.all(Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => readAllRows((from, to) => service.from("projects").select("id,superintendent_id")
       .eq("org_id", context.orgId).in("id", ids.slice(index * 100, (index + 1) * 100)).order("id").range(from, to), { cap: 101, label: "Failed to load the houses' superintendents" })))
       .then((pages) => ({ rows: pages.flatMap((page) => page.rows), truncated: pages.some((page) => page.truncated) })),
-    readAllRows((from, to) => context.supabase.from("superintendent_capacity").select("id,user_id,warn_houses,max_houses")
+    readAllRows((from, to) => service.from("superintendent_capacity").select("id,user_id,warn_houses,max_houses")
       .eq("org_id", context.orgId).order("id").range(from, to), { cap: LOAD_CAP, label: "Failed to load superintendent limits" }),
-    readAllRows((from, to) => context.supabase.from("projects").select("id,superintendent_id")
-      .eq("org_id", context.orgId).eq("status", "active").not("superintendent_id", "is", null).order("id").range(from, to), { cap: LOAD_CAP, label: "Failed to count assigned houses" }),
+    readAllRows((from, to) => service.from("projects").select("id,superintendent_id")
+      .eq("org_id", context.orgId).not("status", "in", "(completed,cancelled)").not("superintendent_id", "is", null).order("id").range(from, to), { cap: LOAD_CAP, label: "Failed to count assigned houses" }),
   ])
   if (projects.truncated || capacities.truncated || assigned.truncated) throw new Error("Too many houses to resolve superintendent load")
   const toLimits = (row: { warn_houses: unknown; max_houses: unknown }) => ({ warn: Number(row.warn_houses), max: Number(row.max_houses) })

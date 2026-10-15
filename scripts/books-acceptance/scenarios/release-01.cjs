@@ -37,7 +37,9 @@ const attempt = async (work) => { try { await work(); return "allowed" } catch (
 const labelled = (outcome, pattern, label = "refused") => outcome === "allowed" ? "allowed" : pattern.test(outcome) ? label : String(outcome).slice(0, 300)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const LOTS = { crash: 0, cancel: 1, receipt: 2, guard: 3, fanout: 4, fanoutSecond: 5, raceDesk: 6, raceQueue: 7, raceDetach: 8, spare: 9 }
+const LOTS = { crash: 0, cancel: 1, receipt: 2, guard: 3, fanout: 4, fanoutSecond: 5, raceDesk: 6, raceQueue: 7, raceDetach: 8, spare: 9, forge: 1, repin: 2 }
+/** Homes whose releases build the budget and checklists themselves live in the plan-built org (lots 0-9 there). */
+const PLAN_BUILT = new Set(["crash", "forge", "repin"])
 const ORGS = new WeakMap()
 /** A production builder with Cypress Landing, its plans and tranche 1 (lots 0-9) owned and developed. */
 function releaseOrg(kit) {
@@ -93,7 +95,7 @@ function readyHome(kit, key) {
   return homes.get(key)
 }
 async function buildReadyHome(kit, key) {
-  const built = key === "crash"
+  const built = PLAN_BUILT.has(key)
   const org = built ? await planBuiltOrg(kit) : await releaseOrg(kit)
   const plan = built ? org.planBuilt : org.plans[1]
   const lot = org.lots[LOTS[key]]
@@ -179,6 +181,9 @@ function artifacts(kit, home) {
     duplicateScheduleKeys: count(kit, `(select metadata->>'release_key' from public.schedule_items where project_id=${p} and metadata->>'release_key' is not null group by 1 having count(*)>1) d`),
   }
 }
+/** What each artifact step recorded as its receipt: the count it promised and the count the settlement found. */
+const receipts = (kit, home) => Object.fromEntries(kit.rows(`select step_key, detail->'receipt' r from public.start_release_steps where start_package_id=${kit.q(home.packageId)} and step_key in ('budget','schedule','checklists') order by step_key`)
+  .map((row) => [row.step_key, row.r && row.r.expected === row.r.found ? { balanced: true, built: row.r.expected > 0 } : "missing or unbalanced"]))
 const ledger = (kit, home) => {
   const steps = Object.fromEntries(kit.rows(`select step_key, status from public.start_release_steps where start_package_id=${kit.q(home.packageId)}`).map((row) => [row.step_key, row.status]))
   return {
@@ -229,7 +234,7 @@ async function releaseResumesAfterInjectedCrash(kit, spec, check) {
   const finalStatus = await runUntilSettled(kit, home)
   await kit.drainOutbox(home.orgId)
   equal(check, "a release killed at the second budget line, the third schedule item, the settlement of the schedule step and the second checklist item leaves a partial home each time and no failure is final", spec.expected.partial, partial)
-  equal(check, "run again to the end, the home holds one approved budget whose lines total it, the template's schedule and both checklists once each with no duplicate key, one release event and one audit", spec.expected.final, { finalStatus, ...artifacts(kit, home), ...budgetBuilt(), ledger: ledger(kit, home) })
+  equal(check, "run again to the end, the home holds one approved budget whose lines total it, the template's schedule and both checklists once each with no duplicate key, one release event and one audit", spec.expected.final, { finalStatus, ...artifacts(kit, home), ...budgetBuilt(), receipts: receipts(kit, home), ledger: ledger(kit, home) })
   return { orgId: home.orgId, packageId: home.packageId }
 }
 
@@ -453,6 +458,77 @@ async function raceLotDetachVsDeskWrite(kit, spec, check) {
   return { orgId: org.orgId, lotId: lot.id }
 }
 
+// ---------------------------------------------------------------------------
+// Review round 1: forged keys and plan pins
+
+/** A member session (row-level security and auth.uid() are real) trying a write. */
+const asOwner = (kit, home, statement) => { try { kit.sql(`${asMember(home.org.owner)}\n${statement}`); return "allowed" } catch (error) { const line = /ERROR:\s+([^\n]+)/.exec(error.message); return line ? line[1].trim() : error.message } }
+
+async function releaseKeysCannotBeForgedThroughTheDataApi(kit, spec, check) {
+  const home = await readyHome(kit, "forge")
+  const q = kit.q
+  const p = q(home.projectId)
+  const forged = (sql) => labelled(asOwner(kit, home, sql), /Release keys are written by the release worker only/, "refused: release keys are the worker's")
+  const attempts = {
+    budget: forged(`insert into public.budgets(org_id,project_id,status,metadata) values(${q(home.orgId)},${p},'draft','{"release_key":"budget"}');`),
+    scheduleItem: forged(`insert into public.schedule_items(org_id,project_id,name,metadata) values(${q(home.orgId)},${p},'Planted','{"release_key":"schedule:0"}');`),
+    extraScheduleItem: forged(`insert into public.schedule_items(org_id,project_id,name,metadata) values(${q(home.orgId)},${p},'Planted','{"release_key":"schedule:99"}');`),
+    version: forged(`insert into public.budgets(org_id,project_id,status,metadata) values(${q(home.orgId)},${p},'draft','{"release_version":"${randomUUID()}"}');`),
+  }
+  const ordinary = asOwner(kit, home, `insert into public.budgets(org_id,project_id,status) values(${q(home.orgId)},${p},'draft');`)
+  const keyOnOrdinary = forged(`update public.budgets set metadata='{"release_key":"budget"}' where project_id=${p} and metadata->>'release_key' is null;`)
+  const planted = count(kit, `public.budgets where project_id=${p} and metadata->>'release_key' is not null`) + count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' is not null`)
+  await adoptInventory(kit, home)
+  await queueRelease(kit, home)
+  settleDrawings(kit, home)
+  const finalStatus = await runUntilSettled(kit, home)
+  await kit.drainOutbox(home.orgId)
+  equal(check, "an owner session cannot insert a budget, a schedule item or a version stamp under a release key, nor key an existing budget; an ordinary budget is still allowed", spec.expected.refused, { ...attempts, keyOnOrdinary, ordinaryBudget: ordinary, plantedRows: planted })
+  equal(check, "the release builds its own budget and schedule and its receipts balance: nothing the member tried is adopted", spec.expected.released, { finalStatus, receipts: receipts(kit, home), keyedBudgetOfThisRelease: count(kit, `public.budgets where project_id=${p} and metadata->>'release_key'='budget' and status='approved'`) })
+  return { orgId: home.orgId, packageId: home.packageId }
+}
+
+async function rePinDuringAReleaseIsRefusedAndAResumeNeverMixesVersions(kit, spec, check) {
+  const home = await readyHome(kit, "repin")
+  const org = home.org
+  const q = kit.q
+  const p = q(home.projectId)
+  const otherVersion = org.plans[0].versionId
+  const lotRow = () => one(kit, `select house_plan_version_id::text v from public.lots where id=${q(home.lotId)}`).v
+  const repin = (versionId) => asOwner(kit, home, `update public.lots set house_plan_version_id=${q(versionId)} where id=${q(home.lotId)};`)
+  const refusedAs = (outcome) => labelled(outcome, /Cancel the release before changing/, "refused: cancel the release first")
+  await adoptInventory(kit, home)
+  let stalled
+  await withFault(kit, "repin_schedule", { table: "schedule_items", when: `new.project_id=${p} and new.metadata->>'release_key'='schedule:2'` }, async () => {
+    await queueRelease(kit, home)
+    settleDrawings(kit, home)
+    await quiesce(kit, home)
+    stalled = { package: packageStatus(kit, home), items: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`) }
+    stalled.memberRePin = refusedAs(repin(otherVersion))
+    stalled.serviceRePin = refusedAs((() => { try { kit.sql(`update public.lots set house_plan_version_id=${q(otherVersion)} where id=${q(home.lotId)}`); return "allowed" } catch (error) { return error.message } })())
+    stalled.pinUnchanged = lotRow() === home.planVersionId
+  })
+  // Cancelled, the lot may be re-pinned; resuming on the other version must not adopt the first version's items.
+  await kit.as(home.actor, () => app("starts").cancelRelease(home.packageId))
+  retireCancelled(kit, home)
+  const afterCancel = { package: packageStatus(kit, home), rePinAllowed: repin(otherVersion) }
+  await queueRelease(kit, home)
+  settleDrawings(kit, home)
+  await quiesce(kit, home)
+  const mixed = one(kit, `select status, error from public.start_release_steps where start_package_id=${q(home.packageId)} and step_key='schedule'`)
+  const resumed = { scheduleStep: mixed.status, error: /different plan version/.test(mixed.error ?? "") ? "begun from a different plan version" : mixed.error, package: packageStatus(kit, home), keyedItemsOfTheFirstVersion: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_version'=${q(home.planVersionId)}`) }
+  // The coordinator withdraws that release and puts the home back on the version it was building.
+  await kit.as(home.actor, () => app("starts").cancelRelease(home.packageId))
+  retireCancelled(kit, home)
+  const restored = repin(home.planVersionId)
+  const finalStatus = await runUntilSettled(kit, home)
+  await kit.drainOutbox(home.orgId)
+  equal(check, "while a release is stopped part way, neither a member nor the service can re-pin the lot's plan version", spec.expected.stalled, stalled)
+  equal(check, "cancelled, the lot can be re-pinned, but a release resumed on the other version refuses to adopt the first version's items and releases nothing", spec.expected.resumed, { afterCancel, resumed })
+  equal(check, "put back on its own version the release completes with every receipt balanced", spec.expected.completed, { restored, finalStatus, receipts: receipts(kit, home), versions: kit.rows(`select distinct metadata->>'release_version' v from public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`).map((row) => row.v === home.planVersionId) })
+  return { orgId: home.orgId, packageId: home.packageId }
+}
+
 module.exports = {
   id: "RELEASE-01",
   subcases: {
@@ -465,5 +541,7 @@ module.exports = {
     "race-desk-mutation-vs-actor-revocation": raceDeskMutationVsActorRevocation,
     "race-gate-or-package-edit-vs-queue-release": raceGateOrPackageEditVsQueueRelease,
     "race-lot-detach-vs-desk-write": raceLotDetachVsDeskWrite,
+    "release-keys-cannot-be-forged-through-the-data-api": releaseKeysCannotBeForgedThroughTheDataApi,
+    "re-pin-during-a-release-is-refused-and-a-resume-never-mixes-versions": rePinDuringAReleaseIsRefusedAndAResumeNeverMixesVersions,
   },
 }

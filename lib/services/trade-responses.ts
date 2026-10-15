@@ -306,6 +306,12 @@ export async function resolveTradeResponse(input: unknown, orgId?: string) {
   const parsed = resolveTradeResponseSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
+  // Read through the caller's session first: row security carries the division
+  // wall that the service-role RPC does not.
+  const { data: visible, error: visibleError } = await context.supabase.from("trade_work_responses")
+    .select("id").eq("org_id", context.orgId).eq("id", parsed.responseId).maybeSingle()
+  if (visibleError) throw new Error(`Failed to load the answer: ${visibleError.message}`)
+  if (!visible) throw new Error("Trade response not found")
   const { error } = await createServiceSupabaseClient().rpc("resolve_trade_response", {
     p_org_id: context.orgId, p_actor_id: context.userId, p_response_id: parsed.responseId,
     p_resolution: parsed.resolution, p_note: parsed.note ?? null,

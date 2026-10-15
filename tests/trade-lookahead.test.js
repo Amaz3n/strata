@@ -44,7 +44,7 @@ function purchaseOrderLine(i, { status = "approved", company = COMPANY, name = "
 
 function harness({
   count = 5001, assignedOnly = false, divisionIds = ["division"], unresolved = false, fail = null, denied = false, multipleTrades = false,
-  providerCap = null, client = null, projectMembershipRequired = false, databaseWorkspace = false, actorId = "user", contacts = 1001,
+  providerCap = null, client = null, projectMembershipRequired = false, databaseWorkspace = false, actorId = "user", contacts = 1001, deniedProjects = [],
 } = {}) {
   const tables = {
     schedule_items: Array.from({ length: count }, (_, i) => schedule(i, { multipleTrades, unresolved })),
@@ -74,7 +74,10 @@ function harness({
   }
   stubModule("@/lib/services/context", { requireOrgContext: async () => ({ supabase: db, orgId: ORG, userId: actorId }) })
   stubModule("@/lib/services/permissions", { requirePermission: async () => { if (denied) throw new Error("Forbidden") } })
-  stubModule("@/lib/services/authorization", { getProjectReadScopeForUser: async () => ({ divisionIds: assignedOnly ? divisionIds : null, projectMembershipRequired }) })
+  stubModule("@/lib/services/authorization", {
+    getProjectReadScopeForUser: async () => ({ divisionIds: assignedOnly ? divisionIds : null, projectMembershipRequired }),
+    authorizeMany: async ({ permission, projectIds }) => new Map(projectIds.map((id) => [id, permission === "project.read" && !deniedProjects.includes(id)])),
+  })
   stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => db })
   stubModule("@/lib/services/trade-notices", {
     resolveTradePortalLink: async () => null,
@@ -135,6 +138,14 @@ test("a purchase-order vendor is an inference, only from an awarded order, and n
   assert.equal(assigned.rows[0].companyName, "Assigned")
 })
 
+test("a house the coordinator is denied project.read on is not in their look-ahead or their notice", async () => {
+  const h = harness({ count: 3, deniedProjects: ["project-1"] })
+  const { rows } = await h.getTradeLookahead({ weeks: 3 })
+  assert.deepEqual(rows[0].items.map((item) => item.name), ["Task 0", "Task 2"])
+  await h.sendTradeLookahead(COMPANY, { weeks: 3 })
+  assert.deepEqual(h.deliveries[0].draft.snapshot.lines.map((line) => line.name), ["Task 0", "Task 2"])
+})
+
 test("trade schedules enforce division access without an organization-wide project roster", async () => {
   const h = harness({ count: 2, assignedOnly: true })
   h.store.schedule_items[1]["project.division_id"] = "hidden"
@@ -178,15 +189,27 @@ test("work inferred from a purchase order is never emailed", async () => {
   assert.equal(onlyInferred.deliveries.length, 0)
 })
 
-test("a look-ahead's duplicate key follows its scope and its day, so a community send does not stand in for the full one", async () => {
-  const h = harness({ count: 1 })
+test("a look-ahead's duplicate key follows what it lists, so different work is never called already sent", async () => {
+  const h = harness({ count: 2 })
   await h.sendTradeLookahead(COMPANY, { weeks: 3 })
-  await h.sendTradeLookahead(COMPANY, { weeks: 3, communityId: COMMUNITY })
+  await h.sendTradeLookahead(COMPANY, { weeks: 3 })
+  h.store.schedule_items[1].start_date = day(5)
   await h.sendTradeLookahead(COMPANY, { weeks: 3 })
   const keys = h.deliveries.map(({ input }) => input.dedupeKey)
-  assert.equal(keys[0], keys[2])
-  assert.notEqual(keys[0], keys[1])
+  assert.equal(keys[0], keys[1], "the same notice asked twice is one")
+  assert.notEqual(keys[1], keys[2], "the same work on different dates is a different notice")
   assert.match(keys[0], new RegExp(`${day(0)}$`))
+})
+
+test("a coordinator whose scope lists less work gets a different notice key from the one who saw all of it", async () => {
+  const h = harness({ count: 2, assignedOnly: true, divisionIds: ["division", DIVISION] })
+  h.store.schedule_items[1]["project.division_id"] = DIVISION
+  await h.sendTradeLookahead(COMPANY, { weeks: 3 })
+  await h.sendTradeLookahead(COMPANY, { weeks: 3, divisionId: DIVISION })
+  const [all, narrowed] = h.deliveries
+  assert.equal(all.draft.snapshot.lines.length, 2)
+  assert.equal(narrowed.draft.snapshot.lines.length, 1)
+  assert.notEqual(all.input.dedupeKey, narrowed.input.dedupeKey)
 })
 
 test("a notice is never built when a contact read fails", async () => {

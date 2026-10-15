@@ -621,7 +621,7 @@ async function deriveAutoGate(
       readAgreementMilestoneBlockers(reader, orgId, projectId, "start"),
       readStartFinancingRecord(reader, orgId, projectId),
     ])
-    return blockers.length === 0 && financingGateClear(financing)
+    return blockers.length === 0 && financingGateClear({ ...financing, isFinanced: pkg.is_financed === true })
   }
   if (source === "selections_locked") {
     // Absence of evidence is not satisfaction. "No open selection groups" is
@@ -715,7 +715,9 @@ function settleReadiness(previous: unknown, data: unknown) {
 
 export async function refreshAutoGates(packageId: string, orgId?: string): Promise<StartGateDTO[]> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("start.read", context)
+  // It writes the gates' verdicts and the package's readiness, so it is a mutation.
+  await requirePermission("start.write", context)
+  await requireStartsMember(context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   const [purchasingEnabled, loadedRows, active] = await Promise.all([
     loadPurchasingEnabled(context.supabase, context.orgId, pkg.community_id),
@@ -867,7 +869,9 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
   if (pkg.status !== "ready") throw new Error("The start package is not ready to release.")
   const targetWeek = pkg.target_week ?? mondayOfIsoWeek(parsed.scheduledStartDate)
 
+  let createdHome = false
   if (!pkg.project_id) {
+    createdHome = true
     // A package opened before homes were created at open gets its home here,
     // under the package lock: a retried release reuses it instead of building
     // a second house for the same lot.
@@ -886,7 +890,11 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
   if (homeError || !home) throw new Error("The house for this start package was not found")
   // A house is handed to the person who will run it before it starts; the
   // release transaction refuses one without, this says so first.
-  if (!home.superintendent_id) throw new Error("Assign a superintendent to this house before releasing it.")
+  if (!home.superintendent_id) {
+    throw new Error(createdHome
+      ? "The house was just created for this package. Assign a superintendent to it, then release."
+      : "Assign a superintendent to this house before releasing it.")
+  }
 
   const { data: localToday, error: todayError } = await startsWriter().rpc("permit_local_today", { p_org_id: context.orgId, p_project_id: pkg.project_id })
   if (todayError) throw new Error(`Failed to read the home's calendar day: ${todayError.message}`)
@@ -1295,8 +1303,10 @@ export async function listSuperintendentCandidates(
     readAllRows((from, to) => context.supabase.from("superintendent_capacity").select("id,user_id,warn_houses,max_houses")
       .eq("org_id", context.orgId).order("id").range(from, to),
     { cap: SUPERINTENDENT_MEMBER_CAP + 1, label: "Failed to load superintendent limits" }),
-    readAllRows((from, to) => context.supabase.from("projects").select("id,superintendent_id")
-      .eq("org_id", context.orgId).eq("status", "active").not("superintendent_id", "is", null).order("id").range(from, to),
+    // Counted org-wide on the server, as the assignment counts: a division-scoped caller's session
+    // would leave out the person's houses in other divisions and the picker would promise room that is not there.
+    readAllRows((from, to) => startsWriter().from("projects").select("id,superintendent_id")
+      .eq("org_id", context.orgId).not("status", "in", "(completed,cancelled)").not("superintendent_id", "is", null).order("id").range(from, to),
     { cap: ASSIGNED_HOUSE_CAP, label: "Failed to count assigned houses" }),
   ])
   if (members.truncated) throw new Error(`More than ${SUPERINTENDENT_MEMBER_CAP} active members; narrow the superintendent list by role.`)

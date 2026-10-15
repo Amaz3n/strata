@@ -36,8 +36,9 @@ export interface FinancingMilestoneRecord {
  * or failed one, a waiver (no document) and an archived file all hold it.
  * Absence is never a pass; the gate itself can still be waived by a releaser.
  */
-export function financingGateClear(record: { agreement: { milestones: FinancingMilestoneRecord[] } | null }) {
-  if (!record.agreement) return true
+export function financingGateClear(record: { agreement: { milestones: FinancingMilestoneRecord[] } | null; isFinanced: boolean }) {
+  // A package flagged financed with no agreement in force has a buyer nobody has recorded: that is absence.
+  if (!record.agreement) return !record.isFinanced
   const proofs = record.agreement.milestones.filter((milestone) =>
     milestone.templateKey === FINANCING_MILESTONE_KEYS.financed || milestone.templateKey === FINANCING_MILESTONE_KEYS.cash)
   return proofs.length > 0 && proofs.every((milestone) =>
