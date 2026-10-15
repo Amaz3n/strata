@@ -575,7 +575,9 @@ test("a refresh records only evidence it was given, and never touches a package 
   assert.equal((await h.audit("starts.gates_refreshed")).n, 1)
   assert.equal(await h.events("start_gate.refreshed"), 1)
 
+  await h.db.exec("alter table start_packages disable trigger start_packages_gate_completion_guard")
   await h.db.query("update start_packages set status = 'releasing' where id = $1", [h.pkg.id])
+  await h.db.exec("alter table start_packages enable trigger start_packages_gate_completion_guard")
   assert.deepEqual(await h.refresh({ [h.gates.selections.id]: false }), { status: "releasing", changed: 0 })
   assert.equal(await h.gateStatus(h.gates.selections), "passed")
   await assert.rejects(h.mutate(h.gates.soil, "attest"), /cannot change after release begins/)
@@ -1064,7 +1066,9 @@ test("a new gate definition reaches every open and ready package, and a ready pa
   assert.equal(financed.packages_updated, 2)
   assert.deepEqual((await gatesOf(open.id)).find((gate) => gate.key === "loan_docs"), { key: "loan_docs", status: "not_applicable" }, "a cash buyer's package does not answer a financing gate")
 
+  await h.db.exec("alter table start_packages disable trigger start_packages_gate_completion_guard")
   await h.db.query("update start_packages set status = 'releasing' where id = $1", [open.id])
+  await h.db.exec("alter table start_packages enable trigger start_packages_gate_completion_guard")
   const reactivated = await saveGate(h, { p_id: inactive.definition.id, p_key: "survey", p_label: "Survey", p_is_active: true })
   assert.equal(reactivated.packages_updated, 1, "a reactivated gate reaches open and ready packages, not one already releasing")
   assert.equal((await gatesOf(open.id)).some((gate) => gate.key === "survey"), false)
@@ -1175,10 +1179,165 @@ test("a release in attention still holds its slot, and the release refuses an at
   assert.equal((await h.queue({ p_slot_target: 9 })).queued, true)
 })
 
-test("flipping a package to financed reopens its financing gate", async (t) => {
-  const h = await desk(t, { status: "ready" })
-  const definition = await full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key: "financing", label: "Financing", check_kind: "auto", auto_source: "agreement_milestones_clear", applies_when: "always", sort_order: 80 })
-  const gate = await full.insert(h.db, "start_package_gates", { org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: definition.id, status: "passed", passed_via: "auto" })
+test("flipping a package to financed reopens its financing gate and drops it out of ready, in either order against the queue", async (t) => {
+  const definitionOf = (h) => full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key: "financing", label: "Financing", check_kind: "auto", auto_source: "agreement_milestones_clear", applies_when: "always", sort_order: 80 })
+  const update = (h, actorId = h.actorId) => full.rpc(h.db, "update_start_package", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: actorId, p_patch: { is_financed: true }, p_purchasing_enabled: false })
+
+  // The edit first: the gate reopens, the package leaves ready, and the queue refuses it.
+  const edited = await desk(t, { status: "ready" })
+  const gate = await full.insert(edited.db, "start_package_gates", { org_id: edited.orgId, start_package_id: edited.pkg.id, gate_definition_id: (await definitionOf(edited)).id, status: "passed", passed_via: "auto" })
+  await edited.db.query("update start_packages set is_financed = true where id = $1", [edited.pkg.id])
+  assert.equal((await edited.row("select status from start_package_gates where id = $1", [gate.id])).status, "pending")
+  assert.equal((await edited.row("select status from start_packages where id = $1")).status, "open")
+  await assert.rejects(edited.queue(), /not ready to release/)
+
+  // The queue first: the package is releasing, so the edit is refused and nothing changes.
+  const queued = await desk(t, { status: "ready" })
+  await full.insert(queued.db, "start_package_gates", { org_id: queued.orgId, start_package_id: queued.pkg.id, gate_definition_id: (await definitionOf(queued)).id, status: "passed", passed_via: "auto" })
+  assert.equal((await queued.queue()).queued, true)
+  await assert.rejects(update(queued), /Only open or ready packages can be edited/)
+  assert.equal((await queued.row("select is_financed from start_packages where id = $1")).is_financed, false)
+})
+
+async function gateDefinition(h, key, appliesWhen = "always") {
+  return full.insert(h.db, "start_gate_definitions", { org_id: h.orgId, key, label: key, check_kind: "manual", applies_when: appliesWhen, sort_order: 10 })
+}
+const giveGate = (h, definition, status, extra = {}) =>
+  full.insert(h.db, "start_package_gates", { org_id: h.orgId, start_package_id: h.pkg.id, gate_definition_id: definition.id, status, ...extra })
+
+test("a package cannot enter releasing, in any function, while a gate it answers for is incomplete", async (t) => {
+  const h = await desk(t)
+  const soil = await gateDefinition(h, "soil_report")
+  const gate = await giveGate(h, soil, "pending")
+  await assert.rejects(h.queue(), /Release completion is not proven for the soil_report gate/)
+  await assert.rejects(h.db.query("update start_packages set status = 'releasing' where id = $1", [h.pkg.id]), /not proven for the soil_report gate/)
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "ready")
+
+  await h.db.query("update start_package_gates set status = 'not_applicable' where id = $1", [gate.id])
+  await assert.rejects(h.queue(), /not proven for the soil_report gate/, "an always-gate is never not applicable")
+  await h.db.query("update start_package_gates set status = 'waived', waived_reason = 'The surveyor signed off on site' where id = $1", [gate.id])
+  assert.equal((await h.queue()).queued, true)
+})
+
+test("a gate that does not apply to the package does not hold it, and a definition with no gate row does", async (t) => {
+  const h = await desk(t)
+  const loan = await gateDefinition(h, "loan_docs", "financed_only")
+  await giveGate(h, loan, "pending")
+  const cash = await h.queue()
+  assert.equal(cash.queued, true, "a pending financing gate does not hold a cash buyer")
+  await h.cancel()
   await h.db.query("update start_packages set is_financed = true where id = $1", [h.pkg.id])
-  assert.equal((await h.row("select status from start_package_gates where id = $1", [gate.id])).status, "pending")
+  await assert.rejects(h.queue(), /not proven for the loan_docs gate/, "the same gate holds a financed buyer")
+  await h.db.query("update start_package_gates set status = 'passed' where start_package_id = $1", [h.pkg.id])
+  await gateDefinition(h, "survey")
+  await assert.rejects(h.queue(), /not proven for the survey gate/, "an active gate the package has no row for")
+})
+
+test("publication refuses a gate the release produced but did not prove, and the queue does not ask for it", async (t) => {
+  const h = await desk(t)
+  const budget = await gateDefinition(h, "budget")
+  const gate = await giveGate(h, budget, "pending")
+  assert.equal((await h.queue()).queued, true, "the release itself produces the budget gate")
+  const job = await h.claim()
+  await h.db.query("update start_release_steps set status = 'completed', completed_at = now() where start_package_id = $1", [h.pkg.id])
+  const publish = () => full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: job.claim_token, p_event_id: full.uuid() })
+  await assert.rejects(publish(), /Release completion is not proven for the budget gate/)
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "releasing")
+  await h.db.query("update start_package_gates set status = 'passed' where id = $1", [gate.id])
+  assert.equal((await publish()).actual_start_date, "2026-11-02")
+})
+
+test("release keys written before rows carried a plan version are stamped with the lot's pinned version", async (t) => {
+  const h = await desk(t)
+  const plan = await full.insert(h.db, "house_plans", { org_id: h.orgId, code: "MG1", name: "Mangrove" })
+  const version = await full.insert(h.db, "house_plan_versions", { org_id: h.orgId, house_plan_id: plan.id, version_number: 1, status: "released", released_at: new Date(), released_by: h.actorId, bundle_snapshot: {} })
+  await h.db.query("update lots set house_plan_id = $1, house_plan_version_id = $2 where id = $3", [plan.id, version.id, h.lot.id])
+  const budget = await full.insert(h.db, "budgets", { org_id: h.orgId, project_id: h.home.id, version: 1, status: "approved", total_cents: 0, metadata: { release_key: "budget" } })
+  const item = await full.insert(h.db, "schedule_items", { org_id: h.orgId, project_id: h.home.id, name: "Excavate", metadata: { release_key: "schedule:0" } })
+  const ordinary = await full.insert(h.db, "schedule_items", { org_id: h.orgId, project_id: h.home.id, name: "Ordinary" })
+  const stamped = await full.insert(h.db, "schedule_items", { org_id: h.orgId, project_id: h.home.id, name: "Stamped", metadata: { release_key: "schedule:1", release_version: full.uuid() } })
+
+  const result = await full.rpc(h.db, "stamp_release_versions", { p_org_id: h.orgId })
+  assert.deepEqual(result, { budgets: 1, schedule_items: 1, inspections: 0 })
+  const version_of = async (table, id) => (await h.db.query(`select metadata->>'release_version' as v from ${table} where id = $1`, [id])).rows[0].v
+  assert.equal(await version_of("budgets", budget.id), version.id)
+  assert.equal(await version_of("schedule_items", item.id), version.id)
+  assert.equal(await version_of("schedule_items", ordinary.id), null, "an ordinary row is not keyed, so it is not stamped")
+  assert.notEqual(await version_of("schedule_items", stamped.id), version.id, "a row that already names a version keeps it")
+  assert.deepEqual(await full.rpc(h.db, "stamp_release_versions", { p_org_id: h.orgId }), { budgets: 0, schedule_items: 0, inspections: 0 }, "stamping again changes nothing")
+  await assert.rejects(full.rpc(h.db, "stamp_release_versions", {}, { role: "authenticated", userId: h.actorId }), /permission denied/)
+})
+
+test("a gate defined after a release was queued does not strand it: the release is judged by the gate rows it has", async (t) => {
+  const h = await desk(t)
+  const budget = await gateDefinition(h, "budget")
+  const produced = await giveGate(h, budget, "pending")
+  assert.equal((await h.queue()).queued, true)
+  const job = await h.claim()
+  await gateDefinition(h, "late_survey")
+  await h.db.query("update start_release_steps set status = 'completed', completed_at = now() where start_package_id = $1", [h.pkg.id])
+  await h.db.query("update start_package_gates set status = 'passed' where id = $1", [produced.id])
+  const publish = () => full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: job.claim_token, p_event_id: full.uuid() })
+  assert.equal((await publish()).actual_start_date, "2026-11-02", "the new definition has no row on this package, so it does not hold the publication")
+})
+
+test("a retry from attention is judged by the rows the package has, while a fresh queue still needs a row for every active gate", async (t) => {
+  const h = await desk(t)
+  await h.queue()
+  await h.claim()
+  await h.db.query("update start_packages set status = 'attention' where id = $1", [h.pkg.id])
+  await h.db.query("update outbox set status = 'failed' where payload->>'start_package_id' = $1", [h.pkg.id])
+  await gateDefinition(h, "late_survey")
+  await full.rpc(h.db, "retry_start_release", { p_org_id: h.orgId, p_package_id: h.pkg.id, p_actor_id: h.actorId })
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "releasing")
+  await h.cancel()
+  assert.equal((await h.row("select status from start_packages where id = $1")).status, "ready")
+  await assert.rejects(h.queue(), /not proven for the late_survey gate/, "once cancelled, queueing again needs the row")
+})
+
+test("a release in flight before the gate rules finishes on the gate states it was queued with, and a re-queue is judged afresh", async (t) => {
+  const h = await desk(t)
+  const financing = await gateDefinition(h, "financing")
+  const gate = await giveGate(h, financing, "not_applicable")
+  await h.db.exec("alter table start_packages disable trigger start_packages_gate_completion_guard")
+  await h.db.query("update start_packages set status = 'releasing', scheduled_start_date = '2026-11-02', metadata = metadata || '{\"gate_rules_legacy\":true}' where id = $1", [h.pkg.id])
+  await h.db.exec("alter table start_packages enable trigger start_packages_gate_completion_guard")
+  await h.db.query("insert into outbox (org_id, job_type, payload, status) values ($1, 'start_release', $2, 'pending')", [h.orgId, { start_package_id: h.pkg.id, actor_id: h.actorId }])
+  await h.db.query("insert into start_release_steps (org_id, start_package_id, step_key, status, completed_at) select $1, $2, step, 'completed', now() from unnest(array['project','budget','schedule','checklists','drawings','pos','notify_trades','finalize']) step", [h.orgId, h.pkg.id])
+  const job = await h.claim()
+  assert.ok(job)
+  const publish = () => full.rpc(h.db, "publish_start_release", { p_org_id: h.orgId, p_job_id: job.job_id, p_token: job.claim_token, p_event_id: full.uuid() })
+  assert.equal((await publish()).actual_start_date !== undefined, true, "a cash buyer's not-applicable financing gate, written before the proof rule, does not hold the release")
+  assert.equal((await h.row("select metadata ? 'gate_rules_legacy' as legacy from start_packages where id = $1")).legacy, false, "the marker is dropped once released")
+})
+
+test("the in-flight allowance ends when the release is cancelled", async (t) => {
+  const h = await desk(t)
+  const financing = await gateDefinition(h, "financing")
+  await giveGate(h, financing, "not_applicable")
+  await h.db.exec("alter table start_packages disable trigger start_packages_gate_completion_guard")
+  await h.db.query("update start_packages set status = 'releasing', metadata = metadata || '{\"gate_rules_legacy\":true}' where id = $1", [h.pkg.id])
+  await h.db.exec("alter table start_packages enable trigger start_packages_gate_completion_guard")
+  await h.db.query("insert into outbox (org_id, job_type, payload, status) values ($1, 'start_release', $2, 'pending')", [h.orgId, { start_package_id: h.pkg.id, actor_id: h.actorId }])
+  await h.cancel()
+  assert.equal((await h.row("select metadata ? 'gate_rules_legacy' as legacy from start_packages where id = $1")).legacy, false)
+  await assert.rejects(h.queue(), /not proven for the financing gate/, "today's rule: not applicable on an always gate never counts")
+})
+
+test("the legacy marker is dropped on a queue from ready, and a carried marker earns nothing", async (t) => {
+  const h = await desk(t)
+  const financing = await gateDefinition(h, "financing")
+  await giveGate(h, financing, "not_applicable")
+  // A privileged writer puts the marker on a ready package: it grants nothing, and the queue refuses today's rule.
+  await h.db.query("update start_packages set metadata = metadata || '{\"gate_rules_legacy\":true}' where id = $1", [h.pkg.id])
+  await assert.rejects(h.queue(), /not proven for the financing gate/)
+  await h.db.query("update start_package_gates set status = 'passed' where start_package_id = $1", [h.pkg.id])
+  assert.equal((await h.queue()).queued, true)
+  assert.equal((await h.row("select metadata ? 'gate_rules_legacy' as legacy from start_packages where id = $1")).legacy, false, "the queue from ready strips it")
+})
+
+test("a waived gate always carries its reason, so no legacy rule is needed for one", async (t) => {
+  const h = await desk(t)
+  const soil = await gateDefinition(h, "soil_report")
+  await assert.rejects(giveGate(h, soil, "waived"), /start_package_gate_waiver_reason/)
 })

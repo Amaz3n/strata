@@ -9,6 +9,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { hasProjectPermission, requirePermission } from "@/lib/services/permissions"
 import { bulkUpdateScheduleItems, previewScheduleReschedule, type ScheduleReschedulePreview } from "@/lib/services/schedule"
 import { NotificationService } from "@/lib/services/notifications"
+import { readAllRows } from "@/lib/land/paging"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** How far ahead of today a trade is asked to answer, and how many tasks one page shows. */
@@ -139,10 +140,14 @@ export async function listTradeWorkForPortal(input: {
  */
 async function tradeResponseRecipients(orgId: string, projectId: string) {
   const supabase = createServiceSupabaseClient()
-  const [{ data: memberships }, { data: project }] = await Promise.all([
-    supabase.from("memberships").select("user_id,role_id").eq("org_id", orgId).eq("status", "active").limit(2000),
+  const [roster, { data: project }] = await Promise.all([
+    readAllRows((from, to) => supabase.from("memberships").select("id,user_id,role_id")
+      .eq("org_id", orgId).eq("status", "active").order("id").range(from, to),
+    { cap: 100001, label: "Failed to read the coordinator roster" }),
     supabase.from("projects").select("superintendent_id").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
   ])
+  if (roster.truncated) throw new Error("The coordinator roster exceeds the supported limit")
+  const memberships = roster.rows
   const roleIds = Array.from(new Set((memberships ?? []).map((membership) => membership.role_id)))
   const { data: grants } = roleIds.length
     ? await supabase.from("role_permissions").select("role_id").in("role_id", roleIds).in("permission_key", ["start.write", "*"])

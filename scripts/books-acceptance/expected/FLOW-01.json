@@ -30,15 +30,17 @@
       }
     },
     "starts-attested-evidence-archived-before-publication-blocks-release": {
-      "derivation": "The org defines a manual gate, Soil report on file. A spec home on lot 4 has it attested with the report as a file on the home, and the package is ready; the spec home's financing gate passed because a spec has no buyer. The report is archived before the release runs. Publication re-checks the attested file, so the home does not release (it stays held in releasing for retry) and the job's error names the soil_report gate's evidence.",
+      "derivation": "The org defines a manual gate, Soil report on file. A spec home on lot 4 has it attested with the report as a file on the home, and the package is ready; the spec home's financing gate passed because a spec has no buyer. The report is archived after the gate cleared. Releasing refuses at queue time naming the missing evidence, the package stays ready and no release job exists. With the file back on the home the same release queues. (Publication re-checks the file again; that leg is proved by the starts-release unit test.)",
       "inputs": {
         "lot": 4
       },
       "expected": {
         "readyWithEvidence": "ready",
         "specFinancing": "passed",
-        "afterArchive": "held",
-        "refusal": true
+        "queueRefusal": "refused: evidence gone",
+        "packageStillReady": "ready",
+        "noJobQueued": true,
+        "queuedOnceRestored": true
       }
     },
     "starts-release-without-superintendent-is-refused": {

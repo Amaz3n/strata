@@ -112,6 +112,19 @@ async function adoptInventory(kit, home) {
   await kit.as(home.org.owner, () => app("books/inventory").enableProjectInventory({ projectId: home.projectId, effectiveOn: "2026-06-01", evidenceUrl: `${seed.EVIDENCE}/ownership` }))
 }
 const queueRelease = (kit, home) => kit.as(home.actor, () => app("starts").releaseStart(home.packageId, { scheduledStartDate: seed.isoDay(0), overTargetReason: "Acceptance harness: week capacity is not under test" }))
+/** The county approves a revision of the home's live building application, as it does when the plan changes. */
+async function approvePermitRevision(kit, home) {
+  const permits = app("permits")
+  const as = (operation) => kit.as(home.actor, operation)
+  const previous = one(kit, `select id::text, jurisdiction_company_id::text company from public.permit_applications where project_id=${kit.q(home.projectId)} and superseded_at is null order by created_at desc limit 1`)
+  const { applicationId } = await as(() => permits.createPermitApplication({ projectId: home.projectId, jurisdictionCompanyId: previous.company, permitType: "building", supersedesId: previous.id }))
+  await as(() => permits.setPermitDocument({ applicationId, documentKind: "plot_plan", fileId: seed.homeFile(kit, home.org, home.projectId, "plot-plan-revision.pdf") }))
+  await as(() => permits.recordPermitSubmission({ applicationId, submittedOn: seed.isoDay(-10), reference: "CYP-PLAN-REVISION" }))
+  await as(() => permits.recordPermitDecision({
+    applicationId, decision: "approved", decidedOn: seed.isoDay(-1), permitNumber: `BLD-${randomUUID().slice(0, 8).toUpperCase()}`,
+    issuedPermitFileId: seed.homeFile(kit, home.org, home.projectId, "building-permit-revision.pdf"), approvedPlansFileId: seed.homeFile(kit, home.org, home.projectId, "approved-plans-revision.pdf"),
+  }))
+}
 /** The plan-set copy needs file storage, so that one step is settled directly and nothing else about the release is. */
 const settleDrawings = (kit, home) => kit.sql(`update public.start_release_steps set status='completed', completed_at=now(), error=null, detail='{"harness":"no file storage on the acceptance stack"}' where start_package_id=${kit.q(home.packageId)} and step_key='drawings'`)
 
@@ -222,7 +235,7 @@ async function releaseResumesAfterInjectedCrash(kit, spec, check) {
     dueNow(kit, home); await runPipeline(kit); await quiesce(kit, home)
     partial.afterScheduleFault = { package: packageStatus(kit, home), budgetStep: stepStatus("budget"), ...budgetBuilt(), items: keyedItems(), scheduleStep: stepStatus("schedule") }
   })
-  await withFault(kit, "settle_schedule", { table: "start_release_steps", event: "update", when: `new.step_key='schedule' and new.status='completed'` }, async () => {
+  await withFault(kit, "settle_schedule", { table: "start_release_steps", event: "update", when: `new.step_key='schedule' and new.status='completed' and new.start_package_id=${kit.q(home.packageId)}` }, async () => {
     dueNow(kit, home); await runPipeline(kit); await quiesce(kit, home)
     partial.afterSettlementFault = { itemsBuilt: artifacts(kit, home).scheduleMatchesTemplate, scheduleStep: stepStatus("schedule"), projectLedgerMarksSchedule: ledger(kit, home).projectLedgerMarks.includes("schedule") }
   })
@@ -425,15 +438,16 @@ async function raceGateOrPackageEditVsQueueRelease(kit, spec, check) {
     const status = packageStatus(kit, home)
     const financed = one(kit, `select is_financed from public.start_packages where id=${q(home.packageId)}`).is_financed === true
     const [queueWon, editWon] = [a.ok, b.ok]
-    // Serial order decides who wins. A cancel excludes the queue either way. A financing change leaves a ready package
-    // ready, so edit-then-queue lets both through; queue-then-edit refuses the edit (the package is releasing).
+    // Serial order decides who wins, and exactly one does: a cancel excludes the queue either way, and a financing
+    // change reopens the financing gate and drops the package out of ready, so edit-then-queue refuses the queue
+    // while queue-then-edit refuses the edit (the package is releasing).
     rounds.push({
       action: action.name,
-      atLeastOneWon: queueWon || editWon,
+      exactlyOneWon: queueWon !== editWon,
       loserRefusedCleanly: [a, b].filter((r) => !r.ok).every((r) => /not ready to release|cannot be cancelled|Only open or ready|already being released/.test(r.stderr)),
       consistent: queueWon
-        ? status === "releasing" && (action.name === "cancel" ? !editWon : financed === editWon)
-        : editWon && (action.name === "cancel" ? status === "cancelled" : ["open", "ready"].includes(status) && financed),
+        ? status === "releasing" && !financed
+        : action.name === "cancel" ? status === "cancelled" : status === "open" && financed,
     })
     kit.sql(`update public.outbox set status='completed' where org_id=${q(home.orgId)} and job_type='start_release' and payload->>'start_package_id'=${q(home.packageId)} and status in ('pending','processing')`)
   }
@@ -493,9 +507,12 @@ async function rePinDuringAReleaseIsRefusedAndAResumeNeverMixesVersions(kit, spe
   const org = home.org
   const q = kit.q
   const p = q(home.projectId)
-  const otherVersion = org.plans[0].versionId
+  const otherPlan = org.plans[0]
   const lotRow = () => one(kit, `select house_plan_version_id::text v from public.lots where id=${q(home.lotId)}`).v
-  const repin = (versionId) => asOwner(kit, home, `update public.lots set house_plan_version_id=${q(versionId)} where id=${q(home.lotId)};`)
+  // A member cannot re-plan a home with an approved permit at all; a plan change reaches the lot through the service,
+  // which pins plan, version and elevation together (as the seed does).
+  const memberRePin = (plan) => asOwner(kit, home, `update public.lots set house_plan_version_id=${q(plan.versionId)} where id=${q(home.lotId)};`)
+  const pinTo = (plan) => { try { seed.pinSpecPlan(kit, { lot: home.lot, plan }); return "allowed" } catch (error) { return error.message } }
   const refusedAs = (outcome) => labelled(outcome, /Cancel the release before changing/, "refused: cancel the release first")
   await adoptInventory(kit, home)
   let stalled
@@ -504,14 +521,18 @@ async function rePinDuringAReleaseIsRefusedAndAResumeNeverMixesVersions(kit, spe
     settleDrawings(kit, home)
     await quiesce(kit, home)
     stalled = { package: packageStatus(kit, home), items: count(kit, `public.schedule_items where project_id=${p} and metadata->>'release_key' like 'schedule:%'`) }
-    stalled.memberRePin = refusedAs(repin(otherVersion))
-    stalled.serviceRePin = refusedAs((() => { try { kit.sql(`update public.lots set house_plan_version_id=${q(otherVersion)} where id=${q(home.lotId)}`); return "allowed" } catch (error) { return error.message } })())
+    stalled.memberRePin = labelled(memberRePin(otherPlan), /revise the permit instead of re-planning/, "refused: the approved permit locks the plan")
+    stalled.serviceRePin = refusedAs(pinTo(otherPlan))
     stalled.pinUnchanged = lotRow() === home.planVersionId
   })
   // Cancelled, the lot may be re-pinned; resuming on the other version must not adopt the first version's items.
   await kit.as(home.actor, () => app("starts").cancelRelease(home.packageId))
   retireCancelled(kit, home)
-  const afterCancel = { package: packageStatus(kit, home), rePinAllowed: repin(otherVersion) }
+  const afterCancel = { package: packageStatus(kit, home), rePinAllowed: pinTo(otherPlan) }
+  // The permit belongs to the plan it was approved for: the county approves the other plan, the desk re-reads its gates,
+  // and only then does the release run on the other version.
+  await approvePermitRevision(kit, home)
+  await kit.as(home.actor, () => app("starts").refreshAutoGates(home.packageId))
   await queueRelease(kit, home)
   settleDrawings(kit, home)
   await quiesce(kit, home)
@@ -520,7 +541,11 @@ async function rePinDuringAReleaseIsRefusedAndAResumeNeverMixesVersions(kit, spe
   // The coordinator withdraws that release and puts the home back on the version it was building.
   await kit.as(home.actor, () => app("starts").cancelRelease(home.packageId))
   retireCancelled(kit, home)
-  const restored = repin(home.planVersionId)
+  const restored = pinTo(org.planBuilt)
+  await approvePermitRevision(kit, home)
+  await kit.as(home.actor, () => app("starts").refreshAutoGates(home.packageId))
+  await queueRelease(kit, home)
+  settleDrawings(kit, home)
   const finalStatus = await runUntilSettled(kit, home)
   await kit.drainOutbox(home.orgId)
   equal(check, "while a release is stopped part way, neither a member nor the service can re-pin the lot's plan version", spec.expected.stalled, stalled)

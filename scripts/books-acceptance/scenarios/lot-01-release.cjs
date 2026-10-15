@@ -98,6 +98,8 @@ async function freshHome(kit, { pdf = false } = {}) {
 
 function settleSteps(kit, home, keys = STEPS) {
   kit.sql(`update public.start_release_steps set status='completed', completed_at=now(), error=null, detail='{"harness":"settled directly"}' where start_package_id=${kit.q(home.packageId)} and step_key = any(array[${keys.map(kit.q).join(",")}])`)
+  // The finalize step proves the two gates the release itself produces (syncReleaseProducedGates); settling it by hand does the same.
+  if (keys.includes("finalize")) kit.sql(`update public.start_package_gates g set status='passed', passed_via='auto' from public.start_gate_definitions d where d.id=g.gate_definition_id and g.start_package_id=${kit.q(home.packageId)} and d.key in ('budget','po_set') and g.status='pending'`)
 }
 
 /** The coordinator queues the release; one job of this org is claimed the way claim_starts_jobs claims it. */

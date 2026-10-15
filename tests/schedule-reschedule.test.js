@@ -103,10 +103,17 @@ describe("the item editor", () => {
   test("a date edit that pushes a promised close is sent to the schedule view's review", async () => {
     const service = harness(["schedule.edit"])
     await assert.rejects(
-      service.run(() => schedule.updateScheduleItem({ itemId: FOUNDATION, input: { start_date: "2026-11-16", end_date: "2026-11-23" } })),
+      service.run(() => schedule.updateScheduleItem({ itemId: HANDOFF, input: { start_date: "2026-11-25", end_date: "2026-11-25" } })),
       /promised close/,
     )
     assert.deepEqual(service.writes("schedule_items"), [])
+  })
+
+  test("dependents the edit does not move are not counted, and a dependency loop does not block it", async () => {
+    const service = harness(["schedule.edit"])
+    service.db.schedule_dependencies.push({ id: id(34), org_id: ORG, project_id: PROJECT, item_id: FOUNDATION, depends_on_item_id: ROOFING, dependency_type: "FS", lag_days: 0 })
+    await service.run(() => schedule.updateScheduleItem({ itemId: FOUNDATION, input: { start_date: "2026-11-16", end_date: "2026-11-23" } }))
+    assert.equal(service.writes("schedule_items").length, 1)
   })
 
   test("a date edit inside the promised close is written", async () => {

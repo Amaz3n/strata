@@ -229,3 +229,32 @@ test("closing an answer needs start.write from the actor", async (t) => {
     p_org_id: f.orgId, p_actor_id: f.sales.userId, p_response_id: decline.id, p_resolution: "acknowledged", p_note: null,
   }), /no longer has start\.write/)
 })
+
+test("a division-limited actor cannot move or close another division's home", async (t) => {
+  const f = await fixture(t)
+  const north = await insert(f.db, "divisions", { org_id: f.orgId, name: "North" })
+  const south = await insert(f.db, "divisions", { org_id: f.orgId, name: "South" })
+  await f.db.query("update projects set division_id = $2 where id = $1", [f.project.id, north.id])
+  const { rows: [membership] } = await f.db.query(
+    "update memberships set division_scope = 'assigned' where org_id = $1 and user_id = $2 returning id", [f.orgId, f.coordinator.userId])
+  await insert(f.db, "membership_divisions", { membership_id: membership.id, division_id: south.id })
+  await assert.rejects(apply(f, [change(f.framing, "2026-11-04", "2026-11-08")]), /outside your division access/)
+  await respond(f, { p_response: "declined", p_reason: "Crew is on another job" })
+  const { rows: [decline] } = await f.db.query("select id from trade_work_responses where status = 'open'")
+  await assert.rejects(rpc(f.db, "resolve_trade_response", {
+    p_org_id: f.orgId, p_actor_id: f.coordinator.userId, p_response_id: decline.id, p_resolution: "acknowledged", p_note: null,
+  }), /outside your division access/)
+  await f.db.query("insert into membership_divisions (membership_id, division_id) values ($1, $2)", [membership.id, north.id])
+  await apply(f, [change(f.framing, "2026-11-04", "2026-11-08")])
+})
+
+test("a move of many tasks queues notice jobs no larger than the handler accepts", async (t) => {
+  const f = await fixture(t)
+  const rows = []
+  for (let i = 0; i < 1201; i++) {
+    rows.push(await insert(f.db, "schedule_items", { org_id: f.orgId, project_id: f.project.id, name: `Task ${i}`, start_date: "2026-12-01", end_date: "2026-12-02" }))
+  }
+  await apply(f, rows.map((row) => change(row, "2026-12-03", "2026-12-04")))
+  const { rows: jobs } = await f.db.query("select jsonb_array_length(payload->'moves') n from outbox where job_type = 'schedule_reschedule_notify' and org_id = $1 order by id", [f.orgId])
+  assert.deepEqual(jobs.map((job) => job.n), [500, 500, 201])
+})

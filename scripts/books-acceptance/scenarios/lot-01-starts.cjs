@@ -905,6 +905,8 @@ async function startsCronTelemetryIsTruthful(kit, expected, check) {
   const quiet = async (work) => { const errors = []; const original = console.error; console.error = (...args) => errors.push(args.map(String).join(" ")); try { return { value: await work(), errors } } finally { console.error = original } }
 
   // The queue is shared with every other run on the stack: drain what is due first so the accepted run below starts from a quiet queue.
+  // Aged drawing-copy reservations other subcases left behind cannot be swept without file storage, and a sweep that fails is (truthfully) a failed run; clear them so this run starts quiet.
+  kit.sql("update public.projects set metadata = metadata #- '{plan_instantiation,drawing_copy_attempt}' where metadata->'plan_instantiation'->'drawing_copy_attempt'->>'status'='abandoned' or (metadata->'plan_instantiation'->'drawing_copy_attempt'->>'status'='reserved' and (metadata->'plan_instantiation'->'drawing_copy_attempt'->>'reserved_at')::timestamptz < now() - interval '1 day')")
   for (let pass = 0; pass < 2; pass += 1) await kit.service(() => app("starts-pipeline").runStartsPipeline())
 
   // not authorised: refused, nothing recorded

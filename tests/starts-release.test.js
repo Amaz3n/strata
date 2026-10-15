@@ -1037,7 +1037,7 @@ test("a database without the claim protocol is left alone: the worker stays iner
   assert.equal(harness.calls.instantiate.length, 0)
 })
 
-test("a database that answers the probe with an ordinary error still runs the worker", async () => {
+test("a live function's own refusal (P0001) is the ready answer to the claim probe", async () => {
   const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
   const rpc = harness.supabase.rpc.bind(harness.supabase)
   harness.supabase.rpc = async (fn, args) => fn === "claim_starts_jobs" && args.p_limit === 0
@@ -1109,4 +1109,17 @@ test("a marker that exists but answers false is an incomplete chain: the worker 
 
   assert.equal(summary.notCutOver, true)
   assert.equal(harness.store.outbox[0].status, "pending")
+})
+
+test("any other answer to the readiness probe means not ready: the worker fails closed", async () => {
+  for (const answer of [{ data: null, error: { message: "fetch failed" } }, { data: null, error: { code: "42501", message: "permission denied" } }, { data: [], error: null }]) {
+    const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+    const rpc = harness.supabase.rpc.bind(harness.supabase)
+    harness.supabase.rpc = async (fn, args) => fn === "claim_starts_jobs" && args.p_limit === 0 ? answer : rpc(fn, args)
+
+    const summary = await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+
+    assert.equal(summary.notCutOver, true, JSON.stringify(answer))
+    assert.equal(harness.store.outbox[0].status, "pending")
+  }
 })

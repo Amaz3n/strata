@@ -290,7 +290,7 @@ async function membersCannotForgeCopyState(kit, spec, check) {
 async function startsOwnershipForgeries(kit, home) {
   const { createClient } = require("@supabase/supabase-js")
   const { org } = home
-  const refused = /authorized server action|require an authorized server|Browser cannot use starts worker headers|row-level security|permission denied/i
+  const refused = /authorized server action|require an authorized server|server writers|Browser cannot use starts worker headers|row-level security|no row visible|permission denied/i
   const named = (outcome) => labelled(outcome, refused)
   const tokened = kit.sql(`insert into public.outbox(org_id, job_type, payload, status, start_claim_token, start_job_lease_expires_at) values (${kit.q(org.orgId)}, 'start_package_notice', '{}', 'processing', gen_random_uuid(), now() + interval '3 minutes') returning id`).split("\n")[0]
   const packageBefore = one(kit, `select status, notes from public.start_packages where id=${kit.q(home.packageId)}`)
@@ -299,17 +299,18 @@ async function startsOwnershipForgeries(kit, home) {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${kit.localJwt({ sub: actor.userId, role: "authenticated", aud: "authenticated" })}`, ...headers } },
   })
-  const result = async (work) => { const { error } = await work(); return error ? error.message : "allowed" }
+  // A write that matches no visible row changed nothing: that is a refusal too (as in LOT-01).
+  const result = async (work) => { const { data, error } = await work(); return error ? error.message : Array.isArray(data) && !data.length ? "no row visible" : "allowed" }
   const owner = browser(org.owner)
   const posing = browser(org.team.starts, { "x-starts-job-id": tokened, "x-starts-claim-token": randomUUID() })
   const observed = {
     insertReleaseJob: named(await result(() => owner.from("outbox").insert({ org_id: org.orgId, job_type: "start_release", payload: { start_package_id: home.packageId, actor_id: org.owner.userId } }))),
     insertJobWithAClaimToken: named(await result(() => owner.from("outbox").insert({ org_id: org.orgId, job_type: "reindex_search", payload: {}, start_claim_token: randomUUID() }))),
-    rewriteClaimedJob: named(await result(() => owner.from("outbox").update({ status: "pending", start_claim_token: null }).eq("id", Number(tokened)))),
-    deleteClaimedJob: named(await result(() => owner.from("outbox").delete().eq("id", Number(tokened)))),
-    updatePackage: named(await result(() => owner.from("start_packages").update({ status: "ready", notes: "forged" }).eq("id", home.packageId))),
-    updateReleaseStep: named(await result(() => owner.from("start_release_steps").update({ status: "completed" }).eq("start_package_id", home.packageId))),
-    packageWriteWithWorkerHeaders: named(await result(() => posing.from("start_packages").update({ notes: "forged" }).eq("id", home.packageId))),
+    rewriteClaimedJob: named(await result(() => owner.from("outbox").update({ status: "pending", start_claim_token: null }).eq("id", Number(tokened)).select("id"))),
+    deleteClaimedJob: named(await result(() => owner.from("outbox").delete().eq("id", Number(tokened)).select("id"))),
+    updatePackage: named(await result(() => owner.from("start_packages").update({ status: "ready", notes: "forged" }).eq("id", home.packageId).select("id"))),
+    updateReleaseStep: named(await result(() => owner.from("start_release_steps").update({ status: "completed" }).eq("start_package_id", home.packageId).select("id"))),
+    packageWriteWithWorkerHeaders: named(await result(() => posing.from("start_packages").update({ notes: "forged" }).eq("id", home.packageId).select("id"))),
     claimRpc: named(await result(() => owner.rpc("claim_starts_jobs", { p_limit: 1 }))),
   }
   const jobAfter = job(kit, tokened), packageAfter = one(kit, `select status, notes from public.start_packages where id=${kit.q(home.packageId)}`)

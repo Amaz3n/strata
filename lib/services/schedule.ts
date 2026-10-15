@@ -670,6 +670,9 @@ export async function updateScheduleItem({
       const plan = await buildReschedulePlan(
         createServiceSupabaseClient(), resolvedOrgId, [{ id: itemId, start_date: start, end_date: end ?? start }],
         async () => undefined,
+        // Only the edit itself is applied here; dependents are not pushed, so they
+        // neither count toward the close nor let a stored dependency loop block it.
+        { dependents: false },
       );
       if (plan.closeImpacts.length) {
         throw new Error(`This date pushes the promised close past its date (${plan.closeImpacts.map((impact) => `${impact.projectName}, ${impact.daysLate} days late`).join("; ")}). Move it from the schedule view, which reviews and approves the impact.`);
@@ -1036,6 +1039,7 @@ async function buildReschedulePlan(
   orgId: string,
   moves: DateMove[],
   authorize: (projectIds: string[]) => Promise<void>,
+  { dependents = true }: { dependents?: boolean } = {},
 ) {
   const ids = Array.from(new Set(moves.map((move) => move.id)));
   const { data: moved, error: movedError } = await supabase
@@ -1069,7 +1073,7 @@ async function buildReschedulePlan(
       id: item.id, start_date: item.start_date, end_date: item.end_date,
       status: item.status, constraint_type: item.constraint_type,
     })),
-    dependencies.map((dependency) => ({
+    (dependents ? dependencies : []).map((dependency) => ({
       item_id: dependency.item_id, depends_on_item_id: dependency.depends_on_item_id,
       dependency_type: dependency.dependency_type === "SS" || dependency.dependency_type === "FF" || dependency.dependency_type === "SF" ? dependency.dependency_type : "FS",
       lag_days: dependency.lag_days ?? 0,

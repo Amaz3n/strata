@@ -504,8 +504,8 @@ test("a stale whole-metadata instantiation write misses once a reservation advan
 test("changed source evidence or a malformed reservation cannot open another destination", async (t) => {
   const h = await publication(t)
 
-  await assert.rejects(h.reserve({ size_bytes: 100, source_etag: "replacement" }), /differs/)
   await assert.rejects(h.reserve({ size_bytes: 101, source_etag: "source" }), /differs from file record/)
+  await assert.rejects(h.reserve({ size_bytes: 100, source_etag: "replacement" }), /differs/)
 
   await h.asWorker(false)
   await h.db.query(
@@ -960,9 +960,60 @@ test("the schema marker fails closed: it is true on the full chain and false whe
     "drop table trade_work_responses cascade",
     "drop function guard_release_key_browser_writes() cascade",
     "drop function read_trade_lookahead_workspace(uuid,uuid,integer,uuid,uuid,text,integer,text,integer)",
+    "drop trigger start_packages_gate_completion_guard on start_packages",
+    "drop function apply_schedule_reschedule(uuid,uuid,jsonb,text,jsonb,uuid)",
+    "drop function stamp_release_versions(uuid)",
+    "drop function assert_start_gates_complete(public.start_packages,boolean,boolean,boolean) cascade",
   ]) {
     const db = await createDatabase(t)
     await db.exec(drop)
     assert.equal(await rpc(db, "starts_cutover_ready", {}), false, drop)
   }
+
+  // 196000 and 197000 are proven by behaviour: the reservation window and the legacy-marker strip.
+  const without196 = await createDatabase(t)
+  const reserve = (await without196.query("select pg_get_functiondef('public.reserve_plan_drawing_copy(uuid,uuid,uuid,uuid,jsonb)'::regprocedure) as def")).rows[0].def
+  assert.ok(reserve.includes("interval '2 minutes'"))
+  await without196.exec(reserve.replace("interval '2 minutes'", "interval '0 minutes'"))
+  assert.equal(await rpc(without196, "starts_cutover_ready", {}), false, "a reserve that releases a fresh reservation")
+  const without197 = await createDatabase(t)
+  const guard = (await without197.query("select pg_get_functiondef('public.guard_start_package_gate_completion()'::regprocedure) as def")).rows[0].def
+  await without197.exec(guard.replaceAll("v_strip", "v_keep"))
+  assert.equal(await rpc(without197, "starts_cutover_ready", {}), false, "a guard that does not strip the legacy marker the way 197000 does")
+})
+
+test("a source that changed under a reservation is released for cleanup by the retrying release, and the next attempt reserves the new version", async (t) => {
+  const h = await publication(t)
+  const changed = { size_bytes: 100, source_etag: "replaced" }
+
+  // A reservation made moments ago is contested by a concurrent worker: still refused.
+  await assert.rejects(h.reserve(changed), /Existing drawing copy attempt differs/)
+  await h.asWorker(false)
+  await h.db.query("update projects set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,reserved_at}', to_jsonb(now() - interval '10 minutes')) where id = $1", [h.home.id])
+  await h.asWorker(true)
+
+  // The release worker (live claim, package releasing) retries with the source as it is now.
+  const released = await h.reserve(changed)
+  assert.equal(released.status, "abandoned")
+  assert.equal(released.attempt_id, h.copy.attempt_id)
+  assert.equal((await h.ledger()).plan_instantiation.drawing_copy_attempt.status, "abandoned")
+  assert.equal(await h.count("audit_log where entity_id = $1 and source = 'plan_drawing_copy.source_changed'", [h.home.id]), 1)
+
+  // The sweep deletes the stale object (no age gate for an abandoned copy) and clears the manifest.
+  await h.asWorker(false)
+  const [copy] = await rpc(h.db, "claim_abandoned_plan_drawing_copies", { p_limit: 25 })
+  assert.equal(copy.storage_path, h.copy.storage_path)
+  assert.equal(await rpc(h.db, "clear_abandoned_plan_drawing_copy", { p_org_id: h.orgId, p_project_id: h.home.id, p_attempt_id: copy.attempt_id }), true)
+
+  await h.asWorker(true)
+  const next = await h.reserve(changed)
+  assert.equal(next.status, "reserved")
+  assert.equal(next.source_etag, "replaced")
+  assert.notEqual(next.attempt_id, h.copy.attempt_id)
+})
+
+test("outside a release claim, a reservation whose source differs still needs recovery", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  await assert.rejects(h.reserve({ size_bytes: 100, source_etag: "replaced" }), /Existing drawing copy attempt differs/)
 })

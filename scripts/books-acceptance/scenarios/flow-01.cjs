@@ -147,30 +147,40 @@ async function financingGate(kit, expected, check) {
 async function attestedEvidenceArchived(kit, expected, check) {
   const { org } = await world(kit)
   const starts = app("starts")
-  await kit.as(org.team.starts, () => starts.upsertGateDefinition({ key: "soil_report", label: "Soil report on file", checkKind: "manual", appliesWhen: "always", sortOrder: 95, isActive: true }))
-  let evidenceId = null
-  const home = await specHome(kit, org, 3, {
-    beforeApproval: async ({ packageId, projectId }) => {
-      const detail = await kit.as(org.team.starts, () => starts.getStartPackage(packageId))
-      evidenceId = seed.homeFile(kit, org, projectId, "soil-report.pdf")
-      await kit.as(org.team.starts, () => starts.attestGate(packageId, detail.gates.find((gate) => gate.key === "soil_report").id, { evidenceFileId: evidenceId, notes: "Geotech report received" }))
-    },
-  })
-  const ready = await kit.as(org.team.starts, () => starts.getStartPackage(home.packageId))
-  // A spec home has no buyer, so there is nothing for its financing gate to prove.
-  const observed = { readyWithEvidence: ready.status, specFinancing: gateStatus(ready.gates, "financing") }
-  await seed.assignSuperintendent(kit, org, { projectId: home.projectId })
-  // The report is withdrawn from the home between readiness and publication.
-  kit.sql(`update public.files set archived_at=now() where id=${kit.q(evidenceId)}`)
-  const released = await seed.releaseHome(kit, org, { packageId: home.packageId, projectId: home.projectId })
-  observed.afterArchive = released.released.status === "released" ? "released" : "held"
-  observed.refusal = /soil_report gate's evidence is no longer on the home/.test(one(kit, `select coalesce(last_error,'') e from public.outbox where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)} order by id desc limit 1`).e)
-  // The release stays parked; its job is settled and the custom gate retired so no later subcase meets either.
-  kit.sql(`update public.outbox set status='completed' where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)}`)
-  await kit.as(org.team.starts, () => starts.upsertGateDefinition({ key: "soil_report", label: "Soil report on file", checkKind: "manual", appliesWhen: "always", sortOrder: 95, isActive: false }))
-  unassign(kit, [home.projectId])
-  check.equal("a manual gate attested with a file stays passed, but publication re-checks the file is still on the home and not archived: the release does not publish a house whose evidence has gone", expected.expected, observed)
-  return { orgId: org.orgId, packageId: home.packageId }
+  const soil = (isActive) => kit.as(org.team.starts, () => starts.upsertGateDefinition({ key: "soil_report", label: "Soil report on file", checkKind: "manual", appliesWhen: "always", sortOrder: 95, isActive }))
+  await soil(true)
+  try {
+    let evidenceId = null
+    const home = await specHome(kit, org, 3, {
+      beforeApproval: async ({ packageId, projectId }) => {
+        const detail = await kit.as(org.team.starts, () => starts.getStartPackage(packageId))
+        evidenceId = seed.homeFile(kit, org, projectId, "soil-report.pdf")
+        await kit.as(org.team.starts, () => starts.attestGate(packageId, detail.gates.find((gate) => gate.key === "soil_report").id, { evidenceFileId: evidenceId, notes: "Geotech report received" }))
+      },
+    })
+    const ready = await kit.as(org.team.starts, () => starts.getStartPackage(home.packageId))
+    // A spec home has no buyer, so there is nothing for its financing gate to prove.
+    const observed = { readyWithEvidence: ready.status, specFinancing: gateStatus(ready.gates, "financing") }
+    await seed.assignSuperintendent(kit, org, { projectId: home.projectId })
+    // The report is withdrawn from the home after the gate cleared: the release refuses to queue on it, before any step builds.
+    kit.sql(`update public.files set archived_at=now() where id=${kit.q(evidenceId)}`)
+    const refusal = await attempt(() => kit.as(org.team.starts, () => starts.releaseStart(home.packageId, { scheduledStartDate: day(0) })))
+    observed.queueRefusal = /evidence file is no longer on the home/.test(refusal) ? "refused: evidence gone" : refusal
+    observed.packageStillReady = one(kit, `select status from public.start_packages where id=${kit.q(home.packageId)}`).status
+    observed.noJobQueued = Number(one(kit, `select count(*)::int n from public.outbox where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)}`).n) === 0
+    // With the file back on the home the same release queues.
+    kit.sql(`update public.files set archived_at=null where id=${kit.q(evidenceId)}`)
+    const queued = await kit.as(org.team.starts, () => starts.releaseStart(home.packageId, { scheduledStartDate: day(0) }))
+    observed.queuedOnceRestored = queued.released === true
+    kit.sql(`update public.outbox set status='completed' where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id'=${kit.q(home.packageId)};
+update public.start_packages set status='cancelled' where id=${kit.q(home.packageId)}`)
+    unassign(kit, [home.projectId])
+    check.equal("a manual gate attested with a file stays passed, but the release re-checks at queue time that the file is still on the home and not archived: it refuses before any step builds, and queues once the file is back (publication re-checks it again)", expected.expected, observed)
+    return { orgId: org.orgId, packageId: home.packageId }
+  } finally {
+    // The custom gate is retired even when a check throws, so no later subcase meets it.
+    await soil(false)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,19 +361,25 @@ update public.projects set superintendent_id=null where id in (${kit.q(first.pro
 async function raceReleasesIntoCap(kit, expected, check) {
   const { org } = await world(kit)
   const flow = app("even-flow")
+  // Two real ready houses on later lots: the land is bought in Books and the lots developed, as the first tranche was.
+  const later = [10, 11].map((index) => org.lots[index].id)
+  if (one(kit, `select count(*)::int n from public.lots where id in (${later.map((id) => kit.q(id)).join(",")}) and status='developed'`).n < later.length) {
+    await kit.as(org.owner, () => app("books/inventory").acquireLandInventory({ date: "2026-06-02", allocations: later.map((lotId) => ({ lotId, amountCents: org.landCentsPerLot })),
+      cashAccountId: seed.glId(kit, org, "1000"), cashCents: org.landCentsPerLot * later.length, debtInstrumentId: null, debtCents: 0, reference: "Cypress Landing later lots", evidenceUrl: `${seed.EVIDENCE}/later-lots` }))
+    await kit.as(org.team.land, () => app("lots").bulkUpdateLots(org.communityId, { lotIds: later, patch: { status: "developed" } }))
+  }
+  const homes = []
+  for (const index of [10, 11]) {
+    const home = await specHome(kit, org, index)
+    await seed.assignSuperintendent(kit, org, { projectId: home.projectId })
+    homes.push(home)
+  }
+  const ready = homes.map((home) => home.packageId)
   const rounds = []
-  // Two future weeks, one round each, so the earlier round's releases do not count.
+  // Two future weeks, one round each; between rounds the packages go back to ready so the same houses are raced again.
   for (let round = 0; round < 2; round += 1) {
     const week = math().addWeeks(math().mondayOfIsoWeek(day(0)), 3 + round)
-    const a = await houseFixture(kit, org, `cap-a-${round}`), b = await houseFixture(kit, org, `cap-b-${round}`)
-    const ready = []
-    for (const house of [a, b]) {
-      const lotId = randomUUID(), packageId = randomUUID()
-      kit.sql(`insert into public.lots(id,org_id,community_id,division_id,project_id,lot_number,status) values(${kit.q(lotId)},${kit.q(org.orgId)},${kit.q(org.communityId)},${kit.q(org.divisionId)},${kit.q(house.projectId)},${kit.q(`cap-${packageId.slice(0, 6)}`)},'assigned');
-update public.projects set superintendent_id=${kit.q(org.team.superintendent.userId)}, division_id=${kit.q(org.divisionId)} where id=${kit.q(house.projectId)};
-insert into public.start_packages(id,org_id,lot_id,community_id,project_id,status,target_week) values(${kit.q(packageId)},${kit.q(org.orgId)},${kit.q(lotId)},${kit.q(org.communityId)},${kit.q(house.projectId)},'ready',${kit.q(week)})`)
-      ready.push(packageId)
-    }
+    kit.sql(`update public.start_packages set target_week=${kit.q(week)} where id in (${ready.map((id) => kit.q(id)).join(",")})`)
     await kit.as(org.team.starts, () => flow.setThroughputTarget({ weekStart: week, divisionId: org.divisionId, targetStarts: 1 }))
     const script = (packageId) => serviceSession(`select public.queue_start_release(${kit.q(org.orgId)},${kit.q(packageId)},${kit.q(org.team.starts.userId)},${kit.q(week)}::date,${kit.q(week)}::date,99,false)::text;`)
     const results = await race(kit, ready.map(script))
@@ -374,9 +390,11 @@ insert into public.start_packages(id,org_id,lot_id,community_id,project_id,statu
       releasing: Number(one(kit, `select count(*)::int n from public.start_packages where id in (${ready.map((id) => kit.q(id)).join(",")}) and status='releasing'`).n),
     })
     kit.sql(`update public.outbox set status='completed' where org_id=${kit.q(org.orgId)} and job_type='start_release' and payload->>'start_package_id' in (${ready.map((id) => kit.q(id)).join(",")});
-update public.start_packages set status='cancelled' where id in (${ready.map((id) => kit.q(id)).join(",")})`)
+update public.start_packages set status='ready' where id in (${ready.map((id) => kit.q(id)).join(",")}) and status='releasing'`)
   }
-    check.equal("two sessions releasing into a division cap of one in the same week: exactly one is queued and the other is held by the division cap, never both", expected.expected, { rounds })
+  kit.sql(`update public.start_packages set status='cancelled' where id in (${ready.map((id) => kit.q(id)).join(",")})`)
+  unassign(kit, homes.map((home) => home.projectId))
+  check.equal("two sessions releasing into a division cap of one in the same week: exactly one is queued and the other is held by the division cap, never both", expected.expected, { rounds })
   return { orgId: org.orgId }
 }
 

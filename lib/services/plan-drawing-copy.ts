@@ -24,8 +24,11 @@ export async function publishPlanDrawingCopy(input: {
   if (projectError || !project) throw new Error(`Unable to recover drawing copy state: ${projectError?.message ?? "project not found"}`)
   const saved = z.object({ plan_instantiation: z.object({ drawing_copy_attempt: attemptSchema.optional() }).optional() })
     .parse(project.metadata ?? {}).plan_instantiation?.drawing_copy_attempt
+  // A published copy replays from its stored evidence without touching storage. A reservation
+  // that never published is checked against the source as it is NOW: if the PDF changed since,
+  // reserving with the fresh evidence is what releases the stale reservation for cleanup.
   let evidence: { size_bytes: number; source_etag: string }
-  if (saved) {
+  if (saved?.status === "published") {
     evidence = { size_bytes: saved.size_bytes, source_etag: saved.source_etag }
   } else {
     const head = await headFilesCopySource({ orgId: input.orgId, path: input.source.storage_path })
@@ -36,6 +39,9 @@ export async function publishPlanDrawingCopy(input: {
     p_org_id: input.orgId, p_project_id: input.projectId, p_plan_version_id: input.planVersionId, p_actor_id: input.actorId, p_source_evidence: evidence,
   })
   if (reservationError) throw new Error(`Unable to reserve drawing copy: ${reservationError.message}`)
+  // The source changed under a reservation this release held: it was released for cleanup; the retry reserves the new version.
+  if (z.object({ status: z.literal("abandoned") }).safeParse(reserved).success)
+    throw new Error("The plan PDF changed after its copy was reserved; the stale reservation was released for cleanup and the release will retry")
   const attempt = attemptSchema.parse(reserved)
   if (attempt.plan_version_id !== input.planVersionId || attempt.source_file_id !== input.source.id || attempt.actor_id !== input.actorId)
     throw new Error("Reserved drawing copy does not match this release")

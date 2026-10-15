@@ -232,20 +232,20 @@
       }
     },
     "race-gate-or-package-edit-vs-queue-release": {
-      "derivation": "Policy (EP07-11/13/17): one transaction at a time owns a package. Two rounds, each a ready package and two real sessions released together: queue_start_release against a financing change (is_financed set; the package stays ready) and against a cancel. Both take the package lock first, so the outcome is a serial order. Cancel: exactly one wins, the queue is refused as not ready, or the cancel as not cancellable once releasing. Financing change: queue first refuses the edit (the package is releasing and only open or ready packages are edited); edit first lets the queue through as well, ending releasing and financed. Any refusal is one of the package's own messages; the final state is what that order leaves.",
+      "derivation": "Policy (EP07-11/13/17): one transaction at a time owns a package. Two rounds, each a ready package and two real sessions released together: queue_start_release against a financing change (is_financed set: the financing gate reopens and the package drops out of ready) and against a cancel. Both take the package lock first, so the outcome is a serial order. Cancel: exactly one wins, the queue is refused as not ready, or the cancel as not cancellable once releasing. Financing change: queue first refuses the edit (the package is releasing and only open or ready packages are edited); edit first drops the package to open, so the queue is refused as not ready and the package ends open and financed; exactly one of the two wins. Any refusal is one of the package's own messages; the final state is what that order leaves.",
       "expected": {
         "rounds": [
           {
             "action": "financing change",
             "loserRefusedCleanly": true,
             "consistent": true,
-            "atLeastOneWon": true
+            "exactlyOneWon": true
           },
           {
             "action": "cancel",
             "loserRefusedCleanly": true,
             "consistent": true,
-            "atLeastOneWon": true
+            "exactlyOneWon": true
           }
         ]
       }
@@ -291,12 +291,12 @@
       }
     },
     "re-pin-during-a-release-is-refused-and-a-resume-never-mixes-versions": {
-      "derivation": "Review C#2: artifacts are keyed by position, so a resume on another plan version would mix versions. A fault stops the schedule after two items (package releasing). A member and the service both try to re-pin the lot's plan version: lots_release_pin_guard refuses both and the pin is unchanged. The coordinator cancels the release (package ready), the pin can now be changed to another released version; releasing again, the schedule step meets the first version's two keyed items (release_version differs) and fails with 'begun from a different plan version', the package is not released and the two items are still the first version's. Cancelled again and put back on its own version, the release completes, every schedule item is of that version and the receipts balance. The re-pin statements print nothing on success (allowed).",
+      "derivation": "Review C#2: artifacts are keyed by position, so a resume on another plan version would mix versions. A fault stops the schedule after two items (package releasing). The home has an approved permit, so a member's re-pin is refused by the permit rule before anything else; the service pins plan, version and elevation together (a plan change reaches the lot that way) and lots_release_pin_guard refuses it, leaving the pin unchanged. The coordinator cancels the release (package ready), the service can now pin the lot to another released plan (version and its elevation); releasing again, the schedule step meets the first version's two keyed items (release_version differs) and fails with 'begun from a different plan version', the package is not released and the two items are still the first version's. Cancelled again and put back on its own version, the release completes, every schedule item is of that version and the receipts balance. The re-pin statements print nothing on success (allowed). The distinct release versions of the schedule items are one, the home's own. Each re-pin is followed by the county's approval of a revision of the home's live building application (the permit belongs to the plan), and the release is queued only after the desk re-reads its gates.",
       "expected": {
         "stalled": {
           "package": "releasing",
           "items": 2,
-          "memberRePin": "refused: cancel the release first",
+          "memberRePin": "refused: the approved permit locks the plan",
           "serviceRePin": "refused: cancel the release first",
           "pinUnchanged": true
         },
@@ -330,13 +330,6 @@
             }
           },
           "versions": [
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
             true
           ]
         }

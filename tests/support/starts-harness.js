@@ -243,6 +243,7 @@ const claimProtocol = {
   },
 
   claim_starts_jobs({ p_limit: limit }, store) {
+    if (limit === 0) return { data: null, error: { code: "P0001", message: "Invalid starts claim limit" } }
     const claimed = (store.outbox ?? [])
       .filter((row) => STARTS_JOB_TYPES.includes(row.job_type) && row.status === "pending" && (!row.run_at || row.run_at <= iso()))
       .slice(0, limit)

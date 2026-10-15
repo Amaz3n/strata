@@ -28,7 +28,7 @@ test('copy crash reuses persisted destination and source ETag on the next worker
  const h=harness({copyFails:true})
  await assert.rejects(h.service.publishPlanDrawingCopy(input),/worker stopped/)
  const result=await h.service.publishPlanDrawingCopy(input);assert.equal(result.drawing_set_id,receipt.drawing_set_id)
- assert.equal(h.calls.head,1);assert.equal(h.calls.copies.length,2);assert.equal(h.calls.copies[0].destinationPath,h.calls.copies[1].destinationPath);assert.equal(h.calls.copies[1].expectedSourceEtag,'original')
+ assert.equal(h.calls.head,2);assert.equal(h.calls.copies.length,2);assert.equal(h.calls.copies[0].destinationPath,h.calls.copies[1].destinationPath);assert.equal(h.calls.copies[1].expectedSourceEtag,'original')
 })
 test('lost publication response replays and verifies the receipt without copying again',async()=>{
  const h=harness({loseReply:true})
@@ -46,4 +46,11 @@ test('reservation failure leaves storage untouched and changed recovery receipts
  const recovery=harness({loseReply:true});await assert.rejects(recovery.service.publishPlanDrawingCopy(input),/response lost/)
  const rpc=recovery.db.rpc.bind(recovery.db);recovery.db.rpc=async(name,args)=>name==='publish_plan_drawing_copy'?{data:{...receipt,job_id:'99'},error:null}:rpc(name,args)
  await assert.rejects(recovery.service.publishPlanDrawingCopy(input),/receipt changed/);assert.equal(recovery.calls.copies.length,1)
+})
+
+test('a source that changed under a reservation releases it for cleanup and stops before any copy',async()=>{
+ const h=harness();await h.service.publishPlanDrawingCopy(input).catch(()=>{})
+ const rpc=h.db.rpc.bind(h.db);h.calls.copies.length=0
+ h.db.rpc=async(name,args)=>name==='reserve_plan_drawing_copy'?{data:{status:'abandoned',attempt_id:ATTEMPT},error:null}:rpc(name,args)
+ await assert.rejects(h.service.publishPlanDrawingCopy(input),/released for cleanup/);assert.equal(h.calls.copies.length,0)
 })

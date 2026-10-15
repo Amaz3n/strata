@@ -10,35 +10,35 @@ import type { SupabaseClient } from "@supabase/supabase-js"
  * side-effect free to call, so "is the schema here yet" is a question the
  * worker can ask instead of failing on.
  *
- * A probe is called with arguments the function rejects (or answers harmlessly)
- * once it exists. PostgREST answers PGRST202 only when no such function is in
- * the schema, which is the one answer that means "not migrated".
+ * The check fails closed. A probe passes only on the one answer that proves the
+ * function is there and the schema complete: the error code a live function
+ * raises for the arguments the probe sends, or a marker that returns true.
+ * Anything else (the function missing, the marker false, a network or database
+ * error, an unexpected code) means "not ready", and the worker does nothing.
  */
+type Probe = { rpc: string; args: Record<string, unknown>; readyWhen: { errorCode: string } | { returns: true } }
+
 export const SCHEMA_REQUIREMENTS = {
   "starts-pipeline": {
     probes: [
       // 20261003048000: the tokened claim protocol. A zero limit raises
-      // "Invalid starts claim limit" when the function exists.
-      { rpc: "claim_starts_jobs", args: { p_limit: 0 } },
-      // 20261014180000: true only when an object from each EP07 migration exists
-      // (throughput, trade notices, trade responses, release resume, cutover
-      // guards, release-key guards), whatever order they were applied in.
-      { rpc: "starts_cutover_ready", args: {}, mustReturn: true },
+      // "Invalid starts claim limit" (P0001) when the function exists.
+      { rpc: "claim_starts_jobs", args: { p_limit: 0 }, readyWhen: { errorCode: "P0001" } },
+      // True only when an object from every EP07 migration exists, whatever
+      // order they were applied in (see the function's own migration).
+      { rpc: "starts_cutover_ready", args: {}, readyWhen: { returns: true } },
     ],
   },
-} as const satisfies Record<string, { probes: ReadonlyArray<{ rpc: string; args: Record<string, unknown>; mustReturn?: true }> }>
+} as const satisfies Record<string, { probes: ReadonlyArray<Probe> }>
 
 export type SchemaRequirementKey = keyof typeof SCHEMA_REQUIREMENTS
 
-const FUNCTION_MISSING = "PGRST202"
-
-/** The first required function the database does not have, or null when the schema is ready. */
+/** The first probe that does not prove the schema ready, or null when the schema is ready. */
 export async function findMissingSchemaRequirement(service: SupabaseClient, key: SchemaRequirementKey) {
-  for (const probe of SCHEMA_REQUIREMENTS[key].probes) {
+  for (const probe of SCHEMA_REQUIREMENTS[key].probes as ReadonlyArray<Probe>) {
     const { data, error } = await service.rpc(probe.rpc, probe.args)
-    if (error?.code === FUNCTION_MISSING) return probe.rpc
-    // A marker that exists but answers false is a chain with a migration missing.
-    if (!error && "mustReturn" in probe && data !== true) return probe.rpc
+    const ready = "errorCode" in probe.readyWhen ? error?.code === probe.readyWhen.errorCode : !error && data === true
+    if (!ready) return probe.rpc
   }
   return null
 }
