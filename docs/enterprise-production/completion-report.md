@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 58.8% — a documented lower bound, not an ETA |
-| Fully verified | 56.4% |
+| Implemented | 64% — a documented lower bound, not an ETA |
+| Fully verified | 60.6% |
 | Release ready | 0% |
-| Code implemented | 3 items |
-| Partially implemented | 40 items |
+| Code implemented | 5 items |
+| Partially implemented | 33 items |
 | Known pending tasks | 13 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 71 items; this does not imply full workflow verification |
@@ -159,18 +159,18 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP08-01 | Production bid workbench entry | verified | Fix rescind of price-book awards (EP08-05) since it is reachable from this workbench. |
-| EP08-02 | Bounded bid and vendor queues | verified | QA judgement whether the vendor picker must show a visible total; if so surface the directory page total. |
-| EP08-03 | Bid subresource authorization | partial | Route listBidPackages/getProjectBuyoutSummary through assertBidProjectVisibility; scope or delete listCommunityBidPackages. |
-| EP08-04 | Complete bid intelligence | verified | Render an explicit error state instead of .catch(() => null) at app/(app)/purchasing/bids/[packageId]/page.tsx:40. |
-| EP08-05 | Rebid and renewal lifecycle | partial | Make rescind_bid_award void/end the minted agreements and restore superseded predecessors transactionally (migration, needs approval). |
-| EP08-06 | PO preview and exception resolution | verified | Decide policy for zero-price manual resolutions. |
-| EP08-07 | Transactional PO issuance | partial | Apply migration 20261010111000_po_generation_commit_rejects_stale_prior_run after 20261003048000 (pending approval). |
-| EP08-08 | Vendor PO acknowledgment | partial | Add an issued-version concept and vendor accept/dispute (quantities, dates, scope) with reason, portal permission, events, audit and email allowlist (migration). |
-| EP08-09 | Variance approval controls | partial | Require cost evidence per org policy and validate file ancestry. |
-| EP08-10 | Delivery and shortage workflow | partial | Design delivery records keyed to home + PO line (expected/received date and qty, shortage reason) — migration with RLS, indexes, RBAC, search, events. |
-| EP08-11 | Completion to payment reconciliation | partial | Apply migration 20261010110000_po_completion_rollback_keeps_bill (pending approval). |
-| EP08-12 | Complete variance reporting | verified | Compare scoped vs RPC outputs and export totals on populated QA facts. |
+| EP08-01 | Production bid workbench entry | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-02 | Bounded bid and vendor queues | implemented | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-03 | Bid subresource authorization | implemented | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-04 | Complete bid intelligence | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-05 | Rebid and renewal lifecycle | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-06 | PO preview and exception resolution | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-07 | Transactional PO issuance | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-08 | Vendor PO acknowledgment | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-09 | Variance approval controls | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-10 | Delivery and shortage workflow | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-11 | Completion to payment reconciliation | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
+| EP08-12 | Complete variance reporting | verified | Apply the EP08 migrations (20261015100000, 110000, 120000, 130000, 140000, 154000, 160000, 161000, 162000, 163000, 164000, 170000, 171000, 172000, 173000, 180000, 181000, 182000, 183000 (19 files, all 20261015*)) with the code in one window (pending approval). |
 
 ### EP09: Field execution and quality
 
