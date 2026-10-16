@@ -990,10 +990,13 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
       }
       for (const item of poRows) {
         const companyId = await ensureCompany(context, { ...row, parsed: item.parsed as ImportParsedRow })
-        const { data: commitment, error } = await context.supabase.from("commitments").insert({ org_id: context.orgId, project_id: projectId, company_id: companyId, commitment_type: "purchase_order", title: item.parsed?.description ?? `Imported PO ${item.parsed?.po_number}`, status: "approved", total_cents: item.parsed?.remaining_cents, currency: "usd", contract_number: item.parsed?.po_number, metadata: { imported_open_wip: true, original_cents: item.parsed?.original_cents, as_of_date: asOfDate } }).select("id").single()
+        const { data: commitment, error } = await context.supabase.from("commitments").insert({ org_id: context.orgId, project_id: projectId, company_id: companyId, commitment_type: "purchase_order", title: item.parsed?.description ?? `Imported PO ${item.parsed?.po_number}`, status: "draft", total_cents: item.parsed?.remaining_cents, currency: "usd", contract_number: item.parsed?.po_number, metadata: { imported_open_wip: true, original_cents: item.parsed?.original_cents, as_of_date: asOfDate } }).select("id").single()
         if (error || !commitment) throw new Error(`Failed to create imported PO: ${error?.message}`)
         const { error: lineError } = await context.supabase.from("commitment_lines").insert({ org_id: context.orgId, commitment_id: commitment.id, cost_code_id: item.parsed?.cost_code_id, description: item.parsed?.description, quantity: 1, unit: "remaining", unit_cost_cents: item.parsed?.remaining_cents, metadata: { imported_open_wip: true } })
         if (lineError) throw new Error(`Failed to create imported PO lines: ${lineError.message}`)
+        // An approved purchase order is locked, so it is approved once its line is on it.
+        const { error: approveError } = await context.supabase.from("commitments").update({ status: "approved" }).eq("org_id", context.orgId).eq("id", commitment.id)
+        if (approveError) throw new Error(`Failed to approve imported PO: ${approveError.message}`)
       }
       if (!row.parsed.schedule_template_id) throw new Error(`Lot ${row.parsed.lot_number}: the plan has no schedule template, so the current stage cannot be placed`)
       const { data: template, error: templateError } = await context.supabase.from("schedule_templates").select("items").eq("org_id", context.orgId).eq("id", row.parsed.schedule_template_id).maybeSingle()

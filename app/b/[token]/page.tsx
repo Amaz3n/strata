@@ -83,7 +83,7 @@ async function BidPortalPageContent({ params }: BidPortalPageProps) {
           token={token}
           tokenType="bid"
           orgName={gateContext?.orgName ?? access.org.name}
-          projectName={gateContext?.projectName ?? access.project.name}
+          projectName={gateContext?.projectName ?? access.job.name}
           initialEmail={gateContext?.expectedEmail ?? ""}
           suggestedFullName={gateContext?.suggestedFullName ?? ""}
           emailLocked={gateContext?.emailLocked}

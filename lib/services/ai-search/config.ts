@@ -188,6 +188,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   permit_application: "/projects/{project_id}/permits?permit={id}",
   price_agreement: "/purchasing?tab=price-book&agreement={id}",
   commitment_change_order: "/projects/{project_id}/financials/budget?vpo={id}",
+  po_completion: "/purchasing?tab=completions&project={project_id}",
   selection_option: "/design-studio?option={id}",
   selection_exception: "/projects/{project_id}/selections?exception={id}",
   design_studio_appointment: "/design-studio/sheet/{project_id}",

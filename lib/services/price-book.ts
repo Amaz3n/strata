@@ -8,13 +8,18 @@ import { recordEvent } from "@/lib/services/events"
 import { getPurchasingSettings } from "@/lib/services/purchasing-settings"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
+  agreementEndSchema,
+  agreementVoidSchema,
   priceAgreementFiltersSchema,
   priceAgreementInputSchema,
+  renewalFiltersSchema,
   repriceAgreementSchema,
   type PriceAgreementFilters,
   type PriceAgreementInput,
+  type RenewalFilters,
   type RepriceAgreementInput,
 } from "@/lib/validation/price-book"
+import { bestComparableBid, type PriceLine } from "@/lib/financials/renewal-compare"
 
 export type PriceAgreement = PriceAgreementCandidate & {
   org_id: string
@@ -224,9 +229,66 @@ export async function getPriceAgreementHistory(agreementId: string, orgId?: stri
   return (data ?? []).map((row) => mapAgreement(row))
 }
 
+/**
+ * The write-strict twin of `agreementAccessFilter`. A member limited to some
+ * divisions may change a row only when its division, or its community's
+ * division, is one of theirs; an org-wide row (no division, no community) is
+ * everyone's to read and only an unrestricted member's to change. The database
+ * policies say the same for direct writes; the state changes run as definer, so
+ * the service says it first.
+ */
+export function agreementWriteAllowed(
+  access: { assignedOnly: boolean; divisionIds: string[] },
+  scope: { divisionId: string | null; communityId: string | null; communityDivisionId: string | null },
+) {
+  if (!access.assignedOnly) return true
+  if (!scope.divisionId && !scope.communityId) return false
+  if (scope.divisionId && !access.divisionIds.includes(scope.divisionId)) return false
+  if (scope.communityId && !(scope.communityDivisionId && access.divisionIds.includes(scope.communityDivisionId))) return false
+  return true
+}
+
+async function assertAgreementWriteAccess(
+  context: { supabase: OrgSupabase; orgId: string; userId: string },
+  scope: { division_id?: string | null; community_id?: string | null },
+) {
+  const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  if (!access.assignedOnly) return
+  let communityDivisionId: string | null = null
+  if (scope.community_id) {
+    const { data, error } = await context.supabase.from("communities").select("division_id")
+      .eq("org_id", context.orgId).eq("id", scope.community_id).maybeSingle()
+    if (error) throw new Error(`Failed to check the community's division: ${error.message}`)
+    communityDivisionId = data?.division_id ?? null
+  }
+  if (!agreementWriteAllowed(access, { divisionId: scope.division_id ?? null, communityId: scope.community_id ?? null, communityDivisionId })) {
+    throw new Error("This price agreement is outside your divisions")
+  }
+}
+
+async function countOrdersPricedFrom(orgId: string, agreementIds: string[]) {
+  const { data, error } = await createServiceSupabaseClient().rpc("price_agreement_order_count", {
+    p_org_id: orgId, p_agreement_ids: agreementIds,
+  })
+  if (error || typeof data !== "number") throw new Error(`Failed to count the orders priced from this agreement: ${error?.message}`)
+  return data
+}
+
+/** What a void, end or reprice would touch, for the confirmation the buyer reads first. */
+export async function getAgreementImpact(agreementId: string, orgId?: string) {
+  const context = await authorize("price_book.write", orgId)
+  const { data, error } = await context.supabase.from("vendor_price_agreements").select("id, division_id, community_id")
+    .eq("org_id", context.orgId).eq("id", agreementId).maybeSingle()
+  if (error || !data) throw new Error("Price agreement not found")
+  await assertAgreementWriteAccess(context, data)
+  return { affectedPoCount: await countOrdersPricedFrom(context.orgId, [agreementId]) }
+}
+
 export async function createPriceAgreement(input: PriceAgreementInput, orgId?: string) {
   const parsed = priceAgreementInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await authorize("price_book.write", orgId)
+  const context = await authorize("price_book.write", orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  await assertAgreementWriteAccess(context, parsed)
   const { data, error } = await supabase.from("vendor_price_agreements").insert({
     ...parsed, org_id: resolvedOrgId, created_by: userId,
   }).select(SELECT).single()
@@ -237,47 +299,69 @@ export async function createPriceAgreement(input: PriceAgreementInput, orgId?: s
   return mapped
 }
 
+async function loadAgreementForChange(context: { supabase: OrgSupabase; orgId: string; userId: string }, agreementId: string) {
+  const { data, error } = await context.supabase.from("vendor_price_agreements").select("*")
+    .eq("org_id", context.orgId).eq("id", agreementId).maybeSingle()
+  if (error || !data) throw new Error("Price agreement not found")
+  await assertAgreementWriteAccess(context, data)
+  return data
+}
+
 export async function repriceAgreement(agreementId: string, input: RepriceAgreementInput, orgId?: string) {
   const parsed = repriceAgreementSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await authorize("price_book.write", orgId)
-  const { data: old, error: oldError } = await supabase.from("vendor_price_agreements").select("*")
-    .eq("org_id", resolvedOrgId).eq("id", agreementId).maybeSingle()
-  if (oldError || !old) throw new Error("Price agreement not found")
+  const context = await authorize("price_book.write", orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  const old = await loadAgreementForChange(context, agreementId)
   const service = createServiceSupabaseClient()
   const { data: newId, error } = await service.rpc("reprice_vendor_price_agreement", {
     p_org_id: resolvedOrgId, p_agreement_id: agreementId, p_effective_from: parsed.effective_from,
     p_unit_cost_cents: parsed.unit_cost_cents ?? null, p_lump_sum_cents: parsed.lump_sum_cents ?? null,
-    p_notes: parsed.notes ?? null, p_actor_id: userId,
+    p_notes: parsed.notes ?? null, p_actor_id: userId, p_reason: parsed.reason,
   })
   if (error || !newId) throw new Error(`Failed to reprice agreement: ${error?.message}`)
-  const { data: created, error: reloadError } = await supabase.from("vendor_price_agreements").select(SELECT)
-    .eq("org_id", resolvedOrgId).eq("id", newId).single()
+  const [{ data: created, error: reloadError }, affectedPoCount] = await Promise.all([
+    supabase.from("vendor_price_agreements").select(SELECT).eq("org_id", resolvedOrgId).eq("id", newId).single(),
+    countOrdersPricedFrom(resolvedOrgId, [agreementId]),
+  ])
   if (reloadError || !created) throw new Error("Repriced agreement could not be reloaded")
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "price_agreement", entityId: agreementId, before: old, after: { superseded_by_id: newId } })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "price_agreement", entityId: agreementId, before: old, after: { superseded_by_id: newId, reason: parsed.reason } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "price_agreement", entityId: String(newId), after: created })
-  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "price_agreement.repriced", entityType: "price_agreement", entityId: String(newId), payload: { superseded_id: agreementId } })
-  return mapAgreement(created)
+  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "price_agreement.repriced", entityType: "price_agreement", entityId: String(newId), payload: { superseded_id: agreementId, reason: parsed.reason } })
+  return { agreement: mapAgreement(created), affectedPoCount }
 }
 
-async function setAgreementState(agreementId: string, update: Record<string, unknown>, eventType: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await authorize("price_book.write", orgId)
-  const { data: before, error: beforeError } = await supabase.from("vendor_price_agreements").select("*")
-    .eq("org_id", resolvedOrgId).eq("id", agreementId).maybeSingle()
-  if (beforeError || !before) throw new Error("Price agreement not found")
-  const { data, error } = await supabase.from("vendor_price_agreements").update(update)
-    .eq("org_id", resolvedOrgId).eq("id", agreementId).select(SELECT).single()
-  if (error || !data) throw new Error(`Failed to update agreement: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "price_agreement", entityId: agreementId, before, after: data })
-  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType, entityType: "price_agreement", entityId: agreementId })
-  return mapAgreement(data)
+async function changeAgreementState(
+  agreementId: string,
+  action: "void" | "end",
+  change: { reason: string; effectiveTo: string | null },
+  eventType: string,
+  orgId?: string,
+) {
+  const context = await authorize("price_book.write", orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  const before = await loadAgreementForChange(context, agreementId)
+  const { data: result, error } = await createServiceSupabaseClient().rpc("price_agreement_state", {
+    p_org_id: resolvedOrgId, p_agreement_id: agreementId, p_action: action,
+    p_effective_to: change.effectiveTo, p_reason: change.reason, p_actor_id: userId,
+  })
+  const affectedPoCount = result && typeof result === "object" && !Array.isArray(result) ? Reflect.get(result, "affected_po_count") : null
+  if (error || typeof affectedPoCount !== "number") throw new Error(`Failed to ${action} the agreement: ${error?.message}`)
+  const { data, error: reloadError } = await supabase.from("vendor_price_agreements").select(SELECT)
+    .eq("org_id", resolvedOrgId).eq("id", agreementId).single()
+  if (reloadError || !data) throw new Error("The agreement could not be reloaded")
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "price_agreement", entityId: agreementId, before, after: { ...data, reason: change.reason } })
+  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType, entityType: "price_agreement", entityId: agreementId, payload: { reason: change.reason, affected_po_count: affectedPoCount } })
+  return { agreement: mapAgreement(data), affectedPoCount }
 }
 
-export function voidPriceAgreement(agreementId: string, orgId?: string) {
-  return setAgreementState(agreementId, { status: "void" }, "price_agreement.voided", orgId)
+export function voidPriceAgreement(agreementId: string, input: { reason: string }, orgId?: string) {
+  const parsed = agreementVoidSchema.parse(input)
+  return changeAgreementState(agreementId, "void", { reason: parsed.reason, effectiveTo: null }, "price_agreement.voided", orgId)
 }
 
-export function setAgreementEnd(agreementId: string, effectiveTo: string, orgId?: string) {
-  return setAgreementState(agreementId, { effective_to: effectiveTo }, "price_agreement.ended", orgId)
+export function setAgreementEnd(agreementId: string, input: { effective_to: string; reason: string }, orgId?: string) {
+  const parsed = agreementEndSchema.parse(input)
+  return changeAgreementState(agreementId, "end", { reason: parsed.reason, effectiveTo: parsed.effective_to }, "price_agreement.ended", orgId)
 }
 
 export type AgreementScope = {
@@ -651,4 +735,114 @@ export async function importPriceAgreements({ rows, dryRun = true, orgId }: { ro
   }
   const insertable = dryRun ? pending.length : inserted.length
   return { total: parsed.length, insertable, skipped: parsed.length - insertable, dryRun }
+}
+
+export type RenewalBid = {
+  packageId: string
+  packageTitle: string
+  companyId: string
+  companyName: string
+  submissionId: string
+  price: PriceLine
+  deltaCents: number | null
+  deltaPct: number | null
+}
+
+export type RenewalRow = {
+  agreement: PriceAgreement
+  price: PriceLine
+  bids: RenewalBid[]
+  bestBidSubmissionId: string | null
+}
+
+const RENEWAL_PACKAGE_CAP = 300
+const OPEN_BID_STATUSES = ["draft", "sent", "open", "closed"]
+
+function agreementPrice(agreement: PriceAgreement): PriceLine {
+  return agreement.pricing_kind === "unit"
+    ? { kind: "unit", uom: agreement.uom ?? null, cents: agreement.unit_cost_cents ?? 0 }
+    : { kind: "lump_sum", uom: null, cents: agreement.lump_sum_cents ?? 0 }
+}
+
+/**
+ * Expiring agreements beside the replacement bids already on file for the same
+ * community, plan and cost code. Read-only: awarding the replacement is the bid
+ * package workbench's job. Bounded to one page of agreements, and the bid reads
+ * are bounded by it.
+ */
+export async function getRenewalCandidates(filters: Partial<RenewalFilters> = {}, orgId?: string) {
+  const parsed = renewalFiltersSchema.parse(filters)
+  const expiring = await listPriceAgreements({ divisionId: parsed.divisionId, expiringWithinDays: parsed.windowDays, page: parsed.page, pageSize: parsed.pageSize })
+  if (expiring.items.length === 0) return { rows: [] as RenewalRow[], count: expiring.count, page: expiring.page, pageSize: expiring.pageSize }
+  const { supabase, orgId: resolvedOrgId } = await authorize("price_book.read", orgId)
+
+  const costCodeIds = Array.from(new Set(expiring.items.map((agreement) => agreement.cost_code_id)))
+  const communityIds = Array.from(new Set(expiring.items.flatMap((agreement) => agreement.community_id ? [agreement.community_id] : [])))
+  const planIds = Array.from(new Set(expiring.items.flatMap((agreement) => agreement.house_plan_id ? [agreement.house_plan_id] : [])))
+  const scopeFilters = [
+    communityIds.length ? `community_id.in.(${communityIds.join(",")})` : null,
+    planIds.length ? `house_plan_id.in.(${planIds.join(",")})` : null,
+  ].filter((value): value is string => value !== null)
+  const empty = { rows: expiring.items.map((agreement): RenewalRow => ({ agreement, price: agreementPrice(agreement), bids: [], bestBidSubmissionId: null })), count: expiring.count, page: expiring.page, pageSize: expiring.pageSize }
+  if (scopeFilters.length === 0) return empty
+
+  const { data: packages, error: packageError } = await supabase.from("bid_packages").select("id, title, community_id, house_plan_id")
+    .eq("org_id", resolvedOrgId).eq("award_target", "price_agreement").in("status", OPEN_BID_STATUSES)
+    .or(scopeFilters.join(",")).order("created_at", { ascending: false }).limit(RENEWAL_PACKAGE_CAP)
+  if (packageError) throw new Error(`Failed to load replacement bid packages: ${packageError.message}`)
+  const packageIds = (packages ?? []).map((row) => row.id)
+  if (packageIds.length === 0) return empty
+
+  const [{ data: scopeItems, error: scopeError }, { data: invites, error: inviteError }] = await Promise.all([
+    supabase.from("bid_scope_items").select("id, bid_package_id, cost_code_id, unit")
+      .eq("org_id", resolvedOrgId).in("bid_package_id", packageIds).in("cost_code_id", costCodeIds),
+    supabase.from("bid_invites").select("id, bid_package_id, company_id, company:companies!bid_invites_org_company_fk(name)")
+      .eq("org_id", resolvedOrgId).in("bid_package_id", packageIds).eq("status", "submitted"),
+  ])
+  if (scopeError) throw new Error(`Failed to load replacement bid scope: ${scopeError.message}`)
+  if (inviteError) throw new Error(`Failed to load replacement bidders: ${inviteError.message}`)
+  if (!scopeItems?.length || !invites?.length) return empty
+
+  const { data: submissions, error: submissionError } = await supabase.from("bid_submissions").select("id, bid_invite_id")
+    .eq("org_id", resolvedOrgId).eq("is_current", true).in("status", ["submitted", "revised"]).in("bid_invite_id", invites.map((row) => row.id))
+  if (submissionError) throw new Error(`Failed to load replacement bids: ${submissionError.message}`)
+  if (!submissions?.length) return empty
+  const { data: items, error: itemError } = await supabase.from("bid_submission_items")
+    .select("bid_submission_id, bid_scope_item_id, amount_cents, unit_rate_cents, quantity")
+    .eq("org_id", resolvedOrgId).eq("response", "priced").in("bid_submission_id", submissions.map((row) => row.id)).in("bid_scope_item_id", scopeItems.map((row) => row.id))
+  if (itemError) throw new Error(`Failed to load replacement bid prices: ${itemError.message}`)
+
+  const packageById = new Map((packages ?? []).map((row) => [row.id, row]))
+  const scopeById = new Map(scopeItems.map((row) => [row.id, row]))
+  const inviteById = new Map(invites.map((row) => [row.id, row]))
+  const submissionById = new Map(submissions.map((row) => [row.id, row]))
+
+  const rows = expiring.items.map((agreement): RenewalRow => {
+    const price = agreementPrice(agreement)
+    const candidates: Array<{ price: PriceLine; bid: Omit<RenewalBid, "deltaCents" | "deltaPct"> }> = []
+    for (const item of items ?? []) {
+      const scope = scopeById.get(item.bid_scope_item_id)
+      const submission = submissionById.get(item.bid_submission_id)
+      const invite = submission ? inviteById.get(submission.bid_invite_id) : undefined
+      const pkg = scope ? packageById.get(scope.bid_package_id) : undefined
+      if (!scope || !submission || !invite || !pkg) continue
+      if (scope.cost_code_id !== agreement.cost_code_id) continue
+      if ((pkg.community_id ?? null) !== (agreement.community_id ?? null) || (pkg.house_plan_id ?? null) !== (agreement.house_plan_id ?? null)) continue
+      if (item.amount_cents == null) continue
+      const bidPrice: PriceLine = scope.unit == null
+        ? { kind: "lump_sum", uom: null, cents: Number(item.amount_cents) }
+        : { kind: "unit", uom: scope.unit, cents: Number(item.unit_rate_cents ?? Math.round(Number(item.amount_cents) / Math.max(Number(item.quantity ?? 1), 1))) }
+      candidates.push({ price: bidPrice, bid: {
+        packageId: pkg.id, packageTitle: pkg.title, companyId: invite.company_id, companyName: relatedName(invite.company) ?? "Unknown vendor",
+        submissionId: submission.id, price: bidPrice,
+      } })
+    }
+    const best = bestComparableBid(price, candidates)
+    const bids = candidates.map(({ bid }) => {
+      const comparison = bestComparableBid(price, [{ price: bid.price }])
+      return { ...bid, deltaCents: comparison?.comparison.deltaCents ?? null, deltaPct: comparison?.comparison.deltaPct ?? null }
+    })
+    return { agreement, price, bids, bestBidSubmissionId: best ? best.bid.bid.submissionId : null }
+  })
+  return { rows, count: expiring.count, page: expiring.page, pageSize: expiring.pageSize }
 }

@@ -75,3 +75,28 @@ export function vpoApprovalBlockReason({
   }
   return null
 }
+
+/**
+ * Cost evidence is the one fact an approver cannot check from the order itself.
+ * A back-charge always needs it; any other variance order needs it from the
+ * org's threshold upward (null: never, 0: always). Returns the message to fail
+ * with, or null when the order may be approved.
+ */
+export function vpoEvidenceBlockReason({
+  totalCents,
+  isBackcharge,
+  evidenceOverCents,
+  evidenceCount,
+}: {
+  totalCents: number
+  isBackcharge: boolean
+  evidenceOverCents: number | null
+  evidenceCount: number
+}): string | null {
+  if (evidenceCount > 0) return null
+  if (isBackcharge) return "A back-charge needs cost evidence (the damage report, photos or the vendor's agreement) before it is approved."
+  if (evidenceOverCents !== null && Math.abs(totalCents) >= evidenceOverCents) {
+    return "Attach cost evidence (a quote, invoice or receipt) before approving a variance order of this size."
+  }
+  return null
+}

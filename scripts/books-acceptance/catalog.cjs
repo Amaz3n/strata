@@ -41,6 +41,10 @@ const IMPLEMENTED = {
   "CUT-01": "./scenarios/cut-01.cjs",
   "RELEASE-01": "./scenarios/release-01.cjs",
   "TRADE-01": "./scenarios/trade-01.cjs",
+  "BID-01": "./scenarios/bid-01.cjs",
+  "PO-01": "./scenarios/po-01.cjs",
+  "VPO-01": "./scenarios/vpo-01.cjs",
+  "SUPPLY-01": "./scenarios/supply-01.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -63,21 +67,13 @@ const NOT_IMPLEMENTED = {
  * as open with its reason, so the scenario is INCOMPLETE rather than FAILED. An
  * incomplete production scenario does not fail an all-scenarios run; a failed one does.
  */
-const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" }, "FLOW-01": { checklist: "EP07-01" }, "CUT-01": { checklist: "EP07-18" }, "RELEASE-01": { checklist: "EP07-04" }, "TRADE-01": { checklist: "EP07-06" } }
+const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" }, "FLOW-01": { checklist: "EP07-01" }, "CUT-01": { checklist: "EP07-18" }, "RELEASE-01": { checklist: "EP07-04" }, "TRADE-01": { checklist: "EP07-06" }, "BID-01": { checklist: "EP08-03" }, "PO-01": { checklist: "EP08-07" }, "VPO-01": { checklist: "EP08-09" }, "SUPPLY-01": { checklist: "EP08-08" } }
 
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {
   "LOT-01": {
-    "purchasing-manager-reaches-a-house": "EP14-01",
     "agreement-signs-through-an-envelope": "EP14-01",
     "release-copies-the-plan-set": "EP14-01",
-    "addendum-can-be-issued-on-an-open-package": "EP08-01",
-    "purchasing-manager-runs-the-bid-workbench": "EP08-01",
-    "purchasing-manager-reads-the-history-of-awarded-homes": "EP08-04",
-    "purchasing-manager-resolves-an-exception-on-a-house": "EP08-06",
-    "purchasing-manager-requests-a-variance-order-on-a-house": "EP08-06",
-    "division-scoped-variance-report-matches-the-organisation-report": "EP08-12",
-    "variance-report-labels-the-superintendent": "EP08-12",
   },
 }
 

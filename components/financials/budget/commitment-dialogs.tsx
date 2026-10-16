@@ -9,6 +9,7 @@ import type { CommitmentSummary, CommitmentLine } from "@/lib/services/commitmen
 import type { CommitmentChangeOrderSummary } from "@/lib/services/commitment-change-orders"
 import { useToast } from "@/hooks/use-toast"
 import { unwrapAction } from "@/lib/action-result"
+import { isIssuedPurchaseOrder } from "@/lib/purchasing/po-lock"
 
 import { listBudgetCompaniesAction } from "@/app/(app)/projects/[id]/financials/budget/actions"
 import {
@@ -25,6 +26,10 @@ import {
   voidCommitmentChangeOrderAction,
 } from "@/app/(app)/projects/[id]/commitments/actions"
 import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
+import { listVarianceReasonsAction } from "@/app/(app)/purchasing/vpo-actions"
+import { PoIssuanceSection } from "@/components/purchasing/po-issuance-section"
+import { PoReconciliationSection } from "@/components/purchasing/po-reconciliation-section"
+import { VpoEvidenceUpload } from "@/components/purchasing/vpo-evidence-upload"
 import {
   attachFileAction,
   detachFileLinkAction,
@@ -168,7 +173,8 @@ export function CommitmentCreateDialog({
           company_id: companyId,
           title: title.trim(),
           total_cents: Math.round(n * 100),
-          status,
+          // An approved purchase order is locked, so its line goes on while it is a draft.
+          status: "draft",
           contract_number: contractNumber.trim() || null,
           retainage_percent: retainage,
           scope: scope.trim(),
@@ -182,6 +188,7 @@ export function CommitmentCreateDialog({
           unit: "LS",
           unit_cost_cents: Math.round(n * 100),
         }))
+        if (status === "approved") unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status: "approved" }))
         toast({ title: "Commitment created" })
         onOpenChange(false)
         router.refresh()
@@ -338,6 +345,8 @@ export function CommitmentEditDialog({
   const [retainagePercent, setRetainagePercent] = useState("")
   const [scope, setScope] = useState("")
   const [terms, setTerms] = useState("")
+  // An approved purchase order is issued to its vendor: only its status moves here.
+  const locked = commitment !== null && isIssuedPurchaseOrder(commitment.commitment_type, commitment.status)
 
   useEffect(() => {
     if (commitment) {
@@ -353,6 +362,19 @@ export function CommitmentEditDialog({
 
   const submit = () => {
     if (!commitment) return
+    if (locked) {
+      startTransition(async () => {
+        try {
+          unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status }))
+          toast({ title: "Commitment updated" })
+          onClose()
+          router.refresh()
+        } catch (error) {
+          toast({ title: "Unable to update commitment", description: (error as Error).message })
+        }
+      })
+      return
+    }
     if (title.trim().length < 2) {
       toast({ title: "Title required" })
       return
@@ -396,17 +418,21 @@ export function CommitmentEditDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit commitment</DialogTitle>
-          <DialogDescription>Update amount, status, scope, and commercial terms.</DialogDescription>
+          <DialogDescription>
+            {locked
+              ? "This purchase order is approved and locked. Raise a variance order to change its terms, or set the status to Draft to un-issue it."
+              : "Update amount, status, scope, and commercial terms."}
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
             <Label>Title</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} disabled={locked} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Commitment #</Label>
-              <Input value={contractNumber} onChange={(e) => setContractNumber(e.target.value)} />
+              <Input value={contractNumber} onChange={(e) => setContractNumber(e.target.value)} disabled={locked} />
             </div>
             <div className="space-y-1.5">
               <Label>Retainage (%)</Label>
@@ -414,6 +440,7 @@ export function CommitmentEditDialog({
                 value={retainagePercent}
                 onChange={(e) => setRetainagePercent(e.target.value)}
                 inputMode="decimal"
+                disabled={locked}
               />
             </div>
           </div>
@@ -424,6 +451,7 @@ export function CommitmentEditDialog({
                 value={totalDollars}
                 onChange={(e) => setTotalDollars(e.target.value)}
                 inputMode="decimal"
+                disabled={locked}
               />
               <p className="text-xs text-muted-foreground">
                 Once allocation lines exist, this total follows the line total.
@@ -446,11 +474,11 @@ export function CommitmentEditDialog({
           </div>
           <div className="space-y-1.5">
             <Label>Scope</Label>
-            <Textarea value={scope} onChange={(e) => setScope(e.target.value)} rows={3} />
+            <Textarea value={scope} onChange={(e) => setScope(e.target.value)} rows={3} disabled={locked} />
           </div>
           <div className="space-y-1.5">
             <Label>Terms</Label>
-            <Textarea value={terms} onChange={(e) => setTerms(e.target.value)} rows={3} />
+            <Textarea value={terms} onChange={(e) => setTerms(e.target.value)} rows={3} disabled={locked} />
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={onClose}>
@@ -542,6 +570,8 @@ export function CommitmentLinesDialog({
   }, [commitment?.id])
 
   const totalCents = lines.reduce((s, l) => s + (l.total_cents ?? 0), 0)
+  // An approved purchase order's lines are locked: a variance order changes them.
+  const linesLocked = commitment !== null && isIssuedPurchaseOrder(commitment.commitment_type, commitment.status)
   const approvedChangeOrdersCents = changeOrders
     .filter((changeOrder) => changeOrder.status === "approved")
     .reduce((sum, changeOrder) => sum + changeOrder.total_cents, 0)
@@ -562,7 +592,7 @@ export function CommitmentLinesDialog({
               {lines.length} {lines.length === 1 ? "line" : "lines"} · Total{" "}
               {formatCurrency(totalCents)}
             </p>
-            <Button size="sm" onClick={() => setCreating(true)}>
+            <Button size="sm" onClick={() => setCreating(true)} disabled={linesLocked} title={linesLocked ? "An approved purchase order is locked" : undefined}>
               <Plus className="h-4 w-4" />
               Add line
             </Button>
@@ -613,6 +643,7 @@ export function CommitmentLinesDialog({
                           variant="ghost"
                           className="h-7 text-xs"
                           onClick={() => setEditingLine(line)}
+                          disabled={linesLocked}
                         >
                           Edit
                         </Button>
@@ -632,6 +663,14 @@ export function CommitmentLinesDialog({
               </Table>
             </div>
           )}
+
+          {commitment?.commitment_type === "purchase_order" ? (
+            <PoIssuanceSection commitmentId={commitment.id} />
+          ) : null}
+
+          {commitment?.commitment_type === "purchase_order" ? (
+            <PoReconciliationSection projectId={projectId} commitmentId={commitment.id} />
+          ) : null}
 
           <div className="space-y-3 border-t pt-3">
             <div className="flex items-center justify-between gap-3">
@@ -687,6 +726,11 @@ export function CommitmentLinesDialog({
                           {changeOrder.source_change_order_title ? (
                             <span className="block text-xs text-muted-foreground">
                               From {changeOrder.source_change_order_title}
+                            </span>
+                          ) : null}
+                          {changeOrder.reason_label ? (
+                            <span className="block text-xs text-muted-foreground">
+                              {changeOrder.reason_label} · {changeOrder.evidence_file_ids.length} evidence {changeOrder.evidence_file_ids.length === 1 ? "file" : "files"}
                             </span>
                           ) : null}
                         </TableCell>
@@ -1036,9 +1080,23 @@ function CommitmentChangeOrderCreateDialog({
   const [description, setDescription] = useState("")
   const [lineId, setLineId] = useState("")
   const [amount, setAmount] = useState("0.00")
+  const [reasonId, setReasonId] = useState("")
+  const [reasons, setReasons] = useState<Array<{ id: string; label: string }>>([])
+  const [evidenceIds, setEvidenceIds] = useState<string[]>([])
+  const isPurchaseOrder = commitment?.commitment_type === "purchase_order"
+
+  useEffect(() => {
+    if (!open || !isPurchaseOrder) return
+    listVarianceReasonsAction().then((result) => {
+      if (result.success) setReasons(result.data)
+      else toast({ title: "Unable to load variance reasons", description: result.error })
+    })
+  }, [open, isPurchaseOrder, toast])
 
   useEffect(() => {
     if (!open) return
+    setReasonId("")
+    setEvidenceIds([])
     const firstLine = lines[0]
     setLineId(firstLine?.id ?? "")
     setTitle(firstLine ? `${firstLine.description} change` : "Commitment change order")
@@ -1064,6 +1122,8 @@ function CommitmentChangeOrderCreateDialog({
       try {
         unwrapAction(await createCommitmentChangeOrderAction(projectId, {
           commitment_id: commitment.id,
+          reason_code_id: isPurchaseOrder && reasonId ? reasonId : null,
+          evidence_file_ids: evidenceIds,
           title: title.trim(),
           description: description.trim() || null,
           lines: [
@@ -1131,6 +1191,32 @@ function CommitmentChangeOrderCreateDialog({
             <Label>Description</Label>
             <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
           </div>
+          {isPurchaseOrder ? (
+            <>
+              <div className="space-y-2">
+                <Label>Reason</Label>
+                <Select value={reasonId} onValueChange={setReasonId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Why is this order changing?" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {reasons.map((reason) => (
+                      <SelectItem key={reason.id} value={reason.id}>{reason.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Cost evidence</Label>
+                <div className="flex items-center gap-2">
+                  <VpoEvidenceUpload projectId={projectId} disabled={isPending} onUploaded={(ids) => setEvidenceIds((current) => [...current, ...ids])} />
+                  <span className="text-xs text-muted-foreground">
+                    {evidenceIds.length} attached. A quote, invoice or receipt; large orders and back-charges need one to be approved.
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>

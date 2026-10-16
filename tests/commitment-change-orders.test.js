@@ -37,10 +37,17 @@ const vpo = (overrides = {}) => ({
   ...overrides,
 })
 
-function harness({ orders = [vpo()] } = {}) {
+const HOME_FILE = id(8)
+const FOREIGN_FILE = id(9)
+
+function harness({ orders = [vpo()], permissions = ["project.read", "commitment.write", "vpo.request", "vpo.approve", "vpo.approve_large"] } = {}) {
   return createServiceHarness({
-    permissions: ["project.read", "commitment.write", "vpo.request", "vpo.approve", "vpo.approve_large"],
+    permissions,
     tables: {
+      files: [
+        { id: HOME_FILE, org_id: ORG, project_id: PROJECT, archived_at: null },
+        { id: FOREIGN_FILE, org_id: ORG, project_id: id(77), archived_at: null },
+      ],
       projects: [{ id: PROJECT, org_id: ORG }],
       commitments: [{ id: PO, org_id: ORG, project_id: PROJECT, commitment_type: "purchase_order", title: "Framing PO", status: "approved" }],
       variance_reason_codes: [
@@ -213,5 +220,50 @@ describe("a variance order an executed change order raised", () => {
   test("an office variance order is never passed off as one the change order raised", async () => {
     const service = harness()
     await assert.rejects(service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { origin: "design_studio_co" } })), /keeps its origin/)
+  })
+})
+
+describe("cost evidence and who may decide", () => {
+  const large = (overrides = {}) => vpo({ total_cents: 150_000, evidence_file_ids: [], ...overrides })
+
+  test("an order at or above the org's threshold is not approved without cost evidence", async () => {
+    const service = harness({ orders: [large()] })
+    await assert.rejects(service.run(() => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO })), /cost evidence/)
+    assert.equal(service.db.commitment_change_orders[0].status, "draft")
+
+    const attached = harness({ orders: [large({ evidence_file_ids: [HOME_FILE] })] })
+    const approved = await attached.run(() => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO }))
+    assert.equal(approved.status, "approved")
+  })
+
+  test("a back-charge always needs evidence, whatever the threshold says", async () => {
+    const service = harness({ orders: [vpo({ reason_code_id: BACKCHARGE, total_cents: -5_000, evidence_file_ids: [] })] })
+    await assert.rejects(service.run(() => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO })), /back-charge/i)
+  })
+
+  test("evidence the home does not own is refused when the order is raised or edited", async () => {
+    const service = harness({ orders: [] })
+    await assert.rejects(
+      service.run(() => createCommitmentChangeOrder({ input: { commitment_id: PO, reason_code_id: OVERAGE, title: "Extra", evidence_file_ids: [FOREIGN_FILE], lines: [line(10_000)] } })),
+      /cost evidence must be available and belong to this home/i,
+    )
+    assert.deepEqual(service.writes("commitment_change_orders"), [])
+
+    const existing = harness()
+    await assert.rejects(
+      existing.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { evidence_file_ids: [FOREIGN_FILE] } })),
+      /belong to this home/i,
+    )
+    await existing.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { evidence_file_ids: [HOME_FILE] } }))
+    assert.deepEqual(existing.db.commitment_change_orders[0].evidence_file_ids, [HOME_FILE])
+  })
+
+  test("rejecting an order needs the same approver its amount does", async () => {
+    const small = harness({ orders: [large({ evidence_file_ids: [HOME_FILE] })], permissions: ["project.read", "commitment.write", "vpo.approve"] })
+    await assert.rejects(small.run(() => rejectVarianceOrder({ commitmentChangeOrderId: VPO, reason: "No" })))
+    assert.equal(small.db.commitment_change_orders[0].status, "draft")
+
+    const approver = harness({ orders: [large({ evidence_file_ids: [HOME_FILE] })] })
+    assert.equal((await approver.run(() => rejectVarianceOrder({ commitmentChangeOrderId: VPO, reason: "No" }))).status, "rejected")
   })
 })

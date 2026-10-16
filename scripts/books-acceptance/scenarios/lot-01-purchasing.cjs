@@ -561,13 +561,13 @@ async function observePurchaseOrders(kit) {
   out.cleanWrote = { purchaseOrders: kit.rows(`select count(*)::int n from public.commitments where project_id=${kit.q(projectId)} and commitment_type='purchase_order'`)[0].n, previewRunsAdded: previewRuns() - runsBefore }
 
   // 2. One agreement ends in ten days: the preview warns, inside the org's 30-day window.
-  await kit.as(buyer, () => book.setAgreementEnd(agreementOf("Cypress Sitework"), inDays(10)))
+  await kit.as(buyer, () => book.setAgreementEnd(agreementOf("Cypress Sitework"), { effective_to: inDays(10), reason: "Agreement runs out with the community phase" }))
   out.expiring = shape(await preview()).expiring
 
   // 3. Gulf Concrete's agreement lapsed yesterday and Coastal Plumbing's is void: two price exceptions.
-  await kit.as(buyer, () => book.setAgreementEnd(agreementOf("Gulf Concrete"), inDays(-1)))
+  await kit.as(buyer, () => book.setAgreementEnd(agreementOf("Gulf Concrete"), { effective_to: inDays(-1), reason: "Vendor price lapsed" }))
   const coastal = agreementOf("Coastal Plumbing")
-  await kit.as(buyer, () => book.voidPriceAgreement(coastal))
+  await kit.as(buyer, () => book.voidPriceAgreement(coastal, { reason: "Entered against the wrong plan" }))
   const withExceptions = await preview()
   out.withExceptions = shape(withExceptions)
   out.exceptionCandidates = Object.fromEntries(withExceptions.exceptions.map((item) => [item.reason, item.candidates.length]))
@@ -583,7 +583,7 @@ async function observePurchaseOrders(kit) {
     malformedFingerprint: /regex|Invalid/i.test(await attempt(() => commit(buyer, "not-a-hash"))) ? "refused: malformed fingerprint" : "allowed",
     differentAsOfDate: refusal(await attempt(() => commit(buyer, fingerprint, { asOfDate: inDays(1) }))),
   }
-  await kit.as(buyer, () => book.repriceAgreement(agreementOf("Palmetto Framing"), { effective_from: today, unit_cost_cents: 4500 }))
+  await kit.as(buyer, () => book.repriceAgreement(agreementOf("Palmetto Framing"), { effective_from: today, unit_cost_cents: 4500, reason: "Lumber index moved" }))
   out.commitRefusals.priceMovedAfterPreview = refusal(await attempt(() => commit(buyer, fingerprint)))
   out.commitRefusals.wrongRole = reason(await attempt(() => commit(org.team.sales, fingerprint)))
   out.commitRefusals.purchaseOrdersWritten = before()
@@ -705,8 +705,10 @@ async function observeVariance(kit) {
   kit.sql(`insert into public.project_members(org_id,project_id,user_id,role_id,status) select ${kit.q(org.orgId)},${kit.q(closedHome)},${kit.q(org.team.superintendent.userId)},id,'active' from public.roles where key='field' on conflict (project_id,user_id) do nothing`)
 
   const requested = []
+  // The buyer attaches the vendor's quote to each order: from the org threshold up, and for every back-charge, approval needs cost evidence.
+  const quoteOf = (projectId) => { const id = randomUUID(); kit.sql(`insert into public.files(id,org_id,project_id,file_name,storage_path,category) values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(projectId)},'quote.pdf',${kit.q(`${org.orgId}/${projectId}/variance-quote-${id}.pdf`)},'financials')`); return id }
   const request = async (projectId, vendor, reasonCode, cents, approvedAt) => {
-    const created = await kit.as(buyer, () => orders.createCommitmentChangeOrder({ input: { commitment_id: orderOf(projectId, vendor), reason_code_id: reasons[reasonCode], title: `${reasonCode} ${vendor}`, lines: [{ description: reasonCode, quantity: 1, unit_cost_cents: cents }] } }))
+    const created = await kit.as(buyer, () => orders.createCommitmentChangeOrder({ input: { commitment_id: orderOf(projectId, vendor), reason_code_id: reasons[reasonCode], title: `${reasonCode} ${vendor}`, evidence_file_ids: [quoteOf(projectId)], lines: [{ description: reasonCode, quantity: 1, unit_cost_cents: cents }] } }))
     await kit.as(org.owner, () => orders.approveCommitmentChangeOrder({ commitmentChangeOrderId: created.id }))
     kit.sql(`update public.commitment_change_orders set approved_at=${kit.q(approvedAt)}::timestamptz where id=${kit.q(created.id)}`)
     requested.push({ id: created.id, projectId, vendor, reasonCode, cents, approvedAt })

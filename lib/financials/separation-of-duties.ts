@@ -19,6 +19,8 @@ export type SeparationRule =
   | "payment_run.preparer_cannot_approve"
   | "budget_transfer.requester_cannot_approve"
   | "variance_order.requester_cannot_approve"
+  | "po_completion.reporter_cannot_verify"
+  | "po_completion.approver_cannot_have_reported_or_verified"
 
 export const BILL_SELF_APPROVAL_MESSAGE =
   "You entered this payable, so someone else has to approve it."

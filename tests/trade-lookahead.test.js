@@ -34,10 +34,10 @@ function schedule(i, { multipleTrades = false, unresolved = false, status = "pla
   }
 }
 
-function purchaseOrderLine(i, { status = "approved", company = COMPANY, name = "Partner" } = {}) {
+function purchaseOrderLine(i, { status = "approved", company = COMPANY, name = "Partner", issuedAt = "2026-10-01T00:00:00Z" } = {}) {
   return {
     id: `line-${i}-${company}`, org_id: ORG, cost_code_id: "cost", "commitment.project_id": `project-${i}`, "commitment.org_id": ORG,
-    "commitment.commitment_type": "purchase_order", "commitment.status": status,
+    "commitment.commitment_type": "purchase_order", "commitment.status": status, "commitment.issued_at": issuedAt,
     commitment: { project_id: `project-${i}`, company_id: company, company: { name } },
   }
 }
@@ -126,6 +126,9 @@ test("a purchase-order vendor is an inference, only from an awarded order, and n
   assert.equal((await h.getTradeLookahead({ weeks: 3 })).rows[0].companyId, null, "a canceled order awards nothing")
   h.store.commitment_lines[0]["commitment.status"] = "complete"
   assert.equal((await h.getTradeLookahead({ weeks: 3 })).rows[0].items[0].assignment, "inferred")
+  h.store.commitment_lines[0]["commitment.issued_at"] = null
+  assert.equal((await h.getTradeLookahead({ weeks: 3 })).rows[0].companyId, null, "an order never issued to the vendor awards nothing")
+  h.store.commitment_lines[0]["commitment.issued_at"] = "2026-10-01T00:00:00Z"
   assert.deepEqual([...LOOKAHEAD_PO_STATUSES], ["approved", "complete"])
 
   h.store.commitment_lines.push(purchaseOrderLine(0, { company: "other-company", name: "Other" }))
@@ -425,6 +428,7 @@ test("the fallback filters the purchase-order parent to awarded orders and never
     assert.equal(url.searchParams.get("commitment.project_id"), `in.(${home})`)
     assert.equal(url.searchParams.get("commitment.commitment_type"), "eq.purchase_order")
     assert.equal(url.searchParams.get("commitment.status"), "in.(approved,complete)")
+    assert.equal(url.searchParams.get("commitment.issued_at"), "not.is.null")
     return json([{ id: "line-a", cost_code_id: "cost", commitment: { project_id: home, company_id: COMPANY, company: { name: "PO company" } } }])
   } } })
   const result = await harness({ client, count: 0 }).getTradeLookaheadWorkspace({ weeks: 3 })

@@ -16,6 +16,7 @@ import {
   createBidAddendumInputSchema,
   awardBidSubmissionInputSchema,
   rescindBidAwardInputSchema,
+  priceBookAwardPreviewInputSchema,
   bulkCreateBidInvitesInputSchema,
   manualBidSubmissionInputSchema,
   saveBidScopeItemsInputSchema,
@@ -35,6 +36,8 @@ import type { Rfi, RfiResponse } from "@/lib/types"
 import { getBidInvitePrequalificationWarnings } from "@/lib/services/prequalification"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 import { getDivisionAccessForUser, getDivisionScopedProjectIds } from "@/lib/services/authorization"
+import { displacedByAward } from "@/lib/financials/award-displacement"
+import { comparePrice, type PriceLine } from "@/lib/financials/renewal-compare"
 
 async function getBidInviteComplianceWarnings(companyIds: string[], orgId: string): Promise<Map<string,string>> {
   const ids = Array.from(new Set(companyIds.filter(Boolean)))
@@ -233,6 +236,7 @@ export interface BidAwardResult {
   awardId: string
   commitmentId?: string
   agreementIds?: string[]
+  displacedAgreementIds?: string[]
 }
 
 export interface BidActivityItem {
@@ -1102,6 +1106,7 @@ export async function listBidPackages(projectId: string, orgId?: string): Promis
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
   await ensureProjectInOrg(projectId, resolvedOrgId, supabase)
+  await assertBidProjectVisibility(projectId, resolvedOrgId, userId, supabase)
 
   const { data, error } = await supabase
     .from("bid_packages")
@@ -1143,6 +1148,7 @@ export async function getProjectBuyoutSummary(projectId: string, orgId?: string)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
   await ensureProjectInOrg(projectId, resolvedOrgId, supabase)
+  await assertBidProjectVisibility(projectId, resolvedOrgId, userId, supabase)
 
   const { data: packages, error: packagesError } = await supabase
     .from("bid_packages")
@@ -1512,18 +1518,6 @@ export async function listOrgBidPackages(orgId?: string, divisionId?: string): P
   })
 }
 
-export async function listCommunityBidPackages(communityId: string, orgId?: string): Promise<BidPackage[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["bid.read", "price_book.read"], { supabase, orgId: resolvedOrgId, userId })
-  const { data: community } = await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).eq("id", communityId).maybeSingle()
-  if (!community) throw new Error("Community not found")
-  const { data, error } = await supabase.from("bid_packages").select(`
-    ${BID_PACKAGE_COLUMNS}, cost_code:cost_codes(code, name), bid_invites!bid_invites_org_package_fk(count)
-  `).eq("org_id", resolvedOrgId).eq("community_id", communityId).order("due_at", { ascending: false }).limit(200)
-  if (error) throw new Error(`Failed to list community bid packages: ${error.message}`)
-  return decorateBidPackageSummaries(supabase, resolvedOrgId, (data ?? []).map(mapBidPackage))
-}
-
 export async function listBidScopeItems(bidPackageId: string, orgId?: string): Promise<BidScopeItem[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
@@ -1770,6 +1764,12 @@ export async function updateBidPackage({
   if (existing.status !== "draft" && (parsed.scope !== undefined || parsed.instructions !== undefined || parsed.mode !== undefined)) {
     throw new Error("Start a scope revision before changing an issued package's scope or instructions.")
   }
+  const changesParent = (parsed.community_id !== undefined && parsed.community_id !== existing.community_id)
+    || (parsed.house_plan_id !== undefined && parsed.house_plan_id !== existing.house_plan_id)
+    || (parsed.cost_code_id !== undefined && parsed.cost_code_id !== existing.cost_code_id)
+  if (existing.status !== "draft" && changesParent) {
+    throw new Error("An issued bid package keeps its community, plan and cost code.")
+  }
   const isDueDateUpdated = parsed.due_at !== undefined && parsed.due_at !== existing.due_at
 
   if (parsed.cost_code_id) {
@@ -1794,7 +1794,6 @@ export async function updateBidPackage({
   if (parsed.title !== undefined) updates.title = parsed.title
   if (parsed.community_id !== undefined) updates.community_id = parsed.community_id
   if (parsed.house_plan_id !== undefined) updates.house_plan_id = parsed.house_plan_id
-  if (parsed.award_target !== undefined) updates.award_target = parsed.award_target
   if (resolvedUpdateCostCodeId !== undefined) updates.cost_code_id = resolvedUpdateCostCodeId
   if (parsed.budget_line_id !== undefined) updates.budget_line_id = parsed.budget_line_id
   if (parsed.trade !== undefined) updates.trade = parsed.trade
@@ -2146,7 +2145,7 @@ export async function setBidInviteRequireAccount({
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   await ensureBidInviteAccess(inviteId, resolvedOrgId, supabase)
 
@@ -2933,7 +2932,7 @@ export type BidNotificationOutcome = {
 /** Retry the same notice; never manufacture a second addendum or invalidate existing links. */
 export async function retryBidAddendumNotifications({ addendumId, orgId }: { addendumId: string; orgId?: string }): Promise<BidNotificationOutcome> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId });
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId });
   const { data: notice, error } = await supabase.from("bid_addenda").select("*").eq("org_id", resolvedOrgId).eq("id", addendumId).single();
   if (error || !notice) throw new Error("Bid notice not found.");
   const pkg = await getBidPackage(notice.bid_package_id, resolvedOrgId);
@@ -3364,10 +3363,35 @@ export async function updateBidSubmissionItemLeveling({
   return mapBidSubmissionItem(data)
 }
 
+/** What rescinding a package's active price-book award would void, restore and leave priced on open orders. */
+export async function previewRescindImpact({ bidPackageId, orgId }: { bidPackageId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
+  await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
+  const { data: award, error: awardError } = await supabase.from("bid_awards").select("id")
+    .eq("org_id", resolvedOrgId).eq("bid_package_id", bidPackageId).is("rescinded_at", null).maybeSingle()
+  if (awardError) throw new Error(`Failed to load the award: ${awardError.message}`)
+  if (!award) return { agreementCount: 0, restorableCount: 0, affectedPoCount: 0 }
+  const service = createServiceSupabaseClient()
+  const { data: minted, error: mintedError } = await service.from("vendor_price_agreements").select("id, metadata")
+    .eq("org_id", resolvedOrgId).eq("source_bid_award_id", award.id).in("status", ["draft", "active"])
+  if (mintedError) throw new Error(`Failed to load the agreements this award minted: ${mintedError.message}`)
+  const ids = (minted ?? []).map((row) => row.id as string)
+  const restorable = (minted ?? []).reduce((sum, row) => sum + (Array.isArray(row.metadata?.supersedes) ? row.metadata.supersedes.length : 0), 0)
+  if (ids.length === 0) return { agreementCount: 0, restorableCount: restorable, affectedPoCount: 0 }
+  const { data: affected, error: countError } = await service.rpc("price_agreement_order_count", { p_org_id: resolvedOrgId, p_agreement_ids: ids })
+  if (countError || typeof affected !== "number") throw new Error(`Failed to count the orders priced from this award: ${countError?.message}`)
+  return { agreementCount: ids.length, restorableCount: restorable, affectedPoCount: affected }
+}
+
 export interface BidAwardRescindResult {
   bidPackageId: string
   commitmentId: string | null
   commitmentCanceled: boolean
+  voidedAgreementCount: number
+  restoredAgreementCount: number
+  skippedAgreementCount: number
+  affectedPoCount: number
 }
 
 /** Rescind an award: cancels the draft/approved subcontract (refused once
@@ -3382,7 +3406,7 @@ export async function rescindBidAward({
 }): Promise<BidAwardRescindResult> {
   const parsed = rescindBidAwardInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
 
   const { data: award, error: awardError } = await supabase
@@ -3424,6 +3448,10 @@ export async function rescindBidAward({
       bid_award_id: award.id,
       reason: parsed.reason,
       commitment_id: row?.commitment_id ?? null,
+      voided_agreement_ids: row?.voided_agreement_ids ?? [],
+      restored_agreement_ids: row?.restored_agreement_ids ?? [],
+      skipped_agreement_ids: row?.skipped_agreement_ids ?? [],
+      affected_po_count: row?.affected_po_count ?? 0,
     },
   })
 
@@ -3433,13 +3461,18 @@ export async function rescindBidAward({
     action: "update",
     entityType: "bid_award",
     entityId: award.id,
-    after: { rescinded: true, reason: parsed.reason },
+    after: { rescinded: true, reason: parsed.reason, affected_po_count: row?.affected_po_count ?? 0 },
   })
 
+  const count = (value: unknown) => (Array.isArray(value) ? value.length : 0)
   return {
     bidPackageId: parsed.bid_package_id,
     commitmentId: (row?.commitment_id as string | null) ?? null,
     commitmentCanceled: !!row?.commitment_canceled,
+    voidedAgreementCount: count(row?.voided_agreement_ids),
+    restoredAgreementCount: count(row?.restored_agreement_ids),
+    skippedAgreementCount: count(row?.skipped_agreement_ids),
+    affectedPoCount: typeof row?.affected_po_count === "number" ? row.affected_po_count : 0,
   }
 }
 
@@ -3721,6 +3754,57 @@ export async function getBidPackageAward(bidPackageId: string, orgId?: string): 
   }
 }
 
+/** Tell the winner they won and everyone else who bid that they were not selected. A failure to queue a notice never undoes the award. */
+async function queueAwardNotices({ supabase, orgId, bidPackage, winnerInviteId, awardId }: {
+  supabase: any
+  orgId: string
+  bidPackage: { id: string; title: string; project_id: string | null; prospect_id: string | null; community_id: string | null; house_plan_id: string | null }
+  winnerInviteId: string
+  awardId: string
+}) {
+  try {
+    const { data: org } = await supabase
+      .from("orgs")
+      .select("id, name, logo_url, slug")
+      .eq("id", orgId)
+      .maybeSingle()
+    const { data: allInvites } = await supabase
+      .from("bid_invites")
+      .select(`
+        id, org_id, bid_package_id, company_id, contact_id, invite_email, status,
+        company:companies!bid_invites_org_company_fk(id, name, email),
+        contact:contacts!bid_invites_org_contact_fk(id, full_name, email)
+      `)
+      .eq("org_id", orgId)
+      .eq("bid_package_id", bidPackage.id)
+      .in("status", ["sent", "viewed", "submitted"])
+
+    const jobName = await resolveBidPackageJobName(supabase, orgId, bidPackage)
+    for (const inviteRow of allInvites ?? []) {
+      const inviteForEmail = mapBidInvite(inviteRow)
+      const emailTo = getBidEmailRecipient(inviteForEmail)
+      if (!emailTo) continue
+      await enqueueBidEmail(orgId, {
+        kind: "award_notice",
+        to: emailTo,
+        outcome: inviteForEmail.id === winnerInviteId ? "winner" : "not_selected",
+        companyName: inviteForEmail.company?.name,
+        contactName: inviteForEmail.contact?.full_name,
+        projectName: jobName,
+        bidPackageTitle: bidPackage.title,
+        orgName: org?.name,
+        orgLogoUrl: org?.logo_url,
+        orgSlug: org?.slug,
+        bidPackageId: bidPackage.id,
+        inviteId: inviteForEmail.id,
+        awardId,
+      })
+    }
+  } catch (noticeError) {
+    console.error("Failed to queue bid award notices", noticeError)
+  }
+}
+
 export async function awardBidSubmission({
   input,
   orgId,
@@ -3800,23 +3884,25 @@ export async function awardBidSubmission({
       p_awarded_by: userId,
       p_notes: [parsed.notes, `Reviewed scope: ${parsed.reviewed_scope}`, `Commercial terms: ${parsed.reviewed_terms}`, parsed.readiness_exception ? `Readiness exception: ${parsed.readiness_exception}` : null].filter(Boolean).join("\n\n"),
       p_accepted_alternate_ids: parsed.accepted_alternate_ids ?? [],
+      p_effective_from: parsed.effective_from ?? null,
     })
     if (awardError || !result?.award_id) throw new Error(`Failed to award bid to the price book: ${awardError?.message}`)
     // Money creates roles: an awarded price agreement makes the winner a vendor.
     await ensureVendorRoleWithClient(supabase, resolvedOrgId, invite.company_id, userId)
-    const agreementIds = Array.isArray(result.agreement_ids)
-      ? result.agreement_ids.filter((id: unknown): id is string => typeof id === "string")
-      : []
+    const idsOf = (value: unknown) => Array.isArray(value) ? value.filter((id: unknown): id is string => typeof id === "string") : []
+    const agreementIds = idsOf(result.agreement_ids)
+    const displacedAgreementIds = idsOf(result.displaced_ids)
     await recordEvent({
       orgId: resolvedOrgId, actorId: userId, eventType: "bid_package.awarded_to_price_book",
       entityType: "bid_package", entityId: bidPackage.id,
-      payload: { bid_package_id: bidPackage.id, bid_submission_id: submission.id, agreement_ids: agreementIds },
+      payload: { bid_package_id: bidPackage.id, bid_submission_id: submission.id, agreement_ids: agreementIds, displaced_agreement_ids: displacedAgreementIds, effective_from: parsed.effective_from ?? null },
     })
     await recordAudit({
       orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "bid_package",
       entityId: bidPackage.id, before: bidPackage, after: { ...bidPackage, status: "awarded", award_id: result.award_id },
     })
-    return { awardId: result.award_id, agreementIds }
+    await queueAwardNotices({ supabase, orgId: resolvedOrgId, bidPackage, winnerInviteId: invite.id, awardId: result.award_id })
+    return { awardId: result.award_id, agreementIds, displacedAgreementIds }
   }
 
   let awardProjectId = bidPackage.project_id as string | null
@@ -3911,51 +3997,96 @@ export async function awardBidSubmission({
   // Money creates roles: the subcontract this award cut makes the winner a vendor.
   await ensureVendorRoleWithClient(supabase, resolvedOrgId, invite.company_id, userId)
 
-  try {
-    const { data: org } = await supabase
-      .from("orgs")
-      .select("id, name, logo_url, slug")
-      .eq("id", resolvedOrgId)
-      .maybeSingle()
-    const { data: allInvites } = await supabase
-      .from("bid_invites")
-      .select(`
-        id, org_id, bid_package_id, company_id, contact_id, invite_email, status,
-        company:companies!bid_invites_org_company_fk(id, name, email),
-        contact:contacts!bid_invites_org_contact_fk(id, full_name, email)
-      `)
-      .eq("org_id", resolvedOrgId)
-      .eq("bid_package_id", bidPackage.id)
-      .in("status", ["sent", "viewed", "submitted"])
-
-    const jobName = await resolveBidPackageJobName(supabase, resolvedOrgId, bidPackage)
-    for (const inviteRow of allInvites ?? []) {
-      const inviteForEmail = mapBidInvite(inviteRow)
-      const emailTo = getBidEmailRecipient(inviteForEmail)
-      if (!emailTo) continue
-      const isWinner = inviteForEmail.id === invite.id
-      await enqueueBidEmail(resolvedOrgId, {
-        kind: "award_notice",
-        to: emailTo,
-        outcome: isWinner ? "winner" : "not_selected",
-        companyName: inviteForEmail.company?.name,
-        contactName: inviteForEmail.contact?.full_name,
-        projectName: jobName,
-        bidPackageTitle: bidPackage.title,
-        orgName: org?.name,
-        orgLogoUrl: org?.logo_url,
-        orgSlug: org?.slug,
-        bidPackageId: bidPackage.id,
-        inviteId: inviteForEmail.id,
-        awardId: result.awardId,
-      })
-    }
-  } catch (noticeError) {
-    console.error("Failed to queue bid award notices", noticeError)
-  }
+  await queueAwardNotices({ supabase, orgId: resolvedOrgId, bidPackage, winnerInviteId: invite.id, awardId: result.awardId })
 
   return {
     awardId: result.awardId,
     commitmentId: result.commitmentId,
   }
+}
+
+export interface PriceBookAwardPreviewLine {
+  costCodeId: string
+  costCode: string | null
+  description: string
+  price: PriceLine
+  replaces: Array<{
+    agreementId: string
+    vendorName: string
+    price: PriceLine
+    deltaCents: number | null
+    deltaPct: number | null
+    startsOn: string
+    endsOn: string
+  }>
+}
+
+/** What awarding this bid to the price book would replace, and when each standing price ends. Read-only: the award is `awardBidSubmission`. */
+export async function previewPriceBookAward({ input, orgId }: { input: unknown; orgId?: string }): Promise<PriceBookAwardPreviewLine[]> {
+  const parsed = priceBookAwardPreviewInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
+  await ensureBidSubmissionAccess(parsed.bid_submission_id, resolvedOrgId, supabase)
+
+  const { data: submission } = await supabase.from("bid_submissions").select("id, bid_invite_id")
+    .eq("org_id", resolvedOrgId).eq("id", parsed.bid_submission_id).maybeSingle()
+  const { data: invite } = submission
+    ? await supabase.from("bid_invites").select("id, bid_package_id").eq("org_id", resolvedOrgId).eq("id", submission.bid_invite_id).maybeSingle()
+    : { data: null }
+  const { data: bidPackage } = invite
+    ? await supabase.from("bid_packages").select("id, award_target, community_id, house_plan_id").eq("org_id", resolvedOrgId).eq("id", invite.bid_package_id).maybeSingle()
+    : { data: null }
+  if (!bidPackage) throw new Error("Bid package not found")
+  if (bidPackage.award_target !== "price_agreement") throw new Error("Only a price-book package replaces standing prices")
+
+  const { data: items, error: itemsError } = await supabase.from("bid_submission_items")
+    .select("amount_cents, unit_rate_cents, quantity, description, scope:bid_scope_items!inner(id, cost_code_id, item_type, unit, position)")
+    .eq("org_id", resolvedOrgId).eq("bid_submission_id", parsed.bid_submission_id).eq("response", "priced").not("amount_cents", "is", null)
+  if (itemsError) throw new Error(`Failed to load the bid's priced lines: ${itemsError.message}`)
+
+  const lines = (items ?? []).flatMap((item: any) => {
+    const scope = Array.isArray(item.scope) ? item.scope[0] : item.scope
+    if (!scope?.cost_code_id) return []
+    if (scope.item_type === "alternate" && !parsed.accepted_alternate_ids.includes(scope.id)) return []
+    const price: PriceLine = scope.unit == null
+      ? { kind: "lump_sum", uom: null, cents: Number(item.amount_cents) }
+      : { kind: "unit", uom: scope.unit, cents: Number(item.unit_rate_cents ?? Math.round(Number(item.amount_cents) / Math.max(Number(item.quantity ?? 1), 1))) }
+    return [{ position: Number(scope.position ?? 0), costCodeId: String(scope.cost_code_id), costCode: null as string | null, description: String(item.description), price }]
+  }).sort((a: { position: number }, b: { position: number }) => a.position - b.position)
+  if (lines.length === 0) return []
+
+  const { data: codes, error: codesError } = await supabase.from("cost_codes").select("id, code")
+    .eq("org_id", resolvedOrgId).in("id", Array.from(new Set(lines.map((line: { costCodeId: string }) => line.costCodeId))))
+  if (codesError) throw new Error(`Failed to load the cost codes: ${codesError.message}`)
+  const codeById = new Map((codes ?? []).map((row: { id: string; code: string }) => [row.id, row.code]))
+  for (const line of lines) line.costCode = codeById.get(line.costCodeId) ?? null
+
+  const { data: standing, error: standingError } = await supabase.from("vendor_price_agreements")
+    .select("*, company:companies(name)")
+    .eq("org_id", resolvedOrgId).eq("status", "active").in("cost_code_id", Array.from(new Set(lines.map((line: { costCodeId: string }) => line.costCodeId))))
+  if (standingError) throw new Error(`Failed to load the standing prices: ${standingError.message}`)
+
+  return lines.map((line: { costCodeId: string; costCode: string | null; description: string; price: PriceLine }) => ({
+    costCodeId: line.costCodeId,
+    costCode: line.costCode,
+    description: line.description,
+    price: line.price,
+    replaces: displacedByAward(standing ?? [], { costCodeId: line.costCodeId, communityId: bidPackage.community_id ?? null, housePlanId: bidPackage.house_plan_id ?? null }, parsed.effective_from).map(({ agreement, endsOn }) => {
+      const standingPrice: PriceLine = agreement.pricing_kind === "unit"
+        ? { kind: "unit", uom: agreement.uom ?? null, cents: agreement.unit_cost_cents ?? 0 }
+        : { kind: "lump_sum", uom: null, cents: agreement.lump_sum_cents ?? 0 }
+      const comparison = comparePrice(standingPrice, line.price)
+      const company = Reflect.get(agreement, "company")
+      const companyRow = Array.isArray(company) ? company[0] : company
+      return {
+        agreementId: agreement.id,
+        vendorName: companyRow && typeof companyRow === "object" && typeof Reflect.get(companyRow, "name") === "string" ? String(Reflect.get(companyRow, "name")) : "Unknown vendor",
+        price: standingPrice,
+        deltaCents: comparison.comparable ? comparison.deltaCents : null,
+        deltaPct: comparison.comparable ? comparison.deltaPct : null,
+        startsOn: agreement.effective_from,
+        endsOn,
+      }
+    }),
+  }))
 }

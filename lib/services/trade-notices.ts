@@ -17,7 +17,7 @@ import {
 
 const ATTENTION_LIMIT = 50
 
-export type TradeNoticeKind = "lookahead" | "release" | "schedule_change"
+export type TradeNoticeKind = "lookahead" | "release" | "schedule_change" | "po_issued"
 export type TradeNoticeOutcome = "sent" | "duplicate" | "skipped"
 
 export interface TradeNoticeDraft {

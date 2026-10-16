@@ -65,6 +65,7 @@ const CATEGORY_BY_TYPE: Record<SearchEntityType, PreviewCategory> = {
   permit_application: "request",
   price_agreement: "financial",
   commitment_change_order: "financial",
+  po_completion: "financial",
   selection_option: "general",
   selection_exception: "request",
   design_studio_appointment: "schedule",

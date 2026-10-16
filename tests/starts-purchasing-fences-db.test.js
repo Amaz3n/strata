@@ -71,123 +71,394 @@ test("service-role execution can create a PO line mapped to its owned budget",as
  await h.db.query("insert into commitment_lines(org_id,commitment_id,budget_line_id) values($1,$2,$3)",[ORG,po,line])
 })
 
-// Replay the repository RPC, rather than a hand-written approximation. This
-// fixture adds its columns and hot FK actions; it is not the full schema chain.
-async function setupCommit(t,patched=true){
- const h=await setup(t)
- await h.db.exec(`
- create type public.cost_type as enum ('labor','material','equipment','other');
- alter table budgets add column version integer,add column status text,add column total_cents integer,add column metadata jsonb;
- alter table budget_lines add column cost_code_id uuid,add column description text,add column amount_cents integer,add column sort_order integer,add column cost_type cost_type,add column metadata jsonb,
- add foreign key(budget_id) references budgets(id) on delete cascade;
- alter table commitments add column title text,add column status text,add column total_cents integer,add column currency text,add column contract_number text,add column scope text,add column issued_at timestamptz,add column metadata jsonb;
- alter table commitment_lines add column cost_code_id uuid,add column description text,add column quantity numeric,add column unit text,add column unit_cost_cents integer,add column scheduled_value_cents integer,add column sort_order integer,add column metadata jsonb,
- add foreign key(commitment_id) references commitments(id) on delete cascade,
- add foreign key(budget_line_id) references budget_lines(id) on delete set null;
- alter table po_generation_runs add column mode text default 'commit',add column status text default 'running',add column input_fingerprint text,add column summary jsonb,add column completed_at timestamptz;
- alter table po_generation_exceptions add column cost_code_id uuid,add column source_kind text,add column source_ref jsonb,add column description text,add column quantity numeric,add column uom text,add column reason text,add column candidates jsonb;
- alter table project_vendors add column role text,add column scope text,add column status text,add column notes text,add unique(project_id,company_id);
- create table vendor_bills(id uuid primary key default gen_random_uuid(),org_id uuid,commitment_id uuid references commitments(id));
- `)
- await h.db.exec(fs.readFileSync(require.resolve('../supabase/migrations/20260817120100_po_generation_serialization.sql'),'utf8'))
- if(patched)await h.db.exec(migrationSql("20261003032000_po_regeneration_fenced_children"))
- const run=async()=> (await h.db.query("insert into po_generation_runs(org_id,project_id,lot_id,input_fingerprint) values($1,$2,$3,replace(gen_random_uuid()::text||gen_random_uuid()::text,'-','')) returning id",[ORG,HOME,LOT])).rows[0].id
- const payload={total_cents:100,budget_lines:[{description:'Framing',amount_cents:100,cost_type:'labor'}],purchase_orders:[{company_id:VENDOR,title:'Framing',total_cents:100,lines:[{description:'Framing',quantity:1,unit:'ea',unit_cost_cents:100,total_cents:100,cost_type:'labor'}]}],exceptions:[{source_kind:'option',source_ref:{option_id:'missing'},description:'Unpriced option',reason:'no_agreement'}],summary:{exception_count:1}}
- const commit=async(id,prior=null,overrides={})=>(await h.db.query("select run_po_generation_commit($1,$2,$3) result",[ORG,id,{...payload,...overrides,prior_run_id:prior}])).rows[0].result
- return {...h,run,commit,payload}
+// ---------------------------------------------------------------------------
+// run_po_generation_commit: the repository RPC replayed over a fixture that adds
+// only the columns the function reads. Each case is one claim about what a house's
+// purchase orders and budget look like after a commit.
+
+const CODE = "00000000-0000-4000-8000-0000000000c1"
+const OTHER_CODE = "00000000-0000-4000-8000-0000000000c2"
+const SECOND_VENDOR = "00000000-0000-4000-8000-0000000000a2"
+const AGREEMENT = "00000000-0000-4000-8000-0000000000a1"
+const PREFIX = "PO-CYP-7"
+
+async function setupCommit(t) {
+  const h = await setup(t)
+  await h.db.exec(`
+    create type public.cost_type as enum ('labor','material','equipment','other');
+    create function public.is_org_member(uuid) returns boolean language sql as 'select true';
+    alter table budgets add column version integer, add column status text, add column total_cents integer, add column metadata jsonb,
+      add column baseline_locked_at timestamptz;
+    alter table budget_lines add column cost_code_id uuid, add column description text, add column amount_cents integer,
+      add column sort_order integer, add column cost_type cost_type, add column metadata jsonb,
+      add foreign key (budget_id) references budgets(id) on delete cascade;
+    alter table commitments add column title text, add column status text, add column total_cents integer, add column currency text,
+      add column contract_number text, add column scope text, add column issued_at timestamptz, add column metadata jsonb,
+      add column created_at timestamptz default clock_timestamp();
+    alter table commitment_lines add column cost_code_id uuid, add column description text, add column quantity numeric, add column unit text,
+      add column unit_cost_cents integer, add column scheduled_value_cents integer, add column sort_order integer, add column metadata jsonb,
+      add foreign key (commitment_id) references commitments(id) on delete cascade,
+      add foreign key (budget_line_id) references budget_lines(id) on delete set null;
+    alter table po_generation_runs add column mode text default 'commit', add column status text default 'running',
+      add column input_fingerprint text, add column summary jsonb, add column error text, add column completed_at timestamptz,
+      add column created_at timestamptz default clock_timestamp();
+    alter table po_generation_exceptions add column cost_code_id uuid, add column source_kind text, add column source_ref jsonb,
+      add column description text, add column quantity numeric, add column uom text, add column reason text, add column candidates jsonb,
+      add column status text default 'open', add column resolution jsonb, add column resolved_by uuid, add column resolved_at timestamptz;
+    alter table project_vendors add column role text, add column scope text, add column status text, add column notes text, add unique (project_id, company_id);
+    create table vendor_bills (id uuid primary key default gen_random_uuid(), org_id uuid, commitment_id uuid references commitments(id));
+  `)
+  await h.db.query("insert into companies values ($1, $2)", [SECOND_VENDOR, ORG])
+  await h.db.exec(fs.readFileSync(require.resolve("../supabase/migrations/20260817120100_po_generation_serialization.sql"), "utf8"))
+  await h.db.exec(migrationSql("20261015110000_po_generation_reconcile"))
+
+  let fingerprints = 0
+  const run = async (fingerprint = `${String(++fingerprints).padStart(64, "0")}`) =>
+    (await h.db.query("insert into po_generation_runs(org_id, project_id, lot_id, input_fingerprint) values ($1, $2, $3, $4) returning id", [ORG, HOME, LOT, fingerprint])).rows[0].id
+  const line = (key, overrides = {}) => ({
+    source_kind: "takeoff_line", source_id: key, company_id: VENDOR, cost_code_id: CODE, cost_type: "labor",
+    description: `Line ${key}`, quantity: 1, unit: "ea", unit_cost_cents: 100, total_cents: 100,
+    agreement_id: AGREEMENT, scope_text: null, option_descriptor: null, ...overrides,
+  })
+  const commit = async (runId, { lines = [line("a")], scope = null, prior = null, exceptions = [], resolve = null, summary = {} } = {}) =>
+    (await h.db.query("select run_po_generation_commit($1, $2, $3) result", [ORG, runId, {
+      prior_run_id: prior, scope_source_keys: scope, po_number_prefix: PREFIX, lot_label: "Cypress Lot 7", plan_name: "Mangrove",
+      lines, exceptions, resolve_exception: resolve, summary: { exception_count: exceptions.length, ...summary },
+    }])).rows[0].result
+  const orders = async () => (await h.db.query(`
+    select c.id, c.company_id, c.status, c.total_cents, c.contract_number, c.title,
+      (select count(*)::int from commitment_lines l where l.commitment_id = c.id) lines
+    from commitments c order by c.contract_number`)).rows
+  const lineKeys = async () => (await h.db.query(`
+    select l.metadata->>'source' || ':' || (l.metadata->>'source_ref') key, l.scheduled_value_cents cents, c.status
+    from commitment_lines l join commitments c on c.id = l.commitment_id order by 1, 2`)).rows
+  const budgetState = async () => {
+    const budgets = (await h.db.query("select id, status, total_cents from budgets")).rows
+    const lines = (await h.db.query("select cost_code_id, cost_type::text, amount_cents from budget_lines order by cost_code_id, cost_type")).rows
+    const unlinked = (await h.db.query("select count(*)::int n from commitment_lines where budget_line_id is null")).rows[0].n
+    const committed = (await h.db.query("select coalesce(sum(scheduled_value_cents), 0)::int n from commitment_lines")).rows[0].n
+    return { budgets, lines, unlinked, committed }
+  }
+  const setStatus = (status) => h.db.query("update commitments set status = $1", [status])
+  return { ...h, run, line, commit, orders, lineKeys, budgetState, setStatus }
 }
-test("repository PO RPC exposes parent-first cascade failure with staged fences",async t=>{
- const h=await setupCommit(t,false),first=await h.run();await h.commit(first)
- const second=await h.run()
- await assert.rejects(h.commit(second,first),/purchase order mismatch/)
- assert.equal((await h.db.query('select count(*)::int n from commitments')).rows[0].n,1)
- assert.equal((await h.db.query('select count(*)::int n from commitment_lines')).rows[0].n,1)
+
+test("a first commit orders each vendor once, numbers the orders, and budgets what is committed", async (t) => {
+  const h = await setupCommit(t)
+  const result = await h.commit(await h.run(), { lines: [
+    h.line("a"), h.line("b", { total_cents: 300, unit_cost_cents: 300, description: "Second framing line" }),
+    h.line("c", { company_id: SECOND_VENDOR, cost_code_id: OTHER_CODE, cost_type: "material", total_cents: 500, unit_cost_cents: 500 }),
+  ] })
+
+  const orders = await h.orders()
+  assert.deepEqual(orders.map((order) => [order.contract_number, order.company_id, order.total_cents, order.lines, order.status]), [
+    [`${PREFIX}-01`, VENDOR, 400, 2, "draft"], [`${PREFIX}-02`, SECOND_VENDOR, 500, 1, "draft"],
+  ])
+  assert.equal(orders[0].title, "PO — Line a — Cypress Lot 7")
+  const budget = await h.budgetState()
+  assert.equal(budget.budgets.length, 1)
+  assert.deepEqual(budget.lines.map((row) => [row.cost_type, row.amount_cents]), [["labor", 400], ["material", 500]])
+  assert.equal(budget.budgets[0].total_cents, 900)
+  assert.equal(budget.unlinked, 0)
+  assert.equal(result.budget_line_count, 2)
+  assert.equal((await h.db.query("select count(*)::int n from project_vendors")).rows[0].n, 2)
+  assert.equal((await h.db.query("select issued_at from commitments limit 1")).rows[0].issued_at, null)
 })
-test("staged PO RPC regenerates fenced children and mappings atomically as service role",async t=>{
- const h=await setupCommit(t),first=await h.run(),initial=await h.commit(first),second=await h.run()
- await h.db.exec('set role service_role')
- const result=await h.commit(second,first)
- await h.db.exec('reset role')
- assert.notEqual(result.budget_id,initial.budget_id)
- assert.equal((await h.db.query('select count(*)::int n from commitments')).rows[0].n,1)
- assert.equal((await h.db.query('select count(*)::int n from budgets')).rows[0].n,1)
- assert.equal((await h.db.query('select count(*)::int n from commitment_lines cl join budget_lines bl on bl.id=cl.budget_line_id join budgets b on b.id=bl.budget_id where b.id=$1',[result.budget_id])).rows[0].n,1)
- assert.equal((await h.db.query('select status from po_generation_runs where id=$1',[first])).rows[0].status,'superseded')
- await assert.rejects(h.commit(await h.run(),first),/not replaceable/)
+
+test("resolutions and regenerations across several runs leave one order per source line and one budget", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b")] })
+  // Two scoped resolutions, each a run of its own that touches only its line.
+  const second = await h.run()
+  await h.commit(second, { lines: [h.line("a"), h.line("b"), h.line("c")], scope: ["takeoff_line:c"] })
+  const third = await h.run()
+  await h.commit(third, { lines: [h.line("a"), h.line("b"), h.line("c"), h.line("d", { company_id: SECOND_VENDOR })], scope: ["takeoff_line:d"] })
+
+  // A whole-house regeneration after a price moved: drafts are re-priced where they stand.
+  const fourth = await h.run()
+  const result = await h.commit(fourth, {
+    prior: third,
+    lines: [h.line("a", { unit_cost_cents: 150, total_cents: 150 }), h.line("b"), h.line("c"), h.line("d", { company_id: SECOND_VENDOR })],
+  })
+
+  assert.deepEqual((await h.lineKeys()).map((row) => [row.key, Number(row.cents)]), [
+    ["takeoff_line:a", 150], ["takeoff_line:b", 100], ["takeoff_line:c", 100], ["takeoff_line:d", 100],
+  ])
+  assert.equal(result.replaced_line_count, 1)
+  assert.equal(result.created_line_count, 0)
+  assert.deepEqual((await h.orders()).map((order) => [order.company_id, order.total_cents, order.lines]), [[VENDOR, 350, 3], [SECOND_VENDOR, 100, 1]])
+  const budget = await h.budgetState()
+  assert.equal(budget.budgets.length, 1)
+  assert.equal(budget.lines.reduce((sum, row) => sum + row.amount_cents, 0), budget.committed)
+  assert.equal(budget.budgets[0].total_cents, budget.committed)
+  assert.equal(budget.unlinked, 0)
+  // A whole-house commit retires every earlier run of the house, scoped ones included.
+  const history = (await h.db.query("select id, status from po_generation_runs order by created_at")).rows
+  assert.deepEqual(history.map((row) => row.status), ["superseded", "superseded", "superseded", "succeeded"])
 })
-test("regeneration preserves progressed or billed POs and refuses foreign prior runs",async t=>{
- const h=await setupCommit(t),first=await h.run(),initial=await h.commit(first)
- await h.db.query("update commitments set status='approved' where id=$1",[initial.commitment_ids[0]])
- await assert.rejects(h.commit(await h.run(),first),/progressed/)
- await h.db.query("update commitments set status='draft' where id=$1",[initial.commitment_ids[0]])
- await h.db.query('insert into vendor_bills(org_id,commitment_id) values($1,$2)',[ORG,initial.commitment_ids[0]])
- await assert.rejects(h.commit(await h.run(),first),/progressed/)
- await h.headers(false)
- await h.db.query('update po_generation_runs set project_id=$1 where id=$2',[OTHER,first])
- await h.headers(true)
- await assert.rejects(h.commit(await h.run(),first),/not replaceable/)
- assert.equal((await h.db.query('select count(*)::int n from commitment_lines')).rows[0].n,1)
+
+test("a commit identical to the last one changes nothing", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  const lines = [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })]
+  await h.commit(first, { lines })
+  const before = (await h.db.query("select id from commitment_lines order by id")).rows
+  const result = await h.commit(await h.run(), { prior: first, lines })
+  assert.equal(result.replaced_line_count, 0)
+  assert.equal(result.removed_line_count, 0)
+  assert.equal(result.created_line_count, 0)
+  assert.deepEqual((await h.db.query("select id from commitment_lines order by id")).rows, before)
 })
-test("late invalid vendor rolls back all regeneration deletes and prior status",async t=>{
- const h=await setupCommit(t),first=await h.run(),initial=await h.commit(first),second=await h.run()
- await assert.rejects(h.commit(second,first,{purchase_orders:[{...h.payload.purchase_orders[0],company_id:OTHER}]}),/vendor mismatch/)
- assert.equal((await h.db.query('select id from budgets')).rows[0].id,initial.budget_id)
- assert.equal((await h.db.query('select id from commitments')).rows[0].id,initial.commitment_ids[0])
- assert.equal((await h.db.query('select count(*)::int n from commitment_lines')).rows[0].n,1)
- assert.equal((await h.db.query('select status from po_generation_runs where id=$1',[first])).rows[0].status,'succeeded_with_exceptions')
- assert.equal((await h.db.query('select status from po_generation_runs where id=$1',[second])).rows[0].status,'running')
+
+test("orders that were approved or billed are never rewritten, and the difference is reported", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR }), h.line("c", { cost_code_id: OTHER_CODE })] })
+  const [vendorOrder, secondOrder] = await h.orders()
+  // The first vendor's order is approved; the second vendor's order is still a draft but has a bill against it.
+  await h.db.query("update commitments set status = 'approved' where id = $1", [vendorOrder.id])
+  await h.db.query("insert into vendor_bills(org_id, commitment_id) values ($1, $2)", [ORG, secondOrder.id])
+
+  const second = await h.run()
+  const result = await h.commit(second, { prior: first, lines: [
+    h.line("a", { unit_cost_cents: 175, total_cents: 175 }),
+    h.line("b", { company_id: VENDOR }),
+    h.line("c", { cost_code_id: OTHER_CODE, unit_cost_cents: 90, total_cents: 90 }),
+  ] })
+
+  const keys = await h.lineKeys()
+  assert.deepEqual(keys.map((row) => [row.key, Number(row.cents), row.status]), [
+    ["takeoff_line:a", 100, "approved"], ["takeoff_line:b", 100, "draft"], ["takeoff_line:c", 100, "approved"],
+  ])
+  assert.deepEqual(result.preserved_changed.map((change) => [change.source_key, change.contract_number, change.was_cents, change.now_cents, change.was_company_id === change.now_company_id]), [
+    ["takeoff_line:a", `${PREFIX}-01`, 100, 175, true],
+    ["takeoff_line:b", `${PREFIX}-02`, 100, 100, false],
+    ["takeoff_line:c", `${PREFIX}-01`, 100, 90, true],
+  ])
+  assert.equal(result.preserved_line_count, 3)
+  assert.equal((await h.orders()).length, 2)
+  // The run records what it left alone, for the purchasing desk.
+  const stored = (await h.db.query("select summary from po_generation_runs where id = $1", [second])).rows[0].summary
+  assert.equal(stored.preserved_changed.length, 3)
 })
-test("ordinary service-role generation remains compatible without worker headers",async t=>{
- const h=await setupCommit(t);await h.headers(false)
- const first=await h.run();await h.commit(first)
- const second=await h.run();await h.db.exec('set role service_role')
- const result=await h.commit(second,first)
- assert.equal(result.commitment_ids.length,1)
- await h.db.exec('set role authenticated')
- await assert.rejects(h.commit(first),/permission denied for function run_po_generation_commit/)
+
+test("a source that is no longer wanted leaves with its draft order and stays on an order in progress", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR }), h.line("c", { company_id: SECOND_VENDOR })] })
+  const [vendorOrder] = await h.orders()
+  await h.db.query("update commitments set status = 'sent' where id = $1", [vendorOrder.id])
+
+  const result = await h.commit(await h.run(), { prior: first, lines: [h.line("c", { company_id: SECOND_VENDOR })] })
+
+  assert.deepEqual((await h.lineKeys()).map((row) => row.key), ["takeoff_line:a", "takeoff_line:c"])
+  assert.deepEqual(result.preserved_orphaned.map((orphan) => [orphan.source_key, orphan.contract_number]), [["takeoff_line:a", `${PREFIX}-01`]])
+  assert.equal(result.removed_line_count, 1)
+  assert.equal((await h.orders()).length, 2)
 })
-test("duplicate successful fingerprint fails atomically without replacing the prior set",async t=>{
- const h=await setupCommit(t),first=await h.run(),initial=await h.commit(first),second=await h.run()
- await h.db.query('update po_generation_runs set input_fingerprint=(select input_fingerprint from po_generation_runs where id=$1) where id=$2',[first,second])
- await assert.rejects(h.commit(second),/po_generation_runs_commit_fingerprint_uidx/)
- assert.equal((await h.db.query('select count(*)::int n from commitments')).rows[0].n,1)
- assert.equal((await h.db.query('select id from budgets')).rows[0].id,initial.budget_id)
+
+test("an order emptied of lines is removed, and numbers are never reissued", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
+  const second = await h.run()
+  await h.commit(second, { prior: first, lines: [h.line("a")] })
+  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`])
+
+  // The second vendor comes back: its order is new, and 02 is not handed out twice.
+  await h.commit(await h.run(), { prior: second, lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
+  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-02`])
+  await h.db.query("update commitments set status = 'voided' where contract_number = $1", [`${PREFIX}-02`])
+  await h.commit(await h.run(), { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })], prior: (await h.db.query("select id from po_generation_runs where status = 'succeeded' order by created_at desc limit 1")).rows[0].id })
+  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-02`, `${PREFIX}-03`])
+  assert.deepEqual((await h.lineKeys()).map((row) => row.key), ["takeoff_line:a", "takeoff_line:b", "takeoff_line:b"])
 })
-test("PO commit refuses expired ownership before creating any domain artifacts",async t=>{
- const h=await setupCommit(t),run=await h.run()
- await h.db.exec("update outbox set start_job_lease_expires_at=clock_timestamp()-interval '1 second'")
- await assert.rejects(h.commit(run),/worker lease lost/)
- for(const table of ['budgets','budget_lines','commitments','commitment_lines','project_vendors','po_generation_exceptions']){
-  assert.equal((await h.db.query(`select count(*)::int n from ${table}`)).rows[0].n,0,table)
- }
- assert.equal((await h.db.query('select status from po_generation_runs where id=$1',[run])).rows[0].status,'running')
+
+test("a whole-house commit prepared against a run that is no longer the latest is refused", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a")] })
+  await h.commit(await h.run(), { lines: [h.line("a"), h.line("b")], scope: ["takeoff_line:b"] })
+
+  const stale = await h.run()
+  await assert.rejects(h.commit(stale, { prior: first, lines: [h.line("a")] }), /preview again/)
+  assert.equal((await h.db.query("select status from po_generation_runs where id = $1", [stale])).rows[0].status, "running")
+  assert.deepEqual((await h.lineKeys()).map((row) => row.key), ["takeoff_line:a", "takeoff_line:b"])
 })
-test("ownership expiry after budget creation rolls back the actual PO RPC",async t=>{
- const h=await setupCommit(t),first=await h.run(),initial=await h.commit(first),second=await h.run()
- await h.db.exec(`create function expire_po_worker() returns trigger language plpgsql as $$ begin
- update outbox set start_job_lease_expires_at=clock_timestamp()-interval '1 second';return new;end $$;
- create trigger expire_po_worker after insert on budgets for each row execute function expire_po_worker();`)
- await assert.rejects(h.commit(second,first),/worker lease lost/)
- assert.equal((await h.db.query('select id from budgets')).rows[0].id,initial.budget_id)
- assert.equal((await h.db.query('select id from commitments')).rows[0].id,initial.commitment_ids[0])
- assert.equal((await h.db.query('select status from po_generation_runs where id=$1',[first])).rows[0].status,'succeeded_with_exceptions')
- assert.equal((await h.db.query('select start_job_lease_expires_at>clock_timestamp() active from outbox')).rows[0].active,true)
+
+test("an identical commit that arrives second returns the first one's run and writes nothing", async (t) => {
+  const h = await setupCommit(t)
+  const fingerprint = "f".repeat(64)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a")] })
+  await h.db.query("update po_generation_runs set input_fingerprint = $1 where id = $2", [fingerprint, first])
+  const second = await h.run(fingerprint)
+
+  const result = await h.commit(second, { prior: null, lines: [h.line("a")] })
+
+  assert.equal(result.run_id, first)
+  assert.equal(result.already_generated, true)
+  assert.equal((await h.db.query("select status from po_generation_runs where id = $1", [second])).rows[0].status, "superseded")
+  assert.equal((await h.orders()).length, 1)
 })
-test("worker commit rejects a run for a different home or lot before domain writes",async t=>{
- const h=await setupCommit(t);await h.headers(false)
- const wrongHome=(await h.db.query('insert into po_generation_runs(org_id,project_id,lot_id) values($1,$2,$3) returning id',[ORG,OTHER,LOT])).rows[0].id
- const wrongLot=(await h.db.query('insert into po_generation_runs(org_id,project_id,lot_id) values($1,$2,$3) returning id',[ORG,HOME,OTHER])).rows[0].id
- await h.headers(true)
- await assert.rejects(h.commit(wrongHome),/project mismatch/)
- await assert.rejects(h.commit(wrongLot),/lot mismatch/)
- assert.equal((await h.db.query('select count(*)::int n from budgets')).rows[0].n,0)
+
+test("a resolution creates its order and closes its exception together, and the second resolver is refused", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, {
+    lines: [h.line("a")],
+    exceptions: [{ source_kind: "takeoff_line", source_ref: { takeoff_line_id: "b" }, description: "Unpriced", reason: "no_agreement", quantity: 1, uom: "ea" }],
+  })
+  const exceptionId = (await h.db.query("select id from po_generation_exceptions")).rows[0].id
+  const resolve = { id: exceptionId, status: "resolved_manual", resolution: { kind: "manual" }, resolved_by: null }
+  const lines = [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })]
+
+  const winner = await h.commit(await h.run(), { lines, scope: ["takeoff_line:b"], resolve })
+  assert.equal(winner.created_line_count, 1)
+  const row = (await h.db.query("select status, resolution, resolved_at from po_generation_exceptions where id = $1", [exceptionId])).rows[0]
+  assert.equal(row.status, "resolved_manual")
+  assert.ok(row.resolved_at)
+
+  const loserRun = await h.run()
+  const loser = await h.commit(loserRun, { lines: [h.line("a"), h.line("b", { company_id: VENDOR })], scope: ["takeoff_line:b"], resolve })
+  assert.equal(loser.refused, "exception_closed")
+  assert.equal((await h.db.query("select status from po_generation_runs where id = $1", [loserRun])).rows[0].status, "superseded")
+  assert.deepEqual((await h.lineKeys()).map((row) => row.key), ["takeoff_line:a", "takeoff_line:b"])
+  assert.deepEqual((await h.orders()).map((order) => order.company_id), [VENDOR, SECOND_VENDOR])
 })
-test("source-run probes use staged indexes among ten thousand unrelated artifacts",async t=>{
- const h=await setupCommit(t),run=await h.run();await h.commit(run);await h.headers(false)
- for(const table of ['commitments','budgets']){
-  await h.db.query(`insert into ${table}(org_id,project_id,metadata) select $1::uuid,$2::uuid,jsonb_build_object('source_generation_run_id',$3::text) from generate_series(1,10000)`,[ORG,OTHER,OTHER])
-  await h.db.exec(`analyze ${table}`)
-  const plan=(await h.db.query(`explain select id from ${table} where org_id=$1 and metadata->>'source_generation_run_id'=$2 order by id for update`,[ORG,run])).rows.map(row=>row['QUERY PLAN']).join('\n')
-  assert.match(plan,new RegExp(`${table}_generation_run_idx`),plan)
- }
+
+test("a resolution leaves a line that already has an order alone", async (t) => {
+  const h = await setupCommit(t)
+  await h.commit(await h.run(), { lines: [h.line("a")] })
+  const result = await h.commit(await h.run(), { lines: [h.line("a", { unit_cost_cents: 999, total_cents: 999 })], scope: ["takeoff_line:a"] })
+  assert.equal(result.replaced_line_count, 1)
+  assert.deepEqual((await h.lineKeys()).map((row) => Number(row.cents)), [999])
+  await h.setStatus("approved")
+  const again = await h.commit(await h.run(), { lines: [h.line("a", { unit_cost_cents: 5, total_cents: 5 })], scope: ["takeoff_line:a"] })
+  assert.equal(again.preserved_changed.length, 1)
+  assert.deepEqual((await h.lineKeys()).map((row) => Number(row.cents)), [999])
+})
+
+test("lines on a voided order do not count as ordered", async (t) => {
+  const h = await setupCommit(t)
+  await h.commit(await h.run(), { lines: [h.line("a")] })
+  await h.setStatus("voided")
+  await h.commit(await h.run(), { lines: [h.line("a")], scope: ["takeoff_line:a"] })
+  assert.deepEqual((await h.orders()).map((order) => [order.status, order.contract_number]), [["voided", `${PREFIX}-01`], ["draft", `${PREFIX}-02`]])
+})
+
+test("the living budget follows the commitments, and a budget past draft is reported rather than edited", async (t) => {
+  const h = await setupCommit(t)
+  await h.commit(await h.run(), { lines: [h.line("a"), h.line("b", { cost_code_id: OTHER_CODE })] })
+  const { budgets: [budget] } = await h.budgetState()
+
+  // A cost code drops out of the order set: its budget line goes; the budget is the same row.
+  const second = await h.run()
+  await h.commit(second, { prior: (await h.db.query("select id from po_generation_runs where status = 'succeeded'")).rows[0].id, lines: [h.line("a")] })
+  const trimmed = await h.budgetState()
+  assert.deepEqual(trimmed.budgets.map((row) => row.id), [budget.id])
+  assert.equal(trimmed.lines.length, 1)
+
+  await h.db.query("update budgets set status = 'approved'")
+  const result = await h.commit(await h.run(), { prior: second, lines: [h.line("a"), h.line("c", { cost_code_id: OTHER_CODE, total_cents: 700, unit_cost_cents: 700 })] })
+  const frozen = await h.budgetState()
+  assert.equal(result.budget_editable, false)
+  assert.equal(frozen.lines.length, 1)
+  assert.equal(frozen.lines[0].amount_cents, 100)
+  assert.equal(frozen.budgets[0].total_cents, trimmed.budgets[0].total_cents)
+  assert.equal((await h.orders()).reduce((sum, order) => sum + order.total_cents, 0), 800)
+})
+
+test("budgets left by earlier generations collapse onto one living budget", async (t) => {
+  const h = await setupCommit(t)
+  await h.commit(await h.run(), { lines: [h.line("a")] })
+  const old = (await h.db.query("insert into budgets(org_id, project_id, version, status, total_cents, metadata) values ($1, $2, 0, 'draft', 0, '{\"source\":\"po_generation\"}') returning id", [ORG, HOME])).rows[0].id
+  const oldLine = (await h.db.query("insert into budget_lines(org_id, budget_id, cost_code_id, cost_type, amount_cents, description, metadata) values ($1, $2, $3, 'labor', 100, 'Line a', '{\"source\":\"po_generation\"}') returning id", [ORG, old, CODE])).rows[0].id
+  await h.db.query("update commitment_lines set budget_line_id = $1", [oldLine])
+
+  await h.commit(await h.run(), { lines: [h.line("a"), h.line("b")], scope: ["takeoff_line:b"] })
+
+  const living = (await h.db.query("select budget_id from budget_lines bl join commitment_lines cl on cl.budget_line_id = bl.id group by budget_id")).rows
+  assert.equal(living.length, 1)
+  assert.notEqual(living[0].budget_id, old)
+  assert.equal((await h.db.query("select count(*)::int n from commitment_lines where budget_line_id is null")).rows[0].n, 0)
+})
+
+test("a vendor outside the organization rolls the whole commit back", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a")] })
+  const second = await h.run()
+  await assert.rejects(h.commit(second, { prior: first, lines: [h.line("a", { unit_cost_cents: 5, total_cents: 5 }), h.line("b", { company_id: OTHER })] }), /vendor is not in this organization/)
+  assert.deepEqual((await h.lineKeys()).map((row) => [row.key, Number(row.cents)]), [["takeoff_line:a", 100]])
+  assert.equal((await h.budgetState()).committed, 100)
+  assert.equal((await h.db.query("select status from po_generation_runs where id = $1", [second])).rows[0].status, "running")
+})
+
+test("a commit by the starts release worker reconciles its own house under the fences", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
+  const second = await h.run()
+  await h.db.exec("set role service_role")
+  await h.commit(second, { prior: first, lines: [h.line("a", { unit_cost_cents: 120, total_cents: 120 }), h.line("c", { cost_code_id: OTHER_CODE })] })
+  await h.db.exec("reset role")
+  assert.deepEqual((await h.lineKeys()).map((row) => [row.key, Number(row.cents)]), [["takeoff_line:a", 120], ["takeoff_line:c", 100]])
+  assert.equal((await h.budgetState()).unlinked, 0)
+})
+
+test("ordinary service-role generation works without worker headers, and a member cannot run the commit", async (t) => {
+  const h = await setupCommit(t)
+  await h.headers(false)
+  const first = await h.run()
+  await h.db.exec("set role service_role")
+  const result = await h.commit(first, { lines: [h.line("a")] })
+  assert.equal(result.commitment_ids.length, 1)
+  await h.db.exec("set role authenticated")
+  await assert.rejects(h.commit(first), /permission denied for function run_po_generation_commit/)
+})
+
+test("the worker commit refuses expired ownership, another home and another lot before writing anything", async (t) => {
+  const h = await setupCommit(t)
+  const run = await h.run()
+  await h.db.exec("update outbox set start_job_lease_expires_at = clock_timestamp() - interval '1 second'")
+  await assert.rejects(h.commit(run), /worker lease lost/)
+  for (const table of ["budgets", "budget_lines", "commitments", "commitment_lines", "project_vendors"]) {
+    assert.equal((await h.db.query(`select count(*)::int n from ${table}`)).rows[0].n, 0, table)
+  }
+  assert.equal((await h.db.query("select status from po_generation_runs where id = $1", [run])).rows[0].status, "running")
+})
+
+test("a worker cannot commit a run of a different home or lot", async (t) => {
+  const h = await setupCommit(t)
+  await h.headers(false)
+  const wrongHome = (await h.db.query("insert into po_generation_runs(org_id, project_id, lot_id) values ($1, $2, $3) returning id", [ORG, OTHER, LOT])).rows[0].id
+  const wrongLot = (await h.db.query("insert into po_generation_runs(org_id, project_id, lot_id) values ($1, $2, $3) returning id", [ORG, HOME, OTHER])).rows[0].id
+  await h.headers(true)
+  await assert.rejects(h.commit(wrongHome), /project mismatch/)
+  await assert.rejects(h.commit(wrongLot), /lot mismatch/)
+  assert.equal((await h.db.query("select count(*)::int n from budgets")).rows[0].n, 0)
+})
+
+test("members read generation runs and exceptions but cannot write them, even if a grant drifts back", async (t) => {
+  const h = await setupCommit(t)
+  await h.headers(false)
+  const run = await h.run()
+  await h.commit(run, { exceptions: [{ source_kind: "takeoff_line", source_ref: {}, description: "Unpriced", reason: "no_agreement" }] })
+
+  await h.db.exec("set role authenticated")
+  assert.equal((await h.db.query("select count(*)::int n from po_generation_runs")).rows[0].n, 1)
+  assert.equal((await h.db.query("select count(*)::int n from po_generation_exceptions")).rows[0].n, 1)
+  for (const statement of [
+    "update po_generation_exceptions set status = 'resolved_manual'",
+    "delete from po_generation_exceptions",
+    "update po_generation_runs set status = 'failed'",
+    "delete from po_generation_runs",
+  ]) await assert.rejects(h.db.query(statement), /permission denied/, statement)
+  await assert.rejects(h.db.query("insert into po_generation_runs(org_id, project_id, lot_id, input_fingerprint) values ($1, $2, $3, 'x')", [ORG, HOME, LOT]), /permission denied/)
+
+  await h.db.exec("reset role; grant insert, update, delete on po_generation_runs, po_generation_exceptions to authenticated; set role authenticated")
+  await assert.rejects(h.db.query("update po_generation_exceptions set status = 'resolved_manual'"), /written by the generation service/)
+  await assert.rejects(h.db.query("insert into po_generation_runs(org_id, project_id, lot_id, input_fingerprint) values ($1, $2, $3, 'x')", [ORG, HOME, LOT]), /written by the generation service/)
 })

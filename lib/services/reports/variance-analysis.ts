@@ -405,14 +405,33 @@ function emptyVariance() {
   return summarize([])
 }
 
-export function varianceAnalysisCsv(rows: VarianceAnalysisRow[]) {
-  return toCsv(rows, [
+/** A cell that starts with one of these is read by a spreadsheet as a formula. */
+function formulaSafe(value: unknown) {
+  const text = String(value ?? "")
+  return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text
+}
+
+/**
+ * The export is the report as the desk shows it: the same rows, and a header
+ * that says which period and scope they cover so a file lifted out of its
+ * folder still explains itself.
+ */
+export function varianceAnalysisCsv(rows: VarianceAnalysisRow[], context: { startDate: string; endDate: string; scopeLabel: string }) {
+  const table = toCsv(rows, [
     { key: "dimension", header: "Dimension" },
-    { key: "dimension_label", header: "Group" },
+    { key: "dimension_label", header: "Group", format: formulaSafe },
     { key: "net_variance_cents", header: "Net variance", format: (value) => (Number(value) / 100).toFixed(2) },
     { key: "absolute_variance_cents", header: "Absolute variance", format: (value) => (Number(value) / 100).toFixed(2) },
     { key: "incidence", header: "Incidence" },
     { key: "direct_cost_budget_cents", header: "Direct-cost budget", format: (value) => (Number(value) / 100).toFixed(2) },
     { key: "variance_rate", header: "Variance rate", format: (value) => (Number(value) * 100).toFixed(2) + "%" },
   ])
+  return [
+    toCsv([{ label: "Period", value: `${context.startDate} to ${context.endDate}` }, { label: "Scope", value: formulaSafe(context.scopeLabel) }], [
+      { key: "label", header: "Variance analysis" },
+      { key: "value", header: "" },
+    ]),
+    "",
+    table,
+  ].join("\n")
 }

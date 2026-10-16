@@ -13,6 +13,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ensurePortalLink } from "@/lib/services/portal-links"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
+import { resolvePayOnPo } from "@/lib/services/purchasing-settings"
 import {
   coiExtractionSchema,
   evaluateInsuranceCurrency,
@@ -341,12 +342,12 @@ export async function assertBillReleasable(
 
   let constructionEvidence: PaymentReleaseEvidence["constructionEvidence"] = null
   if (bill.commitment_id) {
-    const [{ data: commitment, error: commitmentError }, { data: changes }, { data: committedBills }, { data: completion }, { data: lot }] = await Promise.all([
+    const [{ data: commitment, error: commitmentError }, { data: changes }, { data: committedBills }, { data: completion }, payOnPo] = await Promise.all([
       supabase.from("commitments").select("id,commitment_type,status,total_cents,currency").eq("org_id", resolvedOrgId).eq("id", bill.commitment_id).maybeSingle(),
       supabase.from("commitment_change_orders").select("total_cents").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id).in("status", ["approved", "executed"]),
       supabase.from("vendor_bills").select("id,total_cents,status").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id),
       supabase.from("po_completions").select("id,status,amount_cents").eq("org_id", resolvedOrgId).eq("vendor_bill_id", billId).in("status", ["approved", "billed"]).order("approved_at", { ascending: false }).limit(1).maybeSingle(),
-      supabase.from("lots").select("community:communities(pay_on_po_enabled)").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).limit(1).maybeSingle(),
+      resolvePayOnPo(supabase, resolvedOrgId, bill.project_id),
     ])
     if (commitmentError || !commitment) throw new Error("The payable's commitment could not be validated")
     if (!["approved", "complete"].includes(commitment.status)) throw new Error("The payable commitment is not approved or complete")
@@ -356,8 +357,8 @@ export async function assertBillReleasable(
     // exist. Rejected bills are not obligations and do not count.
     const billedCents = (committedBills ?? []).filter((row) => String(row.status) !== "rejected").reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
     if (billedCents > authorizedCents) throw new Error("Commitment billing exceeds the approved commitment and change orders")
-    const community = Array.isArray(lot?.community) ? lot.community[0] : lot?.community
-    const requirePoCompletion = commitment.commitment_type === "purchase_order" && community?.pay_on_po_enabled === true
+    // The same community-then-org resolution completion creation uses, so a bill in a community with no override still needs its completion.
+    const requirePoCompletion = commitment.commitment_type === "purchase_order" && payOnPo.enabled
     if (requirePoCompletion && (!completion || Number(completion.amount_cents ?? 0) < Number(bill.total_cents ?? 0))) {
       throw new Error("An approved field completion covering this purchase-order bill is required before payment")
     }

@@ -23,6 +23,8 @@ import {
   listBidScopeItems,
   listBidSubmissions,
   listProspectBidQuotes,
+  previewPriceBookAward,
+  previewRescindImpact,
   answerBidPackageRfi,
   pauseBidInviteAccess,
   removeBidInvite,
@@ -41,6 +43,7 @@ import {
   getCostCodeBidHistory,
   getPackageIntelligence,
   getVendorBidStats,
+  type PackageIntelligence,
 } from "@/lib/services/bid-intelligence"
 import {
   pauseBidInviteAccountGrants,
@@ -125,8 +128,21 @@ export async function listBidPackageActivityAction(bidPackageId: string) {
   return listBidPackageActivity(bidPackageId)
 }
 
-export async function getPackageIntelligenceAction(bidPackageId: string) {
-  return getPackageIntelligence(bidPackageId)
+/** The comparison signals, or why they could not be read; a failure must not look like a clean package. */
+export async function getPackageIntelligenceAction(bidPackageId: string): Promise<{ intelligence: PackageIntelligence | null; error: string | null }> {
+  try {
+    return { intelligence: await getPackageIntelligence(bidPackageId), error: null }
+  } catch (error) {
+    return { intelligence: null, error: error instanceof Error ? error.message : "Unable to read the comparison signals" }
+  }
+}
+
+export async function previewRescindImpactAction(bidPackageId: string) {
+  return run(() => previewRescindImpact({ bidPackageId }))
+}
+
+export async function previewPriceBookAwardAction(input: unknown) {
+  return run(() => previewPriceBookAward({ input }))
 }
 
 export async function getCostCodeBidHistoryAction(costCodeId: string) {

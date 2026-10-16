@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, commitmentExecutionSchema } from "@/lib/validation/commitments"
 import { createCommitment, updateCommitment, listCommitmentLines, createCommitmentLine, updateCommitmentLine, deleteCommitmentLine, getCommitmentDetail, executeCommitment } from "@/lib/services/commitments"
+import { getPoIssuance } from "@/lib/services/po-acknowledgments"
 import {
   approveCommitmentChangeOrder,
   createCommitmentChangeOrder,
@@ -53,8 +54,13 @@ export async function createProjectCommitmentWithLineAction(projectId: string, i
     const payload = input as { commitment?: unknown; line?: unknown }
     const parsed = commitmentInputSchema.parse({ ...(payload.commitment as any), project_id: projectId })
     const lineInput = commitmentLineInputSchema.parse(payload.line)
-    const result = await createCommitment({ input: parsed })
-    await createCommitmentLine(result.id, lineInput)
+    // An approved purchase order is locked, so the order is built as a draft and
+    // approved once its line is on it.
+    const created = await createCommitment({ input: { ...parsed, status: "draft" } })
+    await createCommitmentLine(created.id, lineInput)
+    const result = parsed.status === "approved"
+      ? await updateCommitment({ commitmentId: created.id, input: { status: "approved", prequal_override_note: parsed.prequal_override_note } })
+      : created
     revalidateCommitmentSurfaces(projectId, parsed.company_id)
     return result
   })
@@ -71,6 +77,10 @@ export async function updateProjectCommitmentAction(projectId: string, commitmen
 
 export async function getCommitmentDetailAction(commitmentId: string) {
   return run(() => getCommitmentDetail(commitmentId))
+}
+
+export async function getPoIssuanceAction(commitmentId: string) {
+  return run(() => getPoIssuance(commitmentId))
 }
 
 /** Records an agreement signed outside Arc, with the countersigned document. */

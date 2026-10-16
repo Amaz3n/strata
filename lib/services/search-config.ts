@@ -63,6 +63,7 @@ export type SearchEntityType =
   | 'selection_approval'
   | 'price_agreement'
   | 'commitment_change_order'
+  | 'po_completion'
   | 'start_package'
   | 'permit_application'
   | 'closing'
@@ -175,6 +176,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     descriptionFields: ['description'],
     searchableFields: ['title', 'description', 'status', 'origin'],
     hrefTemplate: '/projects/{project_id}/financials/budget?vpo={id}',
+  },
+  po_completion: {
+    table: 'po_completions',
+    titleField: 'status',
+    subtitleFields: ['status', 'reported_source', 'amount_cents'],
+    descriptionFields: ['notes', 'rejected_reason'],
+    searchableFields: ['status', 'notes', 'rejected_reason', 'reported_source'],
+    hrefTemplate: '/purchasing?tab=completions&project={project_id}',
   },
   price_agreement: {
     table: 'vendor_price_agreements',
@@ -621,6 +630,7 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "start_package",
   "permit_application",
   "commitment_change_order",
+  "po_completion",
   "selection_exception",
   "design_studio_appointment",
   "selection_approval",

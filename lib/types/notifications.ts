@@ -120,6 +120,8 @@ export type NotificationType =
   | "start_release_failed"
   | "start_gate_waived"
   | "trade_response_received"
+  | "po_acknowledgment_received"
+  | "po_shortage_opened"
   | "project_superintendent_assigned"
   | "purchase_agreement_executed"
   | "lead_assigned"
@@ -711,6 +713,18 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "starts",
     label: "Trade answered their work",
     description: "Email me when a trade declines work or asks for other dates on a home I coordinate.",
+  },
+  {
+    key: "po_acknowledgment_received",
+    category: "project",
+    label: "Vendor disputed a purchase order",
+    description: "Email me when a vendor disputes the quantity, date or scope of a purchase order on a home I purchase for.",
+  },
+  {
+    key: "po_shortage_opened",
+    category: "project",
+    label: "Delivery shortage",
+    description: "Email me when a purchase-order line is late, short, damaged or the wrong item and needs a purchasing decision.",
   },
   {
     key: "start_package_ready",

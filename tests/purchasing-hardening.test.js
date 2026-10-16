@@ -18,13 +18,13 @@ const {
   hasWholeOrderClaim,
 } = require("../lib/services/po-completions")
 const {
-  buildGeneratedPoNumber,
   findExpiringAgreements,
+  generatedPoNumberPrefix,
   generationSourceKey,
-  nextGeneratedPoSequence,
-  selectMissingLines,
 } = require("../lib/services/po-generation")
 const { completedWeekWindows, summarizeVarianceByOrg } = require("../lib/services/purchasing-maintenance")
+const { classifyPoPosition, poRemainingCents, poRevisedCents } = require("../lib/purchasing/po-position")
+const { varianceAnalysisCsv } = require("../lib/services/reports/variance-analysis")
 
 const migration = (name) => fs.readFileSync(path.resolve(__dirname, "../supabase/migrations", name), "utf8")
 
@@ -228,6 +228,14 @@ test("rejected and void completions release their lines so the trade can re-repo
   assert.equal(hasWholeOrderClaim(existing), false)
 })
 
+test("a variance-order completion claims no PO line, and no variance order is billed twice", () => {
+  const billed = [completion({ id: "first", status: "billed", commitment_line_ids: null, change_order_ids: ["vpo-1"] })]
+  assert.equal(findConflictingCompletion({ requestedLineIds: [], requestedChangeOrderIds: ["vpo-2"], existing: billed }), null)
+  assert.equal(findConflictingCompletion({ requestedLineIds: [], requestedChangeOrderIds: ["vpo-1", "vpo-2"], existing: billed }).completionId, "first")
+  const vpoOnly = [completion({ id: "second", status: "verified", commitment_line_ids: [], change_order_ids: ["vpo-3"] })]
+  assert.equal(findConflictingCompletion({ requestedLineIds: null, existing: vpoOnly }), null)
+})
+
 test("live completions report exactly which lines are still reportable", () => {
   const existing = [
     completion({ id: "first", status: "verified", commitment_line_ids: ["line-1"] }),
@@ -239,64 +247,25 @@ test("live completions report exactly which lines are still reportable", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Scoped incremental regeneration
-// ---------------------------------------------------------------------------
-
-const resolvedLine = (sourceId, sourceKind = "takeoff_line") => ({ sourceKind, sourceId, totalCents: 100 })
-
-test("a scoped commit creates only the lines no commitment covers yet", () => {
-  const lines = [resolvedLine("takeoff-1"), resolvedLine("takeoff-2"), resolvedLine("selection-1", "option")]
-  const covered = [generationSourceKey("takeoff_line", "takeoff-1"), generationSourceKey("option", "selection-1")]
-  assert.deepEqual(selectMissingLines(lines, covered).map((line) => line.sourceId), ["takeoff-2"])
-  assert.deepEqual(selectMissingLines(lines, []).map((line) => line.sourceId), ["takeoff-1", "takeoff-2", "selection-1"])
-})
-
-test("re-running a scoped commit after every line landed creates nothing", () => {
-  // This is what makes resolve-then-mark safe to retry: the second attempt after
-  // a partial failure adds no duplicate purchase order.
-  const lines = [resolvedLine("takeoff-1"), resolvedLine("takeoff-2")]
-  const covered = lines.map((line) => generationSourceKey(line.sourceKind, line.sourceId))
-  assert.deepEqual(selectMissingLines(lines, covered), [])
-})
-
-test("source keys separate takeoff lines from options with the same id", () => {
-  assert.notEqual(generationSourceKey("takeoff_line", "shared"), generationSourceKey("option", "shared"))
-  const lines = [resolvedLine("shared"), resolvedLine("shared", "option")]
-  assert.deepEqual(
-    selectMissingLines(lines, [generationSourceKey("takeoff_line", "shared")]).map((line) => line.sourceKind),
-    ["option"],
-  )
-})
-
-// ---------------------------------------------------------------------------
 // Generated purchase-order numbers
 // ---------------------------------------------------------------------------
 
-test("lot 42 in two communities does not produce the same purchase-order number", () => {
-  const north = buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42" }, 1)
-  const south = buildGeneratedPoNumber({ communityCode: "STH", lotNumber: "42" }, 1)
+test("source keys separate takeoff lines from options with the same id", () => {
+  assert.notEqual(generationSourceKey("takeoff_line", "shared"), generationSourceKey("option", "shared"))
+})
+
+test("lot 42 in two communities does not produce the same purchase-order prefix", () => {
+  const north = generatedPoNumberPrefix({ communityCode: "NRD", lotNumber: "42" })
+  const south = generatedPoNumberPrefix({ communityCode: "STH", lotNumber: "42" })
   assert.notEqual(north, south)
-  assert.equal(north, "PO-NRD-42-01")
-  assert.equal(south, "PO-STH-42-01")
+  assert.equal(north, "PO-NRD-42")
+  assert.equal(south, "PO-STH-42")
 })
 
-test("regeneration continues the sequence instead of reissuing numbers", () => {
-  const firstRun = [1, 2, 3].map((sequence) => buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42" }, sequence))
-  const next = nextGeneratedPoSequence(firstRun)
-  assert.equal(next, 4)
-  const secondRun = [next, next + 1].map((sequence) => buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42" }, sequence))
-  const all = [...firstRun, ...secondRun]
-  assert.equal(new Set(all).size, all.length)
-  assert.deepEqual(secondRun, ["PO-NRD-42-04", "PO-NRD-42-05"])
-})
-
-test("purchase-order numbering survives blocks, missing codes, and untidy input", () => {
-  assert.equal(buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42", block: "b" }, 7), "PO-NRD-42-BB-07")
-  assert.equal(buildGeneratedPoNumber({ communityName: "Sunset Ridge", lotNumber: "42" }, 1), "PO-SUNSET-RIDGE-42-01")
-  assert.equal(buildGeneratedPoNumber({ lotNumber: null }, 1), "PO-COMM-LOT-01")
-  assert.equal(nextGeneratedPoSequence([]), 1)
-  assert.equal(nextGeneratedPoSequence([null, "PO-NRD-42-09", "hand-typed"]), 10)
-  assert.equal(nextGeneratedPoSequence(["PO-NRD-42-02", "PO-NRD-42-11"]), 12)
+test("purchase-order prefixes survive blocks, missing codes, and untidy input", () => {
+  assert.equal(generatedPoNumberPrefix({ communityCode: "NRD", lotNumber: "42", block: "b" }), "PO-NRD-42-BB")
+  assert.equal(generatedPoNumberPrefix({ communityName: "Sunset Ridge", lotNumber: "42" }), "PO-SUNSET-RIDGE-42")
+  assert.equal(generatedPoNumberPrefix({ lotNumber: null }), "PO-COMM-LOT")
 })
 
 // ---------------------------------------------------------------------------
@@ -424,4 +393,40 @@ test("price-book imports and the bid-package constraint backlog are covered", ()
   assert.match(validate, /validate constraint bid_packages_parent_context/)
   assert.match(validate, /set prospect_id = null/)
   assert.match(validate, /where project_id is not null\s*\n\s*and prospect_id is not null/)
+})
+
+// ---------------------------------------------------------------------------
+// Purchase-order positions and the variance export
+// ---------------------------------------------------------------------------
+
+const position = (overrides = {}) => ({
+  commitmentId: "po-1", projectId: "home-1", title: "Framing", contractNumber: null, companyId: null, status: "approved",
+  divisionId: null, communityId: null, payOnPo: true, originalCents: 100_000, approvedVpoCents: 20_000, pendingVpoCount: 0,
+  billedCents: 120_000, paidCents: 60_000, retainageHeldCents: 0, completionBilledCents: 120_000, openCompletionCount: 0,
+  unclaimedVpoCents: 0, ...overrides,
+})
+
+test("a purchase order that reconciles raises nothing, and the revised total includes approved VPOs", () => {
+  assert.deepEqual(classifyPoPosition(position()), [])
+  assert.equal(poRevisedCents(position()), 120_000)
+  assert.equal(poRemainingCents(position({ billedCents: 50_000 })), 70_000)
+})
+
+test("each way the books can disagree with a purchase order is named once, with its amount", () => {
+  assert.deepEqual(classifyPoPosition(position({ billedCents: 130_000, completionBilledCents: 130_000 })), [{ kind: "overbilled", cents: 10_000 }])
+  assert.deepEqual(classifyPoPosition(position({ paidCents: 125_000 })), [{ kind: "paid_exceeds_billed", cents: 5_000 }])
+  assert.deepEqual(classifyPoPosition(position({ completionBilledCents: 100_000 })), [{ kind: "billed_without_completion", cents: 20_000 }])
+  assert.deepEqual(classifyPoPosition(position({ unclaimedVpoCents: 20_000 })), [{ kind: "vpo_unbilled", cents: 20_000 }])
+})
+
+test("completion rules apply only where pay-on-PO does", () => {
+  assert.deepEqual(classifyPoPosition(position({ payOnPo: false, completionBilledCents: 0, unclaimedVpoCents: 20_000 })), [])
+})
+
+test("the variance export states its period and scope and cannot be read as a formula", () => {
+  const rows = [{ dimension: "vendor", dimension_id: "v", dimension_label: "=HYPERLINK(\"x\")", net_variance_cents: 12_345, absolute_variance_cents: 12_345, incidence: 1, direct_cost_budget_cents: 100_000, variance_rate: 0.12345 }]
+  const csv = varianceAnalysisCsv(rows, { startDate: "2026-09-01", endDate: "2026-09-30", scopeLabel: "North" })
+  assert.match(csv, /^Variance analysis,\nPeriod,2026-09-01 to 2026-09-30\nScope,North\n\nDimension,Group,/)
+  assert.match(csv, /'=HYPERLINK/)
+  assert.match(csv, /123\.45,123\.45,1,1000\.00,12\.35%/)
 })

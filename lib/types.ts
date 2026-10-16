@@ -795,6 +795,7 @@ export interface PortalPermissions {
   can_view_punch_items?: boolean     // Can see + work punch items assigned to their company
   can_view_purchase_orders?: boolean
   can_report_po_completion?: boolean
+  can_acknowledge_purchase_orders?: boolean
   // Reviewer-specific permissions
   can_review_submittals?: boolean    // Can decide submittal review steps routed to them
 }
@@ -850,6 +851,7 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_view_punch_items: false,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
+  can_acknowledge_purchase_orders: false,
 }
 
 export type PortalTokenPurpose = "portal" | "vendor_payout"

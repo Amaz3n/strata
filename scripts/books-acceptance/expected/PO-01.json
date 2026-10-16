@@ -1,0 +1,137 @@
+{
+  "scenario": "PO-01",
+  "reviewedFrom": "EP08-06 and EP08-07 (docs/enterprise-production/completion-checklist.json) and the EP08 owner decisions of 2026-10-15: generation reconciles per source line across every run (approved and billed orders are preserved and reported, only drafts are replaced), one living draft budget per home, order numbers assigned under the project lock, an exception is resolved in the transaction that creates its order, zero-price manual resolutions need a note, run and exception tables are read-only to members. Code: lib/services/po-generation.ts, lib/validation/po-generation.ts, components/purchasing/po-generation-preview.tsx; migration 20261015110000_po_generation_reconcile. Values are derived from each subcase's inputs and confirmed by the first run on the acceptance stack.",
+  "subcases": {
+    "po-generation-tables-refuse-data-api-writes": {
+      "derivation": "A sales consultant (a member with no purchasing permission) tries, with their own JWT through the data API, to resolve an open exception with a forged manual vendor and a $0.01 price, to delete the org's exceptions, to insert a succeeded commit run with a chosen fingerprint, and to rewrite run status. Every statement is refused, nothing changes, the exception stays open, and the member can still read. The purchasing manager then resolves the same exception through the service and it lands.",
+      "expected": {
+        "forged": {
+          "resolveException": "refused",
+          "deleteExceptions": "refused",
+          "forgeSucceededRun": "refused",
+          "rewriteRun": "refused"
+        },
+        "rowsChanged": {
+          "exceptions": 0,
+          "runs": 0
+        },
+        "exceptionStillOpen": true,
+        "memberReads": true,
+        "buyerResolved": true
+      }
+    },
+    "po-preview-lists-expiring-agreements": {
+      "derivation": "Two agreements are ended 10 and 25 days from today, inside the org's 30-day lead window. The preview returns both with vendor and days left, soonest first, each carrying its agreement's end date, and writes no order.",
+      "expected": {
+        "expiring": [
+          {
+            "vendor": "Cypress Sitework",
+            "endsInDays": 10,
+            "endDateIsTheAgreementEnd": true
+          },
+          {
+            "vendor": "Palmetto Framing",
+            "endsInDays": 25,
+            "endDateIsTheAgreementEnd": true
+          }
+        ],
+        "previewWroteNoOrders": true
+      }
+    },
+    "po-regeneration-preserves-progressed-orders": {
+      "derivation": "A home is generated, its first order is approved, and the framing agreement is repriced. Regenerating keeps the approved order's status and total, reports it for a variance order when it is the repriced vendor's, re-prices the other draft orders in place, keeps the same number of orders, and leaves one line per source line and one budget equal to the commitments.",
+      "expected": {
+        "approvedOrderUntouched": true,
+        "orderCountUnchanged": true,
+        "reportedForPurchasing": true,
+        "draftsRepriced": true,
+        "firstRunWasWhole": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-resolutions-keep-one-budget": {
+      "derivation": "A home with two price exceptions (a lapsed and a void agreement) is generated, then both exceptions are resolved with manual prices. Each resolution adds its order to the same generated budget; nothing is left open.",
+      "expected": {
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true,
+        "openExceptions": 0,
+        "resolutions": 2
+      }
+    },
+    "po-zero-price-needs-a-reason": {
+      "derivation": "A manual $0 price is refused with no note and with a 4-character note, the exception staying open; with a note of at least ten characters it is accepted and the note is stored on the resolution.",
+      "expected": {
+        "noNote": "needs a reason",
+        "shortNote": "needs a reason",
+        "stillOpenAfterRefusals": true,
+        "withNote": "allowed",
+        "noteStored": "Owner-supplied concrete, no charge"
+      }
+    },
+    "race-po-competing-commits": {
+      "derivation": "Two sessions commit one preview at once. Under the project lock the first writes the orders; the second finds the same inputs already generated and returns that run (or is refused as a stale preview). Exactly one commit run succeeded and the orders exist once.",
+      "expected": {
+        "fulfilled": 2,
+        "distinctRuns": 1,
+        "refusals": [],
+        "succeededCommitRuns": 1,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-duplicate-resolution": {
+      "derivation": "Two sessions resolve one exception, one with each of two vendors. The first to take the project lock orders the line and closes the exception; the other is told it was already resolved. One line for the source, one resolved exception, no failed run, no raw index error.",
+      "expected": {
+        "winners": 1,
+        "losers": [
+          "already resolved"
+        ],
+        "linesForTheSource": 1,
+        "exceptionStatus": "resolved_manual",
+        "failedRuns": 0,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-approval-against-regeneration": {
+      "derivation": "A framing price moves, then a regeneration commit and an approval of a draft order start together. Whichever takes the order's row lock first wins: an approved order is preserved with its lines and price and reported, or the regeneration re-prices the draft and the approval then finds it. Never an approved order without lines, never a double order.",
+      "expected": {
+        "regeneration": "regenerated",
+        "approvalStatementRan": true,
+        "everyApprovedOrderHasLines": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-release-against-resolution": {
+      "derivation": "The starts release's PO step and a buyer's resolution run on one home at once. If the resolution lands between the release reading the house and committing, the release's commit is refused as stale and reads the house again; both finish and every source line is ordered once.",
+      "expected": {
+        "outcomes": [
+          "done",
+          "done"
+        ],
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    }
+  }
+}

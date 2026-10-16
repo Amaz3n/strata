@@ -11,7 +11,9 @@ import { fetchBudgetTabDataAction } from "@/app/(app)/projects/[id]/financials/a
 import { BudgetTab } from "@/components/financials/budget/budget-tab";
 import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner";
 import { PageLayout } from "@/components/layout/page-layout";
+import { PoGenerationPanel } from "@/components/purchasing/po-generation-panel";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getProjectPoGenerationSummary } from "@/lib/services/po-generation";
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup";
 import { getProjectFinancialFeatureConfig, resolveRevenueRecognitionBasis } from "@/lib/financials/billing-model";
 import { hasPermission } from "@/lib/services/permissions";
@@ -36,12 +38,13 @@ async function FinancialsBudgetPageRoute({ params }: PageProps) {
 }
 
 async function FinancialsBudgetData({ id }: { id: string }) {
-  const [project, contract, data, setupStatus, canWrite] = await Promise.all([
+  const [project, contract, data, setupStatus, canWrite, poGeneration] = await Promise.all([
     getProjectAction(id),
     getProjectContractAction(id),
     fetchBudgetTabDataAction(id),
     getProjectFinancialSetupStatusForProject(id),
     hasPermission("budget.write"),
+    getProjectPoGenerationSummary(id),
   ]);
   if (!project) notFound();
 
@@ -57,6 +60,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
       ]}
     >
       <FinancialSetupStatusBanner setup={setupStatus} />
+      {poGeneration && <PoGenerationPanel projectId={project.id} projectName={project.name} summary={poGeneration} />}
       <Suspense fallback={null}><ProjectInventoryLink projectId={id} applicable={resolveRevenueRecognitionBasis(featureConfig) === "closing"} /></Suspense>
       <BudgetTab
         projectId={project.id}

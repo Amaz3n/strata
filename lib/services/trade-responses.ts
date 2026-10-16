@@ -135,27 +135,36 @@ export async function listTradeWorkForPortal(input: {
 }
 
 /**
+ * Active members whose role grants `permission`, narrowed to those who hold it
+ * on THIS home (division scope and per-home grants decide, not the role alone).
+ */
+export async function projectPermissionHolders(orgId: string, projectId: string, permission: string) {
+  const supabase = createServiceSupabaseClient()
+  const roster = await readAllRows((from, to) => supabase.from("memberships").select("id,user_id,role_id")
+    .eq("org_id", orgId).eq("status", "active").order("id").range(from, to),
+  { cap: 100001, label: "Failed to read the coordinator roster" })
+  if (roster.truncated) throw new Error("The coordinator roster exceeds the supported limit")
+  const memberships = roster.rows
+  const roleIds = Array.from(new Set((memberships ?? []).map((membership) => membership.role_id)))
+  const { data: grants } = roleIds.length
+    ? await supabase.from("role_permissions").select("role_id").in("role_id", roleIds).in("permission_key", [permission, "*"])
+    : { data: [] as Array<{ role_id: string }> }
+  const allowedRoles = new Set((grants ?? []).map((grant) => grant.role_id))
+  const candidates = (memberships ?? []).filter((membership) => allowedRoles.has(membership.role_id)).map((membership) => membership.user_id as string)
+  return (await Promise.all(candidates.map(async (userId) =>
+    await hasProjectPermission(userId, projectId, permission) ? userId : null))).filter((userId): userId is string => userId !== null)
+}
+
+/**
  * Users who coordinate this home's starts: the superintendent and everyone whose
  * role grants start.write, narrowed to those who hold it on THIS home.
  */
 async function tradeResponseRecipients(orgId: string, projectId: string) {
   const supabase = createServiceSupabaseClient()
-  const [roster, { data: project }] = await Promise.all([
-    readAllRows((from, to) => supabase.from("memberships").select("id,user_id,role_id")
-      .eq("org_id", orgId).eq("status", "active").order("id").range(from, to),
-    { cap: 100001, label: "Failed to read the coordinator roster" }),
+  const [coordinators, { data: project }] = await Promise.all([
+    projectPermissionHolders(orgId, projectId, "start.write"),
     supabase.from("projects").select("superintendent_id").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
   ])
-  if (roster.truncated) throw new Error("The coordinator roster exceeds the supported limit")
-  const memberships = roster.rows
-  const roleIds = Array.from(new Set((memberships ?? []).map((membership) => membership.role_id)))
-  const { data: grants } = roleIds.length
-    ? await supabase.from("role_permissions").select("role_id").in("role_id", roleIds).in("permission_key", ["start.write", "*"])
-    : { data: [] as Array<{ role_id: string }> }
-  const allowedRoles = new Set((grants ?? []).map((grant) => grant.role_id))
-  const candidates = (memberships ?? []).filter((membership) => allowedRoles.has(membership.role_id)).map((membership) => membership.user_id as string)
-  const coordinators = (await Promise.all(candidates.map(async (userId) =>
-    await hasProjectPermission(userId, projectId, "start.write") ? userId : null))).filter((userId): userId is string => userId !== null)
   const superintendent = typeof project?.superintendent_id === "string" ? [project.superintendent_id] : []
   return Array.from(new Set([...coordinators, ...superintendent]))
 }

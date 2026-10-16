@@ -1,17 +1,18 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
-import { format } from "date-fns"
+import { format, parseISO } from "date-fns"
 import { toast } from "sonner"
 
-import type { BidAddendum, BidAwardResult, BidPackage, BidScopeItem, BidSubmission } from "@/lib/services/bids"
+import type { BidAddendum, BidAwardResult, BidPackage, BidScopeItem, BidSubmission, PriceBookAwardPreviewLine } from "@/lib/services/bids"
 import { itemForScope } from "@/lib/bids/leveling"
-import { awardBidSubmissionAction } from "@/app/(app)/bids/actions"
+import { awardBidSubmissionAction, previewPriceBookAwardAction } from "@/app/(app)/bids/actions"
 import { listAttachmentsAction } from "@/app/(app)/documents/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { cn, formatMoneyCents } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
@@ -29,6 +30,7 @@ const COVERAGE: Array<{ value: Coverage; label: string; phrase: string }> = [
 ]
 
 const day = (value: string) => format(new Date(value), "MMM d, yyyy")
+const calendarDay = (value: string) => format(parseISO(value), "MMM d, yyyy")
 
 /**
  * The award, as one decision: what you're buying, who covers what the trade
@@ -68,6 +70,9 @@ export function BidAwardSheet({
   const [bondVerified, setBondVerified] = useState(false)
   const [hasBondEvidence, setHasBondEvidence] = useState<boolean | null>(null)
   const [isAwarding, startAwarding] = useTransition()
+  const today = new Date().toISOString().slice(0, 10)
+  const [effectiveFrom, setEffectiveFrom] = useState(today)
+  const [displacement, setDisplacement] = useState<{ lines: PriceBookAwardPreviewLine[]; error: string | null } | null>(null)
 
   useEffect(() => {
     if (!open || !bidPackage.bond_required) return
@@ -83,6 +88,24 @@ export function BidAwardSheet({
       active = false
     }
   }, [open, bidPackage.bond_required, submission.id])
+
+  const effectiveValid = effectiveFrom >= today && effectiveFrom <= new Date(Date.now() + 366 * 86_400_000).toISOString().slice(0, 10)
+  const alternateKey = Array.from(alternates).sort().join(",")
+  useEffect(() => {
+    if (!open || !priceBook || !effectiveValid) return
+    let active = true
+    setDisplacement(null)
+    previewPriceBookAwardAction({
+      bid_submission_id: submission.id,
+      effective_from: effectiveFrom,
+      accepted_alternate_ids: alternateKey ? alternateKey.split(",") : [],
+    }).then((result) => {
+      if (active) setDisplacement(result.success ? { lines: result.data, error: null } : { lines: [], error: result.error })
+    })
+    return () => {
+      active = false
+    }
+  }, [open, priceBook, effectiveValid, effectiveFrom, alternateKey, submission.id])
 
   const pricedAlternates = scopeItems
     .filter((scope) => scope.item_type === "alternate")
@@ -156,7 +179,7 @@ export function BidAwardSheet({
   const compliance = submission.invite?.compliance_warning
   const bondOpen = bidPackage.bond_required && !bondVerified
   const needsException = Boolean(prequal || compliance || bondOpen)
-  const ready = allCovered && scope.trim() && terms.trim() && (!needsException || exception.trim()) && contractCents >= 0
+  const ready = allCovered && scope.trim() && terms.trim() && (!needsException || exception.trim()) && contractCents >= 0 && (!priceBook || effectiveValid)
 
   function award() {
     if (!ready) return
@@ -173,6 +196,7 @@ export function BidAwardSheet({
               readiness_exception: exception.trim() || undefined,
               bond_verified: bondVerified,
               notes: notes.trim() || null,
+              effective_from: priceBook ? effectiveFrom : undefined,
             },
           ),
         )
@@ -238,6 +262,53 @@ export function BidAwardSheet({
                 </div>
               ) : null}
             </div>
+
+            {priceBook ? (
+              <div className="space-y-3 pt-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="award-effective-from">Effective from</Label>
+                  <Input id="award-effective-from" type="date" min={today} value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className="w-44" aria-invalid={!effectiveValid} />
+                  {!effectiveValid ? <p className="text-xs text-destructive">Choose today or a date up to a year ahead.</p> : null}
+                </div>
+                <p className="microlabel">Replaces</p>
+                {displacement === null ? (
+                  <div className="h-10 animate-pulse bg-muted" aria-busy="true" />
+                ) : displacement.error ? (
+                  <p role="alert" className="text-xs text-destructive">Could not preview what this replaces: {displacement.error}</p>
+                ) : displacement.lines.every((line) => line.replaces.length === 0) ? (
+                  <p className="text-xs text-muted-foreground">No standing price in this scope. These are new prices.</p>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b text-left text-muted-foreground">
+                        <th className="py-1 font-medium">Line</th>
+                        <th className="py-1 font-medium">Vendor</th>
+                        <th className="py-1 text-right font-medium">Was</th>
+                        <th className="py-1 text-right font-medium">Now</th>
+                        <th className="py-1 text-right font-medium">Change</th>
+                        <th className="py-1 text-right font-medium">Ends</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displacement.lines.flatMap((line) =>
+                        line.replaces.map((replaced) => (
+                          <tr key={`${line.costCodeId}:${replaced.agreementId}`} className="border-b last:border-b-0">
+                            <td className="py-1.5 pr-2">{line.costCode ? <span className="font-mono">{line.costCode}</span> : null} {line.description}</td>
+                            <td className="py-1.5 pr-2">{replaced.vendorName}</td>
+                            <td className="py-1.5 text-right font-mono tabular-nums">{formatMoneyCents(replaced.price.cents)}</td>
+                            <td className="py-1.5 text-right font-mono tabular-nums">{formatMoneyCents(line.price.cents)}</td>
+                            <td className={cn("py-1.5 text-right font-mono tabular-nums", replaced.deltaCents != null && replaced.deltaCents > 0 && "text-destructive", replaced.deltaCents != null && replaced.deltaCents < 0 && "text-success")}>
+                              {replaced.deltaPct != null ? `${replaced.deltaPct > 0 ? "+" : ""}${replaced.deltaPct}%` : "—"}
+                            </td>
+                            <td className="py-1.5 text-right tabular-nums">{calendarDay(replaced.endsOn)}</td>
+                          </tr>
+                        )),
+                      )}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ) : null}
 
             {gaps.length ? (
               <div className="space-y-3 pt-2">

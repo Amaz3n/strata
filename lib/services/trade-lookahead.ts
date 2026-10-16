@@ -49,7 +49,7 @@ function text(value: unknown) {
   return typeof value === "string" ? value : null
 }
 
-async function companyRecipients(supabase: SupabaseClient, orgId: string, companyId: string) {
+export async function companyRecipients(supabase: SupabaseClient, orgId: string, companyId: string) {
   // contact_company_links is the only person-to-company link.
   const links = await readAllRowsById((after, take) => {
     let query = supabase.from("contact_company_links").select("id,contact:contacts!inner(org_id,email)")
@@ -129,6 +129,8 @@ async function loadTradeLookahead(
       const commitments = await readAllRowsById((after, take) => {
         let query = reader.from("commitment_lines").select("id,cost_code_id,commitment:commitments!inner(project_id,company_id,company:companies(name),commitment_type)")
           .eq("org_id", context.orgId).eq("commitment.org_id", context.orgId)
+          // An order that was never issued to the vendor is not an assignment either.
+          .not("commitment.issued_at", "is", null)
           .in("commitment.project_id", batch).in("cost_code_id", costCodeIds.slice(costOffset, costOffset + 100))
           .eq("commitment.commitment_type", "purchase_order").in("commitment.status", [...LOOKAHEAD_PO_STATUSES])
         if (after) query = query.gt("id", after)
@@ -361,7 +363,7 @@ export async function enqueueTradeScheduleChange(input: {
   if (error) throw new Error(`Failed to queue the trade schedule notice: ${error.message}`)
 }
 
-async function homeLabel(supabase: SupabaseClient, orgId: string, projectId: string) {
+export async function homeLabel(supabase: SupabaseClient, orgId: string, projectId: string) {
   const { data, error } = await supabase.from("lots").select("lot_number,block,community:communities(name)")
     .eq("org_id", orgId).eq("project_id", projectId).limit(1).maybeSingle()
   if (error) throw new Error(`Failed to load the home for its trade notice: ${error.message}`)

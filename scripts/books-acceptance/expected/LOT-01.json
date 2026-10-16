@@ -242,9 +242,6 @@
       }
     },
     "purchasing-manager-reaches-a-house": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "D2",
-      "reason": "Defect: the purchasing manager role holds po.generate, commitment.approve and the rest of the purchasing keys but not project.read, and a project-scoped check passes only for a project member or someone with project.read (hasAllProjectAccess, lib/services/authorization-policy.ts), so the role is denied on every house (deny_no_project_membership). It is the only production role without project.read. Separately, row-level security on project_selections shows a home's selections only to project members and admins, so the design studio coordinator, who has project.read, still cannot list or confirm a home's selection group (confirmSelectionGroup reports it not found); the same cause is behind preview-matches-release.",
       "derivation": "The purchasing manager previews the house's purchase orders.",
       "inputs": {},
       "expected": {
@@ -2139,7 +2136,7 @@
           "invites": 1,
           "bids": 1,
           "queued": [
-            "Cypress Landing \u2014 The Mangrove"
+            "Cypress Landing — The Mangrove"
           ]
         },
         "awardRefusals": {
@@ -2254,7 +2251,7 @@
           "rowCounts": {
             "invites": 3,
             "responses": 2,
-            "job": "Cypress Landing \u2014 The Palmetto"
+            "job": "Cypress Landing — The Palmetto"
           }
         },
         "queueRefusals": {
@@ -2420,9 +2417,6 @@
       }
     },
     "addendum-can-be-issued-on-an-open-package": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P3",
-      "reason": "Defect: createBidAddendum (lib/services/bids.ts) fails for every member with 'permission denied for table bid_scope_revisions': the bid_addendum_reconfirmation trigger runs revise_bid_for_addendum() as the caller, and bid_scope_revisions is revoked from authenticated (supabase/migrations/20260921121014_bid_pricing_decisions_and_scope_revisions.sql). Bid intelligence's staleness-against-addenda signal can never be produced by the app.",
       "derivation": "EP08-04 #0 (staleness against addenda is a package signal). An owner issues the first addendum on an open package; it is numbered 1.",
       "inputs": {},
       "expected": {
@@ -2506,9 +2500,6 @@
       }
     },
     "purchasing-manager-reads-the-history-of-awarded-homes": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P4",
-      "reason": "Defect: the purchasing manager holds bid.read, price_book.read and project.read but is not a member of any home, and the commitments row-level policy (commitments_access: is_project_member or org admin) hides every subcontract from her. getCostCodeBidHistory (lib/services/bid-intelligence.ts, amounts() on commitments) therefore throws 'Award history references missing amounts' for a legitimate award and getVendorBidStats reports 0 subcontracts and no change-order growth. Same root cause as D2 (the role is not an org admin and not on the house team).",
       "derivation": "EP08-04 #0 (histories are fully read). The cost-code history is the org's own award history; the purchasing manager, whose job it is, reads the same one award (11,000,000 cents against a 9,240,000 cent budget, 119 percent) the owner does.",
       "inputs": {},
       "expected": {
@@ -2783,9 +2774,6 @@
       }
     },
     "purchasing-manager-resolves-an-exception-on-a-house": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P4",
-      "reason": "Defect (same root cause as P4 above): resolvePoException (lib/services/po-generation.ts runGeneration, loadGeneratedCommitments and loadCoveredSourceKeys) reads the home's issued orders with the member's client; the commitments policy shows them only to project members and org admins, so for the purchasing manager the numbering restarts at 01 (commitments_generated_po_number_uidx duplicate) and the covered-lines check sees nothing, which would re-issue every order were it not for the unique index.",
       "derivation": "EP08-06 #1 (exception resolution). The buyer owns po_exception.resolve; resolving the lapsed-concrete exception with a manual price adds that order to the house.",
       "inputs": {},
       "expected": {
@@ -2963,9 +2951,6 @@
       }
     },
     "purchasing-manager-requests-a-variance-order-on-a-house": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P4",
-      "reason": "Defect (root cause P4): createCommitmentChangeOrder (lib/services/commitment-change-orders.ts loadParentCommitment) loads the purchase order with the member's client; commitments_access shows a house's commitments only to its project team and org admins, so the purchasing manager (vpo.request) gets 'Commitment not found' for every house she is not on.",
       "derivation": "EP08-12 #0 (variance facts come from VPOs the buyer raises). The purchasing manager owns vpo.request; raising a back-charge/variance against a house's order is her job.",
       "inputs": {},
       "expected": {
@@ -2973,22 +2958,19 @@
       }
     },
     "division-scoped-variance-report-matches-the-organisation-report": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P5",
-      "reason": "Defect: getScopedVarianceAnalysis (lib/services/reports/variance-analysis.ts, the projects read by division_id in getVarianceAnalysis) scopes homes by projects.division_id only, while the organisation RPC and loadVarianceFacts use coalesce(lot.division_id, project.division_id). A home sold from a reservation has its division on the lot and a null projects.division_id, so a division-limited reader's report silently omits it (LOT-01's closed home: 310,000 of 560,000 absolute variance shown).",
-      "derivation": "EP08-12 #0 (the report reads all scoped facts). A reader limited to the one division that holds both homes must see the same 1,104 facts and 560,000 absolute variance as the organisation report; the closed home's division is recorded on its lot only.",
+      "derivation": "EP08-12 #0 (the report reads all scoped facts). A reader limited to the one division that holds both homes must see the same 1,104 facts and 560,000 absolute variance as the organisation report; the closed home's division is recorded on its lot only. A home can no longer carry its division on its lot only: projects_division_matches_lot and lots_file_project_under_lot_division keep the house's division equal to its lot's, so both homes record it on the project and the lot, and the division-limited report includes both either way.",
       "inputs": {},
       "expected": {
         "homesAndWhereTheirDivisionIsRecorded": [
           {
             "closed": true,
-            "on_project": false,
-            "on_lot": true
+            "on_lot": true,
+            "on_project": true
           },
           {
             "closed": false,
-            "on_project": true,
-            "on_lot": true
+            "on_lot": true,
+            "on_project": true
           }
         ],
         "divisionSees": {
@@ -2999,9 +2981,6 @@
       }
     },
     "variance-report-labels-the-superintendent": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P6",
-      "reason": "Defect: the superintendent dimension resolves the team through public.roles, and roles_access allows service_role only; get_variance_analysis (security invoker) and loadSuperintendents (lib/services/reports/variance-analysis.ts, supabase.from('roles')) run as the member, so no home ever has a superintendent and the dimension is one 'Unassigned' group for everyone.",
       "derivation": "EP08-12 #0 (supporting labels). The closed home has an active field (superintendent) team member and the second home has none: the closed home's two orders (absolute 170,000) belong to that person and the second home's 1,102 orders (390,000) to Unassigned.",
       "inputs": {},
       "expected": [
@@ -3030,9 +3009,6 @@
       }
     },
     "purchasing-manager-runs-the-bid-workbench": {
-      "status": "NOT_IMPLEMENTED",
-      "defect": "P7",
-      "reason": "Defect: createBidInvite, bulkCreateBidInvites, sendBidPackage and createManualBidSubmission (lib/services/bids.ts) require project.manage, which the purchasing manager does not hold, while createBidPackage, saveBidScopeItems, updateBidPackage and awardBidSubmission accept bid.write. The buyer can create and award a package but cannot invite a vendor or enter a bid, so the owner has to do those steps.",
       "derivation": "EP08-01 #0 (buyers create scoped packages and reach the existing bid workbench). The role playbook gives the starts/purchasing manager bid awards and price agreements; the workbench steps between creating a package and awarding it (invite, send, enter a bid) are the same job.",
       "inputs": {},
       "expected": {

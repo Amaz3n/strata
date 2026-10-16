@@ -72,7 +72,7 @@ async function BidPackageDetailContent({
     getOrgCompaniesAction(),
     listBidPackageRfisAction(bidPackage.id),
     listBidPackageActivityAction(bidPackage.id),
-    getPackageIntelligenceAction(bidPackage.id).catch(() => null),
+    getPackageIntelligenceAction(bidPackage.id),
     getBidPackageAwardAction(bidPackage.id),
   ]);
 
@@ -96,7 +96,8 @@ async function BidPackageDetailContent({
           scopeItems={scopeItems}
           rfis={rfis}
           activity={activity}
-          intelligence={intelligence}
+          intelligence={intelligence.intelligence}
+          intelligenceError={intelligence.error}
           companies={companies}
           award={award}
         />

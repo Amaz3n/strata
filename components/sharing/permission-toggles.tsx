@@ -53,6 +53,7 @@ const DEFAULTS: PortalPermissions = {
   can_upload_subtier_waivers: true,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
+  can_acknowledge_purchase_orders: false,
 }
 
 const PERMISSION_GROUPS = [
@@ -92,6 +93,7 @@ const PERMISSION_GROUPS = [
       { key: "can_upload_compliance_docs", label: "Upload compliance", icon: Layers },
       { key: "can_upload_subtier_waivers", label: "Upload sub-tier waivers", icon: FileText },
       { key: "can_report_po_completion", label: "Report PO completion", icon: CheckSquare },
+      { key: "can_acknowledge_purchase_orders", label: "Accept or dispute purchase orders", icon: CheckSquare },
     ],
   },
 ] as const

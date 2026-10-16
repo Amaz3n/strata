@@ -25,14 +25,6 @@ export type GeneratedPoGroup = {
   lines: PoGenerationResolvedLine[]
 }
 
-export type GeneratedBudgetGroup = {
-  costCodeId: string
-  costType: string | null
-  description: string
-  amountCents: number
-  sourceIds: string[]
-}
-
 export function groupPurchaseOrderLines(lines: PoGenerationResolvedLine[]): GeneratedPoGroup[] {
   const groups = new Map<string, GeneratedPoGroup>()
   for (const line of lines) {
@@ -57,31 +49,13 @@ export function groupPurchaseOrderLines(lines: PoGenerationResolvedLine[]): Gene
     .sort((a, b) => a.companyId.localeCompare(b.companyId))
 }
 
-export function groupGeneratedBudgetLines(lines: PoGenerationResolvedLine[]): GeneratedBudgetGroup[] {
-  const groups = new Map<string, GeneratedBudgetGroup>()
-  for (const line of lines) {
-    const key = `${line.costCodeId}|${line.costType ?? ""}`
-    const group = groups.get(key) ?? {
-      costCodeId: line.costCodeId,
-      costType: line.costType ?? null,
-      description: line.description,
-      amountCents: 0,
-      sourceIds: [],
-    }
-    group.amountCents += line.totalCents
-    group.sourceIds.push(`${line.sourceKind}:${line.sourceId}`)
-    groups.set(key, group)
-  }
-  return Array.from(groups.values())
-    .map((group) => ({ ...group, sourceIds: group.sourceIds.sort() }))
-    .sort((a, b) => `${a.costCodeId}|${a.costType ?? ""}`.localeCompare(`${b.costCodeId}|${b.costType ?? ""}`))
-}
-
 export type PoFingerprintInput = {
   asOfDate: string
   lines: Array<{
     sourceKind: "takeoff_line" | "option"
     sourceId: string
+    /** The vendor a line is priced for: a swap at the same agreement and total is a different order. */
+    companyId?: string | null
     quantity: number
     unit: string
     agreementId?: string | null
@@ -96,6 +70,7 @@ export function createPoGenerationFingerprint(input: PoFingerprintInput) {
       .map((line) => ({
         sourceKind: line.sourceKind,
         sourceId: line.sourceId,
+        companyId: line.companyId ?? null,
         quantity: line.quantity,
         unit: line.unit.trim().toLowerCase(),
         agreementId: line.agreementId ?? null,

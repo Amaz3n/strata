@@ -88,7 +88,8 @@ export interface BidPortalAccess {
   pin_locked_until?: string | null
   invite: BidPortalInvite
   bidPackage: BidPortalPackage
-  project: { id: string; name: string; status: string }
+  /** What the package is for: a project, a prospect's deal, or a community/plan price book. Only a project owns RFIs and files by `project_id`. */
+  job: { kind: "project" | "prospect" | "community_plan"; id: string; name: string; status: string }
   org: { id: string; name: string; logo_url?: string | null }
 }
 
@@ -323,7 +324,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
 
   const revisionResult = await supabase.from("bid_packages").select("scope_revision").eq("id",inviteRow.bid_package_id).maybeSingle()
   if (revisionResult.error && !["42703","PGRST204"].includes(revisionResult.error.code)) throw new Error(revisionResult.error.message)
-  let job: { id: string; org_id: string; name: string; status: string } | null = null
+  let job: { kind: "project" | "prospect" | "community_plan"; id: string; org_id: string; name: string; status: string } | null = null
 
   if (bidPackage.project_id) {
     const projectResult = await supabase
@@ -331,7 +332,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       .select("id, org_id, name, status")
       .eq("id", bidPackage.project_id)
       .maybeSingle()
-    job = projectResult.data
+    job = projectResult.data ? { kind: "project", ...projectResult.data } : null
   } else if (bidPackage.prospect_id) {
     const prospectResult = await supabase
       .from("prospects")
@@ -340,6 +341,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       .maybeSingle()
     job = prospectResult.data
       ? {
+          kind: "prospect",
           id: prospectResult.data.id,
           org_id: prospectResult.data.org_id,
           name: prospectResult.data.name,
@@ -358,6 +360,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     const context = communityResult.data ?? planResult.data
     if (context) {
       job = {
+        kind: "community_plan",
         id: context.id,
         org_id: context.org_id,
         name: [communityResult.data?.name, planResult.data?.name].filter(Boolean).join(" — "),
@@ -431,7 +434,8 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       pricing_available: !revisionResult.error,
       status: bidPackage.status,
     },
-    project: {
+    job: {
+      kind: job.kind,
       id: job.id,
       name: job.name,
       status: job.status,
@@ -1008,7 +1012,7 @@ export async function submitBidFromPortal({
           to: receiptTo,
           companyName: access.invite.company?.name,
           contactName: access.invite.contact?.full_name ?? input.submitted_by_name,
-          projectName: access.project.name,
+          projectName: access.job.name,
           bidPackageTitle: access.bidPackage.title,
           orgName: access.org.name,
           totalCents: submission.total_cents,

@@ -10,13 +10,16 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 
-export function CreateProductionBidDialog() {
+/** A package opened from a renewal starts with the expiring agreement's scope. */
+export type BidPackagePrefill = { title: string; community: PurchasingEntity | null; plan: PurchasingEntity | null; costCodeId: string }
+
+export function CreateProductionBidDialog({ prefill, label = "Create bid package", variant = "default" }: { prefill?: BidPackagePrefill; label?: string; variant?: "default" | "outline" | "ghost" }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
-  const [title, setTitle] = useState("")
+  const [title, setTitle] = useState(prefill?.title ?? "")
   const [scope, setScope] = useState("")
-  const [community, setCommunity] = useState<PurchasingEntity | null>(null)
-  const [plan, setPlan] = useState<PurchasingEntity | null>(null)
+  const [community, setCommunity] = useState<PurchasingEntity | null>(prefill?.community ?? null)
+  const [plan, setPlan] = useState<PurchasingEntity | null>(prefill?.plan ?? null)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
@@ -27,6 +30,7 @@ export function CreateProductionBidDialog() {
         const result = await createBidPackageAction({}, {
           title: title.trim(), scope: scope.trim() || null,
           community_id: community?.id ?? null, house_plan_id: plan?.id ?? null,
+          cost_code_id: prefill?.costCodeId ?? null,
           award_target: "price_agreement", mode: "quote", status: "draft",
         })
         if (!result.success) { setError(result.error); return }
@@ -39,7 +43,7 @@ export function CreateProductionBidDialog() {
   }
 
   return <>
-    <Button size="sm" onClick={() => setOpen(true)}>Create bid package</Button>
+    <Button size="sm" variant={variant} onClick={() => setOpen(true)}>{label}</Button>
     <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value) }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader><DialogTitle>Create production bid package</DialogTitle><DialogDescription>Choose a community, a plan, or both. Awards establish prices for repeat home purchasing.</DialogDescription></DialogHeader>

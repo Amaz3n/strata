@@ -1,5 +1,4 @@
 import { z } from "zod"
-import type { PortalAccessToken, ProjectScopedPortalAccess } from "@/lib/types"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -8,6 +7,9 @@ import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurc
 import { recordEvent } from "@/lib/services/events"
 import { postJobCostActualsForVendorBill } from "@/lib/services/job-cost-actuals"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
+import { assertProjectFiles } from "@/lib/services/commitment-change-orders"
+import { resolvePayOnPo } from "@/lib/services/purchasing-settings"
+import { refuseSeparationOfDuties } from "@/lib/services/separation-of-duties"
 import { enqueueVendorBillSync, recordPayableAccountingEnqueueResult } from "@/lib/services/accounting-sync"
 import { rejectPoCompletionSchema, reportPoCompletionSchema, type ReportPoCompletionInput } from "@/lib/validation/po-completions"
 
@@ -20,21 +22,29 @@ export type PoCompletionStatus = "reported" | "verified" | "approved" | "rejecte
  */
 const CLAIMING_COMPLETION_STATUSES = new Set<string>(["reported", "verified", "approved", "billed"])
 
-export type CompletionCoverage = { id: string; status: string; commitment_line_ids: string[] | null }
+export type CompletionCoverage = { id: string; status: string; commitment_line_ids: string[] | null; change_order_ids?: string[] | null }
 
 /**
- * Two completions may never cover the same purchase-order line. The aggregate
- * check inside `approve_po_completion` cannot catch it: on a $100k PO two $40k
- * completions over identical lines each pass the revised-total test and the PO
- * gets billed twice.
+ * Two completions may never cover the same purchase-order line or the same
+ * variance order. The aggregate check inside `approve_po_completion` cannot
+ * catch it: on a $100k PO two $40k completions over identical lines each pass
+ * the revised-total test and the PO gets billed twice.
+ *
+ * A null line list means the whole purchase order and collides with any line;
+ * an empty list claims no line (a completion for variance orders alone).
  */
-export function findConflictingCompletion({ requestedLineIds, existing }: {
+export function findConflictingCompletion({ requestedLineIds, requestedChangeOrderIds = null, existing }: {
   requestedLineIds: string[] | null
+  requestedChangeOrderIds?: string[] | null
   existing: CompletionCoverage[]
 }): { completionId: string; lineIds: string[] | null } | null {
   for (const completion of existing) {
     if (!CLAIMING_COMPLETION_STATUSES.has(completion.status)) continue
-    // A null line list means the whole purchase order, so it collides with anything.
+    const claimedVpos = new Set(completion.change_order_ids ?? [])
+    if ((requestedChangeOrderIds ?? []).some((id) => claimedVpos.has(id))) {
+      return { completionId: completion.id, lineIds: [] }
+    }
+    if (requestedLineIds?.length === 0 || completion.commitment_line_ids?.length === 0) continue
     if (completion.commitment_line_ids == null || requestedLineIds == null) {
       return { completionId: completion.id, lineIds: completion.commitment_line_ids }
     }
@@ -61,16 +71,9 @@ export function hasWholeOrderClaim(existing: CompletionCoverage[]) {
 }
 
 async function requirePayOnPoEnabled(client: ReturnType<typeof createServiceSupabaseClient>, orgId: string, projectId: string) {
-  const [{ data: lot, error: lotError }, { data: settings, error: settingsError }] = await Promise.all([
-    client.from("lots").select("community:communities(pay_on_po_enabled)").eq("org_id", orgId).eq("project_id", projectId).maybeSingle(),
-    client.from("purchasing_settings").select("pay_on_po_enabled,po_completion_requires_verification").eq("org_id", orgId).maybeSingle(),
-  ])
-  if (lotError) throw new Error(`Failed to resolve the lot's pay-on-PO setting: ${lotError.message}`)
-  if (settingsError) throw new Error(`Failed to resolve purchasing settings: ${settingsError.message}`)
-  const community = Array.isArray(lot?.community) ? lot.community[0] : lot?.community
-  const enabled = community?.pay_on_po_enabled ?? settings?.pay_on_po_enabled ?? false
+  const { enabled, requiresVerification } = await resolvePayOnPo(client, orgId, projectId)
   if (!enabled) throw new Error("Pay-on-PO is not enabled for this community.")
-  return { requiresVerification: settings?.po_completion_requires_verification ?? true }
+  return { requiresVerification }
 }
 
 async function loadCommitment(client: ReturnType<typeof createServiceSupabaseClient>, orgId: string, commitmentId: string) {
@@ -101,27 +104,35 @@ async function createCompletion({
   if (parsed.reported_source === "trade_portal" && parsed.photo_file_ids.length === 0) {
     throw new Error("At least one completion photo is required.")
   }
+  await assertProjectFiles(service, orgId, commitment.project_id, parsed.photo_file_ids, "completion photos")
   if (parsed.commitment_line_ids?.length) {
     const { count, error } = await service.from("commitment_lines").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("commitment_id", commitment.id).in("id", parsed.commitment_line_ids)
     if (error || count !== parsed.commitment_line_ids.length) throw new Error("One or more purchase-order lines are invalid.")
   }
+  if (parsed.change_order_ids?.length) {
+    const { count, error } = await service.from("commitment_change_orders").select("id", { count: "exact", head: true })
+      .eq("org_id", orgId).eq("commitment_id", commitment.id).eq("status", "approved").in("id", parsed.change_order_ids)
+    if (error || count !== parsed.change_order_ids.length) throw new Error("A variance order on this completion is not approved on this purchase order.")
+  }
   const { data: siblings, error: siblingError } = await service.from("po_completions")
-    .select("id,status,commitment_line_ids").eq("org_id", orgId).eq("commitment_id", commitment.id)
+    .select("id,status,commitment_line_ids,change_order_ids").eq("org_id", orgId).eq("commitment_id", commitment.id)
     .order("reported_at", { ascending: false }).limit(200)
   if (siblingError) throw new Error(`Failed to check existing completions: ${siblingError.message}`)
   const conflict = findConflictingCompletion({
     requestedLineIds: parsed.commitment_line_ids ?? null,
+    requestedChangeOrderIds: parsed.change_order_ids ?? null,
     existing: siblings ?? [],
   })
   if (conflict) {
-    throw new Error("Some of this scope is already covered by another completion on this purchase order. Report only the lines that are still outstanding.")
+    throw new Error("Some of this scope is already covered by another completion on this purchase order. Report only the lines and variance orders that are still outstanding.")
   }
   const selfVerified = parsed.reported_source !== "trade_portal" && !requiresVerification
   const now = new Date().toISOString()
   const { data, error } = await service.from("po_completions").insert({
     org_id: orgId, project_id: commitment.project_id, commitment_id: commitment.id,
-    commitment_line_ids: parsed.commitment_line_ids ?? null, status: selfVerified ? "verified" : "reported",
+    commitment_line_ids: parsed.commitment_line_ids ?? null, change_order_ids: parsed.change_order_ids ?? null,
+    status: selfVerified ? "verified" : "reported",
     reported_source: parsed.reported_source, reported_by_contact_id: reportedByContactId ?? null,
     reported_by_user_id: reportedByUserId ?? null, notes: parsed.notes ?? null,
     photo_file_ids: parsed.photo_file_ids,
@@ -168,8 +179,17 @@ export async function verifyPoCompletion(completionId: string, orgId?: string) {
   await requireAuthorization({ permission: "po_completion.verify", userId, orgId: resolvedOrgId, projectId: completion.project_id, supabase, logDecision: true })
   if (completion.status === "verified") return completion
   if (completion.status !== "reported") throw new Error("Only reported completions can be verified.")
-  const { data, error } = await supabase.from("po_completions").update({ status: "verified", verified_by: userId, verified_at: new Date().toISOString() }).eq("org_id", resolvedOrgId).eq("id", completionId).select("*").single()
-  if (error || !data) throw new Error(`Failed to verify PO completion: ${error?.message}`)
+  if (completion.reported_by_user_id === userId) {
+    await refuseSeparationOfDuties({
+      orgId: resolvedOrgId, userId, actionKey: "po_completion.verify", resourceType: "po_completion", resourceId: completionId,
+      projectId: completion.project_id, rule: "po_completion.reporter_cannot_verify",
+      message: "You reported this completion, so someone else has to verify it.",
+    })
+  }
+  // The table is read-only to a member's own client; the write is the service's, after the checks above.
+  const { data, error } = await createServiceSupabaseClient().from("po_completions").update({ status: "verified", verified_by: userId, verified_at: new Date().toISOString() }).eq("org_id", resolvedOrgId).eq("id", completionId).eq("status", "reported").select("*").maybeSingle()
+  if (error) throw new Error(`Failed to verify PO completion: ${error.message}`)
+  if (!data) throw new Error("This completion changed while you were reviewing it. Reload and try again.")
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, before: completion, after: data })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_completion.verified", entityType: "po_completion", entityId: completionId, payload: { project_id: completion.project_id } })
   return data
@@ -180,19 +200,74 @@ export async function rejectPoCompletion(completionId: string, reason: string, o
   const { supabase, orgId: resolvedOrgId, userId, completion } = await loadCompletionForUser(completionId, orgId)
   await requireAuthorization({ permission: "po_completion.verify", userId, orgId: resolvedOrgId, projectId: completion.project_id, supabase, logDecision: true })
   if (!["reported", "verified"].includes(completion.status)) throw new Error("This completion can no longer be rejected.")
-  const { data, error } = await supabase.from("po_completions").update({ status: "rejected", rejected_reason: parsed.reason }).eq("org_id", resolvedOrgId).eq("id", completionId).select("*").single()
-  if (error || !data) throw new Error(`Failed to reject PO completion: ${error?.message}`)
+  const { data, error } = await createServiceSupabaseClient().from("po_completions").update({ status: "rejected", rejected_reason: parsed.reason }).eq("org_id", resolvedOrgId).eq("id", completionId).in("status", ["reported", "verified"]).select("*").maybeSingle()
+  if (error) throw new Error(`Failed to reject PO completion: ${error.message}`)
+  if (!data) throw new Error("This completion changed while you were reviewing it. Reload and try again.")
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, before: completion, after: data })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_completion.rejected", entityType: "po_completion", entityId: completionId, payload: { project_id: completion.project_id } })
   return data
 }
 
-export async function approvePoCompletion(completionId: string, orgId?: string) {
+export type ApprovePoCompletionOptions = { inspectionId?: string | null; inspectionWaiverReason?: string | null }
+
+const approvePoCompletionSchema = z.object({
+  inspectionId: z.string().uuid().nullish(),
+  inspectionWaiverReason: z.string().trim().min(5, "Say why no passed inspection is needed").max(1000).nullish(),
+})
+
+/**
+ * Stores the inspection (or the waiver) the approval relies on, before the
+ * approval RPC checks the org's policy against the stored row. Returns whether
+ * a waiver was recorded.
+ */
+async function recordInspectionEvidence({ service, orgId, userId, completion, input }: {
+  service: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  userId: string
+  completion: { id: string; project_id: string; inspection_id?: string | null }
+  input: z.infer<typeof approvePoCompletionSchema>
+}) {
+  if (!input.inspectionId && !input.inspectionWaiverReason) return false
+  const update: Record<string, unknown> = {}
+  if (input.inspectionId) {
+    const { data: inspection, error } = await service.from("inspections").select("id,status,result")
+      .eq("org_id", orgId).eq("project_id", completion.project_id).eq("id", input.inspectionId).maybeSingle()
+    if (error) throw new Error(`Failed to check the inspection: ${error.message}`)
+    if (!inspection) throw new Error("That inspection does not belong to this home.")
+    if (inspection.status !== "completed" || inspection.result !== "pass") throw new Error("Only a completed, passed inspection can back a completion.")
+    update.inspection_id = inspection.id
+  }
+  const waived = !input.inspectionId && Boolean(input.inspectionWaiverReason)
+  if (waived) Object.assign(update, { inspection_waived_reason: input.inspectionWaiverReason, inspection_waived_by: userId, inspection_waived_at: new Date().toISOString() })
+  const { error } = await service.from("po_completions").update(update).eq("org_id", orgId).eq("id", completion.id)
+  if (error) throw new Error(`Failed to record the inspection evidence: ${error.message}`)
+  return waived
+}
+
+/**
+ * The money step. Whoever reported or verified the work does not also release
+ * the payment for it. When the org requires a passed inspection, the approval
+ * either names one (same home, completed, passed) or carries a waiver reason;
+ * the waiver is recorded on the completion and audited.
+ */
+export async function approvePoCompletion(completionId: string, orgId?: string, options: ApprovePoCompletionOptions = {}) {
+  const parsed = approvePoCompletionSchema.parse(options)
   const { supabase, orgId: resolvedOrgId, userId, completion } = await loadCompletionForUser(completionId, orgId)
   await requireAuthorization({ permission: "bill.approve", userId, orgId: resolvedOrgId, projectId: completion.project_id, supabase, logDecision: true })
   const service = createServiceSupabaseClient()
+  if (completion.status !== "billed" && (completion.reported_by_user_id === userId || completion.verified_by === userId)) {
+    await refuseSeparationOfDuties({
+      orgId: resolvedOrgId, userId, actionKey: "bill.approve", resourceType: "po_completion", resourceId: completionId,
+      projectId: completion.project_id, rule: "po_completion.approver_cannot_have_reported_or_verified",
+      message: "You reported or verified this completion, so someone else has to approve the payment.",
+    })
+  }
+  const inspectionWaived = await recordInspectionEvidence({ service, orgId: resolvedOrgId, userId, completion, input: parsed })
   const { data, error } = await service.rpc("approve_po_completion", { p_org_id: resolvedOrgId, p_completion_id: completionId, p_actor_id: userId })
   if (error || !data?.vendor_bill_id) throw new Error(`Failed to approve PO completion: ${error?.message}`)
+  if (inspectionWaived) {
+    await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, after: { inspection_waived_reason: parsed.inspectionWaiverReason, inspection_waived_by: userId }, critical: true })
+  }
   try {
     await postJobCostActualsForVendorBill({ billId: data.vendor_bill_id, orgId: resolvedOrgId })
   } catch (ledgerError) {
@@ -204,7 +279,7 @@ export async function approvePoCompletion(completionId: string, orgId?: string) 
     const [{ error: billError }, { error: completionError }] = await Promise.all([
       service.from("vendor_bills").update({ status: "rejected", rejected_at: now, rejected_by: userId, rejection_reason: reason })
         .eq("org_id", resolvedOrgId).eq("id", data.vendor_bill_id),
-      service.from("po_completions").update({ status: completion.status, vendor_bill_id: null, amount_cents: null, approved_at: null, approved_by: null })
+      service.from("po_completions").update({ status: completion.status, vendor_bill_id: null, amount_cents: null, approved_at: null, approved_by: null, change_order_ids: completion.change_order_ids })
         .eq("org_id", resolvedOrgId).eq("id", completionId),
     ])
     if (billError || completionError) {
@@ -231,6 +306,18 @@ export async function approvePoCompletion(completionId: string, orgId?: string) 
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, before: completion, after: approved ?? data })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_completion.approved", entityType: "po_completion", entityId: completionId, payload: { project_id: completion.project_id, vendor_bill_id: data.vendor_bill_id, amount_cents: data.amount_cents } })
   return approved ?? data
+}
+
+
+/** The home's passed inspections an approval may rely on. Authorized by the approval permission, not inspection access. */
+export async function listCompletionInspections(completionId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId, completion } = await loadCompletionForUser(completionId, orgId)
+  await requireAuthorization({ permission: "bill.approve", userId, orgId: resolvedOrgId, projectId: completion.project_id, supabase, logDecision: true })
+  const { data, error } = await createServiceSupabaseClient().from("inspections").select("id,title,inspected_at")
+    .eq("org_id", resolvedOrgId).eq("project_id", completion.project_id).eq("status", "completed").eq("result", "pass")
+    .order("inspected_at", { ascending: false, nullsFirst: false }).limit(50)
+  if (error) throw new Error(`Failed to load inspections: ${error.message}`)
+  return (data ?? []).map((row) => ({ id: String(row.id), title: String(row.title ?? "Inspection"), inspectedAt: typeof row.inspected_at === "string" ? row.inspected_at : null }))
 }
 
 export type PoCompletionQueueRow = {
@@ -260,108 +347,4 @@ export async function listPoCompletions(filters: PurchasingQueueFilters & { stat
   const { data, error, count } = await query.range((parsed.page - 1) * parsed.pageSize, parsed.page * parsed.pageSize - 1).returns<PoCompletionQueueRow[]>()
   if (error) throw new Error(`Failed to list PO completions: ${error.message}`)
   return { items: data ?? [], count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
-}
-
-export type PortalPurchaseOrder = {
-  id: string
-  title: string
-  status: string
-  totalCents: number
-  contractNumber: string | null
-  scope: string | null
-  lines: Array<{ id: string; description: string; quantity: number; unit: string | null; scheduledValueCents: number; claimed: boolean }>
-  changes: Array<{ id: string; title: string; status: string; totalCents: number; reasonLabel: string | null }>
-  completions: Array<{ id: string; status: string; reportedAt: string; amountCents: number | null; rejectedReason: string | null; vendorBill: { status: string; paidCents: number; totalCents: number } | null }>
-  /** False once every line is claimed by a live completion — a rejected one is not. */
-  hasReportableScope: boolean
-}
-
-function firstRelation(value: unknown) {
-  const row = Array.isArray(value) ? value[0] : value
-  return row && typeof row === "object" ? row as Record<string, unknown> : null
-}
-
-/**
- * A purchase order the trade has been issued. Drafts were never sent and
- * cancelled orders no longer bind anyone, so neither reaches the vendor portal.
- */
-const ISSUED_PURCHASE_ORDER_STATUSES = ["approved", "active", "complete", "completed"] as const
-
-export async function listPortalPurchaseOrders(access: ProjectScopedPortalAccess): Promise<PortalPurchaseOrder[]> {
-  if (!access.company_id || access.permissions.can_view_purchase_orders !== true) throw new Error("Access denied")
-  const service = createServiceSupabaseClient()
-  try {
-    await requirePayOnPoEnabled(service, access.org_id, access.project_id)
-  } catch (error) {
-    if (error instanceof Error && error.message === "Pay-on-PO is not enabled for this community.") return []
-    throw error
-  }
-  const { data, error } = await service.from("commitments").select(`
-    id,title,status,total_cents,contract_number,scope,created_at,
-    lines:commitment_lines(id,description,quantity,unit,unit_cost_cents,scheduled_value_cents,sort_order),
-    changes:commitment_change_orders(id,title,status,total_cents,reason:variance_reason_codes(label)),
-    completions:po_completions(id,status,reported_at,rejected_reason,amount_cents,commitment_line_ids,vendor_bill:vendor_bills(status,paid_cents,total_cents))
-  `).eq("org_id", access.org_id).eq("project_id", access.project_id).eq("company_id", access.company_id)
-    .eq("commitment_type", "purchase_order").in("status", [...ISSUED_PURCHASE_ORDER_STATUSES])
-    .order("created_at", { ascending: false }).limit(100)
-  if (error) throw new Error(`Failed to load portal purchase orders: ${error.message}`)
-  return (data ?? []).map((row) => {
-    const rawCompletions: CompletionCoverage[] = (row.completions ?? []).map((completion: Record<string, unknown>) => ({
-      id: String(completion.id), status: String(completion.status),
-      commitment_line_ids: Array.isArray(completion.commitment_line_ids) ? completion.commitment_line_ids.map(String) : null,
-    }))
-    const claimedLineIds = claimedCompletionLineIds(rawCompletions)
-    const wholeOrderClaimed = hasWholeOrderClaim(rawCompletions)
-    const lines = (row.lines ?? [])
-      .slice()
-      .sort((a: Record<string, number>, b: Record<string, number>) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0))
-      .map((line: Record<string, unknown>) => ({
-        id: String(line.id), description: String(line.description ?? ""),
-        quantity: Number(line.quantity ?? 0), unit: typeof line.unit === "string" ? line.unit : null,
-        scheduledValueCents: Number(line.scheduled_value_cents ?? 0),
-        claimed: wholeOrderClaimed || claimedLineIds.has(String(line.id)),
-      }))
-    return {
-      id: String(row.id), title: String(row.title ?? "Purchase order"), status: String(row.status),
-      totalCents: Number(row.total_cents ?? 0),
-      contractNumber: typeof row.contract_number === "string" ? row.contract_number : null,
-      scope: typeof row.scope === "string" ? row.scope : null,
-      lines,
-      // A trade sees the revisions it is held to: approved VPOs, not drafts
-      // or requests still under review.
-      changes: (row.changes ?? []).filter((change: Record<string, unknown>) => change.status === "approved").map((change: Record<string, unknown>) => ({
-        id: String(change.id), title: String(change.title ?? ""), status: String(change.status),
-        totalCents: Number(change.total_cents ?? 0),
-        reasonLabel: typeof firstRelation(change.reason)?.label === "string" ? String(firstRelation(change.reason)?.label) : null,
-      })),
-      completions: (row.completions ?? [])
-        .map((completion: Record<string, unknown>) => {
-          const bill = firstRelation(completion.vendor_bill)
-          return {
-            id: String(completion.id), status: String(completion.status),
-            reportedAt: String(completion.reported_at),
-            amountCents: typeof completion.amount_cents === "number" ? completion.amount_cents : null,
-            rejectedReason: typeof completion.rejected_reason === "string" ? completion.rejected_reason : null,
-            vendorBill: bill ? { status: String(bill.status), paidCents: Number(bill.paid_cents ?? 0), totalCents: Number(bill.total_cents ?? 0) } : null,
-          }
-        })
-        .sort((a: { reportedAt: string }, b: { reportedAt: string }) => b.reportedAt.localeCompare(a.reportedAt)),
-      hasReportableScope: lines.some((line) => !line.claimed),
-    }
-  })
-}
-
-export async function isPortalPayOnPoEnabled(access: PortalAccessToken) {
-  if (access.permissions.can_view_purchase_orders !== true) return false
-  // Pay-on-PO is a community setting resolved through the job's lot, so a
-  // vendor account link has nothing to resolve it against — and no purchase
-  // orders to show either.
-  if (access.project_id === null) return false
-  try {
-    await requirePayOnPoEnabled(createServiceSupabaseClient(), access.org_id, access.project_id)
-    return true
-  } catch (error) {
-    if (error instanceof Error && error.message === "Pay-on-PO is not enabled for this community.") return false
-    throw error
-  }
 }

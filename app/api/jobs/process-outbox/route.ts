@@ -32,6 +32,7 @@ import { executeSelectionApprovalFromEnvelope, notifySelectionApprovalOutcome, S
 import { DESIGN_STUDIO_NOTICE_JOB_TYPE, sendDesignStudioAppointmentNotice } from "@/lib/services/design-studio-appointment-notices"
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
 import { processScheduleRescheduleNotice } from "@/lib/services/schedule"
+import { processPoIssueNotice } from "@/lib/services/po-issue-notices"
 import { processSelectionChangeApplied, SELECTION_CHANGE_APPLIED_JOB_TYPE } from "@/lib/services/selection-change-orders"
 import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
 import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
@@ -159,6 +160,7 @@ const OUTBOX_JOB_TYPES = [
   "process_inbound_bill_email",
   "selection_cutoff_recompute",
   "schedule_reschedule_notify",
+  "po_issue_notice",
   SELECTION_CHANGE_APPLIED_JOB_TYPE,
   "warranty_enroll_coverage",
   "reanchor_takeoff_markups",
@@ -600,6 +602,8 @@ async function processOutboxQueue(request: NextRequest) {
           await recomputeProjectSelectionCutoffs(projectId, job.org_id)
         } else if (job.job_type === "schedule_reschedule_notify") {
           await processScheduleRescheduleNotice(job.org_id, job.payload)
+        } else if (job.job_type === "po_issue_notice") {
+          await processPoIssueNotice(job.id, job.org_id, job.payload)
         } else if (job.job_type === SELECTION_CHANGE_APPLIED_JOB_TYPE) {
           await processSelectionChangeApplied(job.org_id, job.payload)
         } else if (job.job_type === "warranty_enroll_coverage") {

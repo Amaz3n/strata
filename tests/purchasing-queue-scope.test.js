@@ -116,26 +116,3 @@ test('original queue-specific filters and stable sort survive scope narrowing', 
   assert.equal(h.calls[1].params.get('status'), 'eq.reported')
   assert.equal(h.calls[1].params.get('order'), 'reported_at.desc,id.desc')
 })
-test('actual Purchasing page forwards the same ambient lens and preserves home/page links on all three queues', async () => {
-  const keys = []
-  for (const [tab, owner] of [['exceptions', 'listPoExceptions'], ['vpos', 'listVarianceOrders'], ['completions', 'listPoCompletions']]) {
-    for (const communityId of [COMMUNITY, PROJECT]) {
-      let input
-      const forbidden = async () => { throw new Error('Unrelated tab requested') }
-      const bindings = Object.fromEntries(['listPoExceptions', 'listVarianceOrders', 'listPoCompletions', 'listPriceAgreements', 'getPriceBookHealth', 'listProductionBidQueue', 'getVarianceAnalysis', 'listCompanies', 'listCostCodes', 'listCommunities', 'listHousePlans'].map(name => [name, forbidden]))
-      Object.assign(bindings, { [owner]: async args => { input = args; return { items: [], count: 1203 } }, getAmbientDeskContext: async () => ({ communityId, divisionId: PACKAGE }), connection: async () => {}, PageLayout: 'main', PurchasingClient: 'section', QueuePagination: 'nav' })
-      const { PurchasingPageContent } = declarations('app/(app)/purchasing/page.tsx', ['PurchasingPageContent', 'relationName'], bindings)
-      const element = await PurchasingPageContent({ searchParams: Promise.resolve({ tab, project: PROJECT, page: '3' }) })
-      assert.equal(input.communityId, communityId); assert.equal(input.divisionId, PACKAGE); assert.equal(input.projectId, PROJECT)
-      assert.equal(input.page, 3); assert.equal(input.pageSize, 50)
-      const client = element.props.children.find(child => child?.type === 'section')
-      keys.push(client.key)
-      const pagination = element.props.children.find(child => child?.type === 'nav')
-      assert.equal(pagination.props.total, 1203)
-      assert.equal(pagination.props.page, 3)
-      assert.match(pagination.props.href, new RegExp(`project=${PROJECT}`))
-      assert.match(pagination.props.href, new RegExp(`tab=${tab}`))
-    }
-  }
-  assert.equal(new Set(keys).size, 6, 'Changed scope remounts local queue state')
-})

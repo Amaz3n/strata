@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { PurchasingEntityPicker, type PurchasingEntity } from "@/components/purchasing/entity-picker"
 import { toast } from "sonner"
 import { parseMoneyToCents } from "@/lib/financials/money-input"
+import { ZERO_PRICE_NOTE_MIN_LENGTH } from "@/lib/validation/po-generation"
 
 export function ManualPriceDialog({ exceptionId, description, uom }: { exceptionId: string; description: string; uom: string | null }) {
   const [open, setOpen] = useState(false)
@@ -19,7 +20,8 @@ export function ManualPriceDialog({ exceptionId, description, uom }: { exception
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const cents = parseMoneyToCents(price)
-  const valid = vendor && price.trim() !== "" && cents !== null && cents >= 0 && note.trim().length > 0
+  const needsReason = cents === 0
+  const valid = vendor && price.trim() !== "" && cents !== null && cents >= 0 && note.trim().length >= (needsReason ? ZERO_PRICE_NOTE_MIN_LENGTH : 1)
 
   function submit() {
     if (!valid || !vendor) return
@@ -45,6 +47,7 @@ export function ManualPriceDialog({ exceptionId, description, uom }: { exception
       <Input id={`price-${exceptionId}`} type="number" min="0" step="0.01" value={price} disabled={pending} onChange={(event) => setPrice(event.target.value)} />
       <Label htmlFor={`note-${exceptionId}`}>Reason for manual pricing</Label>
       <Textarea id={`note-${exceptionId}`} value={note} maxLength={1000} disabled={pending} onChange={(event) => setNote(event.target.value)} />
+      {needsReason && <p className="text-xs text-muted-foreground">A zero price is for free-issue or owner-supplied items. Say why, in at least {ZERO_PRICE_NOTE_MIN_LENGTH} characters.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <Button disabled={pending || !valid} onClick={submit}>{pending ? "Resolving…" : "Resolve and regenerate"}</Button>
     </DialogContent>

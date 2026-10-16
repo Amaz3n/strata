@@ -76,6 +76,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   selection_approval: "selection_approval",
   price_agreement: "price_agreement",
   commitment_change_order: "commitment_change_order",
+  po_completion: "po_completion",
   start_package: "start_package",
   permit_application: "permit_application",
   closing: "closing",

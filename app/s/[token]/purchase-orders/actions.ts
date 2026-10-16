@@ -3,9 +3,11 @@
 import { revalidatePath } from "next/cache"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
+import { acknowledgePoFromPortal } from "@/lib/services/po-acknowledgments"
 import { reportPoCompletionFromPortal } from "@/lib/services/po-completions"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { uploadPortalFile } from "@/lib/services/portal-uploads"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export async function reportPurchaseOrderCompleteAction(token: string, formData: FormData): Promise<ActionResult<{ id: string }>> {
   try {
@@ -27,6 +29,20 @@ export async function reportPurchaseOrderCompleteAction(token: string, formData:
     })
     revalidatePath(`/s/${token}/purchase-orders`)
     return { success: true, data: { id: result.id } }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function acknowledgePurchaseOrderAction(token: string, input: unknown): Promise<ActionResult<{ id: string }>> {
+  try {
+    const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, permission: "can_acknowledge_purchase_orders" })
+    if (!access.company_id) throw new Error("This link is missing your company")
+    const { data: company } = await createServiceSupabaseClient().from("companies")
+      .select("name").eq("org_id", access.org_id).eq("id", access.company_id).maybeSingle()
+    const result = await acknowledgePoFromPortal(access, input, company?.name ?? "A vendor")
+    revalidatePath(`/s/${token}/purchase-orders`)
+    return { success: true, data: result }
   } catch (error) {
     return actionError(error)
   }

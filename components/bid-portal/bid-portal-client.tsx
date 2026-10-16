@@ -69,7 +69,7 @@ export function BidPortalClient({
       <BidPortalPinGate
         token={token}
         orgName={access.org.name}
-        projectName={access.project.name}
+        projectName={access.job.name}
         packageTitle={access.bidPackage.title}
         onSuccess={() => {
           setPinVerified(true)
@@ -98,9 +98,11 @@ export function BidPortalClient({
         >
           <BidAddendaTab addenda={addenda} token={token} onAddendaChange={handleAddendaChange} />
         </PortalSection>
-        <PortalSection id="questions" title="Questions & answers">
-          <BidRfisTab token={token} initialRfis={data.rfis} />
-        </PortalSection>
+        {access.bidPackage.project_id ? (
+          <PortalSection id="questions" title="Questions & answers">
+            <BidRfisTab token={token} initialRfis={data.rfis} />
+          </PortalSection>
+        ) : null}
         <PortalSection id="bid" title="Your bid">
           <BidForm {...bidFormProps} />
         </PortalSection>

@@ -25,6 +25,7 @@ export const commitmentChangeOrderInputSchema = z.object({
   reason_code_id: z.string().uuid().nullable().optional(),
   origin: z.enum(["field_mobile", "office", "design_studio_co", "trade_portal"]).nullable().optional(),
   photo_file_ids: z.array(z.string().uuid()).max(20).default([]),
+  evidence_file_ids: z.array(z.string().uuid()).max(20).default([]),
   title: z.string().trim().min(2, "Title is required").max(255),
   description: z.string().trim().max(5000).nullable().optional(),
   metadata: z.record(z.any()).nullable().optional(),
@@ -35,6 +36,7 @@ export const commitmentChangeOrderUpdateSchema = z.object({
   reason_code_id: z.string().uuid().nullable().optional(),
   origin: z.enum(["field_mobile", "office", "design_studio_co", "trade_portal"]).nullable().optional(),
   photo_file_ids: z.array(z.string().uuid()).max(20).optional(),
+  evidence_file_ids: z.array(z.string().uuid()).max(20).optional(),
   title: z.string().trim().min(2, "Title is required").max(255).optional(),
   description: z.string().trim().max(5000).nullable().optional(),
   metadata: z.record(z.any()).nullable().optional(),
@@ -55,7 +57,7 @@ export const commitmentChangeOrderLinkSchema = z.object({
   commitment_change_order_id: z.string().uuid(),
 })
 
-export type CommitmentChangeOrderInput = z.infer<typeof commitmentChangeOrderInputSchema>
+export type CommitmentChangeOrderInput = z.input<typeof commitmentChangeOrderInputSchema>
 export type CommitmentChangeOrderUpdateInput = z.infer<typeof commitmentChangeOrderUpdateSchema>
 export type CommitmentChangeOrderLineInput = z.infer<typeof commitmentChangeOrderLineInputSchema>
 export type CommitmentChangeOrderFromClientChangeOrderInput = z.infer<

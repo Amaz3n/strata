@@ -20,7 +20,7 @@ export type TradeNoticeSnapshot = z.infer<typeof tradeNoticeSnapshotSchema>
 export const tradeNoticeDeliverySchema = z.object({
   id: z.string().uuid(),
   org_id: z.string().uuid(),
-  kind: z.enum(["lookahead", "release", "schedule_change"]),
+  kind: z.enum(["lookahead", "release", "schedule_change", "po_issued"]),
   company_id: z.string().uuid(),
   project_id: z.string().uuid().nullable(),
   snapshot: tradeNoticeSnapshotSchema,

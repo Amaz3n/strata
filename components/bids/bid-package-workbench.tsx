@@ -31,6 +31,7 @@ import {
   beginBidScopeRevisionAction,
   getBidPackageAction,
   getBidPackageAwardAction,
+  getPackageIntelligenceAction,
   getVendorBidStatsAction,
   listBidAddendaAction,
   listBidInvitesAction,
@@ -39,6 +40,7 @@ import {
   listBidScopeItemsAction,
   listBidSubmissionsAction,
   removeBidInviteAction,
+  previewRescindImpactAction,
   rescindBidAwardAction,
   resendBidInviteAction,
   sendBidPackageAction,
@@ -119,6 +121,7 @@ interface BidPackageWorkbenchProps {
   rfis: Rfi[]
   activity: BidActivityItem[]
   intelligence: PackageIntelligence | null
+  intelligenceError: string | null
   companies: Company[]
   award: BidPackageAward | null
 }
@@ -138,7 +141,8 @@ export function BidPackageWorkbench({
   addenda: initialAddenda,
   rfis: initialRfis,
   activity: initialActivity,
-  intelligence,
+  intelligence: initialIntelligence,
+  intelligenceError: initialIntelligenceError,
   companies,
   award: initialAward,
 }: BidPackageWorkbenchProps) {
@@ -150,6 +154,7 @@ export function BidPackageWorkbench({
   const [rfis, setRfis] = useState(initialRfis)
   const [activity, setActivity] = useState(initialActivity)
   const [award, setAward] = useState(initialAward)
+  const [intelligence, setIntelligence] = useState({ value: initialIntelligence, error: initialIntelligenceError })
   const [vendorStats, setVendorStats] = useState<Record<string, VendorBidStats>>({})
   const [selection, setSelection] = useState<BoardSelection>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -159,6 +164,7 @@ export function BidPackageWorkbench({
   const [confirm, setConfirm] = useState<"close" | "cancel" | null>(null)
   const [rescindOpen, setRescindOpen] = useState(false)
   const [rescindReason, setRescindReason] = useState("")
+  const [rescindImpact, setRescindImpact] = useState<{ agreementCount: number; restorableCount: number; affectedPoCount: number } | null>(null)
   const [revisionOpen, setRevisionOpen] = useState(false)
   const [revisionReason, setRevisionReason] = useState("")
   const [mounted, setMounted] = useState(false)
@@ -189,6 +195,10 @@ export function BidPackageWorkbench({
   const reloadSubmissions = useCallback(async () => setSubmissions(await listBidSubmissionsAction(pkg.id)), [pkg.id])
   const reloadActivity = useCallback(async () => setActivity(await listBidPackageActivityAction(pkg.id)), [pkg.id])
   const reloadPackage = useCallback(async () => setPkg(await getBidPackageAction(pkg.id)), [pkg.id])
+  const reloadIntelligence = useCallback(async () => {
+    const next = await getPackageIntelligenceAction(pkg.id)
+    setIntelligence({ value: next.intelligence, error: next.error })
+  }, [pkg.id])
   const reloadAward = useCallback(async () => setAward(await getBidPackageAwardAction(pkg.id)), [pkg.id])
   const reloadConversation = useCallback(async () => {
     const [nextRfis, nextAddenda, nextActivity] = await Promise.all([
@@ -414,15 +424,39 @@ export function BidPackageWorkbench({
     })
   }
 
+  const isPriceBook = pkg.award_target === "price_agreement"
+
+  useEffect(() => {
+    if (!rescindOpen || !isPriceBook) return
+    let active = true
+    previewRescindImpactAction(pkg.id).then((result) => {
+      if (active && result.success) setRescindImpact(result.data)
+    })
+    return () => {
+      active = false
+      setRescindImpact(null)
+    }
+  }, [rescindOpen, isPriceBook, pkg.id])
+
   function rescind() {
-    if (!rescindReason.trim()) return
+    if (rescindReason.trim().length < 3) return
     startTransition(async () => {
       try {
-        unwrapAction(await rescindBidAwardAction(withContext, { bid_package_id: pkg.id, reason: rescindReason.trim() }))
+        const result = unwrapAction(await rescindBidAwardAction(withContext, { bid_package_id: pkg.id, reason: rescindReason.trim() }))
         setRescindOpen(false)
         setRescindReason("")
         await reloadAll()
-        toast.success("Award rescinded. The subcontract was canceled and the package is back in comparison.")
+        if (isPriceBook) {
+          toast.success("Award rescinded. The prices it set are void and the package is back in comparison.", {
+            description: [
+              result.restoredAgreementCount ? `${result.restoredAgreementCount} earlier price${result.restoredAgreementCount === 1 ? "" : "s"} restored.` : null,
+              result.skippedAgreementCount ? `${result.skippedAgreementCount} earlier price${result.skippedAgreementCount === 1 ? " was" : "s were"} changed since and stay as they are.` : null,
+              result.affectedPoCount ? `${result.affectedPoCount} purchase order${result.affectedPoCount === 1 ? "" : "s"} priced from this award keep their price.` : null,
+            ].filter(Boolean).join(" ") || undefined,
+          })
+        } else {
+          toast.success("Award rescinded. The subcontract was canceled and the package is back in comparison.")
+        }
       } catch (error) {
         toast.error("Award not rescinded", { description: error instanceof Error ? error.message : "Please try again." })
       }
@@ -652,6 +686,16 @@ export function BidPackageWorkbench({
         </div>
       </section>
 
+      {intelligence.error ? (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
+          <span>
+            <span className="font-medium text-destructive">Comparison signals unavailable.</span>{" "}
+            <span className="text-muted-foreground">{intelligence.error}</span>
+          </span>
+          <Button variant="outline" size="sm" onClick={() => startTransition(reloadIntelligence)} disabled={isPending}>Retry</Button>
+        </div>
+      ) : null}
+
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <BidBoard
           context={context}
@@ -661,7 +705,7 @@ export function BidPackageWorkbench({
           editableScope={editableScope}
           canAddTrades={!locked && (pkg.award_target === "price_agreement" || companies.length > 0)}
           selection={selection}
-          signals={intelligence?.signals ?? []}
+          signals={intelligence.value?.signals ?? []}
           onSelect={setSelection}
           onScopeSaved={(items) => {
             setScopeItems(items)
@@ -750,16 +794,32 @@ export function BidPackageWorkbench({
           <DialogHeader>
             <DialogTitle>Rescind the award?</DialogTitle>
             <DialogDescription>
-              Cancels the subcontract{award?.commitment?.contract_number ? ` ${award.commitment.contract_number}` : ""} and puts the package back into comparison. The trade is not notified automatically.
+              {isPriceBook
+                ? "Voids the price agreements this award set and restores the prices it replaced, unless they were changed since. The package goes back into comparison. Bidders are not notified automatically."
+                : `Cancels the subcontract${award?.commitment?.contract_number ? ` ${award.commitment.contract_number}` : ""} and puts the package back into comparison. The trade is not notified automatically.`}
             </DialogDescription>
           </DialogHeader>
+          {isPriceBook && rescindImpact ? (
+            <dl className="grid grid-cols-3 gap-px border bg-border text-sm">
+              {[
+                ["Agreements voided", rescindImpact.agreementCount],
+                ["Earlier prices restored", rescindImpact.restorableCount],
+                ["Orders priced from it", rescindImpact.affectedPoCount],
+              ].map(([label, value]) => (
+                <div key={label} className="bg-card px-3 py-2">
+                  <dt className="text-xs text-muted-foreground">{label}</dt>
+                  <dd className="text-lg font-semibold tabular-nums">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
           <div className="space-y-1.5">
             <Label htmlFor="rescind-reason">Why</Label>
             <Textarea id="rescind-reason" rows={3} value={rescindReason} onChange={(event) => setRescindReason(event.target.value)} />
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRescindOpen(false)}>Keep the award</Button>
-            <Button variant="destructive" onClick={rescind} disabled={isPending || !rescindReason.trim()}>Rescind</Button>
+            <Button variant="destructive" onClick={rescind} disabled={isPending || rescindReason.trim().length < 3}>Rescind</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

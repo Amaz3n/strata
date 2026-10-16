@@ -37,6 +37,9 @@ import {
 } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { RecordExecutionDialog } from "@/components/commitments/record-execution-dialog";
+import { PoIssuanceSection } from "@/components/purchasing/po-issuance-section";
+import { isIssuedPurchaseOrder } from "@/lib/purchasing/po-lock";
+import { ReceivingSection } from "@/components/purchasing/receiving-section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EntityAttachments, type AttachedFile } from "@/components/files";
 import { AlertTriangle, ArrowUpRight, Download, PenLine, Send, Upload } from "@/components/icons";
@@ -418,6 +421,7 @@ export function CommitmentDetailSheet({
   const flags = current ? commitmentFlags(current) : [];
   const status = String(current?.status ?? "").toLowerCase();
   const isDraft = status === "draft";
+  const poLocked = isIssuedPurchaseOrder(String(current?.commitment_type ?? ""), status);
   const awaitingExecution = current ? isCommitmentAwaitingExecution(current) : false;
   // Purchase orders can be signed when a customer requires it, but a PO without a
   // signature is not an exception, so it is offered rather than urged.
@@ -472,6 +476,8 @@ export function CommitmentDetailSheet({
                 size="sm"
                 className="h-8 shrink-0"
                 onClick={() => setEditing(true)}
+                disabled={poLocked}
+                title={poLocked ? "An approved purchase order is locked: raise a variance order, or return it to draft from its budget line." : undefined}
               >
                 <PenLine className="mr-1.5 h-3.5 w-3.5" />
                 Edit
@@ -629,6 +635,14 @@ export function CommitmentDetailSheet({
                   </p>
                 )}
               </div>
+
+              {detail.commitment.commitment_type === "purchase_order" ? (
+                <PoIssuanceSection commitmentId={detail.commitment.id} />
+              ) : null}
+
+              {detail.commitment.commitment_type === "purchase_order" && detail.commitment.status !== "canceled" ? (
+                <ReceivingSection commitmentId={detail.commitment.id} />
+              ) : null}
 
               {detail.change_orders.length > 0 ? (
                 <div className="space-y-2">

@@ -5,12 +5,12 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { resolvePriceForLinePure, resolveSelectedAgreement, resolvedPriceTotal, type PriceAgreementCandidate } from "@/lib/financials/price-resolution"
 import {
   createPoGenerationFingerprint,
-  groupGeneratedBudgetLines,
   groupPurchaseOrderLines,
   type PoGenerationResolvedLine,
 } from "@/lib/financials/po-generation-math"
 import { recordAudit } from "@/lib/services/audit"
 import {
+  authorize,
   getDivisionAccessForUser,
   requireAuthorization,
 } from "@/lib/services/authorization"
@@ -42,6 +42,32 @@ export type ExpiringAgreementWarning = {
   daysRemaining: number
 }
 
+/**
+ * A generated line whose order has been sent, approved or billed. Generation
+ * never rewrites it; when the vendor or amount would now differ purchasing
+ * raises a variance order instead.
+ */
+export type PreservedPoChange = {
+  sourceKey: string
+  commitmentId: string
+  contractNumber: string | null
+  description: string
+  wasCompanyName: string
+  nowCompanyName: string
+  wasCents: number
+  nowCents: number
+}
+
+/** A line on an order in progress whose source (plan line or option) is no longer wanted. */
+export type PreservedPoOrphan = {
+  sourceKey: string
+  commitmentId: string
+  contractNumber: string | null
+  description: string
+  companyName: string
+  cents: number
+}
+
 export type PoGenerationResult = {
   runId: string
   mode: "dry_run" | "commit"
@@ -52,6 +78,35 @@ export type PoGenerationResult = {
   budgetLinesWritten: number
   /** Agreements this run priced from that lapse inside the org's lead window. */
   expiringAgreements: ExpiringAgreementWarning[]
+  preservedChanged: PreservedPoChange[]
+  preservedOrphaned: PreservedPoOrphan[]
+}
+
+/** The commit found the house changed since it was prepared; nothing was written. */
+export class StalePoGenerationError extends Error {}
+
+const commitResultSchema = z.object({
+  run_id: z.string().uuid(),
+  already_generated: z.boolean().optional(),
+  refused: z.literal("exception_closed").optional(),
+  budget_line_count: z.number().int().default(0),
+  preserved_changed: z.array(z.object({
+    source_key: z.string(), commitment_id: z.string().uuid(), contract_number: z.string().nullable(),
+    description: z.string(), was_company_id: z.string().uuid().nullable(), now_company_id: z.string().uuid(),
+    was_cents: z.number().int(), now_cents: z.number().int(),
+  })).default([]),
+  preserved_orphaned: z.array(z.object({
+    source_key: z.string(), commitment_id: z.string().uuid(), contract_number: z.string().nullable(),
+    description: z.string(), company_id: z.string().uuid().nullable(), cents: z.number().int(),
+  })).default([]),
+})
+
+type ExceptionResolutionRun = {
+  exceptionId: string
+  sourceKey: string
+  override: Record<string, unknown>
+  status: "resolved_agreement" | "resolved_manual"
+  stored: PoExceptionResolution
 }
 
 type GenerationContext = Awaited<ReturnType<typeof requireOrgContext>>
@@ -63,8 +118,8 @@ const poExceptionListSchema = purchasingQueueFiltersSchema.extend({
 })
 
 const OPEN_EXCEPTION_SCAN_LIMIT = 1000
-const GENERATED_COMMITMENT_SCAN_LIMIT = 1000
 const PO_NUMBER_TOKEN_LENGTH = 12
+const STALE_RETRY_LIMIT = 3
 
 function relation<T extends Record<string, unknown>>(value: unknown): T | null {
   const row = Array.isArray(value) ? value[0] : value
@@ -76,49 +131,24 @@ export function generationSourceKey(sourceKind: string, sourceId: string) {
   return `${sourceKind}:${sourceId}`
 }
 
-/**
- * The lines a scoped commit still has to create. Everything already carrying a
- * commitment line is left alone, which is what makes resolving an exception
- * additive against issued POs — and what makes a retry after a partial failure
- * create nothing twice.
- */
-export function selectMissingLines<T extends { sourceKind: string; sourceId: string }>(lines: T[], coveredSourceKeys: Iterable<string>) {
-  const covered = new Set(coveredSourceKeys)
-  return lines.filter((line) => !covered.has(generationSourceKey(line.sourceKind, line.sourceId)))
-}
-
 function poNumberToken(value: unknown, fallback: string) {
   const token = String(value ?? "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "")
   return (token || fallback).slice(0, PO_NUMBER_TOKEN_LENGTH)
 }
 
 /**
- * Numbers already handed out are never reissued: the next sequence continues past
- * the highest suffix on the project's generated POs, so a regeneration or a scoped
- * top-up cannot reuse a number an approved PO already carries.
- */
-export function nextGeneratedPoSequence(existingNumbers: Array<string | null | undefined>) {
-  let highest = 0
-  for (const value of existingNumbers) {
-    const match = /-(\d+)$/.exec(String(value ?? ""))
-    if (match) highest = Math.max(highest, Number(match[1]))
-  }
-  return highest + 1
-}
-
-/**
  * Generated PO numbers carry the community, so Lot 42 in two communities cannot
- * collide, and a sequence, so the same lot cannot collide with itself.
+ * collide. The commit appends the sequence under the project lock, continuing
+ * past the highest number the house has ever been given.
  */
-export function buildGeneratedPoNumber(
+export function generatedPoNumberPrefix(
   scope: { communityCode?: unknown; communityName?: unknown; lotNumber?: unknown; block?: unknown },
-  sequence: number,
 ) {
   const community = poNumberToken(scope.communityCode || scope.communityName, "COMM")
   const lot = poNumberToken(scope.lotNumber, "LOT")
   const blockToken = scope.block ? poNumberToken(scope.block, "") : ""
   const block = blockToken ? `-B${blockToken}` : ""
-  return `PO-${community}-${lot}${block}-${String(sequence).padStart(2, "0")}`
+  return `PO-${community}-${lot}${block}`
 }
 
 function daysBetweenDates(from: string, to: string) {
@@ -183,30 +213,6 @@ async function authorizeExceptionAction(exceptionId: string, orgId?: string) {
   return { ...context, existing }
 }
 
-async function loadGeneratedCommitments(context: GenerationContext, projectId: string) {
-  const { data, error } = await createServiceSupabaseClient().from("commitments").select("id,contract_number")
-    .eq("org_id", context.orgId).eq("project_id", projectId).eq("commitment_type", "purchase_order")
-    .eq("metadata->>source", "po_generation").order("created_at").limit(GENERATED_COMMITMENT_SCAN_LIMIT)
-  if (error) throw new Error(`Failed to load generated purchase orders: ${error.message}`)
-  return data ?? []
-}
-
-async function loadCoveredSourceKeys(context: GenerationContext, commitmentIds: string[]) {
-  if (commitmentIds.length === 0) return new Set<string>()
-  const lines = await collectPagedRows<{ metadata: Record<string, unknown> | null }>({
-    label: "generated purchase-order lines",
-    fetchPage: (from, to) => createServiceSupabaseClient().from("commitment_lines").select("metadata")
-      .eq("org_id", context.orgId).in("commitment_id", commitmentIds).order("id").range(from, to),
-  })
-  const covered = new Set<string>()
-  for (const line of lines) {
-    const source = line.metadata?.source
-    const sourceRef = line.metadata?.source_ref
-    if (typeof source === "string" && typeof sourceRef === "string") covered.add(generationSourceKey(source, sourceRef))
-  }
-  return covered
-}
-
 async function loadOpenExceptionKeys(context: GenerationContext, projectId: string) {
   const { data, error } = await createServiceSupabaseClient().from("po_generation_exceptions").select("source_kind,source_ref")
     .eq("org_id", context.orgId).eq("project_id", projectId).eq("status", "open").limit(OPEN_EXCEPTION_SCAN_LIMIT)
@@ -229,11 +235,15 @@ function exceptionSourceId(exception: GenerationException) {
 async function runGeneration(
   parsed: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string; expectedFingerprint?: string },
   context: GenerationContext,
-  options: { incremental?: boolean; pendingResolutions?: Map<string, Record<string, unknown>> } = {},
+  options: { resolution?: ExceptionResolutionRun } = {},
 ): Promise<PoGenerationResult> {
   const { supabase, orgId, userId } = context
   await assertProjectConfiguration(orgId, parsed.projectId)
-  const incremental = options.incremental === true
+  const service = createServiceSupabaseClient()
+  const resolution = options.resolution
+  // A resolution being applied right now is not on the exception row yet: the
+  // commit marks it resolved in the same transaction that creates its order.
+  const pendingResolutions = resolution ? new Map([[resolution.sourceKey, resolution.override]]) : undefined
   const asOfDate = parsed.asOfDate ?? new Date().toISOString().slice(0, 10)
 
   const { data: lot, error: lotError } = await supabase.from("lots").select(`
@@ -252,7 +262,7 @@ async function runGeneration(
   const [{ data: takeoffs, error: takeoffError }, { data: selections, error: selectionError }] = await Promise.all([
     supabase.from("house_plan_takeoff_lines").select("id,cost_code_id,cost_type,description,quantity,uom,elevation_id")
       .eq("org_id", orgId).eq("house_plan_version_id", lot.house_plan_version_id).order("sort_order"),
-    createServiceSupabaseClient().from("project_selections").select(`
+    service.from("project_selections").select(`
       id, selected_option_id, cost_cents_snapshot, status,
       option:selection_options(id,name,sku,vendor,cost_cents,cost_code_id)
     `).eq("org_id", orgId).eq("project_id", parsed.projectId).eq("status", "confirmed"),
@@ -279,20 +289,22 @@ async function runGeneration(
   if (companyError) throw new Error(`Failed to load vendors: ${companyError.message}`)
   const companyNames = new Map((companies ?? []).map((company) => [String(company.id), String(company.name)]))
   const companyByNormalizedName = new Map((companies ?? []).map((company) => [String(company.name).trim().toLowerCase(), String(company.id)]))
-  const { data: priorResolutions, error: resolutionError } = await supabase.from("po_generation_exceptions")
-    .select("source_kind,source_ref,resolution,resolved_at").eq("org_id", orgId).eq("project_id", parsed.projectId)
-    .in("status", ["resolved_agreement", "resolved_manual"]).order("resolved_at", { ascending: false }).limit(1000)
-  if (resolutionError) throw new Error(`Failed to load PO exception resolutions: ${resolutionError.message}`)
+  // Every manual price and chosen agreement the house has ever been given: a
+  // cap here would silently turn older resolutions back into exceptions.
+  const priorResolutions = await collectPagedRows<{ source_kind: string; source_ref: unknown; resolution: unknown }>({
+    label: "PO exception resolutions",
+    fetchPage: (from, to) => service.from("po_generation_exceptions")
+      .select("source_kind,source_ref,resolution,resolved_at").eq("org_id", orgId).eq("project_id", parsed.projectId)
+      .in("status", ["resolved_agreement", "resolved_manual"]).order("resolved_at", { ascending: false }).order("id").range(from, to),
+  })
   const resolutionBySource = new Map<string, Record<string, unknown>>()
-  for (const row of priorResolutions ?? []) {
+  for (const row of priorResolutions) {
     const sourceRef = row.source_ref as Record<string, unknown>
     const sourceId = row.source_kind === "takeoff_line" ? sourceRef.takeoff_line_id : sourceRef.project_selection_id
     const key = generationSourceKey(row.source_kind, String(sourceId ?? ""))
     if (!resolutionBySource.has(key) && row.resolution && typeof row.resolution === "object") resolutionBySource.set(key, row.resolution as Record<string, unknown>)
   }
-  // A resolution being applied right now is not on the row yet: the exception is
-  // only marked resolved once this generation has succeeded.
-  for (const [key, resolution] of options.pendingResolutions ?? []) resolutionBySource.set(key, resolution)
+  for (const [key, override] of pendingResolutions ?? []) resolutionBySource.set(key, override)
   const resolvedLines: PoGenerationResolvedLine[] = []
   const exceptions: GenerationException[] = []
 
@@ -313,7 +325,7 @@ async function runGeneration(
     const chosenAgreement = override?.kind === "agreement" && typeof override.agreement_id === "string"
       ? candidates.find((candidate) => candidate.id === override.agreement_id && candidate.cost_code_id === line.cost_code_id)
       : undefined
-    const result = override?.kind === "agreement" && typeof override.agreement_id === "string" && options.pendingResolutions?.has(generationSourceKey("takeoff_line", line.id))
+    const result = override?.kind === "agreement" && typeof override.agreement_id === "string" && pendingResolutions?.has(generationSourceKey("takeoff_line", line.id))
       ? resolveSelectedAgreement(input, candidates, override.agreement_id)
       : chosenAgreement
       ? { resolved: { agreementId: chosenAgreement.id, companyId: chosenAgreement.company_id, pricingKind: chosenAgreement.pricing_kind, unitCostCents: chosenAgreement.unit_cost_cents ?? undefined, lumpSumCents: chosenAgreement.lump_sum_cents ?? undefined, scopeOfWork: chosenAgreement.scope_of_work ?? undefined } }
@@ -360,7 +372,7 @@ async function runGeneration(
     const chosenAgreement = override?.kind === "agreement" && typeof override.agreement_id === "string"
       ? candidatePool.find((candidate) => candidate.id === override.agreement_id && candidate.cost_code_id === costCodeId)
       : undefined
-    const priceResult = override?.kind === "agreement" && typeof override.agreement_id === "string" && options.pendingResolutions?.has(generationSourceKey("option", sourceId))
+    const priceResult = override?.kind === "agreement" && typeof override.agreement_id === "string" && pendingResolutions?.has(generationSourceKey("option", sourceId))
       ? resolveSelectedAgreement(input, candidatePool, override.agreement_id)
       : chosenAgreement
       ? { resolved: { agreementId: chosenAgreement.id, companyId: chosenAgreement.company_id, pricingKind: chosenAgreement.pricing_kind, unitCostCents: chosenAgreement.unit_cost_cents ?? undefined, lumpSumCents: chosenAgreement.lump_sum_cents ?? undefined, scopeOfWork: chosenAgreement.scope_of_work ?? undefined } }
@@ -388,12 +400,11 @@ async function runGeneration(
   // A pending resolution must actually produce its source line before any run,
   // budget, or PO is written. Removed selections and unpriceable lines remain open.
   const resolvedSourceKeys = new Set(resolvedLines.map((line) => generationSourceKey(line.sourceKind, line.sourceId)))
-  for (const key of options.pendingResolutions?.keys() ?? []) {
+  for (const key of pendingResolutions?.keys() ?? []) {
     if (!resolvedSourceKeys.has(key)) throw new Error("This exception could not be priced, or its source is no longer active. Refresh the queue before resolving it.")
   }
 
   const purchaseOrders = groupPurchaseOrderLines(resolvedLines)
-  const budgetLines = groupGeneratedBudgetLines(resolvedLines)
   const agreementEndsById = new Map<string, string | null>(
     candidates.map((candidate: PriceAgreementCandidate) => [candidate.id, candidate.effective_to ?? null]),
   )
@@ -401,7 +412,7 @@ async function runGeneration(
   const inputFingerprint = createPoGenerationFingerprint({
     asOfDate,
     lines: [
-      ...resolvedLines.map((line) => ({ sourceKind: line.sourceKind, sourceId: line.sourceId, quantity: line.quantity, unit: line.unit, agreementId: line.agreementId, totalCents: line.totalCents })),
+      ...resolvedLines.map((line) => ({ sourceKind: line.sourceKind, sourceId: line.sourceId, companyId: line.companyId, quantity: line.quantity, unit: line.unit, agreementId: line.agreementId, totalCents: line.totalCents })),
       ...exceptions.map((item) => ({ sourceKind: item.source_kind, sourceId: Object.values(item.source_ref)[0] ?? item.description, quantity: item.quantity, unit: item.uom, agreementId: null, totalCents: null })),
     ],
   })
@@ -410,12 +421,16 @@ async function runGeneration(
     throw new Error("Pricing or selections changed since the preview. Preview the purchase orders again before generating.")
   }
 
-  const { data: prior } = await supabase.from("po_generation_runs").select("id,input_fingerprint,status,summary")
+  // Runs are read as the commit reads them (every run of the house, whoever
+  // started it), not through the caller's row security.
+  const { data: prior, error: priorError } = await service.from("po_generation_runs").select("id,input_fingerprint,status")
     .eq("org_id", orgId).eq("project_id", parsed.projectId).eq("mode", "commit")
     .in("status", ["succeeded", "succeeded_with_exceptions"]).order("created_at", { ascending: false }).order("id", { ascending: false })
     .limit(1).maybeSingle()
-  if (parsed.mode === "commit" && prior?.input_fingerprint === inputFingerprint) {
-    return { runId: prior.id, mode: "commit", status: prior.status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: budgetLines.length, expiringAgreements }
+  if (priorError) throw new Error(`Failed to read the last PO generation run: ${priorError.message}`)
+  const vendorName = (companyId: string | null) => (companyId ? companyNames.get(companyId) : undefined) ?? "Unknown vendor"
+  if (parsed.mode === "commit" && !resolution && prior?.input_fingerprint === inputFingerprint) {
+    return { runId: prior.id, mode: "commit", status: prior.status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: 0, expiringAgreements, preservedChanged: [], preservedOrphaned: [] }
   }
 
   const openExceptionKeys = await loadOpenExceptionKeys(context, parsed.projectId)
@@ -432,77 +447,81 @@ async function runGeneration(
     exception_count: exceptions.length,
     per_vendor: purchaseOrders.map((po) => ({ company_id: po.companyId, company_name: po.companyName, total_cents: po.totalCents, line_count: po.lines.length })),
   }
-  const { data: run, error: runError } = await supabase.from("po_generation_runs").insert({
+  // The run, its exceptions and every commit are written by the service after
+  // the caller was authorized: members hold read access to these tables only.
+  const { data: run, error: runError } = await service.from("po_generation_runs").insert({
     org_id: orgId, project_id: parsed.projectId, lot_id: lot.id,
     house_plan_version_id: lot.house_plan_version_id, mode: parsed.mode, status: "running",
     as_of_date: asOfDate, input_fingerprint: inputFingerprint, summary, created_by: userId,
   }).select("id").single()
   if (runError || !run) throw new Error(`Failed to create PO generation run: ${runError?.message}`)
 
-  let committedPurchaseOrders = purchaseOrders
+  let committedRaw: unknown = null
   try {
     if (parsed.mode === "dry_run") {
       if (newExceptions.length > 0) {
-        const { error: exceptionError } = await supabase.from("po_generation_exceptions").insert(newExceptions.map((item) => ({ ...item, org_id: orgId, run_id: run.id, project_id: parsed.projectId })))
+        const { error: exceptionError } = await service.from("po_generation_exceptions").insert(newExceptions.map((item) => ({ ...item, org_id: orgId, run_id: run.id, project_id: parsed.projectId })))
         if (exceptionError) throw new Error(`Failed to record PO exceptions: ${exceptionError.message}`)
       }
       const status = exceptions.length ? "succeeded_with_exceptions" : "succeeded"
-      await supabase.from("po_generation_runs").update({ status, completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", run.id)
+      const { error: finishError } = await service.from("po_generation_runs").update({ status, completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", run.id)
+      if (finishError) throw new Error(`Failed to finish the PO preview: ${finishError.message}`)
     } else {
-      const service = createServiceSupabaseClient()
       const community = relation<Record<string, unknown>>(lot.community)
       const plan = relation<Record<string, unknown>>(lot.house_plan)
-      const lotLabel = `${community?.name ?? "Community"} Lot ${lot.lot_number}${lot.block ? ` Block ${lot.block}` : ""}`
-      const generatedCommitments = await loadGeneratedCommitments(context, parsed.projectId)
-      if (incremental) {
-        const covered = await loadCoveredSourceKeys(context, generatedCommitments.map((row) => String(row.id)))
-        committedPurchaseOrders = groupPurchaseOrderLines(selectMissingLines(resolvedLines, covered))
-      }
-      let sequence = nextGeneratedPoSequence(generatedCommitments.map((row) => row.contract_number))
       const payload = {
-        // A scoped commit adds to what is already issued. Nothing is superseded and
-        // nothing is deleted, so approved and issued POs survive the resolution.
-        prior_run_id: incremental ? null : prior?.id ?? null,
-        // The commit re-reads the latest run under the project lock and refuses
-        // this payload if `prior_run_id` is no longer it (a concurrent commit).
-        incremental,
-        total_cents: summary.total_cents,
-        summary: { ...summary, incremental, committed_po_count: committedPurchaseOrders.length },
-        budget_lines: budgetLines.map((line, index) => ({ cost_code_id: line.costCodeId, cost_type: line.costType, description: line.description, amount_cents: line.amountCents, sort_order: index })),
-        purchase_orders: committedPurchaseOrders.map((po) => ({
-          company_id: po.companyId, total_cents: po.totalCents,
-          title: `PO — ${po.lines[0]?.description ?? plan?.name ?? "Trade"} — ${lotLabel}`,
-          contract_number: buildGeneratedPoNumber({
-            communityCode: community?.code, communityName: community?.name,
-            lotNumber: lot.lot_number, block: lot.block,
-          }, sequence++),
-          scope: po.lines.map((line) => line.scopeText).filter(Boolean).join("\n"),
-          source_agreement_ids: po.sourceAgreementIds,
-          lines: po.lines.map((line, index) => ({
-            cost_code_id: line.costCodeId, cost_type: line.costType, description: line.description,
-            quantity: line.quantity, unit: line.unit, unit_cost_cents: line.unitCostCents,
-            total_cents: line.totalCents, source_agreement_id: line.agreementId, sort_order: index,
-            metadata: { source: line.sourceKind, source_ref: line.sourceId, option_descriptor: line.optionDescriptor ?? null },
-          })),
+        // The commit refuses a whole-house payload whose prior run is no longer
+        // the latest (a competing commit or resolution landed first).
+        prior_run_id: resolution ? null : prior?.id ?? null,
+        // A resolution touches only its own source line; a whole-house commit reconciles them all.
+        scope_source_keys: resolution ? [resolution.sourceKey] : null,
+        po_number_prefix: generatedPoNumberPrefix({ communityCode: community?.code, communityName: community?.name, lotNumber: lot.lot_number, block: lot.block }),
+        lot_label: `${community?.name ?? "Community"} Lot ${lot.lot_number}${lot.block ? ` Block ${lot.block}` : ""}`,
+        plan_name: typeof plan?.name === "string" ? plan.name : null,
+        summary: { ...summary, scoped: Boolean(resolution) },
+        lines: resolvedLines.map((line) => ({
+          source_kind: line.sourceKind, source_id: line.sourceId, company_id: line.companyId,
+          cost_code_id: line.costCodeId, cost_type: line.costType ?? null, description: line.description,
+          quantity: line.quantity, unit: line.unit, unit_cost_cents: line.unitCostCents, total_cents: line.totalCents,
+          agreement_id: line.agreementId, scope_text: line.scopeText ?? null, option_descriptor: line.optionDescriptor ?? null,
         })),
-        exceptions: newExceptions,
+        exceptions: resolution ? [] : newExceptions,
+        resolve_exception: resolution
+          ? { id: resolution.exceptionId, status: resolution.status, resolution: resolution.stored, resolved_by: userId }
+          : null,
       }
-      const { error: commitError } = await service.rpc("run_po_generation_commit", { p_org_id: orgId, p_run_id: run.id, p_payload: payload })
-      if (commitError) throw new Error(commitError.message)
+      const { data, error: commitError } = await service.rpc("run_po_generation_commit", { p_org_id: orgId, p_run_id: run.id, p_payload: payload })
+      if (commitError) {
+        if (commitError.code === "40001") throw new StalePoGenerationError(commitError.message)
+        throw new Error(commitError.message)
+      }
+      committedRaw = data
     }
   } catch (error) {
-    await supabase.from("po_generation_runs").update({ status: "failed", error: error instanceof Error ? error.message : String(error), completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", run.id)
+    await service.from("po_generation_runs").update({ status: "failed", error: error instanceof Error ? error.message : String(error), completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", run.id)
     throw error
   }
 
   const status = exceptions.length ? "succeeded_with_exceptions" : "succeeded"
-  await recordAudit({ orgId, actorId: userId, action: "insert", entityType: "po_generation_run", entityId: run.id, after: { ...summary, mode: parsed.mode, status, incremental } })
-  await recordEvent({ orgId, actorId: userId, eventType: "po_generation.completed", entityType: "po_generation_run", entityId: run.id, payload: { project_id: parsed.projectId, mode: parsed.mode, incremental, ...summary } })
+  const committed = parsed.mode === "commit" ? commitResultSchema.parse(committedRaw) : null
+  if (committed?.refused) throw new Error("This PO exception has already been resolved or dismissed.")
+  const preservedChanged = (committed?.preserved_changed ?? []).map((item) => ({
+    sourceKey: item.source_key, commitmentId: item.commitment_id, contractNumber: item.contract_number, description: item.description,
+    wasCompanyName: vendorName(item.was_company_id), nowCompanyName: vendorName(item.now_company_id), wasCents: item.was_cents, nowCents: item.now_cents,
+  }))
+  const preservedOrphaned = (committed?.preserved_orphaned ?? []).map((item) => ({
+    sourceKey: item.source_key, commitmentId: item.commitment_id, contractNumber: item.contract_number,
+    description: item.description, companyName: vendorName(item.company_id), cents: item.cents,
+  }))
+  // An identical commit that lost the race: the winner's run is the answer, and it already wrote the trail.
+  if (committed?.already_generated) {
+    return { runId: committed.run_id, mode: "commit", status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: 0, expiringAgreements, preservedChanged, preservedOrphaned }
+  }
+  await recordAudit({ orgId, actorId: userId, action: "insert", entityType: "po_generation_run", entityId: run.id, after: { ...summary, mode: parsed.mode, status, scoped: Boolean(resolution), preserved_changed: preservedChanged.length, preserved_orphaned: preservedOrphaned.length } })
+  await recordEvent({ orgId, actorId: userId, eventType: "po_generation.completed", entityType: "po_generation_run", entityId: run.id, payload: { project_id: parsed.projectId, mode: parsed.mode, scoped: Boolean(resolution), preserved_changed: preservedChanged.length, ...summary } })
   return {
-    runId: run.id, mode: parsed.mode, status, inputFingerprint,
-    purchaseOrders: parsed.mode === "commit" ? committedPurchaseOrders : purchaseOrders,
-    exceptions, budgetLinesWritten: parsed.mode === "commit" ? budgetLines.length : 0,
-    expiringAgreements,
+    runId: run.id, mode: parsed.mode, status, inputFingerprint, purchaseOrders, exceptions,
+    budgetLinesWritten: committed?.budget_line_count ?? 0, expiringAgreements, preservedChanged, preservedOrphaned,
   }
 }
 
@@ -519,14 +538,45 @@ export async function generatePurchaseOrders(args: { projectId: string; mode: "d
 export async function generatePurchaseOrdersForStartsRelease(args: { projectId: string; orgId: string }): Promise<PoGenerationResult> {
   const projectId = z.string().uuid().parse(args.projectId)
   const context = await authorizeGeneration("po.generate", projectId, args.orgId)
-  return runGeneration({ projectId, mode: "commit" }, context)
+  // A buyer's resolution can land between this run reading the house and
+  // committing it. The commit refuses and writes nothing; reading the house
+  // again picks the resolution up, so the release goes on instead of failing.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await runGeneration({ projectId, mode: "commit" }, context)
+    } catch (error) {
+      if (!(error instanceof StalePoGenerationError) || attempt >= STALE_RETRY_LIMIT) throw error
+    }
+  }
 }
 
-export async function listGenerationRuns(projectId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await authorizeGeneration("price_book.read", projectId, orgId)
-  const { data, error } = await supabase.from("po_generation_runs").select("*").eq("org_id", resolvedOrgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(50)
-  if (error) throw new Error(`Failed to list PO runs: ${error.message}`)
-  return data ?? []
+export type ProjectPoGenerationSummary = {
+  lastRunStatus: string | null
+  lastRunAt: string | null
+  openExceptions: number
+}
+
+/**
+ * What the project's generation panel shows, or null when the project cannot
+ * have purchase orders generated: no lot with a pinned plan version, or a
+ * caller who may not generate.
+ */
+export async function getProjectPoGenerationSummary(projectId: string, orgId?: string): Promise<ProjectPoGenerationSummary | null> {
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  const decision = await authorize({ permission: "po.generate", userId, orgId: resolvedOrgId, projectId, supabase })
+  if (!decision.allowed) return null
+  const [lot, lastRun, open] = await Promise.all([
+    supabase.from("lots").select("id").eq("org_id", resolvedOrgId).eq("project_id", projectId).not("house_plan_version_id", "is", null).maybeSingle(),
+    supabase.from("po_generation_runs").select("status,completed_at").eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("mode", "commit")
+      .order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("po_generation_exceptions").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("status", "open"),
+  ])
+  if (lot.error) throw new Error(`Failed to check PO generation for the project: ${lot.error.message}`)
+  if (lastRun.error) throw new Error(`Failed to read the last PO generation run: ${lastRun.error.message}`)
+  if (open.error) throw new Error(`Failed to count PO exceptions: ${open.error.message}`)
+  if (!lot.data) return null
+  return { lastRunStatus: lastRun.data?.status ?? null, lastRunAt: lastRun.data?.completed_at ?? null, openExceptions: open.count ?? 0 }
 }
 
 export type PoExceptionQueueRow = {
@@ -578,29 +628,29 @@ export async function resolvePoException(exceptionId: string, resolution: PoExce
     ? { kind: "agreement", agreement_id: parsed.agreement_id }
     : { kind: "manual", company_id: parsed.company_id, unit_cost_cents: parsed.unit_cost_cents, note: parsed.note ?? null }
 
-  // Generate before marking resolved. The scoped commit only creates lines that do
-  // not exist yet, so a failure between the two writes leaves the exception open
-  // and a retry adds nothing twice — while the reverse order can strand a resolved
-  // exception with no purchase order behind it.
+  // One transaction creates the order and marks the exception resolved, so a
+  // crash cannot leave an order behind an open exception, and two people
+  // resolving the same line at once yield one order and one refusal.
+  const status = parsed.kind === "agreement" ? "resolved_agreement" : "resolved_manual"
   const regeneration = await runGeneration(
     { projectId: existing.project_id, mode: "commit" },
     context,
-    { incremental: true, pendingResolutions: new Map([[generationSourceKey(existing.source_kind, sourceId), pending]]) },
+    { resolution: { exceptionId, sourceKey: generationSourceKey(existing.source_kind, sourceId), override: pending, status, stored: parsed } },
   )
-  const status = parsed.kind === "agreement" ? "resolved_agreement" : "resolved_manual"
-  const { data, error } = await supabase.from("po_generation_exceptions").update({ status, resolution: parsed, resolved_by: userId, resolved_at: new Date().toISOString() }).eq("org_id", resolvedOrgId).eq("id", exceptionId).eq("status", "open").select("*").single()
-  if (error || !data) throw new Error(`Failed to resolve PO exception: ${error?.message}`)
+  const { data, error } = await createServiceSupabaseClient().from("po_generation_exceptions").select("*")
+    .eq("org_id", resolvedOrgId).eq("id", exceptionId).single()
+  if (error || !data) throw new Error(`Failed to read the resolved PO exception: ${error?.message}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_generation_exception", entityId: exceptionId, before: existing, after: data })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_exception.resolved", entityType: "po_generation_exception", entityId: exceptionId, payload: { project_id: existing.project_id, run_id: regeneration.runId } })
   return { ...data, regeneration }
 }
 
 export async function dismissPoException(exceptionId: string, note: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId, existing } = await authorizeExceptionAction(exceptionId, orgId)
+  const { orgId: resolvedOrgId, userId, existing } = await authorizeExceptionAction(exceptionId, orgId)
   if (existing.status !== "open") throw new Error("This PO exception has already been resolved or dismissed.")
   // Conditional on still being open: a resolution that lands first keeps its
   // purchase order and its resolution record instead of being relabelled.
-  const { data, error } = await supabase.from("po_generation_exceptions").update({
+  const { data, error } = await createServiceSupabaseClient().from("po_generation_exceptions").update({
     status: "dismissed",
     resolution: { note: note.trim() || "Dismissed by purchasing" },
     resolved_by: userId,

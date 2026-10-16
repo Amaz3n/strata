@@ -10,13 +10,19 @@ export const poGenerationInputSchema = z.object({
   message: "Preview the purchase orders before generating them.",
 })
 
+/** A free-issue or owner-supplied item is a real $0 line, but an unexplained one leaves no reason behind. */
+export const ZERO_PRICE_NOTE_MIN_LENGTH = 10
+
 export const poExceptionResolutionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agreement"), agreement_id: z.string().uuid() }),
   z.object({
     kind: z.literal("manual"), company_id: z.string().uuid(),
     unit_cost_cents: z.number().int().min(0), note: z.string().trim().max(1000).optional(),
   }),
-])
+]).refine((input) => input.kind !== "manual" || input.unit_cost_cents > 0 || (input.note?.length ?? 0) >= ZERO_PRICE_NOTE_MIN_LENGTH, {
+  path: ["note"],
+  message: `A zero price needs a note of at least ${ZERO_PRICE_NOTE_MIN_LENGTH} characters saying why.`,
+})
 
 export type PoGenerationInput = z.infer<typeof poGenerationInputSchema>
 export type PoExceptionResolution = z.infer<typeof poExceptionResolutionSchema>

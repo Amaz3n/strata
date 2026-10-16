@@ -1,4 +1,5 @@
 import { NotificationService } from "@/lib/services/notifications"
+import { sweepLateDeliveries } from "@/lib/services/po-receipts"
 import { collectPagedRows } from "@/lib/services/price-book"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -115,5 +116,6 @@ async function sendWeeklyVarianceDigest(now = new Date()) {
 export async function runPurchasingMaintenance(now = new Date()) {
   const expired = await expirePastDueAgreements()
   const digest = await sendWeeklyVarianceDigest(now)
-  return { expired, digest }
+  const lateDeliveries = await sweepLateDeliveries()
+  return { expired, digest, lateDeliveries }
 }

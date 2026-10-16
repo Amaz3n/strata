@@ -99,6 +99,7 @@ function mapPermissions(row: any): PortalPermissions {
     can_view_punch_items: row.can_view_punch_items ?? false,
     can_view_purchase_orders: row.can_view_purchase_orders ?? false,
     can_report_po_completion: row.can_report_po_completion ?? false,
+    can_acknowledge_purchase_orders: row.can_acknowledge_purchase_orders ?? false,
     // Reviewer-specific permissions
     can_review_submittals: row.can_review_submittals ?? false,
   }
@@ -315,6 +316,7 @@ const VENDOR_ACCOUNT_PERMISSIONS: Partial<PortalPermissions> = {
   can_view_punch_items: false,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
+  can_acknowledge_purchase_orders: false,
   can_review_submittals: false,
 }
 
@@ -2635,6 +2637,7 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_view_punch_items: overrides?.can_view_punch_items ?? false,
     can_view_purchase_orders: overrides?.can_view_purchase_orders ?? false,
     can_report_po_completion: overrides?.can_report_po_completion ?? false,
+    can_acknowledge_purchase_orders: overrides?.can_acknowledge_purchase_orders ?? false,
     // Reviewer-specific permissions (least-privilege: opt-in only)
     can_review_submittals: overrides?.can_review_submittals ?? false,
   }

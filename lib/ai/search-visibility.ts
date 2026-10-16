@@ -43,6 +43,7 @@ export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> =
   budget_transfer: "budget.read",
   commitment: "commitment.read",
   commitment_change_order: "commitment.read",
+  po_completion: "bill.read",
   payable: "bill.read",
   change_event: "change_events.read",
   warranty_request: "warranty.read",

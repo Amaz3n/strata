@@ -87,6 +87,12 @@ export const settingsSections: SettingsSection[] = [
         requiredAny: ["warranty.manage"],
       },
       {
+        title: "Purchasing",
+        url: "/settings/purchasing",
+        icon: Wallet,
+        requiredAny: ["purchasing_settings.write"],
+      },
+      {
         title: "Lead intake",
         url: "/settings/lead-intake",
         icon: Inbox,

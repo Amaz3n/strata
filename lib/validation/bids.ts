@@ -49,7 +49,6 @@ export const createBidPackageInputSchema = z
 export const updateBidPackageInputSchema = z.object({
   community_id: z.string().uuid().optional().nullable(),
   house_plan_id: z.string().uuid().optional().nullable(),
-  award_target: z.enum(["commitment", "price_agreement"]).optional(),
   title: z.string().min(1).optional(),
   cost_code_id: z.string().uuid().optional().nullable(),
   budget_line_id: z.string().uuid().optional().nullable(),
@@ -118,11 +117,19 @@ export const awardBidSubmissionInputSchema = z.object({
   reviewed_terms: z.string().trim().min(1, "Review the subcontract terms"),
   readiness_exception: z.string().trim().optional(),
   bond_verified: z.boolean().default(false),
+  // A price-book award starts when the buyer says; absent means today.
+  effective_from: z.string().date().optional(),
+})
+
+export const priceBookAwardPreviewInputSchema = z.object({
+  bid_submission_id: z.string().uuid(),
+  effective_from: z.string().date(),
+  accepted_alternate_ids: z.array(z.string().uuid()).default([]),
 })
 
 export const rescindBidAwardInputSchema = z.object({
   bid_package_id: z.string().uuid(),
-  reason: z.string().trim().min(1, "A rescind reason is required"),
+  reason: z.string().trim().min(3, "Say why the award is being rescinded"),
 })
 
 export const bidSubmissionItemInputSchema = z.object({

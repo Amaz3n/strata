@@ -5,6 +5,7 @@ import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction, getProjectDependenciesAction, getProjectScheduleAction } from "../actions"
 import { ProjectScheduleClient } from "./project-schedule-client"
+import { DeliveryAdvisoryBanner, DeliveryAdvisoryBannerSkeleton } from "@/components/schedule/delivery-advisory-banner"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -66,7 +67,8 @@ async function ProjectScheduleData({ id }: { id: string }) {
         { label: "Schedule" },
       ]}
     >
-      <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} initialDependencies={dependencies} />
+      <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} initialDependencies={dependencies}
+        banner={<Suspense fallback={<DeliveryAdvisoryBannerSkeleton />}><DeliveryAdvisoryBanner projectId={project.id} /></Suspense>} />
     </PageLayout>
   )
 }
