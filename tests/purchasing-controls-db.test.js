@@ -98,13 +98,17 @@ test("a member cannot raise, approve, reprice, re-reason or delete a variance or
 test("a change order with no variance reason is fenced the same way: no forged approval, no repricing, no decided edit", async (t) => {
   const w = await purchasingWorld(t)
   const as = (sql, args) => w.asUser(w.owner, (tx) => tx.query(sql, args))
-  const draft = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, title: "CCO", total_cents: 100 })
-  await assert.rejects(as("insert into commitment_change_orders (org_id, project_id, commitment_id, title, status, total_cents, approved_by, approved_at) values ($1, $2, $3, 'Forged', 'approved', 5000000, $4, now())", [w.orgId, w.project.id, w.po.id, w.owner]), refused)
+  const sub = await insert(w.db, "commitments", {
+    org_id: w.orgId, project_id: w.project.id, company_id: w.company.id, title: "Framing subcontract", status: "draft",
+    commitment_type: "subcontract", total_cents: 100_000,
+  })
+  const draft = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: sub.id, title: "CCO", total_cents: 100 })
+  await assert.rejects(as("insert into commitment_change_orders (org_id, project_id, commitment_id, title, status, total_cents, approved_by, approved_at) values ($1, $2, $3, 'Forged', 'approved', 5000000, $4, now())", [w.orgId, w.project.id, sub.id, w.owner]), refused)
   await assert.rejects(as("update commitment_change_orders set status = 'approved', approved_by = $2, approved_at = now() where id = $1", [draft.id, w.owner]), refused)
   await assert.rejects(as("update commitment_change_orders set total_cents = 200 where id = $1", [draft.id]), refused)
   await as("update commitment_change_orders set title = 'Renamed', status = 'sent' where id = $1", [draft.id])
 
-  const decided = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, title: "Done", total_cents: 300, status: "approved", approved_by: w.owner, approved_at: new Date().toISOString() })
+  const decided = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: sub.id, title: "Done", total_cents: 300, status: "approved", approved_by: w.owner, approved_at: new Date().toISOString() })
   await insert(w.db, "commitment_change_order_lines", { org_id: w.orgId, commitment_change_order_id: decided.id, description: "Extra", quantity: 1, unit: "ls", unit_cost_cents: 300, amount_cents: 300 })
   await assert.rejects(as("update commitment_change_orders set metadata = '{}'::jsonb, title = 'Rewritten' where id = $1", [decided.id]), refused)
   await assert.rejects(as("update commitment_change_orders set status = 'voided' where id = $1", [decided.id]), refused)
@@ -112,6 +116,93 @@ test("a change order with no variance reason is fenced the same way: no forged a
   await assert.rejects(as("update commitment_change_order_lines set amount_cents = 1 where commitment_change_order_id = $1", [decided.id]), refused)
   const { rows } = await w.db.query("select count(*)::int n from commitment_change_orders where title = 'Forged'")
   assert.equal(rows[0].n, 0)
+})
+
+test("every change order on a purchase order is a variance order: members cannot raise one, and none is approved without a reason", async (t) => {
+  const w = await purchasingWorld(t)
+  const as = (sql, args) => w.asUser(w.owner, (tx) => tx.query(sql, args))
+  await assert.rejects(as("insert into commitment_change_orders (org_id, project_id, commitment_id, title, status, total_cents) values ($1, $2, $3, 'Reasonless', 'draft', 99900000)", [w.orgId, w.project.id, w.po.id]), refused)
+  const draft = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, title: "Legacy", total_cents: 500 })
+  await assert.rejects(as("insert into commitment_change_order_lines (org_id, commitment_change_order_id, description, quantity, unit, unit_cost_cents, amount_cents) values ($1, $2, 'Extra', 1, 'ls', 500, 500)", [w.orgId, draft.id]), refused)
+  await assert.rejects(w.db.query("update commitment_change_orders set status = 'approved', approved_by = $2, approved_at = now() where id = $1", [draft.id, w.owner]), /with a reason/)
+  await assert.rejects(w.db.query("insert into commitment_change_orders (org_id, project_id, commitment_id, title, status, total_cents) values ($1, $2, $3, 'Approved', 'approved', 5)", [w.orgId, w.project.id, w.po.id]), /with a reason/)
+  await w.db.query("update commitment_change_orders set reason_code_id = $2 where id = $1", [draft.id, w.reason.id])
+  await w.db.query("update commitment_change_orders set status = 'approved', approved_by = $2, approved_at = now() where id = $1", [draft.id, w.owner])
+  assert.equal((await w.db.query("select status from commitment_change_orders where id = $1", [draft.id])).rows[0].status, "approved")
+})
+
+test("a change order sits on its commitment's own home and organization, whoever writes it", async (t) => {
+  const w = await purchasingWorld(t)
+  const other = await insert(w.db, "projects", { org_id: w.orgId, name: "Lot 13" })
+  await assert.rejects(w.db.query("insert into commitment_change_orders (org_id, project_id, commitment_id, title, total_cents, reason_code_id) values ($1, $2, $3, 'Elsewhere', 100, $4)", [w.orgId, other.id, w.po.id, w.reason.id]), /project and organization of its commitment/)
+  const order = await w.vpo(500, "draft")
+  await assert.rejects(w.db.query("update commitment_change_orders set project_id = $2 where id = $1", [order.id, other.id]), /project and organization of its commitment/)
+  const { orgId: foreignOrg } = await seedMember(w.db)
+  await assert.rejects(w.db.query("update commitment_change_orders set org_id = $2 where id = $1", [order.id, foreignOrg]), /project and organization of its commitment/)
+})
+
+test("void_commitment_change_order is serialized with completion approval and refuses what a bill or completion relies on", async (t) => {
+  const w = await purchasingWorld(t)
+  const voidOrder = (id, status = "approved", actor = w.owner) => rpc(w.db, "void_commitment_change_order", { p_org_id: w.orgId, p_id: id, p_actor_id: actor, p_reason: "Entered in error", p_expected_status: status })
+  await assert.rejects(rpc(w.db, "void_commitment_change_order", { p_org_id: w.orgId, p_id: (await w.vpo(100, "draft")).id, p_actor_id: w.owner, p_reason: "x", p_expected_status: "draft" }, { role: "authenticated", userId: w.owner }), /permission denied/)
+
+  const claimed = await w.vpo(7_000)
+  await w.completion({ commitment_line_ids: [], change_order_ids: [claimed.id] })
+  await assert.rejects(voidOrder(claimed.id), /completion already claims/)
+
+  const billedOutside = await w.vpo(9_000)
+  await insert(w.db, "vendor_bills", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, status: "approved", total_cents: 100_000 + 7_000 + 9_000 })
+  await assert.rejects(voidOrder(billedOutside.id), /exceed what it authorizes/)
+
+  const draft = await w.vpo(100, "draft")
+  await assert.rejects(voidOrder(draft.id, "approved"), /changed while you were reviewing/)
+  await voidOrder(draft.id, "draft")
+  const row = (await w.db.query("select status, metadata from commitment_change_orders where id = $1", [draft.id])).rows[0]
+  assert.equal(row.status, "voided")
+  assert.equal(row.metadata.void_reason, "Entered in error")
+  await voidOrder(draft.id, "voided")
+})
+
+test("a credit approved after the work was billed closes as an open vendor credit and nets the next payable", async (t) => {
+  const w = await purchasingWorld(t)
+  const walls = await w.completion({ commitment_line_ids: [w.lineA.id] })
+  assert.equal(Number((await w.approve(walls.id)).amount_cents), 60_000)
+
+  const credit = await w.vpo(-5_000)
+  const claim = await w.completion({ commitment_line_ids: [], change_order_ids: [credit.id] })
+  const closed = await w.approve(claim.id)
+  assert.equal(closed.vendor_bill_id, null)
+  assert.equal(Number(closed.credit_cents), 5_000)
+  const position = (await w.db.query("select unclaimed_vpo_cents, open_vendor_credit_cents, billed_cents from purchase_order_positions where commitment_id = $1", [w.po.id])).rows[0]
+  assert.deepEqual([position.unclaimed_vpo_cents, position.open_vendor_credit_cents, position.billed_cents].map(Number), [0, 5_000, 60_000])
+  assert.equal((await w.db.query("select count(*)::int n from vendor_bills where commitment_id = $1", [w.po.id])).rows[0].n, 1)
+
+  const roof = await w.completion({ commitment_line_ids: [w.lineB.id] })
+  const next = await w.approve(roof.id)
+  assert.equal(Number(next.amount_cents), 35_000)
+  assert.equal(Number(next.credit_applied_cents), 5_000)
+  const after = (await w.db.query("select open_vendor_credit_cents, billed_cents from purchase_order_positions where commitment_id = $1", [w.po.id])).rows[0]
+  assert.deepEqual([after.open_vendor_credit_cents, after.billed_cents].map(Number), [0, 95_000])
+  const lines = (await w.db.query("select sum(round(quantity * unit_cost_cents))::int total from bill_lines where bill_id = $1", [next.vendor_bill_id])).rows[0]
+  assert.equal(lines.total, 35_000)
+})
+
+test("voiding or rejecting the variance order that resolved a shortage reopens the shortage", async (t) => {
+  const w = await purchasingWorld(t)
+  const order = await w.vpo(2_000, "draft")
+  const shortage = await insert(w.db, "po_shortages", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, commitment_line_id: w.lineB.id, short_quantity: 1, reason: "vendor_short" })
+  await w.db.query("update po_shortages set status = 'vpo', vpo_id = $2, resolved_by = $3, resolved_at = now() where id = $1", [shortage.id, order.id, w.owner])
+  await rpc(w.db, "void_commitment_change_order", { p_org_id: w.orgId, p_id: order.id, p_actor_id: w.owner, p_reason: "Not needed", p_expected_status: "draft" })
+  const reopened = (await w.db.query("select status, vpo_id, resolved_at from po_shortages where id = $1", [shortage.id])).rows[0]
+  assert.deepEqual([reopened.status, reopened.vpo_id, reopened.resolved_at], ["open", null, null])
+  // Rejecting a pending order does the same; a shortage closed another way stays closed.
+  const rejected = await w.vpo(3_000, "draft")
+  const second = await insert(w.db, "po_shortages", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, commitment_line_id: w.lineA.id, short_quantity: 1, reason: "damaged" })
+  await w.db.query("update po_shortages set status = 'vpo', vpo_id = $2, resolved_by = $3, resolved_at = now() where id = $1", [second.id, rejected.id, w.owner])
+  await w.db.query("update commitment_change_orders set status = 'rejected' where id = $1", [rejected.id])
+  assert.equal((await w.db.query("select status from po_shortages where id = $1", [second.id])).rows[0].status, "open")
+  await w.db.query("update po_shortages set status = 'accepted_short', resolved_by = $2, resolved_at = now(), resolution_note = 'Short is fine' where id = $1", [second.id, w.owner])
+  await assert.rejects(w.db.query("update po_shortages set status = 'open', resolved_by = null, resolved_at = null where id = $1", [second.id]), /already closed/)
 })
 
 test("revise_commitment_change_order edits a pending order in one step and refuses a decided or stale one", async (t) => {

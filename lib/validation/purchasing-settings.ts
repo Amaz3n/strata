@@ -27,7 +27,6 @@ export const purchasingSettingsUpdateSchema = z.object({
   pay_on_po_enabled: z.boolean().optional(),
   po_completion_requires_verification: z.boolean().optional(),
   po_completion_requires_inspection: z.boolean().optional(),
-  vpo_reason_code_required: z.boolean().optional(),
   /** Null: evidence is never required (a back-charge always needs it). 0: always required. */
   vpo_evidence_required_over_cents: z.number().int().min(0).max(1_000_000_000_000).nullable().optional(),
   expiring_agreement_lead_days: z.number().int().min(1).max(365).optional(),

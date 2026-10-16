@@ -338,13 +338,13 @@ test("price agreements are division-fenced and members can only insert", async (
 })
 
 test("a bid line can only price a scope item of its own package, for any writer", async (t) => {
-  const { db, orgId, pkg, submission, community, costCode, buyerId, as } = await fenced(t)
+  const { db, orgId, pkg, submission, community, costCode } = await fenced(t)
   const other = await insert(db, "bid_packages", { org_id: orgId, community_id: community.id, award_target: "price_agreement", title: "Elsewhere", status: "draft" })
   const foreign = await insert(db, "bid_scope_items", { org_id: orgId, bid_package_id: other.id, description: "Foreign", cost_code_id: costCode.id, unit: "sf" })
   const own = (await db.query("select id from bid_scope_items where bid_package_id = $1", [pkg.id])).rows[0]
   const line = (await db.query("select id from bid_submission_items where bid_submission_id = $1", [submission.id])).rows[0]
 
-  await assert.rejects(as(buyerId, (tx) => tx.query("update bid_submission_items set bid_scope_item_id = $2 where id = $1", [line.id, foreign.id])), /scope item of the package/)
+  await assert.rejects(db.query("update bid_submission_items set bid_scope_item_id = $2 where id = $1", [line.id, foreign.id]), /scope item of the package/)
   await assert.rejects(insert(db, "bid_submission_items", { org_id: orgId, bid_submission_id: submission.id, bid_scope_item_id: foreign.id, response: "priced", amount_cents: 1, description: "x" }), /scope item of the package/)
   await db.query("update bid_submission_items set bid_scope_item_id = $2 where id = $1", [line.id, own.id])
 })
@@ -372,4 +372,85 @@ test("a division-limited member cannot write a plan-only package, and ending can
     rpc(db, "price_agreement_state", { p_org_id: orgId, p_agreement_id: incumbent.id, p_action: "end", p_effective_to: "2100-06-01", p_reason: "Extend", p_actor_id: userId }),
     /ended earlier, not extended/,
   )
+})
+
+test("a member levels a vendor's bid but cannot rewrite, add or delete its prices, awarded or not", async (t) => {
+  const { db, submission, award, buyerId, as } = await fenced(t)
+  const line = (await db.query("select id from bid_submission_items where bid_submission_id = $1", [submission.id])).rows[0]
+  const attempts = [
+    ["update bid_submission_items set amount_cents = 1 where id = $1", line.id],
+    ["update bid_submission_items set response = 'excluded' where id = $1", line.id],
+    ["delete from bid_submission_items where id = $1", line.id],
+    ["update bid_submissions set total_cents = 1 where id = $1", submission.id],
+    ["update bid_submissions set is_current = false where id = $1", submission.id],
+    ["delete from bid_submissions where id = $1", submission.id],
+  ]
+  const forge = async () => {
+    for (const [sql, id] of attempts) await assert.rejects(as(buyerId, (tx) => tx.query(sql, [id])), /cannot be changed|bid service/, sql)
+  }
+
+  await forge()
+  await award()
+  await forge()
+
+  await as(buyerId, (tx) => tx.query("update bid_submission_items set gc_plug_cents = 500, gc_note = 'Plug' where id = $1", [line.id]))
+  await as(buyerId, (tx) => tx.query("update bid_submissions set leveled_adjustment_cents = 700, leveling_notes = 'Level' where id = $1", [submission.id]))
+  const stored = (await db.query("select i.amount_cents::int amount, i.gc_plug_cents::int plug, s.total_cents::int total, s.leveled_adjustment_cents::int adjustment from bid_submission_items i join bid_submissions s on s.id = i.bid_submission_id where i.id = $1", [line.id])).rows[0]
+  assert.deepEqual(stored, { amount: 100_000, plug: 500, total: 100_000, adjustment: 700 })
+})
+
+test("a rescind and an award for the same scope run one after the other and leave one active price", async (t) => {
+  const { db, orgId, userId, pkg, community, costCode, award, row, incumbent } = await rebid(t)
+  const second = await insert(db, "companies", { org_id: orgId, name: "Frame Three" })
+  const other = await insert(db, "bid_packages", { org_id: orgId, community_id: community.id, award_target: "price_agreement", title: "Second", status: "draft" })
+  const invite = await insert(db, "bid_invites", { org_id: orgId, bid_package_id: other.id, company_id: second.id, status: "submitted" })
+  const submission = await insert(db, "bid_submissions", { org_id: orgId, bid_invite_id: invite.id, total_cents: 90_000, is_current: true })
+  const scope = await insert(db, "bid_scope_items", { org_id: orgId, bid_package_id: other.id, description: "Framing", cost_code_id: costCode.id, unit: "sf" })
+  await insert(db, "bid_submission_items", { org_id: orgId, bid_submission_id: submission.id, bid_scope_item_id: scope.id, response: "priced", amount_cents: 90_000, unit_rate_cents: 225, quantity: 400, description: "Framing" })
+  await db.query("update bid_packages set status = 'open' where id = $1", [other.id])
+  const first = await award()
+  const advisory = `select (classid::bigint << 32) | objid::bigint as key from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()`
+
+  const rescindKeys = await asRole(db, { role: "service_role" }, async (tx) => {
+    await tx.query("select * from public.rescind_bid_award($1, $2, $3, 'Trade withdrew')", [orgId, first.award_id, userId])
+    return (await tx.query(advisory)).rows.map((r) => r.key)
+  })
+  const awardKeys = await asRole(db, { role: "service_role" }, async (tx) => {
+    await tx.query("select public.run_bid_award_price_agreements($1, $2, $3, 'n', '{}', null)", [orgId, submission.id, userId])
+    return (await tx.query(advisory)).rows.map((r) => r.key)
+  })
+
+  assert.ok(rescindKeys.length > 0 && rescindKeys.every((key) => awardKeys.includes(key)), "rescind and award serialize on one lock")
+  assert.equal((await row(incumbent.id)).status, "superseded", "the second award displaced the restored incumbent")
+  const active = (await db.query("select id from vendor_price_agreements where community_id = $1 and cost_code_id = $2 and status = 'active'", [community.id, costCode.id])).rows
+  assert.equal(active.length, 1)
+  assert.equal((await db.query("select company_id from vendor_price_agreements where id = $1", [active[0].id])).rows[0].company_id, second.id)
+  assert.equal((await db.query("select status from bid_packages where id = $1", [pkg.id])).rows[0].status, "closed")
+})
+
+test("a portal submission's attachments are linked in the same transaction as the submission", async (t) => {
+  const db = await createDatabase(t)
+  const { orgId } = await seedMember(db)
+  const company = await insert(db, "companies", { org_id: orgId, name: "Slab Co" })
+  const project = await insert(db, "projects", { org_id: orgId, name: "Lot 12", phase: "delivery" })
+  const pkg = await insert(db, "bid_packages", { org_id: orgId, project_id: project.id, title: "Concrete", scope: "Concrete", status: "draft" })
+  await insert(db, "bid_scope_items", { org_id: orgId, bid_package_id: pkg.id, item_type: "base", description: "Concrete" })
+  const invite = await insert(db, "bid_invites", { org_id: orgId, bid_package_id: pkg.id, company_id: company.id, status: "sent" })
+  const stranger = await insert(db, "bid_invites", { org_id: orgId, bid_package_id: pkg.id, company_id: (await insert(db, "companies", { org_id: orgId, name: "Other" })).id, status: "sent" })
+  await db.query("update bid_packages set status = 'open' where id = $1", [pkg.id])
+  const file = (inviteId) => insert(db, "files", { org_id: orgId, file_name: "quote.pdf", storage_path: `bids/${inviteId}/${Math.random()}`, metadata: { bid_invite_id: inviteId } })
+  const submit = (fileIds) => rpc(db, "create_bid_submission_version", {
+    p_org_id: orgId, p_bid_invite_id: invite.id, p_payload: { total_cents: 1000, scope_revision: 1, file_ids: fileIds },
+  })
+  const count = async (table) => (await db.query(`select count(*)::int n from ${table}`)).rows[0].n
+
+  const own = await file(invite.id)
+  const result = await submit([own.id])
+  const links = (await db.query("select entity_id, file_id from file_links where entity_type = 'bid_submission'")).rows
+  assert.deepEqual(links, [{ entity_id: result.submission_id, file_id: own.id }])
+
+  const foreign = await file(stranger.id)
+  await assert.rejects(submit([foreign.id]), /does not belong to this bid/)
+  assert.equal(await count("bid_submissions"), 1, "a refused attachment leaves no second submission")
+  assert.equal(await count("file_links"), 1)
 })

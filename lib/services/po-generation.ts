@@ -11,12 +11,13 @@ import {
 import { recordAudit } from "@/lib/services/audit"
 import {
   authorize,
-  getDivisionAccessForUser,
   requireAuthorization,
 } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
 import { recordEvent } from "@/lib/services/events"
+import { resolvePartyCapabilities } from "@/lib/directory/roles"
+import { getPartyRolesWithClient } from "@/lib/services/party-roles"
 import { collectPagedRows, loadPriceAgreementCandidates } from "@/lib/services/price-book"
 import { getExpiringAgreementLeadDays } from "@/lib/services/purchasing-settings"
 import { poExceptionResolutionSchema, poGenerationInputSchema, type PoExceptionResolution } from "@/lib/validation/po-generation"
@@ -129,9 +130,24 @@ const STALE_RETRY_LIMIT = 3
 /** Largest amount the database stores in one cents column (integer). */
 const MAX_CENTS = 2_147_483_647
 
-function relation<T extends Record<string, unknown>>(value: unknown): T | null {
-  const row = Array.isArray(value) ? value[0] : value
-  return row && typeof row === "object" ? row as T : null
+const recordSchema = z.record(z.string(), z.unknown())
+
+/** A joined row arrives as an object, or as a one-element array depending on the join. */
+function relation(value: unknown): Record<string, unknown> | null {
+  const parsed = recordSchema.safeParse(Array.isArray(value) ? value[0] : value)
+  return parsed.success ? parsed.data : null
+}
+
+function stringOrNull(value: unknown) {
+  return typeof value === "string" ? value : null
+}
+
+/** The plan line or selection an exception was raised for, read from its source_ref. */
+function exceptionRefSourceId(sourceKind: string, sourceRef: unknown) {
+  const ref = recordSchema.safeParse(sourceRef)
+  if (!ref.success) return null
+  const id = sourceKind === "takeoff_line" ? ref.data.takeoff_line_id : ref.data.project_selection_id
+  return typeof id === "string" ? id : null
 }
 
 /** The identity of a priced thing across runs: which plan line or selection it came from. */
@@ -231,9 +247,8 @@ async function loadSuppressedExceptionKeys(context: GenerationContext, projectId
   if (error) throw new Error(`Failed to load PO exceptions: ${error.message}`)
   const keys = new Set<string>()
   for (const row of data ?? []) {
-    const sourceRef = row.source_ref as Record<string, unknown>
-    const sourceId = row.source_kind === "takeoff_line" ? sourceRef.takeoff_line_id : sourceRef.project_selection_id
-    if (typeof sourceId !== "string") continue
+    const sourceId = exceptionRefSourceId(row.source_kind, row.source_ref)
+    if (!sourceId) continue
     const key = generationSourceKey(row.source_kind, sourceId)
     keys.add(row.status === "open" ? key : `${key}|${row.reason}`)
   }
@@ -291,7 +306,7 @@ async function runGeneration(
   const costCodeIds = Array.from(new Set([
     ...selectedTakeoffs.map((line) => line.cost_code_id),
     ...optionRows.flatMap((selection) => {
-      const option = relation<Record<string, unknown>>(selection.option)
+      const option = relation(selection.option)
       return typeof option?.cost_code_id === "string" ? [option.cost_code_id] : []
     }),
   ]))
@@ -313,10 +328,9 @@ async function runGeneration(
   })
   const resolutionBySource = new Map<string, Record<string, unknown>>()
   for (const row of priorResolutions) {
-    const sourceRef = row.source_ref as Record<string, unknown>
-    const sourceId = row.source_kind === "takeoff_line" ? sourceRef.takeoff_line_id : sourceRef.project_selection_id
-    const key = generationSourceKey(row.source_kind, String(sourceId ?? ""))
-    if (!resolutionBySource.has(key) && row.resolution && typeof row.resolution === "object") resolutionBySource.set(key, row.resolution as Record<string, unknown>)
+    const resolution = recordSchema.safeParse(row.resolution)
+    const key = generationSourceKey(row.source_kind, exceptionRefSourceId(row.source_kind, row.source_ref) ?? "")
+    if (!resolutionBySource.has(key) && resolution.success) resolutionBySource.set(key, resolution.data)
   }
   for (const [key, override] of pendingResolutions ?? []) resolutionBySource.set(key, override)
   const resolvedLines: PoGenerationResolvedLine[] = []
@@ -327,7 +341,7 @@ async function runGeneration(
       costCodeId: line.cost_code_id, costType: line.cost_type, uom: line.uom,
       quantity: Number(line.quantity), housePlanId: lot.house_plan_id,
       housePlanVersionId: lot.house_plan_version_id, communityId: lot.community_id,
-      divisionId: lot.division_id ?? relation<Record<string, unknown>>(lot.community)?.division_id as string | null,
+      divisionId: lot.division_id ?? stringOrNull(relation(lot.community)?.division_id),
       asOfDate,
     }
     const override = resolutionBySource.get(generationSourceKey("takeoff_line", line.id))
@@ -361,7 +375,7 @@ async function runGeneration(
   }
 
   for (const selection of optionRows) {
-    const option = relation<Record<string, unknown>>(selection.option)
+    const option = relation(selection.option)
     const sourceId = String(selection.id)
     const costCodeId = typeof option?.cost_code_id === "string" ? option.cost_code_id : null
     const optionName = typeof option?.name === "string" ? option.name : "Selected option"
@@ -494,8 +508,8 @@ async function runGeneration(
       const { error: finishError } = await service.from("po_generation_runs").update({ status, completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", run.id)
       if (finishError) throw new Error(`Failed to finish the PO preview: ${finishError.message}`)
     } else {
-      const community = relation<Record<string, unknown>>(lot.community)
-      const plan = relation<Record<string, unknown>>(lot.house_plan)
+      const community = relation(lot.community)
+      const plan = relation(lot.house_plan)
       const payload = {
         // The commit refuses a whole-house payload whose prior run is no longer
         // the latest (a competing commit or resolution landed first).
@@ -596,7 +610,7 @@ export async function getProjectPoGenerationSummary(projectId: string, orgId?: s
   const [lot, lastRun, open] = await Promise.all([
     supabase.from("lots").select("id").eq("org_id", resolvedOrgId).eq("project_id", projectId).not("house_plan_version_id", "is", null).maybeSingle(),
     supabase.from("po_generation_runs").select("status,completed_at").eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("mode", "commit")
-      .order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      .in("status", ["succeeded", "succeeded_with_exceptions"]).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("po_generation_exceptions").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("status", "open"),
   ])
   if (lot.error) throw new Error(`Failed to check PO generation for the project: ${lot.error.message}`)
@@ -606,7 +620,7 @@ export async function getProjectPoGenerationSummary(projectId: string, orgId?: s
   return { lastRunStatus: lastRun.data?.status ?? null, lastRunAt: lastRun.data?.completed_at ?? null, openExceptions: open.count ?? 0 }
 }
 
-export type PoExceptionQueueRow = {
+type PoExceptionQueueRow = {
   id: string
   project_id: string
   description: string
@@ -647,10 +661,13 @@ export async function resolvePoException(exceptionId: string, resolution: PoExce
       .eq("org_id", resolvedOrgId).eq("id", parsed.company_id).maybeSingle()
     if (vendorError) throw new Error(`Failed to validate the selected vendor: ${vendorError.message}`)
     if (!vendor) throw new Error("The selected vendor is not available in this organization.")
+    const roles = await getPartyRolesWithClient(supabase, resolvedOrgId, { companyIds: [parsed.company_id] })
+    if (!resolvePartyCapabilities(roles.get(parsed.company_id) ?? []).isVendor) {
+      throw new Error("The selected company is not a vendor. Give it a vendor role in the directory first.")
+    }
   }
-  const sourceRef = existing.source_ref as Record<string, unknown>
-  const sourceId = existing.source_kind === "takeoff_line" ? sourceRef.takeoff_line_id : sourceRef.project_selection_id
-  if (typeof sourceId !== "string") throw new Error("This PO exception has no source line to price.")
+  const sourceId = exceptionRefSourceId(existing.source_kind, existing.source_ref)
+  if (!sourceId) throw new Error("This PO exception has no source line to price.")
   const pending: Record<string, unknown> = parsed.kind === "agreement"
     ? { kind: "agreement", agreement_id: parsed.agreement_id }
     : { kind: "manual", company_id: parsed.company_id, unit_cost_cents: parsed.unit_cost_cents, note: parsed.note ?? null }
@@ -688,37 +705,4 @@ export async function dismissPoException(exceptionId: string, note: string, orgI
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_generation_exception", entityId: exceptionId, before: existing, after: data })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_exception.dismissed", entityType: "po_generation_exception", entityId: exceptionId, payload: { project_id: existing.project_id } })
   return data
-}
-
-export async function hasOpenPoExceptions(projectId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await authorizeGeneration("price_book.read", projectId, orgId)
-  const { count, error } = await supabase.from("po_generation_exceptions").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("status", "open")
-  if (error) throw new Error(`Failed to check PO exceptions: ${error.message}`)
-  return (count ?? 0) > 0
-}
-
-export async function isPurchasingEnabled(orgId?: string, communityId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await authorizeGeneration("price_book.read", undefined, orgId)
-  const access = await getDivisionAccessForUser({ orgId: resolvedOrgId, userId })
-  let query = supabase.from("vendor_price_agreements").select("id").eq("org_id", resolvedOrgId).eq("status", "active").limit(1)
-  if (communityId) {
-    if (access.assignedOnly) {
-      const { data: community } = await supabase.from("communities").select("division_id").eq("org_id", resolvedOrgId).eq("id", communityId).maybeSingle()
-      if (!community?.division_id || !access.divisionIds.includes(community.division_id)) return false
-    }
-    query = query.or(`community_id.eq.${communityId},community_id.is.null`)
-  } else if (access.assignedOnly) {
-    if (access.divisionIds.length === 0) return false
-    const { data: communities, error: communityError } = await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).in("division_id", access.divisionIds)
-    if (communityError) throw new Error(`Failed to scope purchasing readiness: ${communityError.message}`)
-    const communityIds = (communities ?? []).map((community) => community.id)
-    query = query.or([
-      `division_id.in.(${access.divisionIds.join(",")})`,
-      communityIds.length ? `community_id.in.(${communityIds.join(",")})` : null,
-      "and(division_id.is.null,community_id.is.null)",
-    ].filter(Boolean).join(","))
-  }
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to check purchasing readiness: ${error.message}`)
-  return (data ?? []).length > 0
 }

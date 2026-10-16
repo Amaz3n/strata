@@ -1,41 +1,39 @@
-require("../scripts/register-ts-node-test")
+"use strict"
+
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const vm = require("node:vm")
-const ts = require("typescript")
 const test = require("node:test")
+
+const { stubModule, freshRequire } = require("./support/modules")
+const { createQueryRecorder } = require("./support/query-recorder")
+
 const division = "00000000-0000-4000-8000-000000000001"
 const community = "00000000-0000-4000-8000-000000000002"
 
+const state = { scope: { assignedOnly: false, divisionIds: [] }, denied: false }
+stubModule("@/lib/services/context", { requireOrgContext: async () => state.context })
+stubModule("@/lib/services/authorization", { getDivisionAccessForUser: async () => state.scope })
+stubModule("@/lib/services/permissions", {
+  requirePermission: async () => {
+    if (state.denied) throw new Error("Forbidden")
+  },
+})
+const { listProductionBidQueue } = freshRequire("lib/services/production-bid-queue.ts")
+
 function harness({ scope = { assignedOnly: false, divisionIds: [] }, denied = false, errorTable = null, responses = [], rows = [], total = 1203 } = {}) {
-  const calls = []
-  const context = { orgId: "org", userId: "buyer", supabase: { from(table) {
-    const call = { table, filters: [] }; calls.push(call)
-    const query = {
-      select(columns, options) { call.columns = columns; call.options = options; return query },
-      eq(...args) { call.filters.push(["eq", ...args]); return query }, neq(...args) { call.filters.push(["neq", ...args]); return query },
-      not(...args) { call.filters.push(["not", ...args]); return query },
-      ilike(...args) { call.filters.push(["ilike", ...args]); return query },
-      in(...args) { call.filters.push(["in", ...args]); return query }, or(...args) { call.filters.push(["or", ...args]); return query },
-      order(...args) { call.filters.push(["order", ...args]); return query }, range(from, to) { call.range = [from, to]; return query },
-      then(resolve, reject) {
-        // PostgREST answers 416 when the offset is past the last row, and still reports the total on a one-row page.
-        if (table === "bid_packages" && call.range[0] >= total && call.range[0] > 0) return Promise.resolve({ data: null, count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } }).then(resolve, reject)
-        return Promise.resolve({ data: table === "bid_packages" ? (call.range[0] === 0 && call.range[1] === 0 ? rows.slice(0, 1) : rows) : responses.slice(call.range[0], call.range[1] + 1), count: total, error: errorTable === table ? { message: "database unavailable" } : null }).then(resolve, reject)
-      },
+  const { client, calls } = createQueryRecorder((call) => {
+    // PostgREST answers 416 when the offset is past the last row, and still reports the total on a one-row page.
+    if (call.table === "bid_packages" && call.range[0] >= total && call.range[0] > 0) {
+      return { data: null, count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } }
     }
-    return query
-  } } }
-  const stubs = {
-    zod: require("zod"), "@/lib/land/scope": require("../lib/land/scope"), "@/lib/land/paging": require("../lib/land/paging"),
-    "@/lib/services/context": { requireOrgContext: async () => context },
-    "@/lib/services/authorization": { getDivisionAccessForUser: async () => scope },
-    "@/lib/services/permissions": { requirePermission: async () => { if (denied) throw new Error("Forbidden") } },
-  }
-  const compiled = { exports: {} }
-  const source = fs.readFileSync(require.resolve("../lib/services/production-bid-queue.ts"), "utf8")
-  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { exports: compiled.exports, require: (id) => { assert.ok(stubs[id], id); return stubs[id] } })
-  return { calls, run: compiled.exports.listProductionBidQueue }
+    const data = call.table === "bid_packages"
+      ? (call.range[0] === 0 && call.range[1] === 0 ? rows.slice(0, 1) : rows)
+      : responses.slice(call.range[0], call.range[1] + 1)
+    return { data, count: total, error: errorTable === call.table ? { message: "database unavailable" } : null }
+  })
+  state.scope = scope
+  state.denied = denied
+  state.context = { supabase: client, orgId: "org", userId: "buyer" }
+  return { calls, run: listProductionBidQueue }
 }
 const row = { id: "package", title: "Framing", status: "open", due_at: null, community: { name: "Oak" }, plan: { name: "A" }, invites: [{ count: 25 }] }
 

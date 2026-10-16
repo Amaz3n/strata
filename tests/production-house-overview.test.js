@@ -21,7 +21,10 @@ test("a home's margin reads the approved budget and every posted cost", async ()
         { id: id(6), org_id: ORG, project_id: HOME, version: 2, status: "draft", total_cents: 1_00 },
       ],
       job_cost_entries: [1, 2, 3].map((n) => ({ id: id(10 + n), org_id: ORG, project_id: HOME, status: "posted", cost_cents: 10_000_00 })),
-      commitment_change_orders: [],
+      commitment_change_orders: [
+        { id: id(40), org_id: ORG, project_id: HOME, status: "approved", total_cents: 5_000_00, reason: null, commitment: { commitment_type: "purchase_order" } },
+        { id: id(41), org_id: ORG, project_id: HOME, status: "draft", total_cents: 9_000_00, reason: null, commitment: { commitment_type: "purchase_order" } },
+      ],
       project_selection_groups: [],
       project_selections: [],
       closings: [],
@@ -39,6 +42,10 @@ test("a home's margin reads the approved budget and every posted cost", async ()
 
   assert.equal(overview.money.budgetCents, 400_000_00)
   assert.equal(overview.money.actualCostCents, 30_000_00)
+  // An approved purchase-order change counts as a variance order even with no reason on it; a draft does not.
+  assert.equal(overview.money.vpoCents, 5_000_00)
+  assert.equal(overview.money.vpoCount, 1)
+  assert.equal(overview.money.topVpoReason, "Uncoded")
 })
 
 test("a released home reads the revisions it was built against and what has changed since", async () => {

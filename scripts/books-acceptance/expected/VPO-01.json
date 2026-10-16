@@ -36,7 +36,7 @@
       }
     },
     "purchasing-controls-cannot-be-forged-through-the-data-api": {
-      "derivation": "A draft 400.00 order, an approved 300.00 order and a reported completion exist. The requesting manager and a sales agent each try, with their own session, to approve and reprice the draft, reprice the approved order, rewrite its lines, insert an approved VPO, switch off completion verification, retire reasons, verify the completion and mark it billed: all refuse and the rows are unchanged. A sales agent and a manager asking for a band that names commitment.read are refused by the settings service; the manager's valid save succeeds and is audited. The legitimate paths then work: a second manager approves the draft and verifies the completion. The same members also try, with a reason-less change order: inserting one already approved at 50,000.00, approving a plain 200.00 draft and repricing it: all refuse, no forged row exists and the draft is unchanged.",
+      "derivation": "A draft 400.00 order, an approved 300.00 order and a reported completion exist. The requesting manager and a sales agent each try, with their own session, to approve and reprice the draft, reprice the approved order, rewrite its lines, insert an approved VPO, switch off completion verification, retire reasons, verify the completion and mark it billed: all refuse and the rows are unchanged. A sales agent and a manager asking for a band that names commitment.read are refused by the settings service; the manager's valid save succeeds and is audited. The legitimate paths then work: a second manager approves the draft and verifies the completion. The same members also try, with a reason-less change order: inserting one already approved at 50,000.00, approving a plain 200.00 draft and repricing it: all refuse, no forged row exists and the draft is unchanged. Round 2: every change to a purchase order is a variance order. The same members also try to insert a reason-less 999,000.00 DRAFT on the purchase order and a draft naming another home of the organization: both refuse (a member never inserts a change order on a purchase order; the database also ties a change order to its commitment's own home whoever writes it, which a direct insert as the database owner confirms). A reason-less draft that exists anyway (written by the service, here by the fixture) is refused approval even by a manager holding the large band, and the service refuses to raise one without a reason.",
       "expected": {
         "forge": {
           "requesterApprovesAndReprices": "refused",
@@ -60,7 +60,11 @@
           "requesterRepricesReasonlessDraft": "refused",
           "salesAgentInsertsReasonlessApproved": "refused",
           "salesAgentApprovesReasonlessDraft": "refused",
-          "salesAgentRepricesReasonlessDraft": "refused"
+          "salesAgentRepricesReasonlessDraft": "refused",
+          "requesterInsertsReasonlessDraft": "refused",
+          "requesterInsertsOnAnotherHome": "refused",
+          "salesAgentInsertsReasonlessDraft": "refused",
+          "salesAgentInsertsOnAnotherHome": "refused"
         },
         "state": {
           "draft": {
@@ -89,6 +93,9 @@
           "managerSaveAudited": true
         },
         "service": {
+          "reasonlessRaise": "refused: a purchase-order change needs a reason",
+          "reasonlessApproval": "refused: a reason-less purchase-order change is not approved",
+          "misfiledByAnyWriter": "refused: not on its commitment's home",
           "approvedByTheRightPerson": "allowed",
           "verifiedByAnotherPerson": "allowed"
         }
@@ -209,6 +216,109 @@
         "afterRefusals": "draft",
         "ownDivisionApproves": "allowed",
         "divisionLimitedSavesSettings": "refused: settings are organization-wide"
+      }
+    },
+    "credit-after-billing-nets-the-next-payable-and-void-needs-no-live-reliance": {
+      "derivation": "A home with a 1,000.00 purchase order of two lines (walls 600.00, roof 400.00) and pay-on-PO on. The walls are reported, verified by a second manager and approved by a third: one bill of 600.00. A -50.00 variance order is then raised and approved by the project lead (small band): the revised total is 950.00, billed is 600.00, nothing is open. The office claims the credit from the purchase-order sheet: reported, verified, approved. The completion closes as a vendor credit (billed, no bill, 50.00 recorded) instead of erroring on 'no positive payable amount'; the bills are unchanged at 600.00 and the position now shows an open vendor credit of 50.00 and nothing else. Voiding the claimed credit is refused (a completion claims it). The roof is reported, verified and approved: the bill is 400.00 less the 50.00 credit = 350.00, the position shows billed 950.00 = revised 950.00, no open credit and no exception. A +200.00 variance order is approved and an off-book 200.00 bill drawn: billed 1,150.00 would exceed 950.00 once the order is voided, so the void is refused and the order stays approved. A 100.00 replacement order is raised for a shortage on the roof line and the shortage is closed against it (status vpo); voiding the order with a reason reopens the shortage: status open, the variance order link cleared, no resolution time.",
+      "expected": {
+        "wallsApproval": "allowed",
+        "billedAfterWalls": [
+          [
+            60000,
+            "approved"
+          ]
+        ],
+        "creditApproved": "allowed",
+        "positionAfterCredit": {
+          "original": 100000,
+          "approvedVpos": -5000,
+          "billed": 60000,
+          "openCredit": 0,
+          "exceptions": []
+        },
+        "creditClaimApproval": "allowed",
+        "creditCompletion": {
+          "status": "billed",
+          "noBill": true,
+          "creditCents": 5000
+        },
+        "billsAfterCredit": [
+          [
+            60000,
+            "approved"
+          ]
+        ],
+        "positionWithOpenCredit": {
+          "original": 100000,
+          "approvedVpos": -5000,
+          "billed": 60000,
+          "openCredit": 5000,
+          "exceptions": [
+            "vendor_credit_open"
+          ]
+        },
+        "voidClaimedCredit": "refused: a completion claims it",
+        "roofApproval": "allowed",
+        "billsAfterRoof": [
+          [
+            35000,
+            "approved"
+          ],
+          [
+            60000,
+            "approved"
+          ]
+        ],
+        "positionAfterRoof": {
+          "original": 100000,
+          "approvedVpos": -5000,
+          "billed": 95000,
+          "openCredit": 0,
+          "exceptions": []
+        },
+        "plusApproved": "allowed",
+        "voidBilledPast": "refused: bills already drawn on it",
+        "plusStillApproved": "approved",
+        "voidReplacement": "allowed",
+        "shortage": {
+          "resolvedBy": "vpo",
+          "afterVoid": {
+            "status": "open",
+            "vpoCleared": true,
+            "open": true
+          }
+        }
+      }
+    },
+    "void-and-completion-approval-on-one-vpo-never-both-win": {
+      "derivation": "Two homes, each with a 1,000.00 purchase order, a whole-order completion reported, verified and waiting, and a 150.00 variance order approved but not yet claimed (a whole-order completion names no variance order, so the claim check cannot tell the two apart: only the purchase order's row lock can). Home one: the completion approval runs in its own database session and holds its transaction open for five seconds; 1.5 seconds in, the void arrives, waits for the lock, then sees the completion has billed the order and is refused ('a completion claims it'). The approval commits: bill 1,150.00 (1,000.00 plus the 150.00 order), the order is still approved and is billed, the completion is billed. Home two: the void runs in its own session and holds five seconds; the approval arrives 1.5 seconds in, waits, finds the order voided and bills the purchase order alone: 1,000.00, the order is voided and not billed. Exactly one of the two outcomes holds for each order; both sessions' winner commits.",
+      "expected": {
+        "voidWhileApprovalInFlight": "refused: a completion claims it",
+        "approvalInFlight": "committed",
+        "approvalWins": {
+          "order": "approved",
+          "billedWithOrder": [
+            [
+              115000,
+              "approved"
+            ]
+          ],
+          "orderBilled": true,
+          "completion": "billed"
+        },
+        "approvalWhileVoidInFlight": "allowed",
+        "voidInFlight": "committed",
+        "voidWins": {
+          "order": "voided",
+          "bills": [
+            [
+              100000,
+              "approved"
+            ]
+          ],
+          "orderBilled": false,
+          "completion": "billed"
+        }
       }
     }
   }

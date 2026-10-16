@@ -30,6 +30,7 @@ import { listVarianceReasonsAction } from "@/app/(app)/purchasing/vpo-actions"
 import { PoIssuanceSection } from "@/components/purchasing/po-issuance-section"
 import { PoReconciliationSection } from "@/components/purchasing/po-reconciliation-section"
 import { VpoEvidenceUpload } from "@/components/purchasing/vpo-evidence-upload"
+import { NoVarianceReasonNotice } from "@/components/purchasing/no-variance-reason-notice"
 import {
   attachFileAction,
   detachFileLinkAction,
@@ -1083,12 +1084,13 @@ function CommitmentChangeOrderCreateDialog({
   const [lineId, setLineId] = useState("")
   const [amount, setAmount] = useState("0.00")
   const [reasonId, setReasonId] = useState("")
-  const [reasons, setReasons] = useState<Array<{ id: string; label: string }>>([])
+  const [reasons, setReasons] = useState<Array<{ id: string; label: string }> | null>(null)
   const [evidenceIds, setEvidenceIds] = useState<string[]>([])
   const isPurchaseOrder = commitment?.commitment_type === "purchase_order"
 
   useEffect(() => {
     if (!open || !isPurchaseOrder) return
+    setReasons(null)
     listVarianceReasonsAction().then((result) => {
       if (result.success) setReasons(result.data)
       else toast({ title: "Unable to load variance reasons", description: result.error })
@@ -1124,7 +1126,7 @@ function CommitmentChangeOrderCreateDialog({
       try {
         unwrapAction(await createCommitmentChangeOrderAction(projectId, {
           commitment_id: commitment.id,
-          reason_code_id: isPurchaseOrder && reasonId ? reasonId : null,
+          reason_code_id: isPurchaseOrder ? reasonId : null,
           evidence_file_ids: evidenceIds,
           title: title.trim(),
           description: description.trim() || null,
@@ -1202,11 +1204,12 @@ function CommitmentChangeOrderCreateDialog({
                     <SelectValue placeholder="Why is this order changing?" />
                   </SelectTrigger>
                   <SelectContent>
-                    {reasons.map((reason) => (
+                    {(reasons ?? []).map((reason) => (
                       <SelectItem key={reason.id} value={reason.id}>{reason.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {reasons?.length === 0 ? <NoVarianceReasonNotice /> : null}
               </div>
               <div className="space-y-1">
                 <Label>Cost evidence</Label>
@@ -1224,7 +1227,7 @@ function CommitmentChangeOrderCreateDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={isPending || !selectedLine}>
+          <Button onClick={submit} disabled={isPending || !selectedLine || (isPurchaseOrder && !reasonId)}>
             Create CCO
           </Button>
         </div>

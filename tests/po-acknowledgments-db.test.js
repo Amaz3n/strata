@@ -347,3 +347,39 @@ test("an open-WIP imported order is a backfill version: no email job, and the ve
   assert.equal((await f.db.query("select count(*)::int n from outbox where job_type = 'po_issue_notice'")).rows[0].n, 0)
   assert.equal((await queue(f)).rows[0].state, "unrequested")
 })
+
+test("execution evidence of an approved order is locked to members and the imported marker is server-written only", async (t) => {
+  const f = await fixture(t)
+  const { po, line } = await purchaseOrder(f)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query(
+    "update commitments set metadata = metadata || '{\"imported_open_wip\":true}' where id = $1", [po.id])), /imported marker/)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query(
+    "update commitment_lines set metadata = metadata || '{\"imported_open_wip\":true}' where id = $1", [line.id])), /imported marker/)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query(
+    "insert into commitments (org_id, project_id, company_id, commitment_type, title, status, total_cents, metadata) values ($1, $2, $3, 'purchase_order', 'Marked', 'draft', 1, '{\"imported_open_wip\":true}')",
+    [f.orgId, f.home.id, f.vendor.id])), /imported marker/)
+  await approve(f, po.id)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query("update commitments set executed_at = now() where id = $1", [po.id])), /locked/)
+  await f.db.query("update commitments set executed_at = now() where id = $1", [po.id])
+})
+
+test("po_has_history answers only inside the caller's org; write_commitment_line refuses an approved order and re-totals a draft", async (t) => {
+  const f = await fixture(t)
+  const { po } = await purchaseOrder(f)
+  await approve(f, po.id)
+  const stranger = await seedMember(f.db, { role: "org_owner" })
+  assert.equal(await asUser(f, stranger.userId, (tx) => tx.query("select public.po_has_history($1) h", [po.id])).then((r) => r.rows[0].h), false)
+  assert.equal(await asUser(f, f.owner.userId, (tx) => tx.query("select public.po_has_history($1) h", [po.id])).then((r) => r.rows[0].h), true)
+
+  await assert.rejects(rpc(f.db, "write_commitment_line", {
+    p_org_id: f.orgId, p_op: "insert", p_commitment_id: po.id, p_line_id: null,
+    p_values: { description: "late", quantity: 1, unit: "ea", unit_cost_cents: 100 },
+  }), /approved and locked/)
+  const draft = await purchaseOrder(f, { title: "Draft" })
+  const written = await rpc(f.db, "write_commitment_line", {
+    p_org_id: f.orgId, p_op: "insert", p_commitment_id: draft.po.id, p_line_id: null,
+    p_values: { description: "extra", quantity: 3, unit: "ea", unit_cost_cents: 100 },
+  })
+  assert.equal((await f.db.query("select total_cents from commitments where id = $1", [draft.po.id])).rows[0].total_cents, 500300)
+  assert.ok(written)
+})

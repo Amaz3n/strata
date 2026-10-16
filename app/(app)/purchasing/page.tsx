@@ -81,6 +81,9 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
       hasPermission("po_exception.resolve"),
     ])
     : null
+  const canAttachEvidenceRequest = tab === "vpos"
+    ? Promise.all([hasPermission("vpo.request"), hasPermission("vpo.approve")]).then((granted) => granted.some(Boolean))
+    : Promise.resolve(false)
   const healthRequest = tab === "price-book" ? getPriceBookHealth({ divisionId: ambient.divisionId }) : Promise.resolve(null)
   const [agreements, health, renewals, bids, exceptions, vpos, completions, variance, costCodes, positions, settings] = await Promise.all([
     tab === "price-book" ? listPriceAgreements({
@@ -101,7 +104,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
 
   const [acknowledgments, canResolveAcknowledgment] = acknowledgmentsRequest ? await acknowledgmentsRequest : [null, false]
   const [deliveries, canReceive, canResolveShortage] = deliveriesRequest ? await deliveriesRequest : [null, false, false]
-  const canAttachEvidence = tab === "vpos" && (await Promise.all([hasPermission("vpo.request"), hasPermission("vpo.approve")])).some(Boolean)
+  const canAttachEvidence = await canAttachEvidenceRequest
   const total = acknowledgments ? acknowledgments.total : deliveries ? deliveries.total : tab === "bids" ? bids.count : tab === "price-book" ? agreements.count : tab === "exceptions" ? exceptions.count : tab === "vpos" ? vpos.count : tab === "completions" ? completions.count : null
   const paginationParams = new URLSearchParams({ tab })
   if (tab === "bids" && search) paginationParams.set("q", search)

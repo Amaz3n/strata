@@ -19,6 +19,9 @@ export async function assertProductionBidAccess(
     // An organization-wide plan is shared only beside a community of the member's own:
     // a plan-only package would price every division's homes. Unassigned communities are not shared.
     const sharedPlan = table === "house_plans" && data.division_id == null && Boolean(scope.community_id)
+    if (access.assignedOnly && table === "house_plans" && data.division_id == null && !scope.community_id) {
+      throw new Error("A plan on its own prices every division. Choose one of your communities as well.")
+    }
     if (access.assignedOnly && !sharedPlan
       && (!data.division_id || !access.divisionIds.includes(data.division_id))) {
       throw new Error(`${label} is outside your division access`)

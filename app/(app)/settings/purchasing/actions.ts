@@ -5,6 +5,7 @@ import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { setVarianceReasonCodeActive, updatePurchasingSettings, upsertVarianceReasonCode } from "@/lib/services/purchasing-settings"
+import { purchasingSettingsUpdateSchema, varianceReasonCodeSchema } from "@/lib/validation/purchasing-settings"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -18,11 +19,11 @@ async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
 }
 
 export async function updatePurchasingSettingsAction(input: unknown) {
-  return await run(() => updatePurchasingSettings(input as Parameters<typeof updatePurchasingSettings>[0]))
+  return await run(() => updatePurchasingSettings(purchasingSettingsUpdateSchema.parse(input)))
 }
 
 export async function saveVarianceReasonCodeAction(input: unknown) {
-  return await run(() => upsertVarianceReasonCode(input as Parameters<typeof upsertVarianceReasonCode>[0]))
+  return await run(() => upsertVarianceReasonCode(varianceReasonCodeSchema.parse(input)))
 }
 
 export async function setVarianceReasonCodeActiveAction(reasonCodeId: string, isActive: boolean) {

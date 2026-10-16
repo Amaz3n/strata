@@ -23,7 +23,7 @@ const {
   generationSourceKey,
 } = require("../lib/services/po-generation")
 const { completedWeekWindows, summarizeVarianceByOrg } = require("../lib/services/purchasing-maintenance")
-const { classifyPoPosition, poRemainingCents, poRevisedCents } = require("../lib/purchasing/po-position")
+const { classifyPoPosition, commitmentBillingAtRelease, poRemainingCents, poRevisedCents } = require("../lib/purchasing/po-position")
 const { varianceAnalysisCsv } = require("../lib/services/reports/variance-analysis")
 
 const migration = (name) => fs.readFileSync(path.resolve(__dirname, "../supabase/migrations", name), "utf8")
@@ -403,7 +403,7 @@ const position = (overrides = {}) => ({
   commitmentId: "po-1", projectId: "home-1", title: "Framing", contractNumber: null, companyId: null, status: "approved",
   divisionId: null, communityId: null, payOnPo: true, originalCents: 100_000, approvedVpoCents: 20_000, pendingVpoCount: 0,
   billedCents: 120_000, paidCents: 60_000, retainageHeldCents: 0, completionBilledCents: 120_000, openCompletionCount: 0,
-  unclaimedVpoCents: 0, ...overrides,
+  unclaimedVpoCents: 0, openVendorCreditCents: 0, ...overrides,
 })
 
 test("a purchase order that reconciles raises nothing, and the revised total includes approved VPOs", () => {
@@ -417,6 +417,34 @@ test("each way the books can disagree with a purchase order is named once, with 
   assert.deepEqual(classifyPoPosition(position({ paidCents: 125_000 })), [{ kind: "paid_exceeds_billed", cents: 5_000 }])
   assert.deepEqual(classifyPoPosition(position({ completionBilledCents: 100_000 })), [{ kind: "billed_without_completion", cents: 20_000 }])
   assert.deepEqual(classifyPoPosition(position({ unclaimedVpoCents: 20_000 })), [{ kind: "vpo_unbilled", cents: 20_000 }])
+})
+
+test("a recorded vendor credit explains the excess it covers and is reported as its own exception", () => {
+  const credited = position({ approvedVpoCents: 15_000, openVendorCreditCents: 5_000, completionBilledCents: 120_000 })
+  assert.deepEqual(classifyPoPosition(credited), [{ kind: "vendor_credit_open", cents: 5_000 }])
+  assert.deepEqual(classifyPoPosition({ ...credited, billedCents: 128_000, completionBilledCents: 128_000 }), [
+    { kind: "overbilled", cents: 8_000 }, { kind: "vendor_credit_open", cents: 5_000 },
+  ])
+})
+
+test("a credit approved after a bill does not block that bill, but the next payable is judged with it", () => {
+  const input = (bill) => ({
+    commitmentCents: 100_000,
+    changeOrders: [{ totalCents: 20_000, approvedAt: "2026-10-01T00:00:00Z" }, { totalCents: -5_000, approvedAt: "2026-10-10T00:00:00Z" }],
+    bills: [
+      { id: "b1", totalCents: 120_000, status: "approved", createdAt: "2026-10-05T00:00:00Z" },
+      { id: "b2", totalCents: 40_000, status: "approved", createdAt: "2026-10-12T00:00:00Z" },
+      { id: "b3", totalCents: 9_000, status: "rejected", createdAt: "2026-10-06T00:00:00Z" },
+    ],
+    bill,
+    now: "2026-10-20T00:00:00Z",
+  })
+  const first = commitmentBillingAtRelease(input({ id: "b1", createdAt: "2026-10-05T00:00:00Z", approvedAt: "2026-10-05T00:00:00Z" }))
+  assert.deepEqual(first, { authorizedCents: 120_000, billedCents: 120_000 })
+  const next = commitmentBillingAtRelease(input({ id: "b2", createdAt: "2026-10-12T00:00:00Z", approvedAt: "2026-10-12T00:00:00Z" }))
+  assert.deepEqual(next, { authorizedCents: 115_000, billedCents: 160_000 })
+  const unapproved = commitmentBillingAtRelease(input({ id: "b1", createdAt: "2026-10-05T00:00:00Z", approvedAt: null }))
+  assert.equal(unapproved.authorizedCents, 115_000)
 })
 
 test("completion rules apply only where pay-on-PO does", () => {

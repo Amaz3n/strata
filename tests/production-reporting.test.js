@@ -9,7 +9,7 @@ const { getProductionPortfolioReport } = freshRequire("lib/services/production-r
 const COMMUNITY = id(1)
 const HOME = id(2)
 
-function portfolio({ maxRows } = {}) {
+function portfolio({ maxRows, variance = [] } = {}) {
   return createServiceHarness({
     tables: {
       communities: [{ id: COMMUNITY, org_id: ORG, name: "Maple Ridge", division_id: null, settings: {}, archived_at: null }],
@@ -26,7 +26,7 @@ function portfolio({ maxRows } = {}) {
         { id: id(6), org_id: ORG, project_id: HOME, version: 2, status: "draft", total_cents: 1_00 },
       ],
       job_cost_entries: [1, 2, 3].map((n) => ({ id: id(10 + n), org_id: ORG, project_id: HOME, status: "posted", cost_cents: 10_000_00 })),
-      commitment_change_orders: [],
+      commitment_change_orders: variance,
       home_margin_baselines: [
         { id: id(20), org_id: ORG, project_id: HOME, stage: "agreement", sale_price_cents: 500_000_00, cost_cents: null, margin_cents: null, margin_bps: null },
         { id: id(21), org_id: ORG, project_id: HOME, stage: "release", sale_price_cents: 500_000_00, cost_cents: 390_000_00, margin_cents: 110_000_00, margin_bps: 2200 },
@@ -43,6 +43,15 @@ test("a draft budget never replaces the approved baseline in the margin", async 
   const report = await service.run(() => getProductionPortfolioReport())
 
   assert.equal(report.totals.budgetCents, 400_000_00)
+})
+
+test("an approved purchase-order change counts as variance even without a reason; a draft does not", async () => {
+  const order = (n, status) => ({ id: id(40 + n), org_id: ORG, project_id: HOME, status, total_cents: 5_000_00, reason: null, company: null, commitment: { commitment_type: "purchase_order" } })
+  const service = portfolio({ variance: [order(0, "approved"), order(1, "draft")] })
+
+  const report = await service.run(() => getProductionPortfolioReport())
+
+  assert.deepEqual(report.variance.map((row) => [row.reason, row.count, row.amountCents]), [["Uncoded", 1, 5_000_00]])
 })
 
 test("actual cost counts every posted entry past the API's row cap", async () => {

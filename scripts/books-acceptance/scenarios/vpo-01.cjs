@@ -12,10 +12,15 @@
 //                                                        completion; an off-book bill makes the position and the desk band agree on the exceptions
 //   two-approvals-of-one-completion-bill-once            EP08-11  two sessions approving one completion mint one bill
 //   division-limited-manager-cannot-decide-another-divisions-vpo   EP08-09  the division fence on approving and voiding; settings are organization-wide
+//   credit-after-billing-nets-the-next-payable-and-void-needs-no-live-reliance   EP08-11  a credit approved after the work was billed closes as an open vendor
+//                                                        credit and nets the next payable; a void is refused while a completion or a bill relies on the order; voiding the
+//                                                        order that resolved a shortage reopens the shortage
+//   void-and-completion-approval-on-one-vpo-never-both-win   EP08-11  two database sessions: whichever holds the purchase order's lock wins; the other waits, then is refused or bills without the order
 //
 // The fixture is a production builder with a purchasing manager (requester), a second (verifier), a third
 // (approver) and a project lead who holds only the standard VPO approval. Amounts are cents; dates do not matter.
 const { randomUUID } = require("node:crypto")
+const { spawn } = require("node:child_process")
 const seed = require("../production-seed.cjs")
 const { app } = require("./shared.cjs")
 
@@ -38,6 +43,13 @@ function why(outcome) {
   if (/someone else has to approve/i.test(outcome)) return "refused: reporter or verifier cannot approve"
   if (/passed inspection/i.test(outcome)) return "refused: needs a passed inspection or waiver"
   if (/already covered/i.test(outcome)) return "refused: scope already covered"
+  if (/variance reason is required/i.test(outcome)) return "refused: a purchase-order change needs a reason"
+  if (/without a variance reason cannot be approved/i.test(outcome)) return "refused: a reason-less purchase-order change is not approved"
+  if (/project and organization of its commitment/i.test(outcome)) return "refused: not on its commitment's home"
+  if (/completion already claims/i.test(outcome)) return "refused: a completion claims it"
+  if (/another session|deadlock|timeout/i.test(outcome)) return "refused: lost the race"
+  if (/A claimed variance order is not approved/i.test(outcome)) return "refused: the order was voided first"
+  if (/exceed what it authorizes/i.test(outcome)) return "refused: bills already drawn on it"
   return "refused: not permitted"
 }
 
@@ -51,6 +63,18 @@ async function viaDataApi(kit, actor, write) {
   }))
 }
 const dataApi = (outcome) => outcome === "allowed" ? "allowed" : "refused"
+
+const uuidArray = (ids) => ids === null ? "null" : `array[${ids.map((value) => `'${value}'::uuid`).join(",")}]::uuid[]`
+/**
+ * An office report of finished work, written the way the field and office tools write it. `commitment_line_ids` null reports the whole order;
+ * an empty list claims variance orders alone. The database's overlap rule refuses scope another completion already covers.
+ */
+function reportCompletion(kit, org, h, actor, { commitment_line_ids: lines = null, change_order_ids: changeOrders = null } = {}) {
+  const id = randomUUID()
+  kit.sql(`insert into public.po_completions(id,org_id,project_id,commitment_id,commitment_line_ids,change_order_ids,status,reported_source,reported_by_user_id)
+    values(${kit.q(id)},${kit.q(org.orgId)},${kit.q(h.projectId)},${kit.q(h.orderId)},${uuidArray(lines)},${uuidArray(changeOrders)},'reported','office',${kit.q(actor.userId)});`)
+  return { id }
+}
 
 const ORGS = new WeakMap()
 async function payOrg(kit) {
@@ -152,9 +176,11 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
   const draft = await raise(kit, org, h, { cents: 40_000 })
   const done = await raise(kit, org, h, { cents: 30_000 })
   await approveOrder(kit, org.buyerB, done.id)
-  const completion = await kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, commitment_line_ids: [h.lineIds[0]], reported_source: "office", photo_file_ids: [] }))
+  const completion = reportCompletion(kit, org, h, org.buyerA, { commitment_line_ids: [h.lineIds[0]] })
   const forge = {}
   const reasonless = randomUUID()
+  const elsewhere = randomUUID()
+  kit.sql(`insert into public.projects(id,org_id,name,property_type,status) values(${kit.q(elsewhere)},${kit.q(org.orgId)},'VPO-01 another home','production','active')`)
   kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,title,status,total_cents) values(${kit.q(reasonless)},${kit.q(org.orgId)},${kit.q(h.projectId)},${kit.q(h.orderId)},'Plain change','draft',20000)`)
   const members = { requester: org.buyerA, salesAgent: org.team.sales }
   for (const [who, actor] of Object.entries(members)) {
@@ -165,6 +191,8 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
     forge[`${who}InsertsReasonlessApproved`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").insert({ org_id: org.orgId, project_id: h.projectId, commitment_id: h.orderId, title: "Forged", status: "approved", total_cents: 5_000_000, approved_by: actor.userId, approved_at: new Date().toISOString() }).select("id")))
     forge[`${who}ApprovesReasonlessDraft`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").update({ status: "approved", approved_by: actor.userId, approved_at: new Date().toISOString() }).eq("id", reasonless).select("id")))
     forge[`${who}RepricesReasonlessDraft`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").update({ total_cents: 1 }).eq("id", reasonless).select("id")))
+    forge[`${who}InsertsReasonlessDraft`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").insert({ org_id: org.orgId, project_id: h.projectId, commitment_id: h.orderId, title: "Forged", status: "draft", total_cents: 99_900_000 }).select("id")))
+    forge[`${who}InsertsOnAnotherHome`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").insert({ org_id: org.orgId, project_id: elsewhere, commitment_id: h.orderId, title: "Forged", status: "draft", total_cents: 100 }).select("id")))
     forge[`${who}ChangesSettings`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("purchasing_settings").update({ po_completion_requires_verification: false }).eq("org_id", org.orgId).select("org_id")))
     forge[`${who}EditsReasons`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("variance_reason_codes").update({ is_active: false }).eq("org_id", org.orgId).select("id")))
     forge[`${who}VerifiesCompletion`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("po_completions").update({ status: "verified", verified_by: actor.userId }).eq("id", completion.id).select("id")))
@@ -175,7 +203,7 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
     settingsRequireVerification: kit.rows(`select po_completion_requires_verification v from public.purchasing_settings where org_id=${kit.q(org.orgId)}`)[0]?.v ?? "default",
     completion: kit.rows(`select status from public.po_completions where id=${kit.q(completion.id)}`)[0].status,
     reasonlessDraft: statusOf(kit, reasonless),
-    forgedRows: Number(kit.rows(`select count(*)::int n from public.commitment_change_orders where project_id=${kit.q(h.projectId)} and title='Forged'`)[0].n),
+    forgedRows: Number(kit.rows(`select count(*)::int n from public.commitment_change_orders where commitment_id=${kit.q(h.orderId)} and title='Forged'`)[0].n),
   }
   const writers = {
     salesAgentSavesSettings: why(await attempt(() => kit.as(org.team.sales, () => settings().updatePurchasingSettings({ pay_on_po_enabled: false })))),
@@ -184,6 +212,9 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
     managerSaveAudited: Number(kit.rows(`select count(*)::int n from public.audit_log where org_id=${kit.q(org.orgId)} and entity_type='purchasing_settings'`)[0].n) >= 1,
   }
   const service = {
+    reasonlessRaise: why(await attempt(() => kit.as(org.buyerA, () => orders().createCommitmentChangeOrder({ input: { commitment_id: h.orderId, title: "Plain change", lines: [{ description: "Plain", quantity: 1, unit_cost_cents: 20_000 }] } })))),
+    reasonlessApproval: why(await approveOrder(kit, org.buyerB, reasonless)),
+    misfiledByAnyWriter: why(await attempt(async () => kit.sql(`insert into public.commitment_change_orders(org_id,project_id,commitment_id,title,total_cents,reason_code_id) values(${kit.q(org.orgId)},${kit.q(elsewhere)},${kit.q(h.orderId)},'Misfiled',100,${kit.q(draft.reason_code_id)})`))),
     approvedByTheRightPerson: why(await approveOrder(kit, org.buyerB, draft.id)),
     verifiedByAnotherPerson: why(await attempt(() => kit.as(org.buyerB, () => completions().verifyPoCompletion(completion.id)))),
   }
@@ -193,7 +224,7 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
 
 /** report by A, verify by B, approve by C: the people the rule allows. */
 async function reportAndVerify(kit, org, h, scope) {
-  const completion = await kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, reported_source: "office", photo_file_ids: [], ...scope }))
+  const completion = reportCompletion(kit, org, h, org.buyerA, scope)
   await kit.as(org.buyerB, () => completions().verifyPoCompletion(completion.id))
   return completion
 }
@@ -204,13 +235,13 @@ async function completionMoneyStepNeedsASecondPersonAndAnInspection(kit, expecte
   const org = await payOrg(kit)
   const h = home(kit, org, "Lot 3")
   const observed = {}
-  const walls = await kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, commitment_line_ids: [h.lineIds[0]], reported_source: "office", photo_file_ids: [] }))
+  const walls = reportCompletion(kit, org, h, org.buyerA, { commitment_line_ids: [h.lineIds[0]] })
   observed.reporterVerifies = why(await attempt(() => kit.as(org.buyerA, () => completions().verifyPoCompletion(walls.id))))
   await kit.as(org.buyerB, () => completions().verifyPoCompletion(walls.id))
   observed.reporterApproves = why(await approveCompletion(kit, org.buyerA, walls.id))
   observed.verifierApproves = why(await approveCompletion(kit, org.buyerB, walls.id))
   observed.thirdPersonApproves = why(await approveCompletion(kit, org.buyerC, walls.id))
-  observed.sameLinesAgain = why(await attempt(() => kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, commitment_line_ids: [h.lineIds[0]], reported_source: "office", photo_file_ids: [] }))))
+  observed.sameLinesAgain = why(await attempt(async () => reportCompletion(kit, org, h, org.buyerA, { commitment_line_ids: [h.lineIds[0]] })))
 
   await kit.as(org.buyerA, () => settings().updatePurchasingSettings({ po_completion_requires_inspection: true }))
   const roof = await reportAndVerify(kit, org, h, { commitment_line_ids: [h.lineIds[1]] })
@@ -241,7 +272,7 @@ async function payOnPoCompletionReconcilesToTheBill(kit, expected, check) {
   await kit.as(org.buyerB, () => completions().verifyPoCompletion(officeClaim.id))
   observed.lateVpoCompletionApproval = why(await approveCompletion(kit, org.buyerC, officeClaim.id))
   observed.nothingLeftToClaim = why(await attempt(() => kit.as(org.buyerA, () => completions().reportUnclaimedVariancePoCompletion(h.orderId))))
-  observed.lateVpoClaimedAgain = why(await attempt(() => kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, commitment_line_ids: [], change_order_ids: [late.id], reported_source: "office", photo_file_ids: [] }))))
+  observed.lateVpoClaimedAgain = why(await attempt(async () => reportCompletion(kit, org, h, org.buyerA, { commitment_line_ids: [], change_order_ids: [late.id] })))
 
   // A second one is claimed by the trade from its portal, which lists it as outstanding scope.
   const trade = Object.values(org.vendorIds)[0]
@@ -320,6 +351,102 @@ async function divisionLimitedManagerCannotDecideAnotherDivisionsVpo(kit, expect
   return { orgId: org.orgId, projectId: h.projectId }
 }
 
+async function creditAfterBillingNetsTheNextPayableAndVoidNeedsNoLiveReliance(kit, expected, check) {
+  const org = await payOrg(kit)
+  const h = home(kit, org, "Lot 7")
+  const observed = {}
+  const positions = async () => {
+    const row = (await kit.as(org.team.purchasing, () => app("po-positions").getProjectPoPositions(h.projectId))).rows.find((candidate) => candidate.commitmentId === h.orderId)
+    return { original: row.originalCents, approvedVpos: row.approvedVpoCents, billed: row.billedCents, openCredit: row.openVendorCreditCents, exceptions: row.exceptions.map((exception) => exception.kind).sort() }
+  }
+
+  const walls = await reportAndVerify(kit, org, h, { commitment_line_ids: [h.lineIds[0]] })
+  observed.wallsApproval = why(await approveCompletion(kit, org.buyerC, walls.id))
+  observed.billedAfterWalls = billsOf(kit, h)
+
+  // A credit approved after the walls were billed. It blocks no payment, and claiming it no longer errors.
+  const credit = await raise(kit, org, h, { cents: -5_000, code: "price_increase" })
+  observed.creditApproved = why(await approveOrder(kit, org.lead, credit.id))
+  observed.positionAfterCredit = await positions()
+  const claim = await kit.as(org.buyerA, () => completions().reportUnclaimedVariancePoCompletion(h.orderId))
+  await kit.as(org.buyerB, () => completions().verifyPoCompletion(claim.id))
+  observed.creditClaimApproval = why(await approveCompletion(kit, org.buyerC, claim.id))
+  const closed = kit.rows(`select status, vendor_bill_id is null as no_bill, metadata->>'vendor_credit_cents' as credit from public.po_completions where id=${kit.q(claim.id)}`)[0]
+  observed.creditCompletion = { status: closed.status, noBill: closed.no_bill, creditCents: Number(closed.credit) }
+  observed.billsAfterCredit = billsOf(kit, h)
+  observed.positionWithOpenCredit = await positions()
+  observed.voidClaimedCredit = why(await attempt(() => kit.as(org.buyerB, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: credit.id, reason: "Entered against the wrong order" }))))
+
+  // The next payable is netted against the credit: 400.00 of roof less the 50.00 credit.
+  const roof = await reportAndVerify(kit, org, h, { commitment_line_ids: [h.lineIds[1]] })
+  observed.roofApproval = why(await approveCompletion(kit, org.buyerC, roof.id))
+  observed.billsAfterRoof = billsOf(kit, h)
+  observed.positionAfterRoof = await positions()
+
+  // A void is refused while the bills drawn on the order exceed what it authorizes without that variance order.
+  const plus = await raise(kit, org, h, { cents: 20_000, code: "price_increase" })
+  observed.plusApproved = why(await approveOrder(kit, org.lead, plus.id))
+  kit.sql(`insert into public.vendor_bills(org_id,project_id,commitment_id,company_id,bill_number,status,total_cents) select org_id,project_id,id,company_id,'OFF-BOOK-2','approved',20000 from public.commitments where id=${kit.q(h.orderId)}`)
+  observed.voidBilledPast = why(await attempt(() => kit.as(org.buyerB, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: plus.id, reason: "Entered against the wrong order" }))))
+  observed.plusStillApproved = statusOf(kit, plus.id).status
+
+  // Voiding the order that resolved a shortage reopens the shortage.
+  const replacement = await raise(kit, org, h, { cents: 10_000, code: "damage_theft" })
+  const shortage = randomUUID()
+  kit.sql(`insert into public.po_shortages(id,org_id,project_id,commitment_id,commitment_line_id,short_quantity,reason) values(${kit.q(shortage)},${kit.q(org.orgId)},${kit.q(h.projectId)},${kit.q(h.orderId)},${kit.q(h.lineIds[1])},1,'vendor_short');
+    update public.po_shortages set status='vpo', vpo_id=${kit.q(replacement.id)}, resolved_by=${kit.q(org.buyerA.userId)}, resolved_at=now() where id=${kit.q(shortage)};`)
+  const resolved = kit.rows(`select status from public.po_shortages where id=${kit.q(shortage)}`)[0].status
+  observed.voidReplacement = why(await attempt(() => kit.as(org.buyerB, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: replacement.id, reason: "Replacement no longer needed" }))))
+  const reopened = kit.rows(`select status, vpo_id is null as no_vpo, resolved_at is null as open from public.po_shortages where id=${kit.q(shortage)}`)[0]
+  observed.shortage = { resolvedBy: resolved, afterVoid: { status: reopened.status, vpoCleared: reopened.no_vpo, open: reopened.open } }
+  equal(check, "a credit approved after billing closes as an open vendor credit and nets the next payable; a void is refused while a completion claims the order or the bills exceed what remains authorized; voiding the order that resolved a shortage reopens it", expected.expected, observed)
+  return { orgId: org.orgId, projectId: h.projectId }
+}
+
+/** A second database session that runs `statement` inside a transaction and keeps it open for `seconds`, holding every lock the statement took. */
+function holdOpen(kit, statement, seconds) {
+  const session = spawn("docker", ["exec", "-i", kit.container, "psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"], { stdio: ["pipe", "pipe", "pipe"] })
+  let output = ""
+  session.stdout.on("data", (chunk) => { output += chunk })
+  session.stderr.on("data", (chunk) => { output += chunk })
+  const finished = new Promise((resolve) => session.on("close", (code) => resolve({ code, output: output.trim() })))
+  session.stdin.end(`begin;\n${statement};\nselect pg_sleep(${seconds});\ncommit;`)
+  return finished
+}
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function voidAndCompletionApprovalOnOneVpoNeverBothWin(kit, expected, check) {
+  const org = await payOrg(kit)
+  const observed = {}
+  const vpoBilled = (h, vpo) => Number(kit.rows(`select count(*)::int n from public.bill_lines bl join public.commitment_change_order_lines l on l.id::text = bl.metadata->>'commitment_change_order_line_id' where l.commitment_change_order_id=${kit.q(vpo.id)}`)[0].n) > 0
+  const setup = async (label) => {
+    const h = home(kit, org, label)
+    // A whole-order completion bills the variance orders nobody has billed yet, so it names none of them: only the lock tells the two actions apart.
+    const completion = await reportAndVerify(kit, org, h, {})
+    const vpo = await raise(kit, org, h, { cents: 15_000, code: "price_increase" })
+    await approveOrder(kit, org.lead, vpo.id)
+    return { h, completion, vpo }
+  }
+
+  // The approval is in flight (its transaction holds the purchase order's lock) when the void arrives: the approval bills the order, the void is refused.
+  const first = await setup("Lot 8")
+  const approving = holdOpen(kit, `select public.approve_po_completion(${kit.q(org.orgId)},${kit.q(first.completion.id)},${kit.q(org.buyerC.userId)})`, 5)
+  await pause(1500)
+  observed.voidWhileApprovalInFlight = why(await attempt(() => kit.as(org.buyerB, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: first.vpo.id, reason: "Entered against the wrong order" }))))
+  observed.approvalInFlight = (await approving).code === 0 ? "committed" : "failed"
+  observed.approvalWins = { order: statusOf(kit, first.vpo.id).status, billedWithOrder: billsOf(kit, first.h), orderBilled: vpoBilled(first.h, first.vpo), completion: kit.rows(`select status from public.po_completions where id=${kit.q(first.completion.id)}`)[0].status }
+
+  // The void is in flight when the approval arrives: the approval waits for it, finds the order voided and bills the purchase order alone.
+  const second = await setup("Lot 9")
+  const voiding = holdOpen(kit, `select public.void_commitment_change_order(${kit.q(org.orgId)},${kit.q(second.vpo.id)},${kit.q(org.buyerB.userId)},'Entered against the wrong order','approved')`, 5)
+  await pause(1500)
+  observed.approvalWhileVoidInFlight = why(await approveCompletion(kit, org.buyerC, second.completion.id))
+  observed.voidInFlight = (await voiding).code === 0 ? "committed" : "failed"
+  observed.voidWins = { order: statusOf(kit, second.vpo.id).status, bills: billsOf(kit, second.h), orderBilled: vpoBilled(second.h, second.vpo), completion: kit.rows(`select status from public.po_completions where id=${kit.q(second.completion.id)}`)[0].status }
+  equal(check, "a void and a completion approval racing on one variance order: the one holding the purchase order's lock wins, the other waits and then gets a plain answer, and the order is billed or voided, never both", expected.expected, observed)
+  return { orgId: org.orgId, projectId: second.h.projectId }
+}
+
 const subcases = {
   "vpo-approval-follows-bands-evidence-and-separation": vpoApprovalFollowsBandsEvidenceAndSeparation,
   "purchasing-controls-cannot-be-forged-through-the-data-api": purchasingControlsCannotBeForgedThroughTheDataApi,
@@ -327,6 +454,8 @@ const subcases = {
   "pay-on-po-completion-reconciles-to-the-bill": payOnPoCompletionReconcilesToTheBill,
   "two-approvals-of-one-completion-bill-once": twoApprovalsOfOneCompletionBillOnce,
   "division-limited-manager-cannot-decide-another-divisions-vpo": divisionLimitedManagerCannotDecideAnotherDivisionsVpo,
+  "credit-after-billing-nets-the-next-payable-and-void-needs-no-live-reliance": creditAfterBillingNetsTheNextPayableAndVoidNeedsNoLiveReliance,
+  "void-and-completion-approval-on-one-vpo-never-both-win": voidAndCompletionApprovalOnOneVpoNeverBothWin,
 }
 
 module.exports = { id: "VPO-01", subcases }

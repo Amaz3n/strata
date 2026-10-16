@@ -278,6 +278,18 @@ test("an approver outside the commitment's division does not stop its creator ap
   assert.equal(service.db.commitments[0].status, "approved")
 })
 
+test("a draft purchase order cannot skip approval by being moved to complete", async () => {
+  const service = commitmentOrg({ createdBy: ACTOR, other: commitmentApprover() })
+
+  await assert.rejects(
+    service.run(() => updateCommitment({ commitmentId: COMMITMENT, input: { status: "complete" } })),
+    /Approve it first/,
+  )
+
+  assert.equal(service.db.commitments[0].status, "draft")
+  assert.deepEqual(separationDenials(service), [])
+})
+
 test("a commitment cannot be sent for signature until it is approved, so its creator cannot route around approval", async () => {
   const service = commitmentOrg({ createdBy: ACTOR, other: commitmentApprover() })
   const sendForSignature = () =>

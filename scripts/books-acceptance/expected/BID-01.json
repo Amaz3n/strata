@@ -143,10 +143,10 @@
       }
     },
     "bid-lines-price-only-their-own-package": {
-      "derivation": "Two packages each hold one bid. As a purchasing manager in their own session, re-pointing package A's bid line to package B's scope item is refused by the line trigger, as is inserting a line on A's submission that prices B's scope item; re-pointing to A's own scope item lands (the guard block reports rows touched). Awarding A mints its agreement from A's own cost code (06-100).",
+      "derivation": "Two packages each hold one bid. As a purchasing manager in their own session, re-pointing package A's bid line to package B's scope item is refused by the response fence (a member may only level a bid), as is inserting a line on A's submission; setting the line to the scope item it already has changes nothing and lands (the line-to-package trigger that binds every other writer is proved in the PGlite suite). Awarding A mints its agreement from A's own cost code (06-100).",
       "expected": {
-        "repointLineToAnotherPackage": "A bid line must price a scope item of the package it bids on",
-        "insertLineOnAnotherPackage": "A bid line must price a scope item of the package it bids on",
+        "repointLineToAnotherPackage": "A vendor's bid cannot be changed; only its leveling can",
+        "insertLineOnAnotherPackage": "A bid response is recorded through the bid service, not edited as data",
         "repointLineWithinItsOwnPackage": "landed",
         "awardMintsFromOwnScope": true
       }
@@ -169,7 +169,7 @@
       "derivation": "The seeded plans are organisation-wide. A buyer limited to the community's division creating a plan-only package is refused by the service (the plan is shared only beside one of the member's own communities) and by the data API (restrictive policy: row-level security); the same buyer with a community and the plan succeeds, and an unrestricted buyer's plan-only package succeeds.",
       "expected": {
         "service": {
-          "divisionLimitedPlanOnly": "refused: outside division access",
+          "divisionLimitedPlanOnly": "refused: plan alone prices every division",
           "divisionLimitedCommunityAndPlan": "allowed",
           "unrestrictedPlanOnly": "allowed"
         },
@@ -180,6 +180,35 @@
       "status": "NOT_IMPLEMENTED",
       "requires": "storage",
       "reason": "The bid portal needs BID_PORTAL_SECRET and file storage, which the stack has only under --storage-env. Rules to prove when available: the quote upload row has no project or prospect and carries the invite in its metadata (it used to put the community id in files.project_id and violate the foreign key); a project RFI is refused for a package with no project; submission file_ids must be files uploaded under that invite. They are covered by the service code and unit tests, not yet by the stack."
+    },
+    "a-vendors-quote-is-not-rewritable-by-a-member": {
+      "derivation": "A package for electrical on the community and plan holds one Bright Electric bid of 2,000,000 cents for 1,000 sf. In the purchasing manager's own session, before and after the award, changing the line's price or the submission's total is refused by the response fence, and deleting the line is refused (members level a bid, the service records it). Setting the line's leveling plug and note still lands. After the award is rescinded through the service, the package re-awards from the stored lines: 2,000,000 / 1,000 sf = 2,000 cents per sf both times, and the stored amount and total are untouched.",
+      "expected": {
+        "beforeAward": {
+          "rewriteLinePrice": "A vendor's bid cannot be changed; only its leveling can",
+          "rewriteTotal": "A vendor's bid cannot be changed; only its leveling can",
+          "deleteLine": "A bid response is recorded through the bid service, not edited as data"
+        },
+        "afterAward": {
+          "rewriteLinePrice": "A vendor's bid cannot be changed; only its leveling can",
+          "rewriteTotal": "A vendor's bid cannot be changed; only its leveling can",
+          "deleteLine": "A bid response is recorded through the bid service, not edited as data"
+        },
+        "leveling": "landed",
+        "storedAmountCents": 2000000,
+        "storedTotalCents": 2000000,
+        "firstAwardCents": 2000,
+        "reAwardCents": 2000
+      }
+    },
+    "a-rescind-and-an-award-for-one-scope-leave-one-active-price": {
+      "derivation": "A plumbing scope (community, plan, 22-000) has Coastal Plumbing's price, replaced the same day by Bright Electric's award (Coastal superseded). A challenger package (Palmetto Framing) is awarded by one database session while another rescinds Bright's award, released together. Both take the same scope lock, so they run one after the other. Rescind first: Bright's row is voided, Coastal is restored, then the challenger's award displaces Coastal. Award first: the challenger displaces Bright's row, then the rescind finds nothing active to void and restores nothing. Either way both calls succeed and exactly one price is active: the challenger's.",
+      "expected": {
+        "bothSucceeded": true,
+        "activePrices": [
+          "Palmetto Framing"
+        ]
+      }
     }
   }
 }

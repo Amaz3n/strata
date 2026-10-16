@@ -59,9 +59,25 @@ function reviseOrder(service) {
   }
 }
 
+/** The locked void the database performs: refuses a claimed order or a stale status, then closes it with the reason. */
+function voidOrder(service) {
+  return (args) => {
+    const order = service.db.commitment_change_orders.find((row) => row.id === args.p_id)
+    if (!order) return { data: null, error: { message: "Commitment change order not found" } }
+    if (order.status === "rejected") return { data: null, error: { message: "A rejected change order is already closed." } }
+    if (order.status !== args.p_expected_status) return { data: null, error: { message: "This change order changed while you were reviewing it. Reload and try again." } }
+    if (order.status === "approved" && service.db.po_completions.some((row) => row.commitment_id === order.commitment_id && ["reported", "verified", "approved", "billed"].includes(row.status) && (row.change_order_ids ?? []).includes(order.id))) {
+      return { data: null, error: { message: "A completion already claims this variance order. Reject it, or raise an offsetting back-charge." } }
+    }
+    order.status = "voided"
+    order.metadata = { ...order.metadata, void_reason: args.p_reason, voided_by: args.p_actor_id }
+    return { data: order.id, error: null }
+  }
+}
+
 function harness({ orders = [vpo()], completions = [], permissions = ["project.read", "commitment.write", "vpo.request", "vpo.approve", "vpo.approve_large"] } = {}) {
   const service = createServiceHarness({
-    rpc: { revise_commitment_change_order: (args) => reviseOrder(service)(args) },
+    rpc: { revise_commitment_change_order: (args) => reviseOrder(service)(args), void_commitment_change_order: (args) => voidOrder(service)(args) },
     permissions,
     tables: {
       files: [
@@ -159,12 +175,46 @@ describe("deciding a variance order", () => {
   })
 })
 
+describe("a change order on a purchase order is a variance order", () => {
+  test("it needs a reason to be raised, whatever the settings say, and is never approved without one", async () => {
+    const service = harness({ orders: [vpo({ reason_code_id: null, requested_by: null })] })
+    service.db.purchasing_settings.push({ org_id: ORG, vpo_reason_code_required: false })
+
+    await assert.rejects(service.run(() => createCommitmentChangeOrder({ input: { commitment_id: PO, title: "Extra", lines: [line(10_000)] } })), /variance reason is required/)
+    await assert.rejects(service.run(() => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO })), /without a variance reason cannot be approved/)
+    assert.equal(service.db.commitment_change_orders[0].status, "draft")
+  })
+
+  test("an order naming a home other than its commitment's is refused before anything is decided or written", async () => {
+    const service = harness({ orders: [vpo({ project_id: id(78) })] })
+
+    for (const act of [
+      () => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO }),
+      () => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong home" }),
+      () => rejectVarianceOrder({ commitmentChangeOrderId: VPO, reason: "Wrong home" }),
+      () => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { title: "Renamed" } }),
+    ]) await assert.rejects(service.run(act), /not on its commitment's home/)
+    assert.deepEqual(service.writes("commitment_change_orders"), [])
+  })
+
+  test("an approval misses when the order was revised after it was read, so replaced evidence is never waved through", async () => {
+    const service = harness({ orders: [vpo({ total_cents: 150_000, evidence_file_ids: [HOME_FILE] })] })
+    service.tamper("commitment_change_orders", (result) => {
+      Object.assign(service.db.commitment_change_orders[0], { evidence_file_ids: [], updated_at: "2026-10-02T00:00:00Z" })
+      return result
+    }, { on: "select", times: 1 })
+
+    await assert.rejects(service.run(() => approveCommitmentChangeOrder({ commitmentChangeOrderId: VPO })), /changed while you were reviewing/)
+    assert.equal(service.db.commitment_change_orders[0].status, "draft")
+  })
+})
+
 describe("the variance queue's division lens", () => {
   const NORTH = id(70)
   const SOUTH = id(71)
   const home = (n) => id(100 + n)
   // PostgREST's inner embed of the owning project, which the queue filters on.
-  const order = (n) => vpo({ id: id(200 + n), project_id: home(n), title: `VPO ${n}`, project: { org_id: ORG } })
+  const order = (n) => vpo({ id: id(200 + n), project_id: home(n), title: `VPO ${n}`, project: { org_id: ORG }, commitment: { commitment_type: "purchase_order" } })
 
   function lensHarness(divisionIds) {
     return createServiceHarness({
@@ -313,6 +363,16 @@ describe("voiding, editing and evidence on a decided order", () => {
     assert.equal(claimed.db.commitment_change_orders[0].status, "approved")
     const rejected = harness({ orders: [vpo({ status: "rejected" })] })
     await assert.rejects(rejected.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong vendor" })), /already closed/)
+  })
+
+  test("a void that lost a race to another decision reports it", async () => {
+    const service = harness({ orders: [vpo()] })
+    service.tamper("commitment_change_orders", (result) => {
+      service.db.commitment_change_orders[0].status = "approved"
+      return result
+    }, { on: "select", times: 1 })
+    await assert.rejects(service.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong vendor" })), /changed while you were reviewing/)
+    assert.equal(service.db.commitment_change_orders[0].status, "approved")
   })
 
   test("an edit never lands on an order approved while it was being edited", async () => {

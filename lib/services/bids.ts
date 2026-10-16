@@ -3386,7 +3386,7 @@ export async function previewRescindImpact({ bidPackageId, orgId }: { bidPackage
   return { agreementCount: ids.length, restorableCount: restorable, affectedPoCount: affected }
 }
 
-export interface BidAwardRescindResult {
+interface BidAwardRescindResult {
   bidPackageId: string
   commitmentId: string | null
   commitmentCanceled: boolean
@@ -4029,6 +4029,8 @@ export interface PriceBookAwardPreviewLine {
   }>
 }
 
+const AWARD_PREVIEW_CAP = 500
+
 /** What awarding this bid to the price book would replace, and when each standing price ends. Read-only: the award is `awardBidSubmission`. */
 export async function previewPriceBookAward({ input, orgId }: { input: unknown; orgId?: string }): Promise<PriceBookAwardPreviewLine[]> {
   const parsed = priceBookAwardPreviewInputSchema.parse(input)
@@ -4051,7 +4053,9 @@ export async function previewPriceBookAward({ input, orgId }: { input: unknown; 
   const { data: items, error: itemsError } = await supabase.from("bid_submission_items")
     .select("amount_cents, unit_rate_cents, quantity, description, scope:bid_scope_items!inner(id, cost_code_id, item_type, unit, position)")
     .eq("org_id", resolvedOrgId).eq("bid_submission_id", parsed.bid_submission_id).eq("response", "priced").not("amount_cents", "is", null)
+    .order("id").limit(AWARD_PREVIEW_CAP + 1)
   if (itemsError) throw new Error(`Failed to load the bid's priced lines: ${itemsError.message}`)
+  if ((items ?? []).length > AWARD_PREVIEW_CAP) throw new Error(`This bid has more than ${AWARD_PREVIEW_CAP} priced lines, too many to preview what the award replaces. Split the package.`)
 
   type PreviewLine = { position: number; costCodeId: string; costCode: string | null; description: string; price: PriceLine }
   const lines = (items ?? []).flatMap((item): PreviewLine[] => {
@@ -4071,10 +4075,15 @@ export async function previewPriceBookAward({ input, orgId }: { input: unknown; 
   const codeById = new Map((codes ?? []).map((row) => [row.id, row.code]))
   for (const line of lines) line.costCode = codeById.get(line.costCodeId) ?? null
 
-  const { data: standing, error: standingError } = await supabase.from("vendor_price_agreements")
+  // Only the agreements in this package's own community and plan can be displaced by its award.
+  let standingQuery = supabase.from("vendor_price_agreements")
     .select("*, company:companies(name)")
     .eq("org_id", resolvedOrgId).eq("status", "active").in("cost_code_id", Array.from(new Set(lines.map((line) => line.costCodeId))))
+  standingQuery = bidPackage.community_id ? standingQuery.eq("community_id", bidPackage.community_id) : standingQuery.is("community_id", null)
+  standingQuery = bidPackage.house_plan_id ? standingQuery.eq("house_plan_id", bidPackage.house_plan_id) : standingQuery.is("house_plan_id", null)
+  const { data: standing, error: standingError } = await standingQuery.order("id").limit(AWARD_PREVIEW_CAP + 1)
   if (standingError) throw new Error(`Failed to load the standing prices: ${standingError.message}`)
+  if ((standing ?? []).length > AWARD_PREVIEW_CAP) throw new Error(`More than ${AWARD_PREVIEW_CAP} standing prices share this scope, too many to preview what the award replaces.`)
 
   return lines.map((line) => ({
     costCodeId: line.costCodeId,

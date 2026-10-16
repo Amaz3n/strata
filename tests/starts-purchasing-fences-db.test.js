@@ -108,11 +108,18 @@ async function setupCommit(t) {
       add column created_at timestamptz default clock_timestamp();
     alter table project_vendors add column role text, add column scope text, add column status text, add column notes text, add unique (project_id, company_id);
     create table vendor_bills (id uuid primary key default gen_random_uuid(), org_id uuid, commitment_id uuid references commitments(id));
+    create table po_issue_versions (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id) on delete cascade);
+    create table po_acknowledgments (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id) on delete cascade);
+    create table po_receipts (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id));
+    create table po_receipt_lines (id uuid primary key default gen_random_uuid(), commitment_line_id uuid references commitment_lines(id));
+    create table po_shortages (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id));
+    create table po_completions (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id));
   `)
   await h.db.query("insert into companies values ($1, $2)", [SECOND_VENDOR, ORG])
   await h.db.exec(fs.readFileSync(require.resolve("../supabase/migrations/20260817120100_po_generation_serialization.sql"), "utf8"))
   await h.db.exec(migrationSql("20261015110000_po_generation_reconcile"))
   await h.db.exec(migrationSql("20261015161000_po_generation_review_fixes"))
+  await h.db.exec(migrationSql("20261015171000_po_generation_round2_fixes"))
 
   let fingerprints = 0
   const run = async (fingerprint = `${String(++fingerprints).padStart(64, "0")}`) =>
@@ -243,6 +250,44 @@ test("orders that were approved or billed are never rewritten, and the differenc
   // The run records what it left alone, for the purchasing desk.
   const stored = (await h.db.query("select summary from po_generation_runs where id = $1", [second])).rows[0].summary
   assert.equal(stored.preserved_changed.length, 3)
+})
+
+test("a draft order with history is kept and reported, never deleted or ordered again, and the run succeeds", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR }), h.line("c", { company_id: SECOND_VENDOR })] })
+  const [issuedOrder, receivedOrder] = await h.orders()
+  // The first order was issued and answered, then returned to draft; the second had a receipt that was voided.
+  await h.db.query("insert into po_issue_versions(commitment_id) values ($1)", [issuedOrder.id])
+  await h.db.query("insert into po_acknowledgments(commitment_id) values ($1)", [issuedOrder.id])
+  await h.db.query("insert into po_receipts(commitment_id) values ($1)", [receivedOrder.id])
+  const receivedLine = (await h.db.query("select id from commitment_lines where commitment_id = $1 order by id limit 1", [receivedOrder.id])).rows[0].id
+  await h.db.query("insert into po_receipt_lines(commitment_line_id) values ($1)", [receivedLine])
+
+  // Line a is repriced, line b is dropped from the plan, line c is unchanged.
+  const result = await h.commit(await h.run(), { prior: first, lines: [
+    h.line("a", { unit_cost_cents: 175, total_cents: 175 }), h.line("c", { company_id: SECOND_VENDOR }),
+  ] })
+
+  const orders = await h.orders()
+  assert.equal(orders.length, 2)
+  assert.deepEqual(orders.map((order) => [order.id, order.lines, order.total_cents]), [[issuedOrder.id, 1, 100], [receivedOrder.id, 2, 200]])
+  assert.equal((await h.db.query("select count(*)::int n from po_issue_versions")).rows[0].n, 1)
+  assert.equal((await h.db.query("select count(*)::int n from po_acknowledgments")).rows[0].n, 1)
+  assert.deepEqual(result.preserved_changed.map((change) => [change.source_key, change.was_cents, change.now_cents]), [["takeoff_line:a", 100, 175]])
+  assert.deepEqual(result.preserved_orphaned.map((orphan) => orphan.source_key), ["takeoff_line:b"])
+  assert.equal(result.removed_line_count, 0)
+  assert.equal(result.created_line_count, 0)
+})
+
+test("generation does not reactivate a vendor someone ended on the house", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first)
+  await h.db.query("update project_vendors set status = 'inactive'")
+  await h.setStatus("canceled")
+  await h.commit(await h.run(), { prior: first, lines: [h.line("a")] })
+  assert.deepEqual((await h.db.query("select status from project_vendors")).rows, [{ status: "inactive" }])
 })
 
 test("a source that is no longer wanted leaves with its draft order and stays on an order in progress", async (t) => {

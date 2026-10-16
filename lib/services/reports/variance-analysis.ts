@@ -57,7 +57,7 @@ export type VarianceFact = {
 const SUPERINTENDENT_ROLE_KEYS = ["field", "org_superintendent"]
 const BENCHMARK_LOW = 0.01
 const BENCHMARK_HIGH = 0.02
-/** Matches the RPC: only approved orders carrying a variance reason count. */
+/** Matches the RPC: every approved purchase-order change order counts, with or without a reason. */
 const COUNTED_STATUSES = ["approved"]
 const FACT_PAGE_SIZE = 1000
 
@@ -96,8 +96,8 @@ export async function getVarianceAnalysis({
     // member (RLS is the limit); the facts and superintendent labels for exactly those homes are then read
     // with the service client and aggregated here, over the same exclusive timestamp window as the function.
     const range = utcReportDateRange(startDate, endDate)
-    const visible = await readAllRows<{ id: string; project_id: string }>((from, to) => supabase.from("commitment_change_orders").select("id,project_id")
-      .eq("org_id", resolvedOrgId).not("reason_code_id", "is", null).in("status", COUNTED_STATUSES)
+    const visible = await readAllRows<{ id: string; project_id: string }>((from, to) => supabase.from("commitment_change_orders").select("id,project_id,commitment:commitments!inner(commitment_type)")
+      .eq("org_id", resolvedOrgId).eq("commitment.commitment_type", "purchase_order").in("status", COUNTED_STATUSES)
       .gte("approved_at", range.startInclusive).lt("approved_at", range.endExclusive)
       .order("id").range(from, to),
     { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to scope variance analysis" })
@@ -204,8 +204,8 @@ async function loadVarianceFacts({
   const range = utcReportDateRange(startDate, endDate)
   const orders = await readReferenceRows<Record<string, unknown>>(projectIds, "Failed to load scoped variance analysis", (ids, from, to) => supabase
     .from("commitment_change_orders")
-    .select("id,project_id,total_cents,approved_at,reason_code_id,company_id,reason:variance_reason_codes(label),company:companies(name)")
-    .eq("org_id", orgId).in("project_id", ids).not("reason_code_id", "is", null).in("status", COUNTED_STATUSES)
+    .select("id,project_id,total_cents,approved_at,reason_code_id,company_id,commitment:commitments!inner(commitment_type),reason:variance_reason_codes(label),company:companies(name)")
+    .eq("org_id", orgId).in("project_id", ids).eq("commitment.commitment_type", "purchase_order").in("status", COUNTED_STATUSES)
     .gte("approved_at", range.startInclusive).lt("approved_at", range.endExclusive)
     .order("id").range(from, to))
   if (orders.length === 0) return []

@@ -52,9 +52,17 @@ async function house(kit) {
   const answer = (id, version, body = {}) => attempt(() => kit.service(() => app("po-acknowledgments").acknowledgePoFromPortal(link, {
     commitmentId: id, issueVersionId: version.version_id, termsHash: version.terms_hash, response: "accepted", ...body,
   }, "Supplier")))
+  // A purchase-order change is a variance order and carries a reason code; the org's own code is used, one is added when the seed has none.
+  const reasonCodeId = () => {
+    const existing = kit.rows(`select id from public.variance_reason_codes where org_id=${q(org.orgId)} and is_active and not is_backcharge order by sort_order, code limit 1`)[0]
+    if (existing) return existing.id
+    const id = randomUUID()
+    kit.sql(`insert into public.variance_reason_codes(id,org_id,code,label) values(${q(id)},${q(org.orgId)},'supply_01_extra','Extra material')`)
+    return id
+  }
   const vpo = (id, status) => {
     const vpoId = randomUUID()
-    kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,company_id,title,total_cents,status) values(${q(vpoId)},${q(org.orgId)},${q(projectId)},${q(id)},${q(vendorId)},'Extra bundle',20000,${q(status)})`)
+    kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,company_id,title,total_cents,status,reason_code_id) values(${q(vpoId)},${q(org.orgId)},${q(projectId)},${q(id)},${q(vendorId)},'Extra bundle',20000,${q(status)},${q(reasonCodeId())})`)
     return vpoId
   }
   const queue = (actor, state = "all") => kit.as(actor, () => app("po-acknowledgments").listPoAcknowledgmentQueue({ state }))
@@ -103,7 +111,16 @@ async function poIssueCannotBeForgedOrErased(kit, expected, check) {
   const forgedDraft = {
     insertAsApproved: await viaDataApi(kit, sup, (db) => db.from("commitments").insert({ org_id: org.orgId, project_id: h.projectId, company_id: h.vendorId, commitment_type: "purchase_order", title: `QA-${h.tag} Forged`, status: "approved", total_cents: 99999999 }).select("id")),
     draftToApproved: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ status: "approved", total_cents: 77700000 }).eq("id", draft.id).select("id")),
+    markImported: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ metadata: { imported_open_wip: true } }).eq("id", draft.id).select("id")),
   }
+  // The service path closes the same door: no order is created or moved straight to complete, whoever asks.
+  const skip = await h.purchaseOrder("Complete skip")
+  const serviceComplete = {
+    update: await attempt(() => kit.as(org.owner, () => app("commitments").updateCommitment({ commitmentId: skip.id, input: { status: "complete" } }))),
+    create: await attempt(() => kit.as(org.owner, () => app("commitments").createCommitment({ input: { project_id: h.projectId, company_id: h.vendorId, commitment_type: "purchase_order", title: `QA-${h.tag} Created complete`, total_cents: 100, status: "complete" } }))),
+  }
+  const skipStatus = kit.rows(`select status from public.commitments where id=${kit.q(skip.id)}`)[0].status
+  const createdComplete = Number(kit.rows(`select count(*)::int n from public.commitments where title=${kit.q(`QA-${h.tag} Created complete`)}`)[0].n)
   await h.approve(draft.id)
   const forgedIssued = {
     toComplete: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ status: "complete" }).eq("id", draft.id).select("id")),
@@ -111,6 +128,7 @@ async function poIssueCannotBeForgedOrErased(kit, expected, check) {
     stripLineSource: await viaDataApi(kit, sup, (db) => db.from("commitment_lines").update({ metadata: {} }).eq("id", draft.lineId).select("id")),
     neededBy: await viaDataApi(kit, sup, (db) => db.from("commitment_lines").update({ needed_by: "2030-01-01" }).eq("id", draft.lineId).select("id")),
     sortOrder: await viaDataApi(kit, sup, (db) => db.from("commitment_lines").update({ sort_order: 9 }).eq("id", draft.lineId).select("id")),
+    executedAt: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ executed_at: new Date().toISOString() }).eq("id", draft.id).select("id")),
   }
   const [v1] = await h.versions(draft.id)
   const stillAnswerable = await h.answer(draft.id, v1)
@@ -136,6 +154,7 @@ async function poIssueCannotBeForgedOrErased(kit, expected, check) {
   kit.sql(`update public.commitments set metadata = metadata || '{"imported_open_wip":true}'::jsonb where id=${kit.q(imported.id)}; update public.commitments set status='approved' where id=${kit.q(imported.id)}`)
   eq(check, "a member cannot insert an order as approved or move a draft to approved; once issued, complete, provenance metadata, needed_by and sort_order are all refused and the vendor can still answer the version", expected.expected.forged, {
     forgedDraft, forgedIssued, forgedOrders: forgedCount, vendorStillAnswers: stillAnswerable,
+    serviceComplete: { update: /Approve it first/.test(serviceComplete.update) ? "refused" : serviceComplete.update, create: /Approve it first/.test(serviceComplete.create) ? "refused" : serviceComplete.create, status: skipStatus, created: createdComplete },
   })
   eq(check, "an order with history cannot be deleted by a member, and one with receipts cannot go back to draft", expected.expected.history, {
     deleteWithHistory, versionsAfterDelete, returnWithReceipt: /deliveries/.test(returnWithReceipt) ? "refused: deliveries" : returnWithReceipt,

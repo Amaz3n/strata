@@ -46,7 +46,7 @@ export function CreateProductionBidDialog({ prefill, label = "Create bid package
     <Button size="sm" variant={variant} onClick={() => setOpen(true)}>{label}</Button>
     <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value) }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
-        <DialogHeader><DialogTitle>Create production bid package</DialogTitle><DialogDescription>Choose a community, a plan, or both. Awards establish prices for repeat home purchasing.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Create production bid package</DialogTitle><DialogDescription>Choose a community, a plan, or both. A plan on its own prices every division, so a division-limited buyer must choose a community as well. Awards establish prices for repeat home purchasing.</DialogDescription></DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2"><Label htmlFor="production-bid-title">Package name</Label><Input id="production-bid-title" value={title} onChange={(event) => setTitle(event.target.value)} disabled={pending} placeholder="Framing — fall pricing" /></div>
           <PurchasingEntityPicker kind="community" value={community} onChange={setCommunity} disabled={pending} />

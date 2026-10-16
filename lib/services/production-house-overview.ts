@@ -122,7 +122,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       return query.order("id").limit(limit).returns<CostRow[]>()
     }),
     readHouseMoney<VpoRow>("Unable to read this home's variance POs", (afterId, limit) => {
-      let query = supabase.from("commitment_change_orders").select("id,total_cents,status,reason:variance_reason_codes(label,code)").eq("org_id", resolvedOrgId).eq("project_id", projectId).not("reason_code_id", "is", null).in("status", ["approved", "executed"])
+      let query = supabase.from("commitment_change_orders").select("id,total_cents,status,reason:variance_reason_codes(label,code),commitment:commitments!inner(commitment_type)").eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("commitment.commitment_type", "purchase_order").eq("status", "approved")
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<VpoRow[]>()
     }),

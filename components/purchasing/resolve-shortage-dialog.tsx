@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { parseMoneyToCents } from "@/lib/financials/money-input"
 import type { DeliveryLine } from "@/lib/services/po-receipts"
+import { NoVarianceReasonNotice } from "@/components/purchasing/no-variance-reason-notice"
 
 type Resolution = "backordered" | "vpo" | "accepted_short" | "cancelled"
 
@@ -102,7 +103,8 @@ export function ResolveShortageDialog({ line, open, onOpenChange, onDone }: {
         <div className="grid gap-1.5 text-xs sm:col-span-3"><Label htmlFor="shortage-reason">Reason</Label>
           <select id="shortage-reason" value={reasonId} disabled={pending || !reasons} onChange={(event) => setReasonId(event.target.value)} className="h-9 border bg-background px-3 text-sm">
             {(reasons ?? []).map((reason) => <option key={reason.id} value={reason.id}>{reason.label}</option>)}
-          </select></div>
+          </select>
+          {reasons?.length === 0 && <NoVarianceReasonNotice />}</div>
         <div className="grid gap-1.5 text-xs"><Label htmlFor="shortage-quantity">Quantity</Label><Input id="shortage-quantity" type="number" min="0" step="any" value={quantity} disabled={pending} onChange={(event) => setQuantity(event.target.value)} className="tabular-nums" /></div>
         <div className="grid gap-1.5 text-xs"><Label htmlFor="shortage-cost">Unit cost (dollars)</Label><Input id="shortage-cost" type="number" min="0" step="0.01" value={unitCost} disabled={pending} onChange={(event) => setUnitCost(event.target.value)} className="tabular-nums" /></div>
       </div>}

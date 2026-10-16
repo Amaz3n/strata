@@ -8,7 +8,7 @@
 //   late-delivery-sweep-opens-one-shortage-and-an-advisory
 //                                                      an overdue line gets one late shortage however often the sweep runs (one notification), the home's task on the same cost code gets an advisory, the schedule is not written, a full receipt closes both
 //   shortage-resolution-reaches-purchasing             back-order restarts the clock, a VPO is raised and linked, accept-short stops the sweep; a reader without po_exception.resolve and a coordinator of another division are refused
-//   receipt-void-policy-and-vpo-quantity               the receiver voids their own ticket the same day, anyone else needs purchasing; an approved VPO's quantity counts as ordered for over-receipt
+//   receipt-void-policy-and-vpo-quantity               the receiver voids their own ticket within 24 hours of entering it, anyone else needs purchasing; an approved VPO's quantity counts as ordered for over-receipt
 //   deliveries-desk-is-scoped-and-capped               the desk shows the reader's divisions only, with the total when the page is cut; a role without price_book.read is refused
 //
 // Fixture: one production builder (`supplyOrg`, built once per run) with two divisions. Every home is a
@@ -292,9 +292,15 @@ async function receiptVoidPolicyAndVpoQuantity(kit, expected, check) {
   const unrelatedRole = labelled(await voidReceipt(org.team.sales, mineTicket.id), /po_receipt\.record|Missing permission/, "refused: needs po_receipt.record")
   const ownSameDay = await voidReceipt(org.team.superintendent, mineTicket.id)
   const second = await receive(kit, org, h, { 0: 4 })
-  kit.sql(`set session_replication_role = replica; update public.po_receipts set received_at = now() - interval '2 days' where id=${kit.q(second.id)}; set session_replication_role = origin;`)
-  const ownLater = labelled(await voidReceipt(org.team.superintendent, second.id), /same day/, "refused: not the same day")
+  kit.sql(`set session_replication_role = replica; update public.po_receipts set received_at = now() - interval '2 days', created_at = now() - interval '2 days' where id=${kit.q(second.id)}; set session_replication_role = origin;`)
+  const ownLater = labelled(await voidReceipt(org.team.superintendent, second.id), /24 hours/, "refused: past 24 hours")
   const purchasingAny = await voidReceipt(org.team.purchasing, second.id)
+  // The old bypass: entered two days ago but dated now. The entry time decides, so the receiver is refused; purchasing then clears it.
+  const fresh = await receive(kit, org, h, { 0: 3 })
+  kit.sql(`set session_replication_role = replica; update public.po_receipts set created_at = now() - interval '2 days' where id=${kit.q(fresh.id)}; set session_replication_role = origin;`)
+  const ownEnteredLateDatedNow = labelled(await voidReceipt(org.team.superintendent, fresh.id), /24 hours/, "refused: past 24 hours")
+  const stillRecorded = status(fresh.id)
+  await voidReceipt(org.team.purchasing, fresh.id)
   // 100 ordered, 5 in. A VPO for 60 more on the same line, approved by a second person, raises what can be received without a reason.
   const reasons = await kit.as(org.team.purchasing, () => app("purchasing-settings").listVarianceReasonCodes())
   const reason = reasons.find((candidate) => !candidate.is_backcharge)
@@ -306,8 +312,8 @@ async function receiptVoidPolicyAndVpoQuantity(kit, expected, check) {
   const overAfter = labelled(await attempt(() => receive(kit, org, h, { 0: 156 })), /over the 160 ordered/, "refused: over 160 ordered")
   const full = await attempt(() => receive(kit, org, h, { 0: 155 }))
   const [row] = mine((await desk(kit, org.team.purchasing, { state: "all", pageSize: 100 })).rows, h)
-  equal(check, "the receiver voids their own ticket the same day; another member's ticket, an unrelated role and an older ticket are refused; purchasing voids any", expected.expected.voidPolicy, {
-    otherUsersTicket, unrelatedRole, ownSameDay, ownLater, purchasingAny,
+  equal(check, "the receiver voids their own ticket within 24 hours of entering it; another member's ticket, an unrelated role and an older ticket are refused; purchasing voids any", expected.expected.voidPolicy, {
+    otherUsersTicket, unrelatedRole, ownSameDay, ownLater, purchasingAny, ownEnteredLateDatedNow, stillRecorded,
     statuses: { mine: status(mineTicket.id), buyers: status(buyerTicket.id), second: status(second.id) },
   })
   equal(check, "quantity an approved VPO added to the line counts as ordered: 156 more is refused at 100 ordered, and at 160 once approved, while the remaining 155 is received without a reason", expected.expected.vpoQuantity, {

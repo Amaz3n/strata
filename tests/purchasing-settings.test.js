@@ -6,6 +6,7 @@ const { freshRequire } = require("./support/modules")
 
 const {
   getPurchasingSettings,
+  listVarianceReasonCodes,
   resolvePayOnPo,
   setVarianceReasonCodeActive,
   updatePurchasingSettings,
@@ -118,6 +119,29 @@ describe("pay-on-PO resolution", () => {
   })
 })
 
+describe("an organization with no variance reasons", () => {
+  const empty = () => createServiceHarness({
+    permissions: ["vpo.request"],
+    tables: { variance_reason_codes: [] },
+  })
+
+  test("is given the defaults the first time a request form asks, so raising a purchase-order change is not a dead end", async () => {
+    const service = empty()
+    await service.run(() => listVarianceReasonCodes())
+    const seeded = service.db.variance_reason_codes
+    assert.equal(seeded.length, 12)
+    assert.ok(seeded.every((row) => row.org_id === ORG))
+    assert.ok(seeded.some((row) => row.code === "back_charge" && row.is_backcharge))
+  })
+
+  test("that retired every reason gets an empty list, which the forms explain and link to Purchasing settings", async () => {
+    const service = empty()
+    await service.run(() => listVarianceReasonCodes())
+    service.db.variance_reason_codes.forEach((row) => { row.is_active = false })
+    assert.deepEqual(await service.run(() => listVarianceReasonCodes()), [])
+  })
+})
+
 describe("who saves settings, and over whom", () => {
   test("a manager limited to a division does not set organization-wide policy", async () => {
     const service = createServiceHarness({
@@ -126,6 +150,16 @@ describe("who saves settings, and over whom", () => {
     })
     await assert.rejects(service.run(() => updatePurchasingSettings({ pay_on_po_enabled: true })), /whole organization/)
     assert.deepEqual(service.writes("purchasing_settings"), [])
+  })
+
+  test("a manager limited to a division does not change the organization's variance reasons either", async () => {
+    const service = createServiceHarness({
+      permissions: ["price_book.read", "purchasing_settings.write"], divisions: [id(60)],
+      tables: { purchasing_settings: [], variance_reason_codes: [{ id: OVERAGE, org_id: ORG, code: "overage", label: "Overage", is_backcharge: false, is_active: true, sort_order: 0 }], commitment_change_orders: [] },
+    })
+    await assert.rejects(service.run(() => upsertVarianceReasonCode({ code: "new_reason", label: "New reason", is_backcharge: false })), /whole organization/)
+    await assert.rejects(service.run(() => setVarianceReasonCodeActive(OVERAGE, false)), /whole organization/)
+    assert.deepEqual(service.writes("variance_reason_codes"), [])
   })
 
   test("a save over a newer one is refused, and a save writes only what it names", async () => {

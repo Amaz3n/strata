@@ -40,7 +40,6 @@ export type PurchasingSettings = {
   pay_on_po_enabled: boolean
   po_completion_requires_verification: boolean
   po_completion_requires_inspection: boolean
-  vpo_reason_code_required: boolean
   /** Null: never required for ordinary variance orders; 0: always. A back-charge always needs evidence. */
   vpo_evidence_required_over_cents: number | null
   vpo_approval_thresholds: ReturnType<typeof parseVpoApprovalBands>
@@ -79,7 +78,6 @@ function mapSettings(orgId: string, data: Record<string, unknown> | null): Purch
     pay_on_po_enabled: data?.pay_on_po_enabled === true,
     po_completion_requires_verification: data?.po_completion_requires_verification !== false,
     po_completion_requires_inspection: data?.po_completion_requires_inspection === true,
-    vpo_reason_code_required: data?.vpo_reason_code_required !== false,
     vpo_evidence_required_over_cents: data && "vpo_evidence_required_over_cents" in data
       ? (typeof data.vpo_evidence_required_over_cents === "number" ? data.vpo_evidence_required_over_cents : null)
       : DEFAULT_VPO_EVIDENCE_REQUIRED_OVER_CENTS,
@@ -121,7 +119,6 @@ export async function updatePurchasingSettings(input: PurchasingSettingsUpdate, 
       pay_on_po_enabled: next.pay_on_po_enabled,
       po_completion_requires_verification: next.po_completion_requires_verification,
       po_completion_requires_inspection: next.po_completion_requires_inspection,
-      vpo_reason_code_required: next.vpo_reason_code_required,
       vpo_evidence_required_over_cents: next.vpo_evidence_required_over_cents,
       vpo_approval_thresholds: next.vpo_approval_thresholds,
       expiring_agreement_lead_days: next.expiring_agreement_lead_days,
@@ -136,10 +133,10 @@ export async function updatePurchasingSettings(input: PurchasingSettingsUpdate, 
   return { ...next, updated_at: String(saved[0].updated_at) }
 }
 
-/** Approval bands and policy are the organization's, so a manager limited to some divisions does not set them. */
+/** Approval bands, policy and the reason taxonomy are the organization's, so a manager limited to some divisions does not set them. */
 async function requireOrgWideScope(orgId: string, userId: string) {
   const access = await getDivisionAccessForUser({ orgId, userId })
-  if (access.assignedOnly) throw new Error("Purchasing settings apply to the whole organization, so they are changed by someone who is not limited to a division.")
+  if (access.assignedOnly) throw new Error("Purchasing settings and variance reasons apply to the whole organization, so they are changed by someone who is not limited to a division.")
 }
 
 /**
@@ -194,6 +191,7 @@ export async function upsertVarianceReasonCode(input: VarianceReasonCodeInput, o
   const parsed = varianceReasonCodeSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "purchasing_settings.write", userId, orgId: resolvedOrgId, supabase, logDecision: true, resourceType: "variance_reason_code", resourceId: parsed.id })
+  await requireOrgWideScope(resolvedOrgId, userId)
   const service = createServiceSupabaseClient()
   const { data: all, error: listError } = await service.from("variance_reason_codes")
     .select("id, code, label, description, is_active, is_backcharge, sort_order").eq("org_id", resolvedOrgId).limit(MAX_VARIANCE_REASON_CODES + 1)
@@ -234,6 +232,7 @@ export async function setVarianceReasonCodeActive(reasonCodeId: string, isActive
   const id = z.string().uuid().parse(reasonCodeId)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "purchasing_settings.write", userId, orgId: resolvedOrgId, supabase, logDecision: true, resourceType: "variance_reason_code", resourceId: id })
+  await requireOrgWideScope(resolvedOrgId, userId)
   const { data, error } = await createServiceSupabaseClient().from("variance_reason_codes")
     .update({ is_active: isActive }).eq("org_id", resolvedOrgId).eq("id", id).select("id, code").maybeSingle()
   if (error) throw new Error(`Failed to update variance reason: ${error.message}`)

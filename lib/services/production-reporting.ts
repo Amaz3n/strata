@@ -215,8 +215,8 @@ export async function getProductionPortfolioReport(
       return query.order("id").limit(limit).returns<CostRow[]>()
     }),
     readForIds<VpoRow>(projectIds, "Failed to load variance POs", (chunk, afterId, limit) => {
-      let query = supabase.from("commitment_change_orders").select("id,project_id,total_cents,reason:variance_reason_codes(code,label),company:companies(name)")
-        .eq("org_id", scopedOrgId).in("project_id", chunk).not("reason_code_id", "is", null).in("status", ["approved", "executed"])
+      let query = supabase.from("commitment_change_orders").select("id,project_id,total_cents,reason:variance_reason_codes(code,label),company:companies(name),commitment:commitments!inner(commitment_type)")
+        .eq("org_id", scopedOrgId).in("project_id", chunk).eq("commitment.commitment_type", "purchase_order").eq("status", "approved")
       if (afterId) query = query.gt("id", afterId)
       return query.order("id").limit(limit).returns<VpoRow[]>()
     }),

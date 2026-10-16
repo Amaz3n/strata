@@ -85,6 +85,53 @@
         "noteStored": "Owner-supplied concrete, no charge"
       }
     },
+    "po-canceled-order-is-reordered": {
+      "derivation": "A home is generated, then its first order is canceled (fixture). The next commit treats a canceled order as not live: it is left exactly as it was with its lines, and the same source lines are ordered again on a new draft order for the same vendor, totalling what the canceled one did, under a number above every number used (the floor, not a reuse). The house has one more order than before, one live order per source line, and one budget equal to the live commitments (canceled orders are not committed).",
+      "expected": {
+        "runSucceeded": true,
+        "canceledOrderUntouched": true,
+        "canceledOrderKeepsItsLines": true,
+        "replacementDraftSameTotal": true,
+        "replacementHasNewNumber": true,
+        "orderCount": 1,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-deleted-draft-is-repaired": {
+      "derivation": "A home is generated and one draft order is deleted. The preview's inputs are identical to the last run, but the reconcile report finds lines to re-create, so the commit is not short-circuited as already generated: the order returns with the same vendor and total, the order count and the sum of totals are what they were, and the house invariants hold.",
+      "expected": {
+        "repairedNotShortCircuited": true,
+        "orderCountRestored": true,
+        "totalsRestored": true,
+        "vendorOrderBack": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-order-with-history-is-preserved": {
+      "derivation": "Palmetto Framing's order is approved by the owner (an issue version is written), receives a receipt that is then voided, and is returned to draft. The framing agreement is then repriced by $1 a unit. Regeneration treats an order with any issue, acknowledgment or receipt history as progressed even though it is a draft: it neither deletes the lines (which would fail on the receipt foreign key) nor orders them again on another draft. The run succeeds; the order stays a draft with its total; its one issue version and one receipt remain; the preview and the commit both report that it would now price differently; one framing order exists.",
+      "expected": {
+        "runSucceeded": true,
+        "orderStillADraft": true,
+        "totalUnchanged": true,
+        "historyUnchanged": true,
+        "previewReportsIt": true,
+        "commitReportsIt": true,
+        "orderCountUnchanged": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
     "race-po-competing-commits": {
       "derivation": "Two sessions commit one preview at once. Under the project lock the first writes the orders; the second finds the same inputs already generated and returns that run (or is refused as a stale preview). Exactly one commit run succeeded and the orders exist once.",
       "expected": {
@@ -117,11 +164,12 @@
       }
     },
     "race-po-approval-against-regeneration": {
-      "derivation": "A framing price moves, then a regeneration commit and an approval of a draft order start together. Whichever takes the order's row lock first wins: an approved order is preserved with its lines and price and reported, or the regeneration re-prices the draft and the approval then finds it. Never an approved order without lines, never a double order.",
+      "derivation": "A framing price moves, then a regeneration commit and an approval of a draft order, made through the approval service the UI calls, start together. The regeneration holds the project lock and the order rows; the approval either lands first (the order is approved with the total it was checked against, and regeneration preserves it and reports a change) or lands after and is refused plainly or approves the re-priced order. Whatever the interleaving there is no raw database error, no approved order without lines, and no approved order whose total differs from the sum of its lines. The concurrency guard itself lives in the commitments service (R2-D); this subcase asserts only the outcome.",
       "expected": {
         "regeneration": "regenerated",
-        "approvalStatementRan": true,
+        "approvalWithoutRawError": true,
         "everyApprovedOrderHasLines": true,
+        "everyApprovedTotalEqualsItsLines": true,
         "oneOrderPerSourceLine": true,
         "noOrderWithoutLines": true,
         "oneBudget": true,

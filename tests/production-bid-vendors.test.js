@@ -1,23 +1,43 @@
+"use strict"
+
 const assert = require("node:assert/strict")
 const test = require("node:test")
-const fs = require("node:fs")
-const vm = require("node:vm")
-const ts = require("typescript")
+
+const { stubModule, freshRequire } = require("./support/modules")
+
 const packageId = "00000000-0000-4000-8000-000000000001"
 
+const state = { calls: [], denied: false, packageDenied: false, awardTarget: "price_agreement", total: 30 }
+stubModule("@/lib/services/context", { requireOrgContext: async () => ({ orgId: "org", userId: "user" }) })
+stubModule("@/lib/services/permissions", {
+  requirePermission: async (permission) => {
+    state.calls.push({ permission })
+    if (state.denied) throw new Error("Forbidden")
+  },
+})
+stubModule("@/lib/services/bids", {
+  getBidPackage: async (id, org) => {
+    state.calls.push({ package: id, org })
+    if (state.packageDenied) throw new Error("Outside division")
+    return { award_target: state.awardTarget }
+  },
+})
+stubModule("@/lib/services/directory", {
+  listDirectoryPage: async (input) => {
+    state.calls.push({ directory: input })
+    return {
+      entries: [{ id: "vendor", name: "Vendor", trade: "Electrical", email: "private@example.com", internal_notes: "private" }],
+      page: input.page,
+      pageSize: input.pageSize,
+      total: state.total,
+    }
+  },
+})
+const { searchProductionBidVendors } = freshRequire("lib/services/production-bid-vendors.ts")
+
 function service({ denied = false, packageDenied = false, awardTarget = "price_agreement", total = 30 } = {}) {
-  const calls = []
-  const dependencies = {
-    zod: require("zod"),
-    "@/lib/services/context": { requireOrgContext: async () => ({ orgId: "org", userId: "user" }) },
-    "@/lib/services/permissions": { requirePermission: async (permission) => { calls.push({ permission }); if (denied) throw new Error("Forbidden") } },
-    "@/lib/services/bids": { getBidPackage: async (id, org) => { calls.push({ package: id, org }); if (packageDenied) throw new Error("Outside division"); return { award_target: awardTarget } } },
-    "@/lib/services/directory": { listDirectoryPage: async (input) => { calls.push({ directory: input }); return { entries: [{ id: "vendor", name: "Vendor", trade: "Electrical", email: "private@example.com", internal_notes: "private" }], page: input.page, pageSize: input.pageSize, total } } },
-  }
-  const compiled = { exports: {} }
-  const code = ts.transpileModule(fs.readFileSync(require.resolve("../lib/services/production-bid-vendors.ts"), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-  vm.runInNewContext(code, { module: compiled, exports: compiled.exports, require(id) { assert.ok(dependencies[id], id); return dependencies[id] } })
-  return { search: compiled.exports.searchProductionBidVendors, calls }
+  Object.assign(state, { calls: [], denied, packageDenied, awardTarget, total })
+  return { search: searchProductionBidVendors, calls: state.calls }
 }
 
 test("production vendor search checks permission and package scope before directory reads", async () => {

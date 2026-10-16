@@ -1,4 +1,5 @@
 import { waiverCoverage } from "@/lib/lien-waivers/coverage"
+import { commitmentBillingAtRelease } from "@/lib/purchasing/po-position"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { recordAudit } from "@/lib/services/audit"
@@ -236,7 +237,7 @@ export async function assertBillReleasable(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase
     .from("vendor_bills")
-    .select("id,project_id,company_id,commitment_id,bill_date,due_date,total_cents,paid_cents,retainage_cents,retainage_released_cents,status,metadata,lien_waiver_status")
+    .select("id,project_id,company_id,commitment_id,bill_date,due_date,total_cents,paid_cents,retainage_cents,retainage_released_cents,status,metadata,lien_waiver_status,created_at,approved_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -344,20 +345,24 @@ export async function assertBillReleasable(
   if (bill.commitment_id) {
     const [{ data: commitment, error: commitmentError }, { data: changes }, { data: committedBills }, { data: completion }, payOnPo] = await Promise.all([
       supabase.from("commitments").select("id,commitment_type,status,total_cents,currency").eq("org_id", resolvedOrgId).eq("id", bill.commitment_id).maybeSingle(),
-      supabase.from("commitment_change_orders").select("total_cents").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id).in("status", ["approved", "executed"]),
-      supabase.from("vendor_bills").select("id,total_cents,status").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id),
+      supabase.from("commitment_change_orders").select("total_cents,approved_at").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id).eq("status", "approved"),
+      supabase.from("vendor_bills").select("id,total_cents,status,created_at").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id),
       supabase.from("po_completions").select("id,status,amount_cents").eq("org_id", resolvedOrgId).eq("vendor_bill_id", billId).in("status", ["approved", "billed"]).order("approved_at", { ascending: false }).limit(1).maybeSingle(),
       resolvePayOnPo(supabase, resolvedOrgId),
     ])
     if (commitmentError || !commitment) throw new Error("The payable's commitment could not be validated")
     if (!["approved", "complete"].includes(commitment.status)) throw new Error("The payable commitment is not approved or complete")
-    const authorizedCents = Number(commitment.total_cents ?? 0) + (changes ?? []).reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
-    // `vendor_bills.status` is CHECK-constrained to pending|approved|partial|
-    // paid|rejected (migration 20260805091000) — void/cancelled variants cannot
-    // exist. Rejected bills are not obligations and do not count.
-    const billedCents = (committedBills ?? []).filter((row) => String(row.status) !== "rejected").reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+    const { authorizedCents, billedCents } = commitmentBillingAtRelease({
+      commitmentCents: Number(commitment.total_cents ?? 0),
+      changeOrders: (changes ?? []).map((row) => ({ totalCents: Number(row.total_cents ?? 0), approvedAt: row.approved_at ?? null })),
+      // `vendor_bills.status` is CHECK-constrained to pending|approved|partial|paid|rejected, so no other
+      // void/cancelled variants exist.
+      bills: (committedBills ?? []).map((row) => ({ id: row.id, totalCents: Number(row.total_cents ?? 0), status: String(row.status), createdAt: row.created_at })),
+      bill: { id: bill.id, createdAt: bill.created_at, approvedAt: bill.approved_at ?? null },
+      now: new Date().toISOString(),
+    })
     if (billedCents > authorizedCents) throw new Error("Commitment billing exceeds the approved commitment and change orders")
-    // The same community-then-org resolution completion creation uses, so a bill in a community with no override still needs its completion.
+    // The same organization setting completion creation reads, so the two cannot disagree about when a completion is needed.
     const requirePoCompletion = commitment.commitment_type === "purchase_order" && payOnPo.enabled
     if (requirePoCompletion && (!completion || Number(completion.amount_cents ?? 0) < Number(bill.total_cents ?? 0))) {
       throw new Error("An approved field completion covering this purchase-order bill is required before payment")

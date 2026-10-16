@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
@@ -411,6 +412,8 @@ async function gateCommitmentApproval({
   return warning
 }
 
+const PO_COMPLETE_FROM_APPROVED_MESSAGE = "A purchase order is completed from an approved order, not created or moved there directly. Approve it first."
+
 export async function createCommitment({ input, orgId }: { input: CommitmentInput; orgId?: string }): Promise<CommitmentSummary> {
   const parsed = commitmentInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -426,6 +429,8 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
   })
 
   const status = parsed.status ?? "draft"
+  // An order is complete only after it was approved, so none is created complete.
+  if (status === "complete") throw new Error(PO_COMPLETE_FROM_APPROVED_MESSAGE)
   const prequalificationWarning =
     status === "approved"
       ? await gateCommitmentApproval({
@@ -577,6 +582,9 @@ export async function updateCommitment({
   // An issued purchase order is locked: its terms change through a variance
   // order, or it goes back to draft (un-issuing it) and is approved again.
   const issued = isIssuedPurchaseOrder(existing.commitment_type, existing.status)
+  if (parsed.status === "complete" && existing.status !== "approved" && existing.status !== "complete") {
+    throw new Error(PO_COMPLETE_FROM_APPROVED_MESSAGE)
+  }
   const unissues = issued && parsed.status !== undefined && !isIssuedPurchaseOrder("purchase_order", parsed.status)
   if (issued) {
     const changed = lockedTermsChanged(existing, parsed)
@@ -603,7 +611,7 @@ export async function updateCommitment({
       : parsed.total_cents ?? existing.total_cents
 
   let prequalificationWarning: string | null = null
-  if (parsed.status === "approved" && existing.status !== "approved") {
+  if (parsed.status === "approved" && existing.status !== "approved" && !issued) {
     prequalificationWarning = await gateCommitmentApproval({
       supabase: db,
       orgId: resolvedOrgId,
@@ -643,11 +651,16 @@ export async function updateCommitment({
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", commitmentId)
+    // What was read, gated and approved is what is written: a regeneration or line edit that landed since is refused.
+    .eq("updated_at", existing.updated_at)
     .select(COMMITMENT_SELECT)
-    .single()
+    .maybeSingle()
 
-  if (error || !data) {
-    throw new Error(`Failed to update commitment: ${error?.message}`)
+  if (error) {
+    throw new Error(`Failed to update commitment: ${error.message}`)
+  }
+  if (!data) {
+    throw new Error("The order changed while you were working on it. Reload it and review the current lines and total.")
   }
 
   await recordAudit({
@@ -969,24 +982,39 @@ async function getCommitmentLineRollup(
   }
 }
 
-async function syncCommitmentTotalFromLines(
-  supabase: SupabaseClient,
+/**
+ * The only writer of a line. The database function locks the order's row, refuses an
+ * approved purchase order and re-totals the order in the same transaction, so a line
+ * never lands on an order that is being, or has just been, approved.
+ */
+async function writeLine(
   orgId: string,
+  op: "insert" | "update" | "delete",
   commitmentId: string,
-) {
-  const rollup = await getCommitmentLineRollup(supabase, orgId, commitmentId)
+  lineId: string | null,
+  values: Record<string, unknown>,
+): Promise<string> {
+  const { data, error } = await createServiceSupabaseClient().rpc("write_commitment_line", {
+    p_org_id: orgId,
+    p_op: op,
+    p_commitment_id: commitmentId,
+    p_line_id: lineId,
+    p_values: values,
+  })
+  if (error) throw new Error(error.message)
+  const result = z.object({ line_id: z.string().uuid() }).parse(data)
+  return result.line_id
+}
 
-  const { error } = await supabase
-    .from("commitments")
-    .update({ total_cents: rollup.totalCents })
+async function readLine(orgId: string, lineId: string) {
+  const { data, error } = await createServiceSupabaseClient()
+    .from("commitment_lines")
+    .select(LINE_SELECT)
+    .eq("id", lineId)
     .eq("org_id", orgId)
-    .eq("id", commitmentId)
-
-  if (error) {
-    throw new Error(`Failed to sync commitment total: ${error.message}`)
-  }
-
-  return rollup
+    .single()
+  if (error || !data) throw new Error(`Failed to load commitment line: ${error?.message}`)
+  return data
 }
 
 const LINE_FIELDS = "id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order"
@@ -1072,21 +1100,7 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
   assertLineEditable(commitment)
 
   const validated = commitmentLineInputSchema.parse(input)
-  const service = createServiceSupabaseClient()
-
-  const { data, error } = await service
-    .from("commitment_lines")
-    .insert({
-      org_id: orgId,
-      commitment_id: commitmentId,
-      ...validated,
-    })
-    .select(LINE_SELECT)
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to create commitment line: ${error?.message}`)
-  }
+  const data = await readLine(orgId, await writeLine(orgId, "insert", commitmentId, null, validated))
 
   await recordAudit({
     orgId,
@@ -1107,8 +1121,6 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
       cost_code_id: validated.cost_code_id,
     },
   })
-
-  await syncCommitmentTotalFromLines(service, orgId, commitmentId)
 
   return mapCommitmentLine(data)
 }
@@ -1131,18 +1143,7 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
   })
   assertLineEditable(order)
 
-  const service = createServiceSupabaseClient()
-  const { data, error } = await service
-    .from("commitment_lines")
-    .update(validated)
-    .eq("id", lineId)
-    .eq("org_id", orgId)
-    .select(LINE_SELECT)
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to update commitment line: ${error?.message}`)
-  }
+  const data = await readLine(orgId, await writeLine(orgId, "update", order.id, lineId, validated))
 
   await recordAudit({
     orgId,
@@ -1164,8 +1165,6 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
     },
   })
 
-  await syncCommitmentTotalFromLines(service, orgId, data.commitment_id as string)
-
   return mapCommitmentLine(data)
 }
 
@@ -1185,16 +1184,7 @@ export async function deleteCommitmentLine(lineId: string): Promise<void> {
   })
   assertLineEditable(order)
 
-  const service = createServiceSupabaseClient()
-  const { error } = await service
-    .from("commitment_lines")
-    .delete()
-    .eq("id", lineId)
-    .eq("org_id", orgId)
-
-  if (error) {
-    throw new Error(`Failed to delete commitment line: ${error.message}`)
-  }
+  await writeLine(orgId, "delete", order.id, lineId, {})
 
   await recordAudit({
     orgId,
@@ -1214,8 +1204,6 @@ export async function deleteCommitmentLine(lineId: string): Promise<void> {
       commitment_line_id: lineId,
     },
   })
-
-  await syncCommitmentTotalFromLines(service, orgId, String(existing.commitment_id))
 }
 
 // ============================================================================
@@ -1264,7 +1252,11 @@ export interface CommitmentDetail {
 export async function getCommitmentDetail(commitmentId: string, orgId?: string): Promise<CommitmentDetail> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
-  const { data: row, error } = await supabase
+  // A purchasing manager works across houses without being on a home's team, so row
+  // security would hide the order: it is read by the service scoped to the org, and the
+  // permission check below carries the project and division scope before anything is returned.
+  const db = createServiceSupabaseClient()
+  const { data: row, error } = await db
     .from("commitments")
     .select(COMMITMENT_SELECT)
     .eq("org_id", resolvedOrgId)
@@ -1287,8 +1279,8 @@ export async function getCommitmentDetail(commitmentId: string, orgId?: string):
   })
 
   const [enriched, linesResult, changeOrdersResult, billsResult] = await Promise.all([
-    enrichCommitments(supabase, resolvedOrgId, [mapCommitment(row)]),
-    supabase
+    enrichCommitments(db, resolvedOrgId, [mapCommitment(row)]),
+    db
       .from("commitment_lines")
       .select(
         `
@@ -1299,7 +1291,7 @@ export async function getCommitmentDetail(commitmentId: string, orgId?: string):
       .eq("org_id", resolvedOrgId)
       .eq("commitment_id", commitmentId)
       .order("sort_order", { ascending: true }),
-    supabase
+    db
       .from("commitment_change_orders")
       .select(
         "id, title, status, total_cents, approved_at, created_at, reason:variance_reason_codes(code, label)",
@@ -1307,7 +1299,7 @@ export async function getCommitmentDetail(commitmentId: string, orgId?: string):
       .eq("org_id", resolvedOrgId)
       .eq("commitment_id", commitmentId)
       .order("created_at", { ascending: false }),
-    supabase
+    db
       .from("vendor_bills")
       .select(
         "id, bill_number, bill_date, due_date, status, total_cents, paid_cents, retainage_cents, lien_waiver_status, file_id, metadata",

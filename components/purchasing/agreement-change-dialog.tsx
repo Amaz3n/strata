@@ -43,13 +43,17 @@ export function AgreementChangeDialog({ change, onClose }: { change: AgreementCh
 
   useEffect(() => {
     if (!agreement) return
-    let active = true
     setReason("")
     setPrice("")
     setError(null)
+    setDate(change?.kind === "reprice" ? new Date().toISOString().slice(0, 10) : agreement.effective_to ?? new Date().toISOString().slice(0, 10))
+  }, [agreement, change?.kind])
+
+  useEffect(() => {
+    if (!agreement) return
+    let active = true
     setImpact(null)
     setImpactError(null)
-    setDate(change?.kind === "reprice" ? new Date().toISOString().slice(0, 10) : agreement.effective_to ?? new Date().toISOString().slice(0, 10))
     getAgreementImpactAction(agreement.id).then((result) => {
       if (!active) return
       if (result.success) setImpact(result.data)
@@ -58,7 +62,7 @@ export function AgreementChangeDialog({ change, onClose }: { change: AgreementCh
     return () => {
       active = false
     }
-  }, [agreement, change?.kind, impactTry])
+  }, [agreement, impactTry])
 
   if (!change || !agreement) return null
   const cents = parseMoneyToCents(price)

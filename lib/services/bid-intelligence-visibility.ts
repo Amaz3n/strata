@@ -50,6 +50,6 @@ export async function visibleBidPackageIds(ids: string[], context: Context, acce
   return new Set(packages.filter((row) =>
     (!row.project_id || projects.has(row.project_id)) && (!row.community_id || communities.has(row.community_id)) &&
     (!row.house_plan_id || plans.has(row.house_plan_id)) &&
-    (!access.assignedOnly || Boolean(row.project_id || row.community_id || row.house_plan_id)),
+    (!access.assignedOnly || Boolean(row.project_id || row.community_id)),
   ).map((row) => row.id))
 }

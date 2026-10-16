@@ -1,36 +1,48 @@
+"use strict"
+
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const vm = require("node:vm")
-const ts = require("typescript")
 const test = require("node:test")
 
-function access(assignedOnly, divisionIds, rows) {
-  const calls = []
-  const compiled = { exports: {} }
-  const source = fs.readFileSync(require.resolve("../lib/services/production-bid-access.ts"), "utf8")
-  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, {
-    exports: compiled.exports, require: () => ({ getDivisionAccessForUser: async () => ({ assignedOnly, divisionIds }) }),
-  })
-  const context = { orgId: "org", userId: "user", supabase: { from(table) {
-    const query = { select() { return query }, eq(key, value) { calls.push([table, key, value]); return query }, async maybeSingle() { return { data: rows[table], error: null } } }
-    return query
-  } } }
-  return { run: (scope) => compiled.exports.assertProductionBidAccess(scope, context), calls }
+const { stubModule, freshRequire } = require("./support/modules")
+const { createQueryRecorder } = require("./support/query-recorder")
+
+let access = { assignedOnly: true, divisionIds: ["a"] }
+stubModule("@/lib/services/authorization", { getDivisionAccessForUser: async () => access })
+const { assertProductionBidAccess } = freshRequire("lib/services/production-bid-access.ts")
+
+function check(scope, { limited = true, divisionIds = ["a"], rows }) {
+  access = { assignedOnly: limited, divisionIds }
+  const { client, calls } = createQueryRecorder((call) => ({ data: rows[call.table] ?? null, error: null }))
+  return { run: assertProductionBidAccess(scope, { supabase: client, orgId: "org", userId: "user" }), calls }
 }
 
-test("production bids reject community and plan parents outside assigned divisions", async () => {
+test("a division-limited buyer is refused a community or plan outside their divisions", async () => {
   for (const [key, table] of [["community_id", "communities"], ["house_plan_id", "house_plans"]]) {
-    const { run } = access(true, ["a"], { [table]: { id: "parent", division_id: "b" } })
-    await assert.rejects(run({ [key]: "parent" }), /outside your division access/)
+    await assert.rejects(check({ [key]: "parent" }, { rows: { [table]: { id: "parent", division_id: "b" } } }).run, /outside your division access/)
   }
 })
-test("both parents must pass, and lookups are organization scoped", async () => {
-  const { run, calls } = access(true, ["a"], { communities: { id: "c", division_id: "a" }, house_plans: { id: "p", division_id: null } })
-  await run({ community_id: "c", house_plan_id: "p" })
-  assert.equal(calls.filter(([, key, value]) => key === "org_id" && value === "org").length, 2)
+
+test("both parents must pass, and every lookup is organization scoped", async () => {
+  const { run, calls } = check(
+    { community_id: "c", house_plan_id: "p" },
+    { rows: { communities: { id: "c", division_id: "a" }, house_plans: { id: "p", division_id: null } } },
+  )
+  await run
+  const scoped = calls.filter((call) => call.filters.some(([op, key, value]) => op === "eq" && key === "org_id" && value === "org"))
+  assert.equal(scoped.length, 2)
 })
+
+test("an organization-wide plan on its own is refused with the reason, beside a community it is allowed", async () => {
+  const rows = { communities: { id: "c", division_id: "a" }, house_plans: { id: "p", division_id: null } }
+  await assert.rejects(check({ house_plan_id: "p" }, { rows }).run, /prices every division. Choose one of your communities/)
+  await check({ community_id: "c", house_plan_id: "p" }, { rows }).run
+})
+
 test("unassigned communities and missing parents fail closed", async () => {
-  const { run } = access(true, [], { communities: { id: "c", division_id: null } })
-  await assert.rejects(run({ community_id: "c" }), /outside your division access/)
-  await assert.rejects(run({ house_plan_id: "missing" }), /not found/)
+  await assert.rejects(check({ community_id: "c" }, { divisionIds: [], rows: { communities: { id: "c", division_id: null } } }).run, /outside your division access/)
+  await assert.rejects(check({ house_plan_id: "missing" }, { rows: {} }).run, /not found/)
+})
+
+test("an unrestricted member may use any community and plan", async () => {
+  await check({ community_id: "c" }, { limited: false, rows: { communities: { id: "c", division_id: "z" } } }).run
 })

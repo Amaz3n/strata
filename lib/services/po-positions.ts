@@ -12,11 +12,12 @@ type ViewRow = {
   status: string; division_id: string | null; community_id: string | null; pay_on_po: boolean
   original_cents: number; approved_vpo_cents: number; pending_vpo_count: number; billed_cents: number; paid_cents: number
   retainage_held_cents: number; completion_billed_cents: number; open_completion_count: number; unclaimed_vpo_cents: number
+  open_vendor_credit_cents: number
 }
 
 const POSITION_SELECT = `project_id, commitment_id, title, contract_number, company_id, status, division_id, community_id, pay_on_po,
   original_cents, approved_vpo_cents, pending_vpo_count, billed_cents, paid_cents, retainage_held_cents, completion_billed_cents,
-  open_completion_count, unclaimed_vpo_cents`
+  open_completion_count, unclaimed_vpo_cents, open_vendor_credit_cents`
 
 /** A home's purchase orders are dozens; an org-wide scan stops here and says so. */
 export const PO_POSITION_SCAN_CAP = 5000
@@ -31,6 +32,7 @@ function toPosition(row: ViewRow): PoPosition {
     pendingVpoCount: Number(row.pending_vpo_count), billedCents: Number(row.billed_cents), paidCents: Number(row.paid_cents),
     retainageHeldCents: Number(row.retainage_held_cents), completionBilledCents: Number(row.completion_billed_cents),
     openCompletionCount: Number(row.open_completion_count), unclaimedVpoCents: Number(row.unclaimed_vpo_cents),
+    openVendorCreditCents: Number(row.open_vendor_credit_cents),
   }
 }
 

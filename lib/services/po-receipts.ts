@@ -29,6 +29,8 @@ const SWEEP_BATCH = 500
 const NOTIFICATION_HREF = "/purchasing?tab=deliveries"
 
 const today = () => new Date().toISOString().slice(0, 10)
+/** A person voids their own receipt this long after entering it; mirrors void_po_receipt. */
+const OWN_RECEIPT_VOID_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const SHORTAGE_REASON_LABELS: Record<string, string> = {
   vendor_short: "Short from vendor",
@@ -420,7 +422,7 @@ interface ReceiptHistory {
   status: "recorded" | "void"
   voidReason: string | null
   photoCount: number
-  /** The reader may void it: purchasing, or the person who entered it, the same day. */
+  /** The reader may void it: purchasing, or the person who entered it, within 24 hours of entering it. */
   canVoid: boolean
   lines: ReceiptHistoryLine[]
 }
@@ -447,6 +449,7 @@ const receiptRowSchema = z.object({
   id: z.string().uuid(),
   received_by: z.string().uuid().nullable(),
   received_at: z.string(),
+  created_at: z.string(),
   ticket_number: z.string().nullable(),
   note: z.string().nullable(),
   status: z.enum(["recorded", "void"]),
@@ -487,7 +490,7 @@ export async function getPoReceiving(commitmentId: string, orgId?: string): Prom
     service.from("commitment_lines").select("id,description,quantity,unit").eq("org_id", context.orgId).eq("commitment_id", id)
       .is("needed_by", null).order("sort_order").order("id").limit(ORDER_LINE_CAP),
     service.from("po_receipts")
-      .select("id,received_by,received_at,ticket_number,note,status,void_reason,photo_file_ids,lines:po_receipt_lines(commitment_line_id,quantity_received,condition,note,over_receipt_reason,line:commitment_lines(description,unit))")
+      .select("id,received_by,received_at,created_at,ticket_number,note,status,void_reason,photo_file_ids,lines:po_receipt_lines(commitment_line_id,quantity_received,condition,note,over_receipt_reason,line:commitment_lines(description,unit))")
       .eq("org_id", context.orgId).eq("commitment_id", id).order("received_at", { ascending: false }).order("id").limit(RECEIPT_HISTORY_CAP),
   ])
   if (untracked.error) throw new Error(`Failed to load the order's lines: ${untracked.error.message}`)
@@ -501,7 +504,7 @@ export async function getPoReceiving(commitmentId: string, orgId?: string): Prom
     receipts: z.array(receiptRowSchema).parse(receipts.data ?? []).map((row) => ({
       id: row.id, receivedAt: row.received_at, ticketNumber: row.ticket_number, note: row.note, status: row.status,
       voidReason: row.void_reason, photoCount: row.photo_file_ids.length,
-      canVoid: row.status === "recorded" && (canResolve || (canRecord && row.received_by === context.userId && row.received_at.slice(0, 10) === today())),
+      canVoid: row.status === "recorded" && (canResolve || (canRecord && row.received_by === context.userId && Date.now() - Date.parse(row.created_at) < OWN_RECEIPT_VOID_WINDOW_MS)),
       lines: row.lines.map((line) => ({
         commitmentLineId: line.commitment_line_id, description: line.line?.description ?? "Line", unit: line.line?.unit ?? null,
         quantity: line.quantity_received, condition: line.condition, note: line.note, overReceiptReason: line.over_receipt_reason,

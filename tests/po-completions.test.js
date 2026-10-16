@@ -56,6 +56,59 @@ describe("approving a completion whose AP posting fails", () => {
     assert.deepEqual(service.writes("vendor_bills").map((write) => write.action), ["update"])
     postingFails = false
   })
+
+  test("the unwind takes back the inspection waiver the approval wrote, so the next approver gives their own", async () => {
+    postingFails = true
+    const service = createServiceHarness({
+      permissions: ["project.read", "bill.approve"],
+      tables: {
+        projects: [{ id: PROJECT, org_id: ORG }],
+        po_completions: [{ id: COMPLETION, org_id: ORG, project_id: PROJECT, commitment_id: PO, status: "verified", verified_by: id(9), inspection_id: null, inspection_waived_reason: null, inspection_waived_by: null, inspection_waived_at: null }],
+        vendor_bills: [],
+      },
+      rpc: {
+        approve_po_completion: () => {
+          service.db.vendor_bills.push({ id: BILL, org_id: ORG, commitment_id: PO, status: "approved", total_cents: 50_000 })
+          Object.assign(service.db.po_completions[0], {
+            status: "billed", vendor_bill_id: BILL, amount_cents: 50_000,
+            inspection_waived_reason: "Punch-list trade", inspection_waived_by: ACTOR, inspection_waived_at: "2026-10-16T00:00:00Z",
+          })
+          return { data: { completion_id: COMPLETION, vendor_bill_id: BILL, amount_cents: 50_000, waived: true }, error: null }
+        },
+      },
+    })
+    await assert.rejects(service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionWaiverReason: "Punch-list trade" })), /rolled back/)
+    postingFails = false
+    const [row] = service.db.po_completions
+    assert.deepEqual([row.status, row.inspection_waived_reason, row.inspection_waived_by, row.inspection_waived_at], ["verified", null, null, null])
+  })
+})
+
+describe("approving a completion that settles as a credit", () => {
+  test("a net credit bills nothing: no ledger posting, no bill, and the credit is announced", async () => {
+    const service = createServiceHarness({
+      permissions: ["project.read", "bill.approve"],
+      tables: {
+        projects: [{ id: PROJECT, org_id: ORG }],
+        po_completions: [{ id: COMPLETION, org_id: ORG, project_id: PROJECT, commitment_id: PO, status: "verified", verified_by: id(9) }],
+        vendor_bills: [],
+      },
+      rpc: {
+        approve_po_completion: () => {
+          Object.assign(service.db.po_completions[0], { status: "billed", vendor_bill_id: null, amount_cents: null })
+          return { data: { completion_id: COMPLETION, vendor_bill_id: null, amount_cents: null, credit_cents: 5_000 }, error: null }
+        },
+      },
+    })
+    postingFails = true
+    const credited = await service.run(() => approvePoCompletion(COMPLETION))
+    postingFails = false
+    assert.equal(credited.status, "billed")
+    assert.equal(credited.vendor_bill_id, null)
+    assert.equal(service.events.at(-1).eventType, "po_completion.credited")
+    assert.equal(service.events.at(-1).payload.credit_cents, 5_000)
+    assert.deepEqual(service.writes("vendor_bills"), [])
+  })
 })
 
 describe("the money step needs a second person", () => {

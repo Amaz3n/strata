@@ -161,7 +161,7 @@ export async function getProductionHomeData(
       p_month_end: monthEnd,
     }),
     canPurchasing && scopedProjectIds.length
-      ? context.supabase.from("commitment_change_orders").select("id,project_id,title,total_cents,status,project:projects(name)").eq("org_id", context.orgId).in("project_id", scopedProjectIds).not("reason_code_id", "is", null).gte("created_at", `${mondayIso}T00:00:00Z`).in("status", ["draft", "sent", "approved", "executed"]).limit(250)
+      ? context.supabase.from("commitment_change_orders").select("id,project_id,title,total_cents,status,project:projects(name),commitment:commitments!inner(commitment_type)").eq("org_id", context.orgId).in("project_id", scopedProjectIds).eq("commitment.commitment_type", "purchase_order").gte("created_at", `${mondayIso}T00:00:00Z`).in("status", ["draft", "sent", "approved"]).limit(250)
       : Promise.resolve({ data: [] as any[], error: null }),
     scopedProjectIds.length
       ? context.supabase.from("schedule_items").select("project_id,updated_at,project:projects(name)").eq("org_id", context.orgId).in("project_id", scopedProjectIds).neq("status", "completed").order("updated_at", { ascending: true }).limit(500)

@@ -10,7 +10,7 @@ const agreementId = "00000000-0000-4000-8000-000000000004"
 const ownVendorId = "00000000-0000-4000-8000-000000000005"
 const asOfDate = "2026-10-02"
 
-function generation({ prior = null, exception = null, configurationError = null, takeoffs = [], candidates = [], companies = [], recordRuns = false, rpcResults = [] } = {}) {
+function generation({ prior = null, exception = null, configurationError = null, takeoffs = [], candidates = [], companies = [], recordRuns = false, rpcResults = [], nonVendorIds = [] } = {}) {
   const writes = []
   const rpcCalls = []
   const trail = []
@@ -51,6 +51,9 @@ function generation({ prior = null, exception = null, configurationError = null,
     "@/lib/services/authorization": { requireAuthorization: async (input) => authorizations.push(input) },
     "@/lib/services/audit": { recordAudit: async () => { trail.push("audit") } }, "@/lib/services/events": { recordEvent: async () => { trail.push("event") } },
     "@/lib/services/price-book": { loadPriceAgreementCandidates: async () => candidates, collectPagedRows: async ({ fetchPage }) => (await fetchPage(0, 999)).data },
+    "@/lib/services/party-roles": {
+      getPartyRolesWithClient: async (_client, _org, { companyIds }) => new Map(companyIds.map((id) => [id, nonVendorIds.includes(id) ? [{ id: "r", relationship_type_id: "t", key: "client", label: "Client", category: "client", status: "active", since: "2026-01-01" }] : [{ id: "r", relationship_type_id: "t", key: "subcontractor", label: "Subcontractor", category: "vendor", status: "active", since: "2026-01-01" }]])),
+    },
     "@/lib/services/purchasing-settings": { getExpiringAgreementLeadDays: async () => 30 },
   }
   for (const [request, exports] of Object.entries(stubs)) stubModule(request, exports)
@@ -77,6 +80,12 @@ test("an identical preview still goes through the database commit, so a draft a 
 test("manual exception pricing rejects a vendor outside the organization before generation", async () => {
   const { service, writes } = generation({ exception: { id: exceptionId, project_id: projectId, status: "open" } })
   await assert.rejects(service.resolvePoException(exceptionId, { kind: "manual", company_id: vendorId, unit_cost_cents: 100 }), /not available in this organization/)
+  assert.equal(writes.length, 0)
+})
+
+test("manual exception pricing refuses a company that holds no vendor role, writing nothing", async () => {
+  const { service, writes } = generation({ exception: { id: exceptionId, project_id: projectId, status: "open", source_kind: "takeoff_line", source_ref: { takeoff_line_id: "line-1" } }, companies: [{ id: vendorId, name: "Owner Co" }], nonVendorIds: [vendorId] })
+  await assert.rejects(service.resolvePoException(exceptionId, { kind: "manual", company_id: vendorId, unit_cost_cents: 100 }), /not a vendor/)
   assert.equal(writes.length, 0)
 })
 

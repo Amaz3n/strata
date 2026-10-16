@@ -932,6 +932,8 @@ export async function submitBidFromPortal({
       submitted_by_name: input.submitted_by_name ?? null,
       submitted_by_email: input.submitted_by_email ?? null,
       line_items: [],
+      // Linked by the function inside the submission's own transaction.
+      file_ids: attachments,
     },
     p_items: rpcItems,
     p_source: "portal",
@@ -946,14 +948,6 @@ export async function submitBidFromPortal({
   const createdVersion = Number((rpcResult as any).version ?? 1)
   const createdStatus = ((rpcResult as any).status as string) ?? "submitted"
   const now = new Date().toISOString()
-
-  // Link uploaded files to the submission
-  if (attachments.length > 0) {
-    const { error: linkError } = await supabase.from("file_links").insert(
-      attachments.map((fileId) => ({ org_id: access.org_id, file_id: fileId, entity_type: "bid_submission", entity_id: createdId })),
-    )
-    if (linkError) throw new Error(`Failed to attach files to the bid: ${linkError.message}`)
-  }
 
   const submission: BidPortalSubmission = {
     id: createdId,

@@ -8,6 +8,7 @@
 //   rescinding-restores-the-prior-price-and-void-end-need-a-reason  EP08-05  rescind by the purchasing manager restores the incumbent; void and end carry a reason inside the member's division
 //   bid-lines-price-only-their-own-package / rescind-restores-an-incumbent-the-sweep-expired / plan-only-packages-need-unrestricted-division-scope   review round 1
 //   concurrent-awards-for-the-same-scope-leave-one-active-price  EP08-05  two sessions award two packages of one scope and date; exactly one price takes effect
+//   a-vendors-quote-is-not-rewritable-by-a-member / a-rescind-and-an-award-for-one-scope-leave-one-active-price   review round 2
 const { randomUUID } = require("node:crypto")
 const seed = require("../production-seed.cjs")
 const { app } = require("./shared.cjs")
@@ -257,9 +258,56 @@ async function planOnlyPackagesNeedUnrestrictedDivisionScope(kit, expected, chec
   }
   const dataApiRefusal = dataApi(kit, w.buyerA, `insert into public.bid_packages(org_id,house_plan_id,award_target,title,status) values(${q(org.orgId)},${q(w.plan.id)},'price_agreement','Planted plan-only','draft')`)
   eq(check, "a division-limited buyer cannot create a plan-only package through the service or the data API; community-scoped and unrestricted creation still work", expected.expected, {
-    service: { ...service, divisionLimitedPlanOnly: /outside your division access/.test(service.divisionLimitedPlanOnly) ? "refused: outside division access" : service.divisionLimitedPlanOnly },
+    service: { ...service, divisionLimitedPlanOnly: /prices every division/.test(service.divisionLimitedPlanOnly) ? "refused: plan alone prices every division" : service.divisionLimitedPlanOnly },
     dataApi: /row-level security/.test(dataApiRefusal) ? "refused: row-level security" : dataApiRefusal,
   })
+  return { orgId: org.orgId }
+}
+
+// ---------------------------------------------------------------------------
+// Review round 2
+
+async function aVendorsQuoteIsNotRewritableByAMember(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q, buyer = org.team.purchasing
+  const a = await pricedPackage(kit, w, { title: "BID-01 quote fence", costCodeKey: "26-000", bidders: [{ vendor: "Bright Electric", email: "bright@bid01.example.test", amountCents: 2_000_000 }] })
+  const submission = a.submissions["Bright Electric"].id
+  const line = kit.rows(`select id from public.bid_submission_items where bid_submission_id=${q(submission)}`)[0].id
+  const forge = () => ({
+    rewriteLinePrice: dataApi(kit, buyer, `update public.bid_submission_items set amount_cents=1 where id=${q(line)}`),
+    rewriteTotal: dataApi(kit, buyer, `update public.bid_submissions set total_cents=1 where id=${q(submission)}`),
+    deleteLine: dataApi(kit, buyer, `delete from public.bid_submission_items where id=${q(line)}`),
+  })
+  const beforeAward = forge()
+  const awarded = await award(kit, w, submission)
+  const afterAward = forge()
+  const leveling = dataApi(kit, buyer, `update public.bid_submission_items set gc_plug_cents=500, gc_note='Plug' where id=${q(line)}`)
+  await kit.as(buyer, () => app("bids").rescindBidAward({ input: { bid_package_id: a.pkg.id, reason: "Re-award from the stored lines" } }))
+  const reAward = await award(kit, w, submission)
+  eq(check, "a member cannot rewrite, delete or re-price a vendor's quote through the data API, before or after the award; leveling still lands and a re-award mints from the untouched lines", expected.expected, {
+    beforeAward, afterAward, leveling,
+    storedAmountCents: Number(kit.rows(`select amount_cents from public.bid_submission_items where id=${q(line)}`)[0].amount_cents),
+    storedTotalCents: Number(kit.rows(`select total_cents from public.bid_submissions where id=${q(submission)}`)[0].total_cents),
+    firstAwardCents: agreement(kit, awarded.agreementIds[0]).cents,
+    reAwardCents: agreement(kit, reAward.agreementIds[0]).cents,
+  })
+  return { orgId: org.orgId }
+}
+
+async function aRescindAndAnAwardForOneScopeLeaveOneActivePrice(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q, buyer = org.team.purchasing, costCode = org.costCodeIds["22-000"]
+  const bid = (title, vendor, email, amountCents) => pricedPackage(kit, w, { title, costCodeKey: "22-000", bidders: [{ vendor, email, amountCents }] })
+  const incumbent = await bid("BID-01 scope race incumbent", "Coastal Plumbing", "coastal@bid01.example.test", 1_900_000)
+  await award(kit, w, incumbent.submissions["Coastal Plumbing"].id)
+  const replacement = await bid("BID-01 scope race replacement", "Bright Electric", "bright@bid01.example.test", 1_800_000)
+  await award(kit, w, replacement.submissions["Bright Electric"].id)
+  const challenger = await bid("BID-01 scope race challenger", "Palmetto Framing", "palmetto@bid01.example.test", 1_700_000)
+  const awardId = kit.rows(`select id from public.bid_awards where bid_package_id=${q(replacement.pkg.id)} and rescinded_at is null`)[0].id
+  const results = await race(kit, [
+    `set role service_role; select * from public.rescind_bid_award(${q(org.orgId)}, ${q(awardId)}, null, 'BID-01 scope race');`,
+    `set role service_role; select public.run_bid_award_price_agreements(${q(org.orgId)}, ${q(challenger.submissions["Palmetto Framing"].id)}, null, 'Reviewed scope: race', '{}', null);`,
+  ])
+  const active = kit.rows(`select c.name from public.vendor_price_agreements v join public.companies c on c.id = v.company_id where v.org_id=${q(org.orgId)} and v.cost_code_id=${q(costCode)} and v.community_id=${q(w.communityA)} and v.house_plan_id=${q(w.plan.id)} and v.status='active' and (v.effective_to is null or v.effective_to >= current_date)`)
+  eq(check, "a rescind racing an award for the same scope leaves exactly one active price, the challenger's, whichever runs first", expected.expected, { bothSucceeded: results.every((result) => result.ok), activePrices: active.map((row) => row.name) })
   return { orgId: org.orgId }
 }
 
@@ -273,5 +321,7 @@ module.exports = {
     "bid-lines-price-only-their-own-package": bidLinesPriceOnlyTheirOwnPackage,
     "rescind-restores-an-incumbent-the-sweep-expired": rescindRestoresAnIncumbentTheSweepExpired,
     "plan-only-packages-need-unrestricted-division-scope": planOnlyPackagesNeedUnrestrictedDivisionScope,
+    "a-vendors-quote-is-not-rewritable-by-a-member": aVendorsQuoteIsNotRewritableByAMember,
+    "a-rescind-and-an-award-for-one-scope-leave-one-active-price": aRescindAndAnAwardForOneScopeLeaveOneActivePrice,
   },
 }

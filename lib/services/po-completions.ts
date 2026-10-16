@@ -154,15 +154,6 @@ async function createCompletion({
   return data
 }
 
-export async function reportPoCompletion(input: ReportPoCompletionInput, orgId?: string) {
-  const parsed = reportPoCompletionSchema.parse(input)
-  if (parsed.reported_source === "trade_portal") throw new Error("Use the portal completion flow for trade reports.")
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const commitment = await loadCommitment(createServiceSupabaseClient(), resolvedOrgId, parsed.commitment_id)
-  await requireAuthorization({ permission: "po_completion.report", userId, orgId: resolvedOrgId, projectId: commitment.project_id, supabase, logDecision: true })
-  return createCompletion({ input: parsed, orgId: resolvedOrgId, reportedByUserId: userId })
-}
-
 /**
  * Reports every approved variance order on a purchase order that no live completion
  * claims yet, for a completion of its own (no PO line). This is how a variance order
@@ -248,6 +239,14 @@ export async function rejectPoCompletion(completionId: string, reason: string, o
 
 export type ApprovePoCompletionOptions = { inspectionId?: string | null; inspectionWaiverReason?: string | null }
 
+/** What `approve_po_completion` reports: a bill, or (for a net credit) none. */
+const approvalResultSchema = z.object({
+  vendor_bill_id: z.string().uuid().nullable(),
+  amount_cents: z.number().nullable(),
+  credit_cents: z.number().nullish(),
+  waived: z.boolean().optional(),
+})
+
 const approvePoCompletionSchema = z.object({
   inspectionId: z.string().uuid().nullish(),
   inspectionWaiverReason: z.string().trim().min(5, "Say why no passed inspection is needed").max(1000).nullish(),
@@ -276,48 +275,61 @@ export async function approvePoCompletion(completionId: string, orgId?: string, 
     p_org_id: resolvedOrgId, p_completion_id: completionId, p_actor_id: userId,
     p_inspection_id: parsed.inspectionId ?? null, p_waiver_reason: parsed.inspectionWaiverReason ?? null,
   })
-  if (error || !data?.vendor_bill_id) throw new Error(`Failed to approve PO completion: ${error?.message}`)
-  if (data.waived === true) {
+  const result = approvalResultSchema.safeParse(data)
+  if (error || !result.success) throw new Error(`Failed to approve PO completion: ${error?.message ?? "the approval returned no result"}`)
+  const { vendor_bill_id: billId, amount_cents: amountCents, waived } = result.data
+  if (waived) {
     await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, after: { inspection_waived_reason: parsed.inspectionWaiverReason, inspection_waived_by: userId }, critical: true })
   }
+  if (!billId) {
+    // A net credit bills nothing: it stands as an open vendor credit that the next payable on this order nets.
+    const { data: credited } = await supabase.from("po_completions").select("*").eq("org_id", resolvedOrgId).eq("id", completionId).single()
+    await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, before: { ...completion }, after: { ...credited } })
+    await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_completion.credited", entityType: "po_completion", entityId: completionId, payload: { project_id: completion.project_id, credit_cents: result.data.credit_cents } })
+    return credited
+  }
   try {
-    await postJobCostActualsForVendorBill({ billId: data.vendor_bill_id, orgId: resolvedOrgId })
+    await postJobCostActualsForVendorBill({ billId, orgId: resolvedOrgId })
   } catch (ledgerError) {
     // Unwind by rejecting the minted bill, not deleting it: it was numbered and
     // audited, so it stays on record and simply bills nothing (the approval RPC
-    // ignores rejected bills). The completion returns to where it stood.
+    // ignores rejected bills, and the credits it netted are open again). The completion returns to where it
+    // stood, including the inspection or waiver the approval wrote: the next approver gives their own.
     const reason = `AP posting failed: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`
     const now = new Date().toISOString()
     const [{ error: billError }, { error: completionError }] = await Promise.all([
       service.from("vendor_bills").update({ status: "rejected", rejected_at: now, rejected_by: userId, rejection_reason: reason })
-        .eq("org_id", resolvedOrgId).eq("id", data.vendor_bill_id),
-      service.from("po_completions").update({ status: completion.status, vendor_bill_id: null, amount_cents: null, approved_at: null, approved_by: null, change_order_ids: completion.change_order_ids })
-        .eq("org_id", resolvedOrgId).eq("id", completionId),
+        .eq("org_id", resolvedOrgId).eq("id", billId),
+      service.from("po_completions").update({
+        status: completion.status, vendor_bill_id: null, amount_cents: null, approved_at: null, approved_by: null, change_order_ids: completion.change_order_ids,
+        inspection_id: completion.inspection_id, inspection_waived_reason: completion.inspection_waived_reason,
+        inspection_waived_by: completion.inspection_waived_by, inspection_waived_at: completion.inspection_waived_at,
+      }).eq("org_id", resolvedOrgId).eq("id", completionId),
     ])
     if (billError || completionError) {
-      throw new Error(`${reason}. The approval could not be unwound (${billError?.message ?? completionError?.message}); reconcile bill ${data.vendor_bill_id} before retrying.`)
+      throw new Error(`${reason}. The approval could not be unwound (${billError?.message ?? completionError?.message}); reconcile bill ${billId} before retrying.`)
     }
-    await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "vendor_bill", entityId: data.vendor_bill_id, after: { status: "rejected", rejection_reason: reason, po_completion_id: completionId } })
+    await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "vendor_bill", entityId: billId, after: { status: "rejected", rejection_reason: reason, po_completion_id: completionId } })
     throw new Error(`Completion approval was rolled back because ${reason}`)
   }
   try {
-    const syncResult = await enqueueVendorBillSync(data.vendor_bill_id, resolvedOrgId)
+    const syncResult = await enqueueVendorBillSync(billId, resolvedOrgId)
     await recordPayableAccountingEnqueueResult({
       orgId: resolvedOrgId,
-      billId: data.vendor_bill_id,
+      billId,
       entityType: "vendor_bill",
-      entityId: data.vendor_bill_id,
+      entityId: billId,
       result: syncResult,
     })
   } catch (syncError) {
     // The approved bill and ledger posting are authoritative. QBO delivery is
     // retryable infrastructure and must not unwind completed job-cost history.
-    console.error("Failed to enqueue pay-on-PO bill for QBO sync", { billId: data.vendor_bill_id, error: syncError })
+    console.error("Failed to enqueue pay-on-PO bill for QBO sync", { billId, error: syncError })
   }
   const { data: approved } = await supabase.from("po_completions").select("*").eq("org_id", resolvedOrgId).eq("id", completionId).single()
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, before: completion, after: approved ?? data })
-  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_completion.approved", entityType: "po_completion", entityId: completionId, payload: { project_id: completion.project_id, vendor_bill_id: data.vendor_bill_id, amount_cents: data.amount_cents } })
-  return approved ?? data
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, before: { ...completion }, after: { ...approved } })
+  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_completion.approved", entityType: "po_completion", entityId: completionId, payload: { project_id: completion.project_id, vendor_bill_id: billId, amount_cents: amountCents } })
+  return approved
 }
 
 

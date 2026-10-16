@@ -753,6 +753,8 @@ export type RenewalRow = {
   price: PriceLine
   bids: RenewalBid[]
   bestBidSubmissionId: string | null
+  /** An open bid package already pricing this cost code in this scope; a second one would split the bids. */
+  openPackage: { id: string; title: string } | null
 }
 
 const RENEWAL_PACKAGE_CAP = 300
@@ -783,15 +785,18 @@ export async function getRenewalCandidates(filters: Partial<RenewalFilters> = {}
     communityIds.length ? `community_id.in.(${communityIds.join(",")})` : null,
     planIds.length ? `house_plan_id.in.(${planIds.join(",")})` : null,
   ].filter((value): value is string => value !== null)
-  const empty = { rows: expiring.items.map((agreement): RenewalRow => ({ agreement, price: agreementPrice(agreement), bids: [], bestBidSubmissionId: null })), count: expiring.count, page: expiring.page, pageSize: expiring.pageSize }
-  if (scopeFilters.length === 0) return empty
+  const unbid = (openPackageOf: (agreement: PriceAgreement) => RenewalRow["openPackage"]) => ({
+    rows: expiring.items.map((agreement): RenewalRow => ({ agreement, price: agreementPrice(agreement), bids: [], bestBidSubmissionId: null, openPackage: openPackageOf(agreement) })),
+    count: expiring.count, page: expiring.page, pageSize: expiring.pageSize,
+  })
+  if (scopeFilters.length === 0) return unbid(() => null)
 
   const { data: packages, error: packageError } = await supabase.from("bid_packages").select("id, title, community_id, house_plan_id")
     .eq("org_id", resolvedOrgId).eq("award_target", "price_agreement").in("status", OPEN_BID_STATUSES)
     .or(scopeFilters.join(",")).order("created_at", { ascending: false }).limit(RENEWAL_PACKAGE_CAP)
   if (packageError) throw new Error(`Failed to load replacement bid packages: ${packageError.message}`)
   const packageIds = (packages ?? []).map((row) => row.id)
-  if (packageIds.length === 0) return empty
+  if (packageIds.length === 0) return unbid(() => null)
 
   const [{ data: scopeItems, error: scopeError }, { data: invites, error: inviteError }] = await Promise.all([
     supabase.from("bid_scope_items").select("id, bid_package_id, cost_code_id, unit")
@@ -801,18 +806,28 @@ export async function getRenewalCandidates(filters: Partial<RenewalFilters> = {}
   ])
   if (scopeError) throw new Error(`Failed to load replacement bid scope: ${scopeError.message}`)
   if (inviteError) throw new Error(`Failed to load replacement bidders: ${inviteError.message}`)
-  if (!scopeItems?.length || !invites?.length) return empty
+  const packageById = new Map((packages ?? []).map((row) => [row.id, row]))
+  const openPackageOf = (agreement: PriceAgreement): RenewalRow["openPackage"] => {
+    for (const scope of scopeItems ?? []) {
+      const pkg = packageById.get(scope.bid_package_id)
+      if (pkg && scope.cost_code_id === agreement.cost_code_id
+        && (pkg.community_id ?? null) === (agreement.community_id ?? null) && (pkg.house_plan_id ?? null) === (agreement.house_plan_id ?? null)) {
+        return { id: pkg.id, title: pkg.title }
+      }
+    }
+    return null
+  }
+  if (!scopeItems?.length || !invites?.length) return unbid(openPackageOf)
 
   const { data: submissions, error: submissionError } = await supabase.from("bid_submissions").select("id, bid_invite_id")
     .eq("org_id", resolvedOrgId).eq("is_current", true).in("status", ["submitted", "revised"]).in("bid_invite_id", invites.map((row) => row.id))
   if (submissionError) throw new Error(`Failed to load replacement bids: ${submissionError.message}`)
-  if (!submissions?.length) return empty
+  if (!submissions?.length) return unbid(openPackageOf)
   const { data: items, error: itemError } = await supabase.from("bid_submission_items")
     .select("bid_submission_id, bid_scope_item_id, amount_cents, unit_rate_cents, quantity")
     .eq("org_id", resolvedOrgId).eq("response", "priced").in("bid_submission_id", submissions.map((row) => row.id)).in("bid_scope_item_id", scopeItems.map((row) => row.id))
   if (itemError) throw new Error(`Failed to load replacement bid prices: ${itemError.message}`)
 
-  const packageById = new Map((packages ?? []).map((row) => [row.id, row]))
   const scopeById = new Map(scopeItems.map((row) => [row.id, row]))
   const inviteById = new Map(invites.map((row) => [row.id, row]))
   const submissionById = new Map(submissions.map((row) => [row.id, row]))
@@ -842,7 +857,7 @@ export async function getRenewalCandidates(filters: Partial<RenewalFilters> = {}
       const comparison = bestComparableBid(price, [{ price: bid.price }])
       return { ...bid, deltaCents: comparison?.comparison.deltaCents ?? null, deltaPct: comparison?.comparison.deltaPct ?? null }
     })
-    return { agreement, price, bids, bestBidSubmissionId: best ? best.bid.bid.submissionId : null }
+    return { agreement, price, bids, bestBidSubmissionId: best ? best.bid.bid.submissionId : null, openPackage: openPackageOf(agreement) }
   })
   return { rows, count: expiring.count, page: expiring.page, pageSize: expiring.pageSize }
 }

@@ -277,19 +277,26 @@ test("quantity an approved variance order added counts as ordered; a credit or a
   assert.deepEqual([Number(row.ordered), Number(row.outstanding), row.state], [120, 0, "received"])
 })
 
-test("the receiver voids their own ticket the same day; anyone else needs purchasing", async (t) => {
+test("the receiver voids their own ticket within a day of entering it, whatever received_at says; anyone else needs purchasing", async (t) => {
   const f = await fixture(t)
   const mine = await receive(f, [{ line: f.studs, quantity: 10 }])
   const void_ = (actor, receipt, any = false) => rpc(f.db, "void_po_receipt", {
     p_org_id: f.orgId, p_actor_id: actor.userId, p_receipt_id: receipt, p_reason: "Wrong PO", p_any_receipt: any,
   })
-  await assert.rejects(void_(f.owner, mine.id), /Only the person who received it, the same day, or purchasing/)
+  await assert.rejects(void_(f.owner, mine.id), /Only the person who received it, within 24 hours of entering it, or purchasing/)
   await void_(f.superintendent, mine.id)
   const old = await receive(f, [{ line: f.studs, quantity: 5 }])
   await f.db.exec("set session_replication_role = replica")
   await f.db.query("update po_receipts set received_at = now() - interval '2 days' where id = $1", [old.id])
   await f.db.exec("set session_replication_role = origin")
-  await assert.rejects(void_(f.superintendent, old.id), /same day/)
+  // A backdated received_at does not close the window: the entry time does.
+  const backdated = await receive(f, [{ line: f.studs, quantity: 1 }])
+  await f.db.exec("set session_replication_role = replica")
+  await f.db.query("update po_receipts set received_at = now() - interval '5 days' where id = $1", [backdated.id])
+  await f.db.query("update po_receipts set created_at = now() - interval '2 days' where id = $1", [old.id])
+  await f.db.exec("set session_replication_role = origin")
+  await void_(f.superintendent, backdated.id)
+  await assert.rejects(void_(f.superintendent, old.id), /within 24 hours/)
   await void_(f.buyer, old.id, true)
   assert.equal(Number((await rowFor(f, f.studs)).received), 0)
 })

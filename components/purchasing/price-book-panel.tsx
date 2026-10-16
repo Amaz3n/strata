@@ -107,11 +107,15 @@ export function PriceBookPanel({ health, agreements, agreementCount, renewals, c
             <TableCell><div className="font-medium">{row.agreement.company_name}</div><div className="text-xs text-muted-foreground"><span className="font-mono">{row.agreement.cost_code_code}</span> {row.agreement.cost_code_name} · {scope}</div></TableCell>
             <TableCell className="text-right tabular-nums">{money(row.price.cents)}</TableCell>
             <TableCell className="text-xs tabular-nums">{row.agreement.effective_to}</TableCell>
-            <TableCell className="text-sm">{row.bids.length === 0 ? <span className="text-muted-foreground">None yet</span> : `${row.bids.length} bid${row.bids.length === 1 ? "" : "s"}`}</TableCell>
+            <TableCell className="text-sm">{row.bids.length === 0
+              ? <span className="text-muted-foreground">{row.openPackage ? "Awaiting bids" : "None yet"}</span>
+              : <>{`${row.bids.length} bid${row.bids.length === 1 ? "" : "s"}`}{!best && <span className="block text-xs text-muted-foreground">Priced by a different unit or kind; not comparable</span>}</>}</TableCell>
             <TableCell className="text-right tabular-nums">{best ? <><span>{money(best.price.cents)}</span><span className="block text-xs text-muted-foreground">{best.companyName}</span></> : "—"}</TableCell>
             <TableCell className={`text-right tabular-nums ${best && best.deltaCents !== null && best.deltaCents > 0 ? "text-destructive" : best && best.deltaCents !== null && best.deltaCents < 0 ? "text-success" : ""}`}>{best ? pct(best.deltaPct) : "—"}</TableCell>
             <TableCell className="text-right">{best
               ? <Button size="sm" variant="outline" asChild><Link href={`/purchasing/bids/${best.packageId}`}>Compare</Link></Button>
+              : row.openPackage
+              ? <Button size="sm" variant="outline" asChild><Link href={`/purchasing/bids/${row.openPackage.id}`}>Open package</Link></Button>
               : (row.agreement.community_id || row.agreement.house_plan_id) && <CreateProductionBidDialog variant="outline" label="Request bids" prefill={{
                   title: `${row.agreement.cost_code_name} renewal`,
                   community: row.agreement.community_id ? { id: row.agreement.community_id, name: row.agreement.community_name ?? "Community", detail: "" } : null,

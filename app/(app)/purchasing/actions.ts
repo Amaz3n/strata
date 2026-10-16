@@ -8,6 +8,7 @@ import { approveCommitmentChangeOrder, rejectVarianceOrder } from "@/lib/service
 import { approvePoCompletion, rejectPoCompletion, verifyPoCompletion } from "@/lib/services/po-completions"
 import { dismissPoException, generatePurchaseOrders, resolvePoException } from "@/lib/services/po-generation"
 import { createPriceAgreement, getAgreementImpact, repriceAgreement, setAgreementEnd, voidPriceAgreement } from "@/lib/services/price-book"
+import { poExceptionResolutionSchema, poGenerationInputSchema } from "@/lib/validation/po-generation"
 import { agreementEndSchema, agreementVoidSchema } from "@/lib/validation/price-book"
 import { getPoExceptionCandidates, searchPurchasingEntities } from "@/lib/services/purchasing-workspace"
 
@@ -70,11 +71,11 @@ export async function generatePurchaseOrdersAction(input: unknown) {
   const projectId = typeof input === "object" && input !== null && typeof Reflect.get(input, "projectId") === "string"
     ? String(Reflect.get(input, "projectId"))
     : undefined
-  return await run(() => generatePurchaseOrders(input as Parameters<typeof generatePurchaseOrders>[0]), projectId)
+  return await run(() => generatePurchaseOrders(poGenerationInputSchema.parse(input)), projectId)
 }
 
 export async function resolvePoExceptionAction(exceptionId: string, input: unknown) {
-  return await run(() => resolvePoException(z.string().uuid().parse(exceptionId), input as Parameters<typeof resolvePoException>[1]))
+  return await run(() => resolvePoException(z.string().uuid().parse(exceptionId), poExceptionResolutionSchema.parse(input)))
 }
 
 export async function dismissPoExceptionAction(exceptionId: string, note: string) {

@@ -12,7 +12,10 @@
 //   po-zero-price-needs-a-reason                  a $0 manual price is refused without a reason and accepted with one
 //   race-po-competing-commits                     two sessions commit one preview: one run, one set of orders
 //   race-po-duplicate-resolution                  two sessions resolve one exception: one order, one refusal, no failed run
-//   race-po-approval-against-regeneration         an approval and a regeneration at once never orphan an approved order
+//   po-canceled-order-is-reordered                a canceled order stays as it was and its lines are ordered again on a new draft
+//   po-deleted-draft-is-repaired                  a draft order a member deleted is re-created from the same lines by the next commit
+//   po-order-with-history-is-preserved            an order returned to draft after it was issued, answered and had a voided receipt is kept whole and reported; the run succeeds
+//   race-po-approval-against-regeneration         an approval (through the approval service) and a regeneration at once never leave an approved order whose total differs from its lines
 //   race-po-release-against-resolution            the starts release and a buyer's resolution at once order each line once
 //
 // Expected values are in expected/PO-01.json.
@@ -29,6 +32,7 @@ const named = (message, table) => {
   for (const [label, pattern] of Object.entries(table)) if (pattern.test(message)) return label
   return message
 }
+const OVERRIDE = "Acceptance trade: no prequalification on file for this vendor."
 const REFUSALS = {
   "already resolved": /already been resolved or dismissed/,
   "preview again": /preview again|changed since the preview/,
@@ -41,6 +45,8 @@ const REFUSALS = {
 // start gates need a clean price check. Each subcase therefore builds its own organisation and home.
 async function home(kit) {
   const org = await seed.productionBuilder(kit, { name: `PO-01 purchasing ${randomUUID().slice(0, 8)}` })
+  // The seed's trade companies carry no directory role; a manual price needs a vendor, as a real one is.
+  kit.sql(`insert into public.party_roles(org_id,company_id,relationship_type_id,status,source) select ${kit.q(org.orgId)}, c.id, t.id, 'active', 'system' from public.companies c join public.directory_relationship_types t on t.org_id=c.org_id and t.key='subcontractor' where c.org_id=${kit.q(org.orgId)}`)
   await seed.seedCommunity(kit, org)
   await seed.seedProduct(kit, org)
   await seed.takeDownTranche(kit, org)
@@ -65,11 +71,11 @@ const orders = (kit, h) => kit.rows(`select c.id, co.name vendor, c.status, c.to
 /** The invariants every outcome must satisfy, however sessions interleaved. */
 function shape(kit, h) {
   const row = kit.rows(`select
-    (select count(*)::int from (select l.metadata->>'source_ref' k from public.commitment_lines l join public.commitments c on c.id=l.commitment_id where c.project_id=${kit.q(h.projectId)} and c.metadata->>'source'='po_generation' and c.status not in ('voided','rejected') group by 1 having count(*)>1) d) duplicate_sources,
+    (select count(*)::int from (select l.metadata->>'source_ref' k from public.commitment_lines l join public.commitments c on c.id=l.commitment_id where c.project_id=${kit.q(h.projectId)} and c.metadata->>'source'='po_generation' and c.status <> 'canceled' group by 1 having count(*)>1) d) duplicate_sources,
     (select count(*)::int from public.commitments c where c.project_id=${kit.q(h.projectId)} and c.metadata->>'source'='po_generation' and not exists (select 1 from public.commitment_lines l where l.commitment_id=c.id)) orders_without_lines,
     (select count(*)::int from public.budgets b where b.project_id=${kit.q(h.projectId)} and b.metadata->>'source'='po_generation') budgets,
     (select coalesce(sum(bl.amount_cents),0)::bigint from public.budget_lines bl join public.budgets b on b.id=bl.budget_id where b.project_id=${kit.q(h.projectId)} and b.metadata->>'source'='po_generation') budget_cents,
-    (select coalesce(sum(l.scheduled_value_cents),0)::bigint from public.commitment_lines l join public.commitments c on c.id=l.commitment_id where c.project_id=${kit.q(h.projectId)} and c.metadata->>'source'='po_generation' and c.status not in ('voided','rejected')) committed_cents,
+    (select coalesce(sum(l.scheduled_value_cents),0)::bigint from public.commitment_lines l join public.commitments c on c.id=l.commitment_id where c.project_id=${kit.q(h.projectId)} and c.metadata->>'source'='po_generation' and c.status <> 'canceled') committed_cents,
     (select count(*)::int from public.po_generation_runs where project_id=${kit.q(h.projectId)} and status='failed' and error ~ 'already been resolved|duplicate key') failed_for_races`)[0]
   return {
     oneOrderPerSourceLine: Number(row.duplicate_sources) === 0, noOrderWithoutLines: Number(row.orders_without_lines) === 0,
@@ -229,6 +235,80 @@ async function raceDuplicateResolution(kit, expected, check) {
   return { orgId: h.org.orgId, projectId: h.projectId }
 }
 
+async function canceledOrderIsReordered(kit, expected, check) {
+  const h = await home(kit)
+  await issue(kit, h)
+  const before = orders(kit, h)
+  const target = before[0]
+  kit.sql(`update public.commitments set status='canceled' where id=${kit.q(target.id)}`)
+  const seen = await preview(h)
+  const result = await commit(h, seen.inputFingerprint)
+  const after = orders(kit, h)
+  const replacement = after.find((row) => row.id !== target.id && row.vendor === target.vendor && row.status === "draft")
+  equal(check, "a canceled order is left exactly as it was; its lines are ordered again on a new draft order for the same vendor with the same total, under a number never used before", expected.expected, {
+    runSucceeded: result.status === "succeeded" || result.status === "succeeded_with_exceptions",
+    canceledOrderUntouched: after.find((row) => row.id === target.id)?.status === "canceled" && after.find((row) => row.id === target.id)?.total_cents === target.total_cents,
+    canceledOrderKeepsItsLines: Number(kit.rows(`select count(*)::int n from public.commitment_lines where commitment_id=${kit.q(target.id)}`)[0].n) > 0,
+    replacementDraftSameTotal: replacement?.total_cents === target.total_cents,
+    replacementHasNewNumber: Boolean(replacement) && !before.some((row) => row.contract_number === replacement.contract_number),
+    orderCount: after.length - before.length,
+    ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function deletedDraftIsRepaired(kit, expected, check) {
+  const h = await home(kit)
+  await issue(kit, h)
+  const before = orders(kit, h)
+  const target = before[0]
+  kit.sql(`delete from public.commitments where id=${kit.q(target.id)}`)
+  const seen = await preview(h)
+  const result = await commit(h, seen.inputFingerprint)
+  const after = orders(kit, h)
+  equal(check, "an identical commit after a member deleted a draft order does not trust the last run: the order is re-created from the same lines with the same total, and the house is whole again", expected.expected, {
+    repairedNotShortCircuited: result.alreadyGenerated !== true,
+    orderCountRestored: after.length === before.length,
+    totalsRestored: after.reduce((sum, row) => sum + Number(row.total_cents), 0) === before.reduce((sum, row) => sum + Number(row.total_cents), 0),
+    vendorOrderBack: after.some((row) => row.vendor === target.vendor && row.total_cents === target.total_cents),
+    ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function orderWithHistoryIsPreserved(kit, expected, check) {
+  const h = await home(kit)
+  await issue(kit, h)
+  const framing = orders(kit, h).find((row) => row.vendor === "Palmetto Framing")
+  const approve = (id) => kit.as(h.org.owner, () => app("commitments").updateCommitment({ commitmentId: id, input: { status: "approved", prequal_override_note: OVERRIDE } }))
+  // Issued (an issue version is written), received against then the receipt voided, and returned to draft.
+  await approve(framing.id)
+  const lineId = kit.rows(`select id from public.commitment_lines where commitment_id=${kit.q(framing.id)} order by id limit 1`)[0].id
+  const receiptId = randomUUID()
+  kit.sql(`insert into public.po_receipts(id,org_id,project_id,commitment_id,idempotency_key,status,voided_by,voided_at,void_reason) values(${kit.q(receiptId)},${kit.q(h.org.orgId)},${kit.q(h.projectId)},${kit.q(framing.id)},${kit.q(`po-01-${receiptId}`)},'void',${kit.q(h.buyer.userId)},now(),'PO-01 fixture');
+    insert into public.po_receipt_lines(org_id,project_id,receipt_id,commitment_id,commitment_line_id,quantity_received) values(${kit.q(h.org.orgId)},${kit.q(h.projectId)},${kit.q(receiptId)},${kit.q(framing.id)},${kit.q(lineId)},1)`)
+  await kit.as(h.org.owner, () => app("commitments").updateCommitment({ commitmentId: framing.id, input: { status: "draft" } }))
+  const counts = () => kit.rows(`select (select count(*)::int from public.po_issue_versions where commitment_id=${kit.q(framing.id)}) versions, (select count(*)::int from public.po_receipts where commitment_id=${kit.q(framing.id)}) receipts, (select count(*)::int from public.commitment_lines where commitment_id=${kit.q(framing.id)}) lines`)[0]
+  const historyBefore = counts()
+  await kit_as(h, () => app("price-book").repriceAgreement(agreementOf(kit, h, "Palmetto Framing"), { effective_from: kit.rows("select current_date::text d")[0].d, unit_cost_cents: Number(kit.rows(`select unit_cost_cents u from public.vendor_price_agreements where id=${kit.q(agreementOf(kit, h, "Palmetto Framing"))}`)[0].u) + 100, reason: "PO-01 price moved" }))
+  const seen = await preview(h)
+  const result = await commit(h, seen.inputFingerprint)
+  const after = orders(kit, h)
+  const kept = after.find((row) => row.id === framing.id)
+  const reportedFor = (reply) => reply.preservedChanged.some((change) => change.commitmentId === framing.id)
+  equal(check, "an order returned to draft after it was issued and had a voided receipt is neither deleted nor re-ordered: the commit succeeds, its lines and total stay, its issue and receipt history stay, and the repricing is reported", expected.expected, {
+    runSucceeded: result.status === "succeeded" || result.status === "succeeded_with_exceptions",
+    orderStillADraft: kept?.status === "draft",
+    totalUnchanged: kept?.total_cents === framing.total_cents,
+    historyUnchanged: JSON.stringify(counts()) === JSON.stringify(historyBefore) && historyBefore.versions >= 1 && historyBefore.receipts === 1,
+    previewReportsIt: reportedFor(seen),
+    commitReportsIt: reportedFor(result),
+    orderCountUnchanged: after.length === orders(kit, h).length && after.filter((row) => row.vendor === "Palmetto Framing").length === 1,
+    ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
 async function raceApprovalAgainstRegeneration(kit, expected, check) {
   const h = await home(kit)
   await issue(kit, h)
@@ -237,12 +317,14 @@ async function raceApprovalAgainstRegeneration(kit, expected, check) {
   const seen = await preview(h)
   const [regeneration, approval] = await Promise.all([
     commit(h, seen.inputFingerprint).then(() => "regenerated", (error) => named(error.message, REFUSALS)),
-    race(kit, [`update public.commitments set status='approved' where id='${target.id}' and status='draft';`]).then((results) => results[0].ok),
+    kit.as(h.org.owner, () => app("commitments").updateCommitment({ commitmentId: target.id, input: { status: "approved", prequal_override_note: OVERRIDE } })).then(() => "approved", (error) => error.message),
   ])
   const approvedOrders = orders(kit, h).filter((row) => row.status === "approved")
-  equal(check, "an approval racing a regeneration is serial-equivalent: the approved order, if any, keeps its lines and its price, and no order is orphaned or ordered twice", expected.expected, {
-    regeneration, approvalStatementRan: approval,
+  const lineSum = (id) => Number(kit.rows(`select coalesce(sum(scheduled_value_cents),0)::bigint n from public.commitment_lines where commitment_id=${kit.q(id)}`)[0].n)
+  equal(check, "an approval through the approval service racing a regeneration is serial-equivalent: it is approved or told plainly to try again, never with a raw database error, and no approved order has a total different from its lines or no lines at all", expected.expected, {
+    regeneration, approvalWithoutRawError: approval === "approved" || !/violates|duplicate key|deadlock|internal/i.test(approval),
     everyApprovedOrderHasLines: approvedOrders.every((row) => kit.rows(`select count(*)::int n from public.commitment_lines where commitment_id=${kit.q(row.id)}`)[0].n > 0),
+    everyApprovedTotalEqualsItsLines: approvedOrders.every((row) => Number(row.total_cents) === lineSum(row.id)),
     ...shape(kit, h),
   })
   return { orgId: h.org.orgId, projectId: h.projectId }
@@ -270,6 +352,9 @@ const subcases = {
   "po-dismissed-exceptions-stay-dismissed": dismissedExceptionsStayDismissed,
   "po-resolutions-keep-one-budget": resolutionsKeepOneBudget,
   "po-zero-price-needs-a-reason": zeroPriceNeedsAReason,
+  "po-canceled-order-is-reordered": canceledOrderIsReordered,
+  "po-deleted-draft-is-repaired": deletedDraftIsRepaired,
+  "po-order-with-history-is-preserved": orderWithHistoryIsPreserved,
   "race-po-competing-commits": raceCompetingCommits,
   "race-po-duplicate-resolution": raceDuplicateResolution,
   "race-po-approval-against-regeneration": raceApprovalAgainstRegeneration,

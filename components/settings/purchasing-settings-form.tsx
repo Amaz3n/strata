@@ -61,7 +61,6 @@ export function PurchasingSettingsForm({ settings, reasons, canWrite }: { settin
     pay_on_po_enabled: settings.pay_on_po_enabled,
     po_completion_requires_verification: settings.po_completion_requires_verification,
     po_completion_requires_inspection: settings.po_completion_requires_inspection,
-    vpo_reason_code_required: settings.vpo_reason_code_required,
   })
   const [bands, setBands] = useState<BandDraft[]>(settings.vpo_approval_thresholds.map((band) => ({ limit: toDollars(band.up_to_cents), permission: band.permission })))
   const [evidenceRequired, setEvidenceRequired] = useState(settings.vpo_evidence_required_over_cents !== null)
@@ -116,7 +115,6 @@ export function PurchasingSettingsForm({ settings, reasons, canWrite }: { settin
       </Section>
 
       <Section title="Variance orders" detail="Who may approve a variance order, and what must be on file first. A back-charge always needs the large-order approver and evidence.">
-        <ToggleRow label="A reason is required on every purchase-order change" detail="Reasons drive the variance report. Turn off only if changes are tracked elsewhere." checked={flags.vpo_reason_code_required} disabled={locked} onChange={setFlag("vpo_reason_code_required")} />
         <div>
           <Label className="text-sm font-medium">Approval bands</Label>
           <p className="mt-0.5 text-xs text-muted-foreground">An order is approved by someone holding the permission of the first band its amount fits. The last band has no limit.</p>

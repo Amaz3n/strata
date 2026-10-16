@@ -76,7 +76,7 @@ export interface CommitmentChangeOrderSummary {
   prime_change_order_id?: string | null
   metadata?: Record<string, any>
   created_at: string
-  updated_at?: string | null
+  updated_at: string
   lines: CommitmentChangeOrderLine[]
   source_change_order_id?: string | null
   source_change_order_title?: string | null
@@ -141,9 +141,13 @@ async function decisionPermission(client: SupabaseClient, orgId: string, order: 
     }),
     isBackcharge,
     evidenceOverCents: settings && "vpo_evidence_required_over_cents" in settings
-      ? settings.vpo_evidence_required_over_cents as number | null
+      ? numberOrNull(settings.vpo_evidence_required_over_cents)
       : DEFAULT_VPO_EVIDENCE_REQUIRED_OVER_CENTS,
   }
+}
+
+function numberOrNull(value: unknown) {
+  return typeof value === "number" ? value : null
 }
 
 function mapLine(row: any): CommitmentChangeOrderLine {
@@ -197,7 +201,7 @@ function mapSummary(row: any, lines: CommitmentChangeOrderLine[] = []): Commitme
     signature_envelope_id: row.signature_envelope_id ?? null,
     metadata,
     created_at: row.created_at,
-    updated_at: row.updated_at ?? null,
+    updated_at: row.updated_at,
     lines,
     prime_change_order_id: row.prime_change_order_id ?? null,
     source_change_order_id: row.prime_change_order_id ?? null,
@@ -224,7 +228,19 @@ async function loadParentCommitment(
     throw new Error(`Commitment not found: ${error?.message ?? "not found"}`)
   }
 
-  return data as unknown as ParentCommitmentRow
+  const company = Array.isArray(data.company) ? data.company[0] : data.company
+  return { ...data, company: company ?? null }
+}
+
+/**
+ * The purchase order or subcontract an order sits on, with the home it is raised against checked: an order
+ * is authorized against its own project, so one that names a project other than its commitment's is refused
+ * before anything is written on its behalf.
+ */
+async function loadOrderCommitment(orgId: string, order: Pick<CommitmentChangeOrderSummary, "commitment_id" | "project_id">) {
+  const commitment = await loadParentCommitment(orgId, order.commitment_id)
+  if (commitment.project_id !== order.project_id) throw new Error("This change order is not on its commitment's home.")
+  return commitment
 }
 
 async function loadRowsByIds(
@@ -502,7 +518,7 @@ export async function listVarianceOrders(filters: PurchasingQueueFilters & {
     let query = reader.from("commitment_change_orders").select(
       `${select}, ${purchasingQueueProjectSelect("", scope, parsed.communityId)}`,
       count ? { count: "exact" } : undefined,
-    ).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).not("reason_code_id", "is", null)
+    ).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).eq("commitment.commitment_type", "purchase_order")
     if (parsed.status === "pending") query = query.in("status", ["draft", "sent"])
     else if (parsed.status) query = query.eq("status", parsed.status)
     if (parsed.reasonCodeId) query = query.eq("reason_code_id", parsed.reasonCodeId)
@@ -517,7 +533,7 @@ export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   let projectIds: string[] | null = null
   if (scope.divisionIds) {
     // Only the homes that have a matching order can appear, so the division lens resolves over those.
-    const candidates = await readAllRows<{ project_id: string }>((rangeFrom, rangeTo) => orders("project_id", false, null)
+    const candidates = await readAllRows<{ project_id: string }>((rangeFrom, rangeTo) => orders("project_id, commitment:commitments!inner(commitment_type)", false, null)
       .order("id").range(rangeFrom, rangeTo).returns<{ project_id: string }[]>(), { cap: 100001, pageSize: 1000, label: "Failed to scope variance orders" })
     if (candidates.truncated) throw new Error("Too many variance orders to scope; narrow the division or community lens")
     projectIds = await projectIdsInDivisions(reader, resolvedOrgId, [...new Set(candidates.rows.map((row) => row.project_id))], scope.divisionIds)
@@ -529,7 +545,7 @@ export async function listVarianceOrders(filters: PurchasingQueueFilters & {
     id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
     approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id,
     prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, evidence_file_ids, metadata, created_at, updated_at,
-    commitment:commitments(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
+    commitment:commitments!inner(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
   `, true, projectIds).order("created_at", { ascending: false }).order("id", { ascending: false })
     .range(from, from + parsed.pageSize - 1)
   if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
@@ -544,6 +560,7 @@ export async function rejectVarianceOrder({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const existing = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, commitmentChangeOrderId)
   if (!existing?.reason_code_id) throw new Error("Variance order not found")
+  await loadOrderCommitment(resolvedOrgId, existing)
   const { permission } = await decisionPermission(supabase, resolvedOrgId, existing)
   await requireAuthorization({
     permission, userId, orgId: resolvedOrgId, projectId: existing.project_id,
@@ -560,7 +577,7 @@ export async function rejectVarianceOrder({
   if (!rejectedRows?.length) throw new Error("This variance order changed while you were reviewing it. Reload and try again.")
   const rejected = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, commitmentChangeOrderId)
   if (!rejected) throw new Error("Rejected variance order could not be reloaded")
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, before: existing as any, after: rejected as any })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, before: { ...existing }, after: { ...rejected } })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "vpo.rejected", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, payload: { project_id: rejected.project_id } })
   return rejected
 }
@@ -599,10 +616,9 @@ export async function createCommitmentChangeOrder({
   if (parsed.reason_code_id && commitment.commitment_type !== "purchase_order") {
     throw new Error("Variance orders can only be created against purchase orders.")
   }
+  // Every change to a purchase order is a variance order: it carries a reason and is decided under the variance controls.
   if (commitment.commitment_type === "purchase_order" && !parsed.reason_code_id) {
-    const { data: settings } = await supabase.from("purchasing_settings")
-      .select("vpo_reason_code_required").eq("org_id", resolvedOrgId).maybeSingle()
-    if (settings?.vpo_reason_code_required !== false) throw new Error("A variance reason is required for purchase-order changes.")
+    throw new Error("A variance reason is required for purchase-order changes.")
   }
   if (parsed.reason_code_id) {
     const { data: reason, error: reasonError } = await supabase.from("variance_reason_codes")
@@ -653,7 +669,7 @@ export async function createCommitmentChangeOrder({
     action: "insert",
     entityType: "commitment_change_order",
     entityId: created.id,
-    after: created as any,
+    after: { ...created },
   })
 
   await recordEvent({
@@ -685,6 +701,7 @@ export async function updateCommitmentChangeOrder({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const existing = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
+  await loadOrderCommitment(resolvedOrgId, existing)
 
   await requireAuthorization({
     permission: "commitment.write",
@@ -747,7 +764,7 @@ export async function updateCommitmentChangeOrder({
   const { error } = await writer.rpc("revise_commitment_change_order", {
     p_org_id: resolvedOrgId,
     p_id: commitmentChangeOrderId,
-    p_expected_updated_at: existing.updated_at ?? null,
+    p_expected_updated_at: existing.updated_at,
     p_patch: {
       title: parsed.title ?? existing.title,
       description: parsed.description ?? existing.description ?? null,
@@ -772,8 +789,8 @@ export async function updateCommitmentChangeOrder({
     action: "update",
     entityType: "commitment_change_order",
     entityId: commitmentChangeOrderId,
-    before: existing as any,
-    after: updated as any,
+    before: { ...existing },
+    after: { ...updated },
   })
 
   return updated
@@ -793,6 +810,7 @@ export async function attachVarianceOrderEvidence({ commitmentChangeOrderId, fil
   const reader = createServiceSupabaseClient()
   const existing = await loadSingle(reader, resolvedOrgId, commitmentChangeOrderId)
   if (!existing?.reason_code_id) throw new Error("Variance order not found")
+  await loadOrderCommitment(resolvedOrgId, existing)
   const asker = { userId, orgId: resolvedOrgId, projectId: existing.project_id, supabase, resourceType: "commitment_change_order", resourceId: commitmentChangeOrderId }
   const requester = await authorize({ ...asker, permission: "vpo.request" })
   if (!requester.allowed) await requireAuthorization({ ...asker, permission: "vpo.approve", logDecision: true })
@@ -801,13 +819,13 @@ export async function attachVarianceOrderEvidence({ commitmentChangeOrderId, fil
   if (evidence.length > 20) throw new Error("A variance order carries at most 20 evidence files.")
   await assertProjectFiles(reader, resolvedOrgId, existing.project_id, evidence, "cost evidence")
   const { error } = await reader.rpc("revise_commitment_change_order", {
-    p_org_id: resolvedOrgId, p_id: commitmentChangeOrderId, p_expected_updated_at: existing.updated_at ?? null,
+    p_org_id: resolvedOrgId, p_id: commitmentChangeOrderId, p_expected_updated_at: existing.updated_at,
     p_patch: { evidence_file_ids: evidence }, p_lines: null,
   })
   if (error) throw new Error(`Failed to attach evidence: ${error.message}`)
   const updated = await loadSingle(reader, resolvedOrgId, commitmentChangeOrderId)
   if (!updated) throw new Error("Failed to reload commitment change order")
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, before: existing as any, after: updated as any })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, before: { ...existing }, after: { ...updated } })
   return updated
 }
 
@@ -823,6 +841,12 @@ export async function approveCommitmentChangeOrder({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const existing = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
+  const commitment = await loadOrderCommitment(resolvedOrgId, existing)
+  // A change to a purchase order is approved as a variance order, with its reason: that is what puts it
+  // under the band, the evidence rule and the requester/approver split.
+  if (commitment.commitment_type === "purchase_order" && !existing.reason_code_id) {
+    throw new Error("A purchase-order change without a variance reason cannot be approved. Void it and raise a variance order.")
+  }
 
   const approval = { status: existing.status, isVariance: Boolean(existing.reason_code_id), approverId: userId }
   const blocked = vpoApprovalBlockReason({ ...approval, requestedBy: null })
@@ -875,8 +899,8 @@ export async function approveCommitmentChangeOrder({
     approved_note: note ?? (existing.metadata ?? {}).approved_note ?? null,
   }
 
-  // Conditional on the status (and total) the approval band was computed from:
-  // a concurrent reject, void or line edit makes this update miss instead of
+  // Conditional on the status, total and revision the band and the evidence were checked against:
+  // a concurrent reject, void, line edit or evidence replacement makes this update miss instead of
   // approving something nobody reviewed.
   const { data: approvedRows, error } = await service
     .from("commitment_change_orders")
@@ -891,6 +915,7 @@ export async function approveCommitmentChangeOrder({
     .eq("id", commitmentChangeOrderId)
     .eq("status", existing.status)
     .eq("total_cents", existing.total_cents)
+    .eq("updated_at", existing.updated_at)
     .select("id")
 
   if (error) {
@@ -923,8 +948,8 @@ export async function approveCommitmentChangeOrder({
     action: "update",
     entityType: "commitment_change_order",
     entityId: commitmentChangeOrderId,
-    before: existing as any,
-    after: approved as any,
+    before: { ...existing },
+    after: { ...approved },
     critical: true,
   })
 
@@ -946,6 +971,7 @@ export async function voidCommitmentChangeOrder({
   const reader = createServiceSupabaseClient()
   const existing = await loadSingle(reader, resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
+  await loadOrderCommitment(resolvedOrgId, existing)
 
   // Voiding takes an order out of (or puts a credit back into) what the purchase order authorizes, so a
   // variance order needs the permission its amount needs to approve, exactly like a decision.
@@ -963,37 +989,14 @@ export async function voidCommitmentChangeOrder({
 
   if (existing.status === "voided") return existing
   if (existing.status === "rejected") throw new Error("A rejected change order is already closed.")
-  if (existing.status === "approved") {
-    const { count, error: claimError } = await reader.from("po_completions").select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId).eq("commitment_id", existing.commitment_id).in("status", ["reported", "verified", "approved", "billed"])
-      .contains("change_order_ids", [commitmentChangeOrderId])
-    if (claimError) throw new Error(`Failed to check completions: ${claimError.message}`)
-    if ((count ?? 0) > 0) throw new Error("A completion already claims this variance order. Reject it, or raise an offsetting back-charge.")
-  }
 
-  const nowIso = new Date().toISOString()
-  // Conditional on the status read above: a decision that lands first wins.
-  const { data: voidedRows, error } = await reader
-    .from("commitment_change_orders")
-    .update({
-      status: "voided",
-      metadata: {
-        ...(existing.metadata ?? {}),
-        voided_at: nowIso,
-        voided_by: userId,
-        void_reason: note,
-      },
-      updated_at: nowIso,
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", commitmentChangeOrderId)
-    .eq("status", existing.status)
-    .select("id")
-
-  if (error) {
-    throw new Error(`Failed to void commitment change order: ${error.message}`)
-  }
-  if (!voidedRows?.length) throw new Error("This change order changed while you were reviewing it. Reload and try again.")
+  // One locked step, serialized with completion approval: it refuses an order a completion claims or a bill
+  // bills, and a void that would leave the purchase order billed past what it authorizes. A decision that
+  // lands first wins.
+  const { error } = await reader.rpc("void_commitment_change_order", {
+    p_org_id: resolvedOrgId, p_id: commitmentChangeOrderId, p_actor_id: userId, p_reason: note, p_expected_status: existing.status,
+  })
+  if (error) throw new Error(error.message)
 
   const voided = await loadSingle(reader, resolvedOrgId, commitmentChangeOrderId)
   if (!voided) throw new Error("Failed to reload commitment change order")
@@ -1012,8 +1015,8 @@ export async function voidCommitmentChangeOrder({
     action: "update",
     entityType: "commitment_change_order",
     entityId: commitmentChangeOrderId,
-    before: existing as any,
-    after: voided as any,
+    before: { ...existing },
+    after: { ...voided },
     critical: true,
   })
 
@@ -1030,6 +1033,7 @@ export async function deleteCommitmentChangeOrder({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const existing = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
+  await loadOrderCommitment(resolvedOrgId, existing)
 
   await requireAuthorization({
     permission: "commitment.write",
@@ -1065,7 +1069,7 @@ export async function deleteCommitmentChangeOrder({
     action: "delete",
     entityType: "commitment_change_order",
     entityId: commitmentChangeOrderId,
-    before: existing as any,
+    before: { ...existing },
   })
 }
 
@@ -1126,8 +1130,8 @@ export async function markCommitmentChangeOrderExecutedFromEnvelope(input: {
     action: "update",
     entityType: "commitment_change_order",
     entityId: input.commitmentChangeOrderId,
-    before: existing as any,
-    after: updated as any,
+    before: { ...existing },
+    after: { ...updated },
   })
 
   await recordEvent({
@@ -1296,6 +1300,7 @@ export async function linkCommitmentChangeOrderToClientChangeOrder({
   if (changeOrder.project_id !== commitmentChangeOrder.project_id) {
     throw new Error("Both change orders must belong to the same project.")
   }
+  await loadOrderCommitment(resolvedOrgId, commitmentChangeOrder)
 
   await requireAuthorization({
     permission: "commitment.write",

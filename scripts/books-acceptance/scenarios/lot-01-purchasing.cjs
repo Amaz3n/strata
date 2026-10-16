@@ -38,6 +38,8 @@ const PO_FIXTURES = new WeakMap()
 function purchaseOrderFixture(kit) {
   if (!PO_FIXTURES.has(kit)) PO_FIXTURES.set(kit, (async () => {
     const org = await seed.productionBuilder(kit, { name: "LOT-01 purchasing price book" })
+    // The seed's trade companies carry no directory role; a manual price needs a vendor, as a real one is.
+    kit.sql(`insert into public.party_roles(org_id,company_id,relationship_type_id,status,source) select ${kit.q(org.orgId)}, c.id, t.id, 'active', 'system' from public.companies c join public.directory_relationship_types t on t.org_id=c.org_id and t.key='subcontractor' where c.org_id=${kit.q(org.orgId)}`)
     await seed.seedCommunity(kit, org)
     await seed.seedProduct(kit, org)
     await seed.takeDownTranche(kit, org)

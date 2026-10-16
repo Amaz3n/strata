@@ -27,5 +27,4 @@ export const poExceptionResolutionSchema = z.discriminatedUnion("kind", [
   message: `A zero price needs a note of at least ${ZERO_PRICE_NOTE_MIN_LENGTH} characters saying why.`,
 })
 
-export type PoGenerationInput = z.infer<typeof poGenerationInputSchema>
 export type PoExceptionResolution = z.infer<typeof poExceptionResolutionSchema>
