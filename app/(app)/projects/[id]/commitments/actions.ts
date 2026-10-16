@@ -1,9 +1,10 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { z } from "zod"
 
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, commitmentExecutionSchema } from "@/lib/validation/commitments"
-import { createCommitment, updateCommitment, listCommitmentLines, createCommitmentLine, updateCommitmentLine, deleteCommitmentLine, getCommitmentDetail, executeCommitment } from "@/lib/services/commitments"
+import { createCommitmentWithLine, updateCommitment, listCommitmentLines, createCommitmentLine, updateCommitmentLine, deleteCommitmentLine, getCommitmentDetail, executeCommitment } from "@/lib/services/commitments"
 import { getPoIssuance } from "@/lib/services/po-acknowledgments"
 import {
   approveCommitmentChangeOrder,
@@ -36,31 +37,15 @@ function revalidateCommitmentSurfaces(projectId: string, companyId?: string | nu
   if (companyId) revalidatePath(`/directory/${companyId}/commitments`)
 }
 
-export async function createProjectCommitmentAction(projectId: string, input: unknown) {
-  return run(async () => {
-    const parsed = commitmentInputSchema.parse({ ...(input as any), project_id: projectId })
-    const result = await createCommitment({ input: parsed })
-    revalidateCommitmentSurfaces(projectId, parsed.company_id)
-    return result
-  })
-}
-
 /**
  * A commitment with no lines contributes nothing to the budget rollup, so the
  * one-step create always lands a line with it.
  */
 export async function createProjectCommitmentWithLineAction(projectId: string, input: unknown) {
   return run(async () => {
-    const payload = input as { commitment?: unknown; line?: unknown }
-    const parsed = commitmentInputSchema.parse({ ...(payload.commitment as any), project_id: projectId })
-    const lineInput = commitmentLineInputSchema.parse(payload.line)
-    // An approved purchase order is locked, so the order is built as a draft and
-    // approved once its line is on it.
-    const created = await createCommitment({ input: { ...parsed, status: "draft" } })
-    await createCommitmentLine(created.id, lineInput)
-    const result = parsed.status === "approved"
-      ? await updateCommitment({ commitmentId: created.id, input: { status: "approved", prequal_override_note: parsed.prequal_override_note } })
-      : created
+    const payload = z.object({ commitment: z.record(z.string(), z.unknown()), line: z.unknown() }).parse(input)
+    const parsed = commitmentInputSchema.parse({ ...payload.commitment, project_id: projectId })
+    const result = await createCommitmentWithLine({ input: parsed, line: commitmentLineInputSchema.parse(payload.line) })
     revalidateCommitmentSurfaces(projectId, parsed.company_id)
     return result
   })
@@ -98,7 +83,7 @@ export async function executeProjectCommitmentAction(
 }
 
 export async function listCommitmentLinesAction(commitmentId: string) {
-  return await listCommitmentLines(commitmentId)
+  return run(() => listCommitmentLines(commitmentId))
 }
 
 export async function createCommitmentLineAction(commitmentId: string, input: unknown) {
@@ -122,7 +107,7 @@ export async function deleteCommitmentLineAction(lineId: string) {
 }
 
 export async function listCommitmentChangeOrdersAction(commitmentId: string) {
-  return await listCommitmentChangeOrders({ commitmentId })
+  return run(() => listCommitmentChangeOrders({ commitmentId }))
 }
 
 export async function createCommitmentChangeOrderAction(projectId: string, input: unknown) {

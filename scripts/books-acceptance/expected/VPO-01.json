@@ -320,6 +320,46 @@
           "completion": "billed"
         }
       }
+    },
+    "signature-and-references-cannot-bypass-the-variance-controls": {
+      "derivation": "One home with a 1,000.00 purchase order (600.00 and 400.00 lines) and a second home with its own budget line. A purchasing manager raises a 1,500.00 variance order with no evidence; an executed signature arrives: the signature is recorded (executed file set) and the order stays draft with no approver, because a purchase-order change is approved only by a named approver under the band and evidence rules. The order is rejected by a large-band approver; a later signature leaves it rejected, and a direct write that tries to move a rejected order to approved is refused by the database, so it stays rejected. A create whose second line names the other home's budget line is refused with a message naming the budget line, and one naming the other order's line is refused likewise; neither leaves an order behind (0). A 100.00 order that resolved a shortage (status vpo) is deleted: the shortage reopens (open, order cleared). A whole-order completion is reported and verified, approved by a third person (allowed, one bill of 1,000.00), then that bill is rejected: the completion returns to verified with its bill and amount cleared and one reopened event; approving it again is allowed and bills again, so the order carries one rejected and one approved bill of 1,000.00 each.",
+      "expected": {
+        "signatureOnVariance": {
+          "status": "draft",
+          "approved": false,
+          "recorded": true
+        },
+        "signatureAfterRejection": "rejected",
+        "writerRevivesRejected": "rejected",
+        "foreignBudgetLine": "refused: names another home's budget line",
+        "foreignOrderLine": "refused: names another order's line",
+        "ordersLeftBehind": 0,
+        "deleteReopensShortage": {
+          "resolvedBy": "vpo",
+          "afterDelete": {
+            "status": "open",
+            "vpoCleared": true
+          }
+        },
+        "firstApproval": "allowed",
+        "afterBillRejected": {
+          "status": "verified",
+          "billCleared": true,
+          "amountCleared": true,
+          "reopenEvents": 1
+        },
+        "secondApproval": "allowed",
+        "billsAfter": [
+          [
+            "approved",
+            100000
+          ],
+          [
+            "rejected",
+            100000
+          ]
+        ]
+      }
     }
   }
 }

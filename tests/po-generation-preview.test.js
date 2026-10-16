@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict")
-const test = require("node:test")
+const { test, mock } = require("node:test")
 const { stubModule, freshRequire } = require("./support/modules")
 const math = require("../lib/financials/po-generation-math")
 
@@ -10,7 +10,7 @@ const agreementId = "00000000-0000-4000-8000-000000000004"
 const ownVendorId = "00000000-0000-4000-8000-000000000005"
 const asOfDate = "2026-10-02"
 
-function generation({ prior = null, exception = null, configurationError = null, takeoffs = [], candidates = [], companies = [], recordRuns = false, rpcResults = [], nonVendorIds = [] } = {}) {
+function generation({ prior = null, exception = null, configurationError = null, takeoffs = [], candidates = [], companies = [], recordRuns = false, rpcResults = [], nonVendorIds = [], previewRun = null, exceptionInsertErrors = {} } = {}) {
   const writes = []
   const rpcCalls = []
   const trail = []
@@ -20,25 +20,38 @@ function generation({ prior = null, exception = null, configurationError = null,
     lots: [{ id: "lot", house_plan_id: "plan", house_plan_version_id: "edition", community_id: "community" }],
     house_plan_takeoff_lines: takeoffs, project_selections: [], companies,
     po_generation_exceptions: exception ? [exception] : [],
-    po_generation_runs: prior ? [prior] : [],
+    po_generation_runs: [prior, previewRun].filter(Boolean),
   }
+  const exceptionInserts = []
   // A preview records its run and exceptions; nothing else may be written.
-  const write = (table, kind) => {
+  const write = (table, kind, payload) => {
     writes.push(table)
     writeKinds.push(`${table}:${kind}`)
     if (!recordRuns || !["po_generation_runs", "po_generation_exceptions"].includes(table)) throw new Error("Unexpected write")
-    const chain = { select() { return chain }, eq() { return chain }, async single() { return { data: { id: "run-1" }, error: null } }, then(resolve, reject) { return Promise.resolve({ data: null, error: null }).then(resolve, reject) } }
+    // A recorded preview is what a later commit finds by its fingerprint.
+    if (table === "po_generation_runs" && kind === "insert" && payload.mode === "dry_run") {
+      rows[table].push({ ...payload, id: "run-1", status: "succeeded", created_at: new Date().toISOString() })
+    }
+    let error = null
+    if (table === "po_generation_exceptions" && kind === "insert") {
+      exceptionInserts.push(payload)
+      error = exceptionInsertErrors[payload.description] ?? null
+    }
+    const chain = { select() { return chain }, eq() { return chain }, async single() { return { data: { id: "run-1" }, error: null } }, then(resolve, reject) { return Promise.resolve({ data: null, error }).then(resolve, reject) } }
     return chain
   }
   const supabase = { rpc(name, args) { rpcCalls.push({ name, args }); return Promise.resolve(rpcResults[Math.min(rpcCalls.length, rpcResults.length) - 1] ?? { data: null, error: null }) }, from(table) {
     assert.ok(table in rows, `Unexpected table ${table}`)
+    // Equality filters apply to the columns a fixture row carries, so a commit's lookups tell a preview from a commit run.
+    const filters = []
+    const matching = () => rows[table].filter((row) => filters.every(([column, value]) => !(column in row) || row[column] === value))
     const query = {
-      select() { return query }, eq() { return query }, in() { return query }, order() { return query }, limit() { return query },
+      select() { return query }, eq(column, value) { filters.push([column, value]); return query }, in() { return query }, gte() { return query }, order() { return query }, limit() { return query },
       range() { return Promise.resolve({ data: rows[table], error: null }) },
-      async maybeSingle() { return { data: rows[table][0] ?? null, error: null } },
-      async single() { return { data: rows[table][0] ?? null, error: null } },
-      then(resolve, reject) { return Promise.resolve({ data: rows[table], error: null }).then(resolve, reject) },
-      insert() { return write(table, "insert") },
+      async maybeSingle() { return { data: matching()[0] ?? null, error: null } },
+      async single() { return { data: matching()[0] ?? null, error: null } },
+      then(resolve, reject) { return Promise.resolve({ data: matching(), error: null }).then(resolve, reject) },
+      insert(payload) { return write(table, "insert", payload) },
       update() { return write(table, "update") },
     }
     return query
@@ -58,12 +71,12 @@ function generation({ prior = null, exception = null, configurationError = null,
   }
   for (const [request, exports] of Object.entries(stubs)) stubModule(request, exports)
   const service = freshRequire("lib/services/po-generation.ts")
-  return { service, writes, writeKinds, authorizations, rpcCalls, trail }
+  return { service, writes, writeKinds, authorizations, rpcCalls, trail, exceptionInserts }
 }
 
 test("a changed preview is rejected before a generation run or PO is written", async () => {
   const { service, writes, authorizations } = generation()
-  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: "f".repeat(64) }), /changed since the preview/)
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: "f".repeat(64) }), /changed since the preview/)
   assert.equal(writes.length, 0)
   assert.equal(authorizations[0].permission, "po.generate")
   assert.equal(authorizations[0].projectId, projectId)
@@ -71,8 +84,8 @@ test("a changed preview is rejected before a generation run or PO is written", a
 
 test("an identical preview still goes through the database commit, so a draft a member deleted is repaired", async () => {
   const fingerprint = math.createPoGenerationFingerprint({ asOfDate, lines: [] })
-  const { service, rpcCalls } = generation({ prior: { id: "prior-run", input_fingerprint: fingerprint, status: "succeeded" }, recordRuns: true, rpcResults: [{ data: { run_id: "00000000-0000-4000-8000-0000000000b2", already_generated: true }, error: null }] })
-  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: fingerprint })
+  const { service, rpcCalls } = generation({ prior: { id: "prior-run", mode: "commit", input_fingerprint: fingerprint, status: "succeeded" }, previewRun: { id: "preview-run", mode: "dry_run", input_fingerprint: fingerprint, as_of_date: asOfDate, status: "succeeded" }, recordRuns: true, rpcResults: [{ data: { run_id: "00000000-0000-4000-8000-0000000000b2", already_generated: true }, error: null }] })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: fingerprint })
   assert.equal(rpcCalls.length, 1)
   assert.equal(result.runId, "00000000-0000-4000-8000-0000000000b2")
 })
@@ -104,7 +117,7 @@ test("an invalid home configuration blocks PO generation before any writes", asy
 
 test("an interactive commit without a preview fingerprint is refused before anything runs", async () => {
   const { service, writes, authorizations } = generation()
-  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate }), /Preview the purchase orders/)
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit" }), /Preview the purchase orders/)
   assert.equal(writes.length, 0)
   assert.equal(authorizations.length, 0)
 })
@@ -127,7 +140,9 @@ test("a preview lists the priced lines, the lines it could not price, and the ag
     rpcResults: [{ data: { changes: 0, preserved_changed: [{ source_key: "takeoff_line:priced", commitment_id: "00000000-0000-4000-8000-0000000000aa", contract_number: "PO-CYP-1-01", description: "Line priced", was_company_id: ownVendorId, now_company_id: ownVendorId, was_cents: 20_000, now_cents: 25_000 }], preserved_orphaned: [] }, error: null }],
   })
 
-  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
+  mock.timers.enable({ apis: ["Date"], now: new Date(`${asOfDate}T12:00:00.000Z`) })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  mock.timers.reset()
   assert.deepEqual(result.preservedChanged.map((change) => [change.contractNumber, change.wasCents, change.nowCents]), [["PO-CYP-1-01", 20_000, 25_000]])
   assert.deepEqual(trail, [])
 
@@ -168,9 +183,9 @@ test("a zero price is allowed only with a reason of at least ten characters", as
 })
 
 test("a commit hands the database the whole desired line set and the run it was prepared against", async () => {
-  const { service, rpcCalls } = pricedHome({ prior: { id: "prior-run", input_fingerprint: "a".repeat(64), status: "succeeded" }, rpcResults: [report, committed({ preserved_changed: [{ source_key: "takeoff_line:line-1", commitment_id: "00000000-0000-4000-8000-0000000000aa", contract_number: "PO-CYP-1-01", description: "Frame the shell", was_company_id: ownVendorId, now_company_id: ownVendorId, was_cents: 20_000, now_cents: 25_000 }] })] })
-  const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
-  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: preview.inputFingerprint })
+  const { service, rpcCalls } = pricedHome({ prior: { id: "prior-run", mode: "commit", input_fingerprint: "a".repeat(64), status: "succeeded" }, rpcResults: [report, committed({ preserved_changed: [{ source_key: "takeoff_line:line-1", commitment_id: "00000000-0000-4000-8000-0000000000aa", contract_number: "PO-CYP-1-01", description: "Frame the shell", was_company_id: ownVendorId, now_company_id: ownVendorId, was_cents: 20_000, now_cents: 25_000 }] })] })
+  const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: preview.inputFingerprint })
 
   assert.equal(rpcCalls.length, 2)
   const payload = rpcCalls[1].args.p_payload
@@ -200,8 +215,8 @@ test("a resolution that lost the race is refused plainly and its run is not reco
 
 test("an identical commit that lost the race returns the winner's run without a second trail", async () => {
   const { service } = pricedHome({ rpcResults: [report, committed({ run_id: "00000000-0000-4000-8000-0000000000b2", already_generated: true })] })
-  const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
-  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: preview.inputFingerprint })
+  const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: preview.inputFingerprint })
   assert.equal(result.runId, "00000000-0000-4000-8000-0000000000b2")
 })
 
@@ -218,14 +233,14 @@ test("the starts release reads the house again when a resolution lands first, an
 
   // An interactive commit is never retried behind the buyer's back.
   const interactive = pricedHome({ rpcResults: [report, stale] })
-  const preview = await interactive.service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
-  await assert.rejects(interactive.service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: preview.inputFingerprint }), /preview again/)
+  const preview = await interactive.service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  await assert.rejects(interactive.service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: preview.inputFingerprint }), /preview again/)
   assert.equal(interactive.rpcCalls.length, 2)
 })
 
 test("a price whose total cannot be stored is a message to the buyer, before any run is written", async () => {
   const { service, writes } = pricedHome({ candidates: [{ ...framingAgreement, unit_cost_cents: 30_000_000 }] })
-  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate }), /totals more than the system can record/)
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "dry_run" }), /totals more than the system can record/)
   assert.equal(writes.length, 0)
 })
 
@@ -242,7 +257,51 @@ test("a dismissed exception is not raised again by the next preview for the same
     exception: { id: exceptionId, project_id: projectId, status: "dismissed", reason: "no_agreement", source_kind: "takeoff_line", source_ref: { takeoff_line_id: "line-x" } },
     recordRuns: true, rpcResults: [{ data: { changes: 0 }, error: null }],
   })
-  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
   assert.equal(result.exceptions.length, 1)
   assert.ok(!writeKinds.includes("po_generation_exceptions:insert"))
+})
+
+test("a commit prices as of the date its preview was stamped with and ignores any date the caller sends", async () => {
+  const { service, rpcCalls } = pricedHome({ rpcResults: [report, committed()] })
+  mock.timers.enable({ apis: ["Date"], now: new Date(`${asOfDate}T12:00:00.000Z`) })
+  const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  // The next day, with a client that also tries to backdate the run.
+  mock.timers.setTime(new Date("2026-10-03T12:00:00.000Z").getTime())
+  const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate: "2020-01-01", expectedFingerprint: preview.inputFingerprint })
+  mock.timers.reset()
+  assert.equal(result.mode, "commit")
+  assert.equal(rpcCalls.length, 2)
+})
+
+test("a commit whose preview is not on record is refused as a changed preview", async () => {
+  const { service, rpcCalls } = pricedHome()
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "commit", expectedFingerprint: "a".repeat(64) }), /changed since the preview/)
+  assert.equal(rpcCalls.length, 0)
+})
+
+test("a preview racing another preview keeps every exception its rival did not already raise", async () => {
+  const line = (id, costCodeId) => ({ id, cost_code_id: costCodeId, cost_type: null, description: `Line ${id}`, quantity: 1, uom: "sf", elevation_id: null })
+  const { service, exceptionInserts } = generation({
+    takeoffs: [line("a", "roofing"), line("b", "tile")], recordRuns: true, rpcResults: [{ data: { changes: 0 }, error: null }],
+    exceptionInsertErrors: { "Line a": { code: "23505", message: "duplicate key value violates unique constraint" } },
+  })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  assert.equal(result.exceptions.length, 2)
+  assert.deepEqual(exceptionInserts.map((row) => row.description).sort(), ["Line a", "Line b"])
+})
+
+test("an exception insert that fails for any other reason fails the preview", async () => {
+  const { service } = generation({
+    takeoffs: [{ id: "a", cost_code_id: "roofing", cost_type: null, description: "Line a", quantity: 1, uom: "sf", elevation_id: null }],
+    recordRuns: true, exceptionInsertErrors: { "Line a": { code: "42501", message: "permission denied" } },
+  })
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "dry_run" }), /Failed to record PO exceptions/)
+})
+
+test("a fractional takeoff quantity prices a whole-cent line, half up, and the order is the sum of its lines", async () => {
+  const { service } = pricedHome({ takeoffs: [{ ...framing, quantity: 12.5, uom: "sf" }, { ...framing, id: "line-2", quantity: 0.5, uom: "sf" }], candidates: [{ ...framingAgreement, unit_cost_cents: 345 }], rpcResults: [report] })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run" })
+  assert.deepEqual(result.purchaseOrders[0].lines.map((line) => line.totalCents).sort((a, b) => a - b), [173, 4313])
+  assert.equal(result.purchaseOrders[0].totalCents, 4486)
 })

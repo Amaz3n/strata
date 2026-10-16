@@ -34,7 +34,8 @@ async function fixture(t) {
   }
   const vendor = await insert(db, "companies", { org_id: orgId, name: "Frame Co" })
   const other = await insert(db, "companies", { org_id: orgId, name: "Other Co" })
-  return { db, orgId, owner, purchasing, sales, pm, superintendent, north, south, home, southHome, vendor, other }
+  const reason = await insert(db, "variance_reason_codes", { org_id: orgId, code: "overage", label: "Overage" })
+  return { db, reason, orgId, owner, purchasing, sales, pm, superintendent, north, south, home, southHome, vendor, other }
 }
 
 async function purchaseOrder(f, overrides = {}) {
@@ -124,10 +125,10 @@ test("a VPO approved against an issued order is a new version; voiding it is ano
   const f = await fixture(t)
   const { po } = await purchaseOrder(f)
   const vpo = await insert(f.db, "commitment_change_orders", {
-    org_id: f.orgId, project_id: f.home.id, commitment_id: po.id, company_id: f.vendor.id, title: "Extra bundle", total_cents: 20000, status: "sent",
+    org_id: f.orgId, reason_code_id: f.reason.id, project_id: f.home.id, commitment_id: po.id, company_id: f.vendor.id, title: "Extra bundle", total_cents: 20000, status: "sent",
   })
   await approve(f, po.id)
-  await f.db.query("update commitment_change_orders set status = 'approved' where id = $1", [vpo.id])
+  await f.db.query("update commitment_change_orders set status = 'approved', approved_by = $2 where id = $1", [vpo.id, f.owner.userId])
   await f.db.query("update commitment_change_orders set status = 'voided' where id = $1", [vpo.id])
   const afterVoid = await versions(f, po.id)
   assert.deepEqual(afterVoid.map((v) => `${v.revision}:${v.reason}`), ["1:approved", "2:vpo_approved", "3:vpo_voided"])
@@ -140,12 +141,15 @@ test("a VPO approved against an issued order is a new version; voiding it is ano
   const last = (await versions(f, po.id)).at(-1)
   assert.deepEqual([last.revision, last.reason], [4, "reapproved"])
 
-  // A VPO on an order that was never issued issues nothing.
+  // A VPO cannot be approved on an order that was never issued, so it issues nothing.
   const draft = await purchaseOrder(f, { title: "Roofing" })
   const draftVpo = await insert(f.db, "commitment_change_orders", {
-    org_id: f.orgId, project_id: f.home.id, commitment_id: draft.po.id, title: "More", total_cents: 100, status: "draft",
+    org_id: f.orgId, reason_code_id: f.reason.id, project_id: f.home.id, commitment_id: draft.po.id, title: "More", total_cents: 100, status: "draft",
   })
-  await f.db.query("update commitment_change_orders set status = 'approved' where id = $1", [draftVpo.id])
+  await assert.rejects(
+    f.db.query("update commitment_change_orders set status = 'approved', approved_by = $2 where id = $1", [draftVpo.id, f.owner.userId]),
+    /approved on an issued purchase order/,
+  )
   assert.deepEqual(await versions(f, draft.po.id), [])
 })
 
@@ -172,9 +176,9 @@ test("an answer is bound to the current version: stale, foreign and draft answer
 
   // A VPO makes the answer stale.
   const vpo = await insert(f.db, "commitment_change_orders", {
-    org_id: f.orgId, project_id: f.home.id, commitment_id: po.id, title: "Extra", total_cents: 1000, status: "sent",
+    org_id: f.orgId, reason_code_id: f.reason.id, project_id: f.home.id, commitment_id: po.id, title: "Extra", total_cents: 1000, status: "sent",
   })
-  await f.db.query("update commitment_change_orders set status = 'approved' where id = $1", [vpo.id])
+  await f.db.query("update commitment_change_orders set status = 'approved', approved_by = $2 where id = $1", [vpo.id, f.owner.userId])
   await assert.rejects(answer(f, po.id, v1), /changed; reload/)
   const v2 = (await versions(f, po.id)).at(-1)
   await answer(f, po.id, v2)
@@ -233,9 +237,9 @@ test("resolving needs po_exception.resolve inside the division, a note, and the 
   assert.equal((await queue(f)).rows[0].state, "pending")
   const second = await answer(f, po.id, v1, { p_response: "disputed", p_reason: "Still short", p_lines: [{ commitment_line_id: line.id, kind: "quantity", proposed_quantity: 80 }] })
   const vpo = await insert(f.db, "commitment_change_orders", {
-    org_id: f.orgId, project_id: f.home.id, commitment_id: po.id, title: "Extra", total_cents: 1000, status: "sent",
+    org_id: f.orgId, reason_code_id: f.reason.id, project_id: f.home.id, commitment_id: po.id, title: "Extra", total_cents: 1000, status: "sent",
   })
-  await f.db.query("update commitment_change_orders set status = 'approved' where id = $1", [vpo.id])
+  await f.db.query("update commitment_change_orders set status = 'approved', approved_by = $2 where id = $1", [vpo.id, f.owner.userId])
   await assert.rejects(resolve(f.purchasing.userId, { p_acknowledgment_id: second.id }), /revised after this dispute/)
 })
 
@@ -258,9 +262,9 @@ test("the queue derives each order's state from its current version, counts in S
   await answer(f, disputed.po.id, await v(disputed), { p_response: "disputed", p_reason: "Wrong unit", p_lines: [{ commitment_line_id: disputed.line.id, kind: "scope", note: "Unit is bundle" }] })
   await answer(f, revised.po.id, await v(revised))
   const vpo = await insert(f.db, "commitment_change_orders", {
-    org_id: f.orgId, project_id: f.home.id, commitment_id: revised.po.id, title: "Extra", total_cents: 1000, status: "sent",
+    org_id: f.orgId, reason_code_id: f.reason.id, project_id: f.home.id, commitment_id: revised.po.id, title: "Extra", total_cents: 1000, status: "sent",
   })
-  await f.db.query("update commitment_change_orders set status = 'approved' where id = $1", [vpo.id])
+  await f.db.query("update commitment_change_orders set status = 'approved', approved_by = $2 where id = $1", [vpo.id, f.owner.userId])
 
   const all = await queue(f)
   const stateOf = Object.fromEntries(all.rows.map((row) => [row.contract_number, row.state]))
@@ -382,4 +386,64 @@ test("po_has_history answers only inside the caller's org; write_commitment_line
   })
   assert.equal((await f.db.query("select total_cents from commitments where id = $1", [draft.po.id])).rows[0].total_cents, 500300)
   assert.ok(written)
+})
+
+test("write_commitment_line totals an order as the sum of each line rounded half up, and refuses an issued order or a foreign reference", async (t) => {
+  const f = await fixture(t)
+  const draft = await insert(f.db, "commitments", {
+    org_id: f.orgId, project_id: f.home.id, company_id: f.vendor.id, commitment_type: "purchase_order", title: "Decimal order", status: "draft", total_cents: 0,
+  })
+  const write = (op, lineId, values, orderId = draft.id) => rpc(f.db, "write_commitment_line", {
+    p_org_id: f.orgId, p_op: op, p_commitment_id: orderId, p_line_id: lineId, p_values: JSON.stringify(values),
+  })
+  const first = await write("insert", null, { description: "Studs", quantity: 12.5, unit: "ea", unit_cost_cents: 4567 })
+  assert.equal(Number(first.total_cents), 57_088, "12.5 x 4567 = 57087.5 rounds up")
+  const second = await write("insert", null, { description: "Sheathing", quantity: 1234.56, unit: "sf", unit_cost_cents: 187 })
+  assert.equal(Number(second.total_cents), 57_088 + 230_863, "1234.56 x 187 = 230862.72 is a cent amount per line, then summed")
+  assert.equal(Number((await f.db.query("select total_cents from commitments where id = $1", [draft.id])).rows[0].total_cents), 287_951)
+
+  const foreignOrg = await insert(f.db, "orgs", { name: "Elsewhere", slug: `elsewhere-${Date.now()}` })
+  const foreignCode = await insert(f.db, "cost_codes", { org_id: foreignOrg.id, code: "01-000", name: "Foreign" })
+  await assert.rejects(write("update", first.line_id, { cost_code_id: foreignCode.id }), /does not belong to this organization/)
+  await assert.rejects(write("update", first.line_id, { budget_line_id: first.line_id }), /not on this home/)
+
+  await approve(f, draft.id)
+  await assert.rejects(write("insert", null, { description: "Late", quantity: 1, unit: "ea", unit_cost_cents: 1 }), /approved and locked/)
+})
+
+test("a line with a vendor answer, a receipt or a shortage cannot be deleted from a returned-to-draft order; the answer survives", async (t) => {
+  const f = await fixture(t)
+  const { po, line } = await purchaseOrder(f)
+  await approve(f, po.id)
+  const [v1] = await versions(f, po.id)
+  await answer(f, po.id, v1, {
+    p_response: "disputed", p_reason: "We can only ship 80",
+    p_lines: JSON.stringify([{ commitment_line_id: line.id, kind: "quantity", proposed_quantity: 80 }]),
+  })
+  await asRole(f.db, { role: "service_role" }, (tx) => tx.query("update commitments set status = 'draft' where id = $1", [po.id]))
+  const lines = () => f.db.query("select count(*)::int as n from po_acknowledgment_lines where commitment_line_id = $1", [line.id]).then((r) => r.rows[0].n)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query("delete from commitment_lines where id = $1", [line.id])), /vendor answer, a receipt or a shortage on record/)
+  await assert.rejects(rpc(f.db, "write_commitment_line", {
+    p_org_id: f.orgId, p_op: "delete", p_commitment_id: po.id, p_line_id: line.id, p_values: "{}",
+  }), /vendor answer, a receipt or a shortage on record/)
+  assert.equal(await lines(), 1)
+  const extra = await insert(f.db, "commitment_lines", { org_id: f.orgId, commitment_id: po.id, description: "Spare", quantity: 1, unit: "ea", unit_cost_cents: 100 })
+  await f.db.query("delete from commitment_lines where id = $1", [extra.id])
+})
+
+test("who created an order is stamped by the database and a member cannot rewrite or remove it, on a draft either", async (t) => {
+  const f = await fixture(t)
+  const draft = await insert(f.db, "commitments", {
+    org_id: f.orgId, project_id: f.home.id, company_id: f.vendor.id, commitment_type: "purchase_order", title: "Mine", status: "draft", total_cents: 0,
+    metadata: { created_by_user_id: f.purchasing.userId },
+  })
+  const asSuper = (sql) => asUser(f, f.superintendent.userId, (tx) => tx.query(sql, [draft.id]))
+  await assert.rejects(asSuper(`update commitments set metadata = metadata || '{"created_by_user_id":"${f.superintendent.userId}"}' where id = $1`), /recorded by the system/)
+  await assert.rejects(asSuper("update commitments set metadata = metadata - 'created_by_user_id' where id = $1"), /recorded by the system/)
+  await asSuper(`update commitments set metadata = metadata || '{"note":1}' where id = $1`)
+  const stamped = await asUser(f, f.superintendent.userId, (tx) => tx.query(
+    "insert into commitments (org_id, project_id, company_id, commitment_type, title, status, total_cents, metadata) values ($1, $2, $3, 'purchase_order', 'Forged', 'draft', 0, $4) returning metadata",
+    [f.orgId, f.home.id, f.vendor.id, JSON.stringify({ created_by_user_id: f.purchasing.userId })],
+  ))
+  assert.equal(stamped.rows[0].metadata.created_by_user_id, f.superintendent.userId, "a member's insert records the member, whatever it claimed")
 })

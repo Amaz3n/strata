@@ -577,14 +577,16 @@ async function observePurchaseOrders(kit) {
   const queue = await kit.as(buyer, () => generation.listPoExceptions({ projectId }))
   out.queue = { open: queue.count, reasons: queue.items.map((item) => item.reason).sort() }
 
-  // 4. Commit refuses a missing preview, a malformed one, a different as-of date, and prices that moved since.
+  // 4. Commit refuses a missing preview, a malformed one, a fingerprint with no recorded preview, a client as-of date that is ignored, and prices that moved since.
   const fingerprint = withExceptions.inputFingerprint
   const before = () => kit.rows(`select count(*)::int n from public.commitments where project_id=${kit.q(projectId)} and commitment_type='purchase_order'`)[0].n
   const refusal = (message) => /Preview the purchase orders before generating/.test(message) ? "refused: preview first" : /Pricing or selections changed/.test(message) ? "refused: inputs changed since the preview" : message
   out.commitRefusals = {
     noFingerprint: refusal(await attempt(() => commit(buyer, null))),
     malformedFingerprint: /regex|Invalid/i.test(await attempt(() => commit(buyer, "not-a-hash"))) ? "refused: malformed fingerprint" : "allowed",
-    differentAsOfDate: refusal(await attempt(() => commit(buyer, fingerprint, { asOfDate: inDays(1) }))),
+    // A client-sent as-of date is ignored: the preview stamps its own, so a date cannot move the fingerprint or select a preview.
+    clientAsOfDateIgnoredByPreview: (await preview(buyer, { asOfDate: inDays(1) })).inputFingerprint === fingerprint ? "ignored" : "changed the preview",
+    fingerprintWithNoPreviewOnRecord: refusal(await attempt(() => commit(buyer, "f".repeat(64), { asOfDate: inDays(1) }))),
   }
   await kit.as(buyer, () => book.repriceAgreement(agreementOf("Palmetto Framing"), { effective_from: today, unit_cost_cents: 4500, reason: "Lumber index moved" }))
   out.commitRefusals.priceMovedAfterPreview = refusal(await attempt(() => commit(buyer, fingerprint)))
@@ -699,6 +701,8 @@ async function observeVariance(kit) {
   const secondHome = second.projectId
   const orderOf = (projectId, vendor) => kit.rows(`select id from public.commitments where project_id=${kit.q(projectId)} and commitment_type='purchase_order' and company_id=${kit.q(org.vendorIds[vendor])} limit 1`)[0].id
   const reasons = Object.fromEntries((await kit.as(buyer, () => app("purchasing-settings").listVarianceReasonCodes())).map((row) => [row.code, row.id]))
+  // Variance orders change an issued order, so both homes' generated orders are approved first, as the office would before work starts.
+  kit.sql(`update public.commitments set status='approved' where project_id in (${kit.q(closedHome)},${kit.q(secondHome)}) and commitment_type='purchase_order' and status='draft'`)
 
   // The buyer asks for a variance order before she is on either home's team.
   out.requestWithoutTeamMembership = await kit.as(buyer, () => orders.createCommitmentChangeOrder({ input: { commitment_id: orderOf(closedHome, "Gulf Concrete"), reason_code_id: reasons.missed_scope, title: "Probe", lines: [{ description: "Probe", quantity: 1, unit_cost_cents: 100 }] } })).then(() => "allowed", (error) => /Commitment not found/.test(error.message) ? "refused: commitment not found" : error.message)

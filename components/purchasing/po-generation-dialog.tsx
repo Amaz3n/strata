@@ -29,7 +29,6 @@ export function PoGenerationDialog({ project }: { project?: PurchasingEntity } =
         const response = await generatePurchaseOrdersAction({ projectId: home.id, mode, expectedFingerprint: mode === "commit" ? result?.inputFingerprint : undefined })
         if (!response.success) { setError(response.error); return }
         setResult(response.data)
-        if (response.data.status === "failed") setError("Generation failed. Review the exceptions before retrying.")
         if (mode === "commit") router.refresh()
       } catch {
         setError("Unable to confirm the result. Retry to recover the generation run.")
@@ -46,7 +45,7 @@ export function PoGenerationDialog({ project }: { project?: PurchasingEntity } =
       {result && <PoGenerationPreview result={result} />}
       <div className="flex justify-end gap-2">
         <Button variant="outline" disabled={pending || !home} onClick={() => run("dry_run")}>{pending ? "Working…" : "Preview orders"}</Button>
-        <Button disabled={pending || !home || result?.mode !== "dry_run" || result.status === "failed"} onClick={() => run("commit")}>Generate orders</Button>
+        <Button disabled={pending || !home || result?.mode !== "dry_run"} onClick={() => run("commit")}>Generate orders</Button>
       </div>
     </DialogContent>
   </Dialog>

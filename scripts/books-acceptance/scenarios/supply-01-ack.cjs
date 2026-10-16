@@ -7,6 +7,7 @@
 //   vendor-receives-and-answers-an-issued-version       approval = revision 1 + one queued email job; accept at the hash; stale hash refused; dispute needs a reason and line facts
 //   approved-vpo-requests-reacknowledgment              VPO approval = revision 2 and "revised"; the obligation is PO + VPO; voiding = revision 3
 //   acknowledgment-queue-is-scoped-and-capped           a division-limited reader sees their division only with a total; a non-holder is refused; a sales agent cannot write answers
+//   decimal-quantity-order-approves-and-issues         a PO with fractional quantities totals each line to a whole cent, approves and issues; the vendor's portal list and issued snapshot carry the same amounts
 //   race-two-vendor-answers-and-a-revision              (multi_session) an answer racing a VPO approval is serial-equivalent: never accepted against a hash that was not current
 //
 // The house is the LOT-01 released house; every row a subcase adds is tagged for it.
@@ -62,7 +63,7 @@ async function house(kit) {
   }
   const vpo = (id, status) => {
     const vpoId = randomUUID()
-    kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,company_id,title,total_cents,status,reason_code_id) values(${q(vpoId)},${q(org.orgId)},${q(projectId)},${q(id)},${q(vendorId)},'Extra bundle',20000,${q(status)},${q(reasonCodeId())})`)
+    kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,company_id,title,total_cents,status,reason_code_id,approved_by,approved_at) values(${q(vpoId)},${q(org.orgId)},${q(projectId)},${q(id)},${q(vendorId)},'Extra bundle',20000,${q(status)},${q(reasonCodeId())},${status === "approved" ? q(org.owner.userId) : "null"},${status === "approved" ? "now()" : "null"})`)
     return vpoId
   }
   const queue = (actor, state = "all") => kit.as(actor, () => app("po-acknowledgments").listPoAcknowledgmentQueue({ state }))
@@ -203,7 +204,7 @@ async function approvedVpoRequestsReacknowledgment(kit, expected, check) {
   await h.answer(id, v1)
   const accepted = stateOf(await h.queue(h.org.team.purchasing), id)
   const vpoId = h.vpo(id, "sent")
-  kit.sql(`update public.commitment_change_orders set status='approved' where id=${kit.q(vpoId)}`)
+  kit.sql(`update public.commitment_change_orders set status='approved', approved_by=${kit.q(h.org.owner.userId)}, approved_at=now() where id=${kit.q(vpoId)}`)
   const revised = stateOf(await h.queue(h.org.team.purchasing), id)
   const staleAnswer = await h.answer(id, v1)
   const view = await kit.service(() => app("po-acknowledgments").loadPoIssueViews(h.org.orgId, [id]))
@@ -264,6 +265,30 @@ async function acknowledgmentQueueIsScopedAndCapped(kit, expected, check) {
   return { orgId: org.orgId, projectId: h.projectId }
 }
 
+async function decimalQuantityOrderApprovesAndIssues(kit, expected, check) {
+  const h = await house(kit)
+  const { id, lineId } = await h.purchaseOrder("Decimal")
+  const desk = h.org.team.purchasing
+  // Takeoff-style quantities: neither extended amount is a whole number of cents, and no scheduled value is stored.
+  await kit.as(desk, () => app("commitments").updateCommitmentLine(lineId, { description: "Studs", quantity: 12.5, unit_cost_cents: 4567, scheduled_value_cents: null }))
+  await kit.as(desk, () => app("commitments").createCommitmentLine(id, { description: "Sheathing", quantity: 1234.56, unit: "sf", unit_cost_cents: 187 }))
+  const draftTotal = Number(kit.rows(`select total_cents from public.commitments where id=${kit.q(id)}`)[0].total_cents)
+  const approved = await attempt(() => h.approve(id))
+  const order = kit.rows(`select status, total_cents from public.commitments where id=${kit.q(id)}`)[0]
+  const portal = await kit.service(() => app("portal-purchase-orders").listPortalPurchaseOrders(h.link))
+  const seen = portal.orders.find((row) => row.id === id)
+  const snapshot = kit.rows(`select snapshot from public.po_issue_versions where commitment_id=${kit.q(id)} order by revision desc limit 1`)[0]?.snapshot
+  eq(check, "a purchase order with fractional quantities totals each line to a whole cent, approves and issues as revision 1, and the vendor's portal list reads the same amounts the order totals to", expected.expected.decimal, {
+    draftTotal, approved,
+    order: { status: order.status, total_cents: Number(order.total_cents) },
+    revisions: (await h.versions(id)).map((row) => `${row.revision}:${row.reason}`),
+    portalLines: Object.fromEntries((seen?.lines ?? []).map((line) => [line.description, line.scheduledValueCents])),
+    portalTotal: seen?.totalCents ?? null,
+    snapshotTotal: snapshot?.total_cents ?? null,
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
 async function raceTwoVendorAnswersAndARevision(kit, expected, check) {
   const h = await house(kit)
   const { id } = await h.purchaseOrder("Raced")
@@ -272,7 +297,7 @@ async function raceTwoVendorAnswersAndARevision(kit, expected, check) {
   const vpoId = h.vpo(id, "sent")
   const answerSql = `begin; select public.record_po_acknowledgment(${kit.q(h.org.orgId)}::uuid, null, ${kit.q(h.vendorId)}::uuid, ${kit.q(id)}::uuid, ${kit.q(v1.version_id)}::uuid, ${kit.q(v1.terms_hash)}, 'accepted', null, '[]'::jsonb); commit;`
   const results = await race(kit, [
-    `begin; update public.commitment_change_orders set status='approved', approved_at=now() where id=${kit.q(vpoId)}; commit;`,
+    `begin; update public.commitment_change_orders set status='approved', approved_by=${kit.q(h.org.owner.userId)}, approved_at=now() where id=${kit.q(vpoId)}; commit;`,
     answerSql,
   ], { user: "postgres" })
   const versions = await h.versions(id)
@@ -295,6 +320,7 @@ const subcases = {
   "vendor-receives-and-answers-an-issued-version": vendorReceivesAndAnswersAnIssuedVersion,
   "approved-vpo-requests-reacknowledgment": approvedVpoRequestsReacknowledgment,
   "acknowledgment-queue-is-scoped-and-capped": acknowledgmentQueueIsScopedAndCapped,
+  "decimal-quantity-order-approves-and-issues": decimalQuantityOrderApprovesAndIssues,
   "race-two-vendor-answers-and-a-revision": raceTwoVendorAnswersAndARevision,
 }
 

@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { derivePoAckState, describeVersionChanges, poAckVendorSentence, poAckWarning, revisedObligationCents } from "@/lib/purchasing/po-acknowledgment-state"
 import { requireOrgContext } from "@/lib/services/context"
+import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { requirePermission } from "@/lib/services/permissions"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -188,18 +189,30 @@ export async function acknowledgePoFromPortal(access: PortalAccessToken, input: 
   const recorded = recordedSchema.parse(data)
   if (parsed.response === "accepted") return { id: recorded.id }
 
-  const recipients = await projectPermissionHolders(access.org_id, recorded.project_id, "po_exception.resolve")
-    .then((holders) => Array.from(new Set(recorded.created_by ? [...holders, recorded.created_by] : holders)))
-    .catch(() => [])
+  const failed = (reason: string) => recordEvent({
+    orgId: access.org_id, eventType: "po_acknowledgment.notification_failed", entityType: "po_acknowledgment", entityId: recorded.id,
+    payload: { project_id: recorded.project_id, commitment_id: parsed.commitmentId, reason },
+  })
+  let recipients: string[]
+  try {
+    const holders = await projectPermissionHolders(access.org_id, recorded.project_id, "po_exception.resolve")
+    recipients = Array.from(new Set(recorded.created_by ? [...holders, recorded.created_by] : holders))
+  } catch (error) {
+    // The dispute is recorded and waits in the Acknowledgments queue; the failed lookup is on the record rather than lost.
+    await failed(error instanceof Error ? error.message : "The resolvers could not be looked up")
+    return { id: recorded.id }
+  }
   const notifications = new NotificationService()
   const label = recorded.contract_number ?? recorded.title
-  await Promise.allSettled(recipients.map((userId) => notifications.createAndQueue({
+  const results = await Promise.allSettled(recipients.map((userId) => notifications.createAndQueue({
     orgId: access.org_id, userId, type: "po_acknowledgment_received",
     title: "Vendor disputed a purchase order",
     message: `${vendorName} disputed ${label} (revision ${recorded.revision}): ${parsed.reason}`,
     projectId: recorded.project_id, entityType: "po_acknowledgment", entityId: recorded.id,
     metadata: { href: "/purchasing?tab=acknowledgments" },
   })))
+  const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+  if (rejected.length) await failed(`${rejected.length} of ${results.length} notifications failed: ${String(rejected[0].reason)}`)
   return { id: recorded.id }
 }
 

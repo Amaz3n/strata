@@ -114,12 +114,14 @@ async function setupCommit(t) {
     create table po_receipt_lines (id uuid primary key default gen_random_uuid(), commitment_line_id uuid references commitment_lines(id));
     create table po_shortages (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id));
     create table po_completions (id uuid primary key default gen_random_uuid(), commitment_id uuid references commitments(id));
+    create table commitment_change_orders (id uuid primary key default gen_random_uuid(), commitment_id uuid not null references commitments(id) on delete cascade, status text not null default 'draft');
   `)
   await h.db.query("insert into companies values ($1, $2)", [SECOND_VENDOR, ORG])
   await h.db.exec(fs.readFileSync(require.resolve("../supabase/migrations/20260817120100_po_generation_serialization.sql"), "utf8"))
   await h.db.exec(migrationSql("20261015110000_po_generation_reconcile"))
   await h.db.exec(migrationSql("20261015161000_po_generation_review_fixes"))
   await h.db.exec(migrationSql("20261015171000_po_generation_round2_fixes"))
+  await h.db.exec(migrationSql("20261015181000_po_generation_round3_fixes"))
 
   let fingerprints = 0
   const run = async (fingerprint = `${String(++fingerprints).padStart(64, "0")}`) =>
@@ -508,6 +510,41 @@ test("members read generation runs and exceptions but cannot write them, even if
   await h.db.exec("reset role; grant insert, update, delete on po_generation_runs, po_generation_exceptions to authenticated; set role authenticated")
   await assert.rejects(h.db.query("update po_generation_exceptions set status = 'resolved_manual'"), /written by the generation service/)
   await assert.rejects(h.db.query("insert into po_generation_runs(org_id, project_id, lot_id, input_fingerprint) values ($1, $2, $3, 'x')", [ORG, HOME, LOT]), /written by the generation service/)
+})
+
+test("a draft order carrying a variance order of any status is kept and reported, and its variance orders survive", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
+  const [withApproved, withDraft] = await h.orders()
+  await h.db.query("insert into commitment_change_orders(commitment_id, status) values ($1, 'approved'), ($2, 'draft')", [withApproved.id, withDraft.id])
+
+  // Neither source is wanted any more, and the first one would now cost more.
+  const report = (await h.db.query("select po_generation_reconcile_report($1, $2, $3, null) r", [ORG, HOME, JSON.stringify([])])).rows[0].r
+  assert.equal(report.changes, 0)
+  assert.deepEqual(report.preserved_orphaned.map((orphan) => orphan.source_key).sort(), ["takeoff_line:a", "takeoff_line:b"])
+  const result = await h.commit(await h.run(), { prior: first, lines: [] })
+
+  assert.equal(result.removed_line_count, 0)
+  assert.deepEqual(result.preserved_orphaned.map((orphan) => orphan.source_key).sort(), ["takeoff_line:a", "takeoff_line:b"])
+  assert.deepEqual((await h.orders()).map((order) => [order.id, order.lines]), [[withApproved.id, 1], [withDraft.id, 1]])
+  assert.equal((await h.db.query("select count(*)::int n from commitment_change_orders")).rows[0].n, 2)
+
+  // Wanted again at a new price: the order in progress is reported, not ordered a second time.
+  const again = await h.commit(await h.run(), { prior: (await h.db.query("select id from po_generation_runs where status = 'succeeded' order by created_at desc limit 1")).rows[0].id, lines: [h.line("a", { unit_cost_cents: 175, total_cents: 175 })] })
+  assert.deepEqual(again.preserved_changed.map((change) => [change.source_key, change.was_cents, change.now_cents]), [["takeoff_line:a", 100, 175]])
+  assert.equal((await h.orders()).length, 2)
+})
+
+test("a fractional quantity is stored at its rounded line total and the order is the sum of its lines", async (t) => {
+  const h = await setupCommit(t)
+  // 12.5 units at 345 cents is 4,312.5 cents; the line is 4,313 (half up) and so is the order and its budget.
+  const result = await h.commit(await h.run(), { lines: [h.line("a", { quantity: 12.5, unit_cost_cents: 345, total_cents: 4313 }), h.line("b", { quantity: 0.5, unit_cost_cents: 3, total_cents: 2 })] })
+  const [order] = await h.orders()
+  assert.equal(order.total_cents, 4315)
+  assert.equal(result.budget_line_count, 1)
+  assert.deepEqual((await h.lineKeys()).map((row) => row.cents), [4313, 2])
+  assert.equal((await h.budgetState()).budgets[0].total_cents, 4315)
 })
 
 test("a completed order with no bill is preserved, not stripped and re-ordered", async (t) => {

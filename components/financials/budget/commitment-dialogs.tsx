@@ -16,7 +16,7 @@ import {
   approveCommitmentChangeOrderAction,
   createCommitmentChangeOrderAction,
   createCommitmentLineAction,
-  createProjectCommitmentAction,
+  createProjectCommitmentWithLineAction,
   deleteCommitmentLineAction,
   listCommitmentChangeOrdersAction,
   listCommitmentLinesAction,
@@ -169,27 +169,26 @@ export function CommitmentCreateDialog({
 
     startTransition(async () => {
       try {
-        const commitment = unwrapAction(await createProjectCommitmentAction(projectId, {
-          project_id: projectId,
-          company_id: companyId,
-          title: title.trim(),
-          total_cents: Math.round(n * 100),
-          // An approved purchase order is locked, so its line goes on while it is a draft.
-          status: "draft",
-          contract_number: contractNumber.trim() || null,
-          retainage_percent: retainage,
-          scope: scope.trim(),
-          terms: terms.trim() || null,
+        unwrapAction(await createProjectCommitmentWithLineAction(projectId, {
+          commitment: {
+            company_id: companyId,
+            title: title.trim(),
+            total_cents: Math.round(n * 100),
+            status,
+            contract_number: contractNumber.trim() || null,
+            retainage_percent: retainage,
+            scope: scope.trim(),
+            terms: terms.trim() || null,
+          },
+          line: {
+            cost_code_id: costCodesEnabled ? costCodeId : null,
+            budget_line_id: costCodesEnabled ? null : draft?.budgetLineId ?? null,
+            description: scope.trim(),
+            quantity: 1,
+            unit: "LS",
+            unit_cost_cents: Math.round(n * 100),
+          },
         }))
-        unwrapAction(await createCommitmentLineAction(commitment.id, {
-          cost_code_id: costCodesEnabled ? costCodeId : null,
-          budget_line_id: costCodesEnabled ? null : draft?.budgetLineId ?? null,
-          description: scope.trim(),
-          quantity: 1,
-          unit: "LS",
-          unit_cost_cents: Math.round(n * 100),
-        }))
-        if (status === "approved") unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status: "approved" }))
         toast({ title: "Commitment created" })
         onOpenChange(false)
         router.refresh()
@@ -306,7 +305,6 @@ export function CommitmentCreateDialog({
                 <SelectContent>
                   <SelectItem value="draft">Draft</SelectItem>
                   <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="complete">Complete</SelectItem>
                   <SelectItem value="canceled">Canceled</SelectItem>
                 </SelectContent>
               </Select>
@@ -467,7 +465,7 @@ export function CommitmentEditDialog({
                 <SelectContent>
                   <SelectItem value="draft">Draft</SelectItem>
                   <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="complete">Complete</SelectItem>
+                  {!(commitment?.commitment_type === "purchase_order" && commitment.status !== "complete") && <SelectItem value="complete">Complete</SelectItem>}
                   <SelectItem value="canceled">Canceled</SelectItem>
                 </SelectContent>
               </Select>
@@ -527,7 +525,7 @@ export function CommitmentLinesDialog({
     }
     let cancelled = false
     setLoading(true)
-    Promise.all([listCommitmentLinesAction(commitment.id), costCodesEnabled ? listCostCodesAction() : Promise.resolve([])])
+    Promise.all([listCommitmentLinesAction(commitment.id).then(unwrapAction), costCodesEnabled ? listCostCodesAction() : Promise.resolve([])])
       .then(([l, c]) => {
         if (cancelled) return
         setLines(l)
@@ -548,15 +546,14 @@ export function CommitmentLinesDialog({
 
   const reload = async () => {
     if (!commitment) return
-    const l = await listCommitmentLinesAction(commitment.id)
-    setLines(l)
+    setLines(unwrapAction(await listCommitmentLinesAction(commitment.id)))
   }
 
   const reloadChangeOrders = async () => {
     if (!commitment) return
     setChangeOrdersLoading(true)
     try {
-      setChangeOrders(await listCommitmentChangeOrdersAction(commitment.id))
+      setChangeOrders(unwrapAction(await listCommitmentChangeOrdersAction(commitment.id)))
     } finally {
       setChangeOrdersLoading(false)
     }

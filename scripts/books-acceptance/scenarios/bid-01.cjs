@@ -9,6 +9,7 @@
 //   bid-lines-price-only-their-own-package / rescind-restores-an-incumbent-the-sweep-expired / plan-only-packages-need-unrestricted-division-scope   review round 1
 //   concurrent-awards-for-the-same-scope-leave-one-active-price  EP08-05  two sessions award two packages of one scope and date; exactly one price takes effect
 //   a-vendors-quote-is-not-rewritable-by-a-member / a-rescind-and-an-award-for-one-scope-leave-one-active-price   review round 2
+//   an-invite-is-the-vendors-identity-on-a-package / rescinding-after-a-reprice-voids-the-whole-chain / a-rescind-and-an-award-for-one-package-never-deadlock   review round 3
 const { randomUUID } = require("node:crypto")
 const seed = require("../production-seed.cjs")
 const { app } = require("./shared.cjs")
@@ -214,18 +215,18 @@ async function bidLinesPriceOnlyTheirOwnPackage(kit, expected, check) {
   const w = await world(kit), { org } = w, q = kit.q, buyer = org.team.purchasing
   const a = await pricedPackage(kit, w, { title: "BID-01 ancestry A", bidders: [{ vendor: "Palmetto Framing", email: "palmetto@bid01.example.test", amountCents: 5_000_000 }] })
   const b = await pricedPackage(kit, w, { title: "BID-01 ancestry B", bidders: [{ vendor: "Gulf Concrete", email: "gulf@bid01.example.test", amountCents: 4_000_000 }] })
-  const own = kit.rows(`select id from public.bid_scope_items where bid_package_id=${q(a.pkg.id)}`)[0].id
   const foreign = kit.rows(`select id from public.bid_scope_items where bid_package_id=${q(b.pkg.id)}`)[0].id
   const submission = a.submissions["Palmetto Framing"].id
   const line = kit.rows(`select id from public.bid_submission_items where bid_submission_id=${q(submission)}`)[0].id
   const outcome = {
     repointLineToAnotherPackage: dataApi(kit, buyer, `update public.bid_submission_items set bid_scope_item_id=${q(foreign)} where id=${q(line)}`),
     insertLineOnAnotherPackage: dataApi(kit, buyer, `insert into public.bid_submission_items(org_id,bid_submission_id,bid_scope_item_id,response,amount_cents,description) values(${q(org.orgId)},${q(submission)},${q(foreign)},'priced',1,'Planted')`),
-    repointLineWithinItsOwnPackage: dataApi(kit, buyer, `update public.bid_submission_items set bid_scope_item_id=${q(own)} where id=${q(line)}`),
+    manualEntryOnAnotherPackagesScopeItem: await attempt(() => kit.as(buyer, () => app("bids").createManualBidSubmission({ input: { bid_package_id: a.pkg.id, company_id: org.vendorIds["Cypress Sitework"], total_cents: 1_000,
+      items: [{ bid_scope_item_id: foreign, description: "Planted on package B", response: "priced", amount_cents: 1_000, quantity: 1 }] } }))).then((outcome) => /scope item of the package/.test(outcome) ? "refused: scope item of its own package" : outcome),
   }
   const awarded = await award(kit, w, submission)
   const minted = kit.rows(`select cost_code_id = ${q(org.costCodeIds["06-100"])} as from_own_scope from public.vendor_price_agreements where id=${q(awarded.agreementIds[0])}`)[0]
-  eq(check, "a member cannot re-point or plant a bid line on another package's scope item, and the award mints only from the package's own scope", expected.expected, { ...outcome, awardMintsFromOwnScope: minted.from_own_scope === true })
+  eq(check, "a member cannot re-point or plant a bid line on another package's scope item, the bid service's own write (service role) is refused the same way, and the award mints only from the package's own scope", expected.expected, { ...outcome, awardMintsFromOwnScope: minted.from_own_scope === true })
   return { orgId: org.orgId }
 }
 
@@ -311,6 +312,74 @@ async function aRescindAndAnAwardForOneScopeLeaveOneActivePrice(kit, expected, c
   return { orgId: org.orgId }
 }
 
+// ---------------------------------------------------------------------------
+// Review round 3
+
+async function anInviteIsTheVendorsIdentityOnAPackage(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q
+  const a = await pricedPackage(kit, w, { title: "BID-01 invite fence", costCodeKey: "31-000", bidders: [{ vendor: "Cypress Sitework", email: "cypress@bid01.example.test", amountCents: 3_000_000 }] })
+  const buyer = org.team.purchasing, invite = `bid_package_id=${q(a.pkg.id)}`
+  const forge = () => ({
+    swapVendor: dataApi(kit, buyer, `update public.bid_invites set company_id=${q(org.vendorIds["Gulf Concrete"])} where ${invite}`),
+    swapContact: dataApi(kit, buyer, `update public.bid_invites set invite_email='someone-else@bid01.example.test' where ${invite}`),
+  })
+  const beforeAward = forge()
+  const harmless = dataApi(kit, buyer, `update public.bid_invites set updated_at=now() where ${invite}`)
+  const awarded = await award(kit, w, a.submissions["Cypress Sitework"].id)
+  const afterAward = forge()
+  const mintedVendor = kit.rows(`select company_id from public.vendor_price_agreements where id=${q(awarded.agreementIds[0])}`)[0].company_id
+  eq(check, "a member cannot re-point an invite to another vendor or address through the data API, before or after the award; other invite updates land and the agreement is minted to the vendor who bid", expected.expected, {
+    beforeAward, afterAward, harmless, awardMintedToTheBidder: mintedVendor === org.vendorIds["Cypress Sitework"],
+  })
+  return { orgId: org.orgId }
+}
+
+async function rescindingAfterARepriceVoidsTheWholeChain(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q, buyer = org.team.purchasing, bids = app("bids"), book = app("price-book")
+  const incumbent = await pricedPackage(kit, w, { title: "BID-01 chain incumbent", costCodeKey: "31-000", bidders: [{ vendor: "Cypress Sitework", email: "cypress@bid01.example.test", amountCents: 3_000_000 }] })
+  const incumbentAward = await award(kit, w, incumbent.submissions["Cypress Sitework"].id)
+  const replacement = await pricedPackage(kit, w, { title: "BID-01 chain replacement", costCodeKey: "31-000", bidders: [{ vendor: "Gulf Concrete", email: "gulf@bid01.example.test", amountCents: 2_800_000 }] })
+  const awarded = await award(kit, w, replacement.submissions["Gulf Concrete"].id)
+  const mintedId = awarded.agreementIds[0]
+  const repriced = await kit.as(buyer, () => book.repriceAgreement(mintedId, { effective_from: day(5), unit_cost_cents: 2_600, reason: "Gulf cut its price" }))
+  const before = {
+    repricedKeepsTheAward: kit.rows(`select source_bid_award_id = ${q(awarded.awardId)} as linked from public.vendor_price_agreements where id=${q(repriced.agreement.id)}`)[0].linked,
+    incumbent: agreement(kit, incumbentAward.agreementIds[0]).status,
+  }
+  const impact = await kit.as(buyer, () => bids.previewRescindImpact({ bidPackageId: replacement.pkg.id }))
+  const rescinded = await kit.as(buyer, () => bids.rescindBidAward({ input: { bid_package_id: replacement.pkg.id, reason: "Gulf withdrew after repricing" } }))
+  const after = { original: agreement(kit, mintedId), repriced: agreement(kit, repriced.agreement.id), incumbent: agreement(kit, incumbentAward.agreementIds[0]) }
+  eq(check, "a price repriced after the award keeps the award's lineage; the rescind dialog counts it, and rescinding voids the repriced price and puts the displaced incumbent back", expected.expected, {
+    before, impact: { agreements: impact.agreementCount, restorable: impact.restorableCount },
+    rescind: { voided: rescinded.voidedAgreementCount, restored: rescinded.restoredAgreementCount, skipped: rescinded.skippedAgreementCount },
+    original: after.original.status, repriced: after.repriced.status, incumbent: { status: after.incumbent.status, replacedBy: after.incumbent.superseded_by_id },
+  })
+  return { orgId: org.orgId }
+}
+
+async function aRescindAndAnAwardForOnePackageNeverDeadlock(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q
+  const p = await pricedPackage(kit, w, { title: "BID-01 same package race", costCodeKey: "03-300", bidders: [
+    { vendor: "Gulf Concrete", email: "gulf@bid01.example.test", amountCents: 6_000_000 },
+    { vendor: "Cypress Sitework", email: "cypress@bid01.example.test", amountCents: 6_200_000 },
+  ] })
+  const first = await award(kit, w, p.submissions["Gulf Concrete"].id)
+  // The same package from both ends: the rescind and a second award of it. Run one after the other either
+  // order is fine; interleaved row and scope locks used to deadlock.
+  const results = await race(kit, [
+    `set role service_role; select * from public.rescind_bid_award(${q(org.orgId)}, ${q(first.awardId)}, null, 'BID-01 same package race');`,
+    `set role service_role; select public.run_bid_award_price_agreements(${q(org.orgId)}, ${q(p.submissions["Cypress Sitework"].id)}, null, 'Reviewed scope: race', '{}', null);`,
+  ])
+  const activeAwards = kit.rows(`select count(*)::int n from public.bid_awards where bid_package_id=${q(p.pkg.id)} and rescinded_at is null`)[0].n
+  const activePrices = kit.rows(`select count(*)::int n from public.vendor_price_agreements where org_id=${q(org.orgId)} and cost_code_id=${q(org.costCodeIds["03-300"])} and community_id=${q(w.communityA)} and house_plan_id=${q(w.plan.id)} and status='active' and source_bid_award_id in (select id from public.bid_awards where bid_package_id=${q(p.pkg.id)})`)[0].n
+  const awardMessage = results[1].ok ? "awarded" : (/already been awarded/.test(results[1].stderr) ? "refused: already awarded" : results[1].stderr.slice(0, 160))
+  eq(check, "a rescind racing a second award of the same package never deadlocks: the rescind succeeds, the award either follows it or is refused as already awarded, and the active prices match the active awards", expected.expected, {
+    rescindSucceeded: results[0].ok, noDeadlock: !results.some((result) => /deadlock/.test(result.stderr)), awardOutcomeIsOrdered: ["awarded", "refused: already awarded"].includes(awardMessage),
+    activePricesMatchActiveAwards: activePrices === activeAwards,
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "BID-01",
   subcases: {
@@ -323,5 +392,8 @@ module.exports = {
     "plan-only-packages-need-unrestricted-division-scope": planOnlyPackagesNeedUnrestrictedDivisionScope,
     "a-vendors-quote-is-not-rewritable-by-a-member": aVendorsQuoteIsNotRewritableByAMember,
     "a-rescind-and-an-award-for-one-scope-leave-one-active-price": aRescindAndAnAwardForOneScopeLeaveOneActivePrice,
+    "an-invite-is-the-vendors-identity-on-a-package": anInviteIsTheVendorsIdentityOnAPackage,
+    "rescinding-after-a-reprice-voids-the-whole-chain": rescindingAfterARepriceVoidsTheWholeChain,
+    "a-rescind-and-an-award-for-one-package-never-deadlock": aRescindAndAnAwardForOnePackageNeverDeadlock,
   },
 }

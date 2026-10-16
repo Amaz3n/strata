@@ -143,12 +143,12 @@
       }
     },
     "bid-lines-price-only-their-own-package": {
-      "derivation": "Two packages each hold one bid. As a purchasing manager in their own session, re-pointing package A's bid line to package B's scope item is refused by the response fence (a member may only level a bid), as is inserting a line on A's submission; setting the line to the scope item it already has changes nothing and lands (the line-to-package trigger that binds every other writer is proved in the PGlite suite). Awarding A mints its agreement from A's own cost code (06-100).",
+      "derivation": "Two packages each hold one bid. As a purchasing manager in their own session, re-pointing package A's bid line to package B's scope item is refused by the response fence (a member may only level a bid), as is inserting a line on A's submission. The line-to-package trigger that binds the writers the fence lets through is exercised twice: in the PGlite suite by name (service role insert on another package's scope item), and here through the bid service's own manual-entry write, which runs as the service role and so passes the response fence: a manual bid entered on package A with a line pricing package B's scope item is refused by that trigger ('A bid line must price a scope item of the package it bids on'), and the whole entry rolls back. Awarding A then mints its agreement from A's own cost code (06-100).",
       "expected": {
         "repointLineToAnotherPackage": "A vendor's bid cannot be changed; only its leveling can",
         "insertLineOnAnotherPackage": "A bid response is recorded through the bid service, not edited as data",
-        "repointLineWithinItsOwnPackage": "landed",
-        "awardMintsFromOwnScope": true
+        "awardMintsFromOwnScope": true,
+        "manualEntryOnAnotherPackagesScopeItem": "refused: scope item of its own package"
       }
     },
     "rescind-restores-an-incumbent-the-sweep-expired": {
@@ -208,6 +208,54 @@
         "activePrices": [
           "Palmetto Framing"
         ]
+      }
+    },
+    "an-invite-is-the-vendors-identity-on-a-package": {
+      "derivation": "A package for site work (31-000) on the community and plan holds one Cypress Sitework bid of 3,000,000 cents for 1,000 sf. In the purchasing manager's own session, before and after the award, pointing the invite at Gulf Concrete or at another email address is refused by the invite fence ('An invite belongs to the vendor it was sent to; invite the other vendor instead'). An update that leaves the vendor and address alone (updated_at) touches the one invite and is reported as landed. The award mints its agreement to the vendor who bid: Cypress.",
+      "expected": {
+        "beforeAward": {
+          "swapVendor": "An invite belongs to the vendor it was sent to; invite the other vendor instead",
+          "swapContact": "An invite belongs to the vendor it was sent to; invite the other vendor instead"
+        },
+        "afterAward": {
+          "swapVendor": "An invite belongs to the vendor it was sent to; invite the other vendor instead",
+          "swapContact": "An invite belongs to the vendor it was sent to; invite the other vendor instead"
+        },
+        "harmless": "landed",
+        "awardMintedToTheBidder": true
+      }
+    },
+    "rescinding-after-a-reprice-voids-the-whole-chain": {
+      "derivation": "Site work (31-000): Cypress Sitework holds an incumbent price from its award (3,000,000 over 1,000 sf = 3,000 per sf). A replacement package takes Gulf Concrete at 2,800,000 (2,800 per sf), awarded today, which supersedes Cypress's row (a different vendor, effective today). The buyer reprices Gulf's price to 2,600 effective in 5 days: the repriced successor is a new row that keeps the award's id, and the original minted row is superseded. The rescind dialog's impact counts the one live minted row (the repriced one) and one price to restore. Rescinding the award voids the repriced row (the only active row of the chain), leaves the original minted row superseded as history, and restores Cypress: restored 1, skipped 0, Cypress active again with no successor.",
+      "expected": {
+        "before": {
+          "repricedKeepsTheAward": true,
+          "incumbent": "superseded"
+        },
+        "impact": {
+          "agreements": 1,
+          "restorable": 1
+        },
+        "rescind": {
+          "voided": 1,
+          "restored": 1,
+          "skipped": 0
+        },
+        "original": "superseded",
+        "repriced": "void",
+        "incumbent": {
+          "status": "active",
+          "replacedBy": null
+        }
+      }
+    },
+    "a-rescind-and-an-award-for-one-package-never-deadlock": {
+      "derivation": "One package for concrete (03-300) with two bids, Gulf's awarded first. A rescind of Gulf's award and a second award (Cypress's bid) for the same package are released together from two database sessions. Both now take the scope lock first and the package row second, so they queue rather than interleave: rescind first, the award then succeeds; award first, it is refused because the package is already awarded. The rescind succeeds either way, no session reports a deadlock, and the number of active prices from this package equals its number of active awards (1 after rescind-then-award, 0 after award-refused-then-rescind).",
+      "expected": {
+        "rescindSucceeded": true,
+        "noDeadlock": true,
+        "awardOutcomeIsOrdered": true,
+        "activePricesMatchActiveAwards": true
       }
     }
   }

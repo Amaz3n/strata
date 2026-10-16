@@ -263,7 +263,7 @@ test("a back-ordered line reads by its promised date, not as short", async (t) =
 test("quantity an approved variance order added counts as ordered; a credit or an unapproved one does not", async (t) => {
   const f = await fixture(t)
   const vpo = async (status, quantity, unitCost) => {
-    const order = await insert(f.db, "commitment_change_orders", { org_id: f.orgId, project_id: f.project.id, commitment_id: f.po.id, title: "More studs", total_cents: 0, status })
+    const order = await insert(f.db, "commitment_change_orders", { org_id: f.orgId, project_id: f.project.id, commitment_id: f.po.id, title: "More studs", total_cents: 0, status, reason_code_id: (await insert(f.db, "variance_reason_codes", { org_id: f.orgId, code: `r${status}${quantity}${unitCost}`, label: "Overage" })).id })
     await insert(f.db, "commitment_change_order_lines", {
       org_id: f.orgId, commitment_change_order_id: order.id, commitment_line_id: f.studs.id, description: "Studs", quantity, unit_cost_cents: unitCost, amount_cents: 0,
     })
@@ -311,4 +311,31 @@ test("a shortage links only a live variance order", async (t) => {
   }), /not live/)
   const { rows: [shortage] } = await f.db.query("select status from po_shortages where id = $1", [shortageId])
   assert.equal(shortage.status, "open")
+})
+
+test("voiding a receipt cancels the shortage it opened and reopens the one it closed in full; a future ticket is refused", async (t) => {
+  const f = await fixture(t)
+  const void_ = (receipt) => rpc(f.db, "void_po_receipt", {
+    p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_receipt_id: receipt, p_reason: "Entered by mistake", p_any_receipt: true,
+  })
+  const shortage = (status) => f.db.query("select status, resolved_by from po_shortages where commitment_line_id = $1 and status = $2", [f.studs.id, status]).then((r) => r.rows)
+
+  const damaged = await receive(f, [{ line: f.studs, quantity: 4, extra: { condition: "damaged" } }])
+  assert.equal((await shortage("open")).length, 1)
+  const first = await void_(damaged.id)
+  assert.deepEqual([first.shortages_cancelled, first.shortages_reopened], [1, 0])
+  assert.equal((await shortage("open")).length, 0)
+  assert.equal((await shortage("cancelled")).length, 1)
+
+  const bad = await receive(f, [{ line: f.studs, quantity: 2, extra: { condition: "wrong_item" } }])
+  const full = await receive(f, [{ line: f.studs, quantity: 100 }])
+  assert.equal((await shortage("received")).length, 1, "the full delivery closes the shortage")
+  const second = await void_(full.id)
+  assert.deepEqual([second.shortages_cancelled, second.shortages_reopened], [0, 1])
+  const [reopened] = await shortage("open")
+  assert.equal(reopened.resolved_by, null)
+  assert.equal(Number((await rowFor(f, f.studs)).received), 0)
+  assert.ok(bad.id)
+
+  await assert.rejects(receive(f, [{ line: f.studs, quantity: 1 }], { p_received_at: new Date(Date.now() + 2 * 86_400_000).toISOString() }), /in the future/)
 })

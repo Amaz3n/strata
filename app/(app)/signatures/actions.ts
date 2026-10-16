@@ -2093,10 +2093,12 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
 
       let commitmentChangeOrderQuery = supabase
         .from("commitment_change_orders")
-        .select("id, project_id, commitment_id, title, status, executed_file_id")
+        .select("id, project_id, commitment_id, title, status, executed_file_id, commitment:commitments!inner(commitment_type)")
         .eq("org_id", orgId)
         .not("project_id", "is", null)
         .is("executed_file_id", null)
+        .is("reason_code_id", null)
+        .neq("commitment.commitment_type", "purchase_order")
         .in("status", ["draft", "sent"])
         .order("updated_at", { ascending: false })
         .limit(200)

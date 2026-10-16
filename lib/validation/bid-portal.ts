@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { bidSubmissionItemResponseEnum } from "@/lib/validation/bids"
+import { bidSubmissionItemResponseEnum, bidTotalCents } from "@/lib/validation/bids"
 
 export const bidPortalPinSchema = z
   .string()
@@ -10,15 +10,15 @@ export const bidPortalPinSchema = z
 export const bidPortalSubmissionItemSchema = z.object({
   bid_scope_item_id: z.string().uuid(),
   response: bidSubmissionItemResponseEnum.default("priced"),
-  amount_cents: z.number().int().nullable().optional(),
-  unit_rate_cents: z.number().int().nullable().optional(),
+  amount_cents: bidTotalCents.nullable().optional(),
+  unit_rate_cents: bidTotalCents.nullable().optional(),
   quantity: z.number().nullable().optional(),
   notes: z.string().max(2000).optional().nullable(),
 })
 
 export const bidPortalSubmissionInputSchema = z.object({
   scope_revision: z.number().int().positive(),
-  total_cents: z.number().int().positive(),
+  total_cents: bidTotalCents.positive(),
   currency: z.string().trim().min(1).optional(),
   valid_until: z.string().optional().nullable(),
   lead_time_days: z.number().int().nonnegative().optional().nullable(),

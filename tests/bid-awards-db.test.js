@@ -454,3 +454,64 @@ test("a portal submission's attachments are linked in the same transaction as th
   assert.equal(await count("bid_submissions"), 1, "a refused attachment leaves no second submission")
   assert.equal(await count("file_links"), 1)
 })
+
+test("rescinding after a reprice voids the whole chain the award minted and restores what it displaced", async (t) => {
+  const { db, orgId, userId, incumbent, award, row } = await rebid(t, { incumbentSameVendor: false })
+  const result = await award()
+  const minted = result.agreement_ids[0]
+  const repriced = await rpc(db, "reprice_vendor_price_agreement", {
+    p_org_id: orgId, p_agreement_id: minted, p_effective_from: daysFrom(5), p_unit_cost_cents: 225, p_actor_id: userId, p_reason: "Lumber dropped",
+  })
+  assert.equal((await db.query("select source_bid_award_id from vendor_price_agreements where id = $1", [repriced])).rows[0].source_bid_award_id, result.award_id)
+  assert.equal((await row(incumbent.id)).status, "superseded")
+
+  const [rescinded] = await rpc(db, "rescind_bid_award", { p_org_id: orgId, p_bid_award_id: result.award_id, p_actor_id: userId, p_reason: "Trade withdrew" })
+
+  assert.deepEqual(rescinded.voided_agreement_ids, [repriced])
+  assert.deepEqual(rescinded.restored_agreement_ids, [incumbent.id])
+  assert.equal((await row(repriced)).status, "void")
+  assert.equal((await row(incumbent.id)).status, "active")
+})
+
+test("a repriced chain whose latest price was ended by hand does not resurrect the displaced price", async (t) => {
+  const { db, orgId, userId, incumbent, award, row } = await rebid(t, { incumbentSameVendor: false })
+  const result = await award()
+  const repriced = await rpc(db, "reprice_vendor_price_agreement", {
+    p_org_id: orgId, p_agreement_id: result.agreement_ids[0], p_effective_from: daysFrom(5), p_unit_cost_cents: 225, p_actor_id: userId, p_reason: "Lumber dropped",
+  })
+  await db.query("update vendor_price_agreements set status = 'void' where id = $1", [repriced])
+
+  const [rescinded] = await rpc(db, "rescind_bid_award", { p_org_id: orgId, p_bid_award_id: result.award_id, p_actor_id: userId, p_reason: "Trade withdrew" })
+
+  assert.deepEqual(rescinded.restored_agreement_ids, [])
+  assert.deepEqual(rescinded.skipped_agreement_ids, [incumbent.id])
+})
+
+test("a member cannot re-point an invite to another vendor, contact or address; its status still moves", async (t) => {
+  const { db, orgId, pkg, buyerId, as } = await fenced(t)
+  const invite = (await db.query("select id, company_id from bid_invites where bid_package_id = $1", [pkg.id])).rows[0]
+  const other = await insert(db, "companies", { org_id: orgId, name: "Frame Two" })
+  const contact = await insert(db, "contacts", { org_id: orgId, full_name: "Pat Lee" })
+
+  await assert.rejects(as(buyerId, (tx) => tx.query("update bid_invites set company_id = $2 where id = $1", [invite.id, other.id])), /belongs to the vendor/)
+  await assert.rejects(as(buyerId, (tx) => tx.query("update bid_invites set contact_id = $2 where id = $1", [invite.id, contact.id])), /belongs to the vendor/)
+  await assert.rejects(as(buyerId, (tx) => tx.query("update bid_invites set invite_email = 'x@example.com' where id = $1", [invite.id])), /belongs to the vendor/)
+  const moved = await as(buyerId, (tx) => tx.query("update bid_invites set status = 'withdrawn' where id = $1 returning status", [invite.id]))
+  assert.equal(moved.rows[0].status, "withdrawn")
+  const invited = await as(buyerId, (tx) => tx.query("insert into bid_invites (org_id, bid_package_id, company_id, status) values ($1, $2, $3, 'draft') returning id", [orgId, pkg.id, other.id]))
+  assert.equal(invited.rows.length, 1, "a new vendor is invited with a new invite")
+  assert.equal((await db.query("select company_id from bid_invites where id = $1", [invite.id])).rows[0].company_id, invite.company_id)
+})
+
+test("the line-to-package guard refuses a priced line on another package's scope item for the service role too", async (t) => {
+  const { db, orgId, submission, community, costCode } = await fenced(t)
+  const other = await insert(db, "bid_packages", { org_id: orgId, community_id: community.id, award_target: "price_agreement", title: "Elsewhere", status: "draft" })
+  const foreign = await insert(db, "bid_scope_items", { org_id: orgId, bid_package_id: other.id, description: "Foreign", cost_code_id: costCode.id, unit: "sf" })
+  const guard = (await db.query("select tgname from pg_trigger where tgrelid = 'public.bid_submission_items'::regclass and tgname = 'bid_submission_items_scope_package'")).rows
+  assert.equal(guard.length, 1, "the guard is installed under its own name")
+
+  await assert.rejects(
+    asRole(db, { role: "service_role" }, (tx) => insert(tx, "bid_submission_items", { org_id: orgId, bid_submission_id: submission.id, bid_scope_item_id: foreign.id, response: "priced", amount_cents: 1, description: "x" })),
+    /scope item of the package/,
+  )
+})

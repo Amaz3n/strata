@@ -3,6 +3,7 @@ import "server-only"
 import { z } from "zod"
 
 import { isIssuedPurchaseOrder } from "@/lib/purchasing/po-lock"
+import { poLineAmountCents } from "@/lib/purchasing/po-line-amount"
 import { revisedObligationCents } from "@/lib/purchasing/po-acknowledgment-state"
 import { deliverTradeNotice, resolveTradePortalLink } from "@/lib/services/trade-notices"
 import { companyRecipients, homeLabel } from "@/lib/services/trade-lookahead"
@@ -66,7 +67,7 @@ export async function processPoIssueNotice(jobId: number, orgId: string, payload
           title,
           intro: `${companyResult.data?.name ?? "Vendor"}, ${revised ? `revision ${job.revision} of` : ""} purchase order ${number} for ${label} is ${revised ? "issued" : "issued to you"}. Total ${money(revisedObligationCents(snapshot))}. Please accept it or tell us what you dispute.`,
           lines: snapshot.lines.map((line) => ({
-            label: line.description ?? "Line", name: `${line.quantity ?? 0} ${line.unit ?? "ea"}`, dates: money(line.scheduled_value_cents),
+            label: line.description ?? "Line", name: `${line.quantity ?? 0} ${line.unit ?? "ea"}`, dates: money(poLineAmountCents(line)),
           })),
           buttonText: link ? "Review and answer" : null, buttonUrl: link ? `${link}/purchase-orders` : null,
           org: { name: orgResult.data?.name ?? null, slug: orgResult.data?.slug ?? null, logoUrl: orgResult.data?.logo_url ?? null },

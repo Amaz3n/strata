@@ -1,8 +1,6 @@
 require("../scripts/register-ts-node-test")
 
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const path = require("node:path")
 const test = require("node:test")
 
 const {
@@ -26,7 +24,7 @@ const { completedWeekWindows, summarizeVarianceByOrg } = require("../lib/service
 const { classifyPoPosition, commitmentBillingAtRelease, poRemainingCents, poRevisedCents } = require("../lib/purchasing/po-position")
 const { varianceAnalysisCsv } = require("../lib/services/reports/variance-analysis")
 
-const migration = (name) => fs.readFileSync(path.resolve(__dirname, "../supabase/migrations", name), "utf8")
+const { asRole, createDatabase, insert, seedMember } = require("./support/pglite")
 
 const agreement = (overrides = {}) => ({
   id: "agreement-a", company_id: "vendor-a", cost_code_id: "cc-1", cost_type: null,
@@ -352,47 +350,82 @@ test("variance totals are absolute and grouped per organization", () => {
 // Migrations
 // ---------------------------------------------------------------------------
 
-test("the completion overlap guard is enforced at write time and at approval", () => {
-  const sql = migration("20260817120000_po_completion_line_overlap_guard.sql")
-  assert.match(sql, /create trigger po_completions_no_line_overlap/)
-  assert.match(sql, /pg_advisory_xact_lock\(hashtextextended\(new\.commitment_id::text, 0\)\)/)
-  assert.match(sql, /other\.commitment_line_ids && new\.commitment_line_ids/)
-  assert.match(sql, /other\.commitment_line_ids && v_completion\.commitment_line_ids/)
-  assert.match(sql, /already billed by completion/)
-  // Rejected and void completions must stay re-reportable.
-  assert.match(sql, /new\.status not in \('reported', 'verified', 'approved', 'billed'\)/)
-  assert.match(sql, /revoke all on function public\.approve_po_completion\(uuid, uuid, uuid\) from public, anon, authenticated;/)
+async function purchaseOrder(t) {
+  const db = await createDatabase(t)
+  const { orgId, userId } = await seedMember(db)
+  const home = await insert(db, "projects", { org_id: orgId, name: "Lot 4" })
+  const order = await insert(db, "commitments", { org_id: orgId, project_id: home.id, title: "Framing PO", status: "approved", commitment_type: "purchase_order", contract_number: "PO-100" })
+  const lines = [await insert(db, "commitment_lines", { org_id: orgId, commitment_id: order.id, description: "Walls", quantity: 1, unit_cost_cents: 100 }), await insert(db, "commitment_lines", { org_id: orgId, commitment_id: order.id, description: "Roof", quantity: 1, unit_cost_cents: 100 })]
+  const report = (status, lineIds) => insert(db, "po_completions", { org_id: orgId, project_id: home.id, commitment_id: order.id, status, commitment_line_ids: lineIds, reported_source: "office", reported_by_user_id: userId })
+  return { db, orgId, userId, home, order, lines, report }
+}
+
+test("two live completions cannot cover the same purchase-order line, and a rejected one releases it", async (t) => {
+  const { lines, report } = await purchaseOrder(t)
+  const [walls, roof] = lines.map((line) => line.id)
+
+  await report("reported", [walls])
+  await assert.rejects(report("verified", [walls]), /already covered by completion/)
+  await report("reported", [roof])
+  await assert.rejects(report("reported", null), /already covered by completion/, "a whole-order completion collides with every line")
 })
 
-test("PO generation serializes per project and cannot reissue a number", () => {
-  const sql = migration("20260817120100_po_generation_serialization.sql")
-  assert.match(sql, /perform pg_advisory_xact_lock\(hashtextextended\(p_org_id::text \|\| ':' \|\| v_run\.project_id::text, 0\)\)/)
-  assert.match(sql, /create unique index if not exists po_generation_runs_commit_fingerprint_uidx/)
-  assert.match(sql, /create unique index if not exists commitments_generated_po_number_uidx/)
-  assert.match(sql, /metadata->>'source' = 'po_generation'/)
-  assert.match(sql, /revoke all on function public\.run_po_generation_commit\(uuid, uuid, jsonb\) from public, anon, authenticated;/)
-  const body = sql.slice(sql.indexOf("function public.run_po_generation_commit"))
-  assert.ok(
-    body.indexOf("pg_advisory_xact_lock") < body.indexOf("v_prior_run_id := nullif"),
-    "the lock must be taken before the prior-run delete-and-recreate decision",
-  )
+test("a rejected completion releases its lines for the trade to re-report", async (t) => {
+  const { db, lines, report } = await purchaseOrder(t)
+  const [walls] = lines.map((line) => line.id)
+  const first = await report("reported", [walls])
+  await db.query("update po_completions set status = 'rejected' where id = $1", [first.id])
+
+  const again = await report("reported", [walls])
+
+  assert.equal(again.status, "reported")
+  await assert.rejects(db.query("update po_completions set status = 'reported' where id = $1", [first.id]), /already covered by completion/)
 })
 
-test("price-book imports and the bid-package constraint backlog are covered", () => {
-  assert.match(
-    migration("20260817120200_price_agreement_import_key_unique.sql"),
-    /create unique index if not exists vendor_price_agreements_import_key_uidx/,
-  )
-  const validate = migration("20260817120300_validate_bid_package_award_target.sql")
-  assert.match(validate, /validate constraint bid_packages_award_target_context/)
-  // Both constraints are validated now. `bid_packages_parent_context` had two
-  // violating rows — leftovers from testing prospect-to-project conversion,
-  // each already pointing at a real project — so the migration clears the stale
-  // prospect pointer first. The cleanup must stay scoped to rows carrying BOTH
-  // pointers, or a legitimate prospect-only bid package would lose its parent.
-  assert.match(validate, /validate constraint bid_packages_parent_context/)
-  assert.match(validate, /set prospect_id = null/)
-  assert.match(validate, /where project_id is not null\s*\n\s*and prospect_id is not null/)
+test("generated purchase orders cannot share a number, and a commit cannot be recorded twice for the same input", async (t) => {
+  const { db, orgId, home } = await purchaseOrder(t)
+  const generated = (number, source = "po_generation") => insert(db, "commitments", { org_id: orgId, project_id: home.id, title: "Generated", status: "draft", commitment_type: "purchase_order", contract_number: number, metadata: { source } })
+  await generated("PO-200")
+  await assert.rejects(generated("PO-200"), /commitments_generated_po_number_uidx/)
+  await generated("PO-100", "manual")
+  await generated("PO-200", "manual")
+
+  const community = await insert(db, "communities", { org_id: orgId, name: "Oak Ridge", code: "OR" })
+  const lot = await insert(db, "lots", { org_id: orgId, community_id: community.id, lot_number: "4", status: "assigned", project_id: home.id })
+  const plan = await insert(db, "house_plans", { org_id: orgId, name: "Mangrove", code: "MG" })
+  const version = await insert(db, "house_plan_versions", { org_id: orgId, house_plan_id: plan.id, version_number: 1, status: "draft" })
+  const run = (extra = {}) => insert(db, "po_generation_runs", { org_id: orgId, project_id: home.id, lot_id: lot.id, house_plan_version_id: version.id, mode: "commit", status: "succeeded", input_fingerprint: "a".repeat(64), ...extra })
+  await run()
+  await assert.rejects(run(), /po_generation_runs_commit_fingerprint_uidx/)
+  await run({ status: "failed" })
+  await run({ mode: "dry_run" })
+})
+
+test("commit and approval functions are the server's alone", async (t) => {
+  const { db, orgId } = await purchaseOrder(t)
+  const { userId } = await seedMember(db, { orgId })
+  const call = (sql) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, [orgId]))
+  await assert.rejects(call("select public.run_po_generation_commit($1, gen_random_uuid(), '[]'::jsonb)"), /permission denied/)
+  await assert.rejects(call("select public.approve_po_completion($1, gen_random_uuid(), gen_random_uuid())"), /permission denied/)
+})
+
+test("an imported price repeating an import key is refused, and a price-book package takes exactly one parent", async (t) => {
+  const { db, orgId, home } = await purchaseOrder(t)
+  const company = await insert(db, "companies", { org_id: orgId, name: "Framing Co" })
+  const costCode = await insert(db, "cost_codes", { org_id: orgId, code: "06-100", name: "Framing" })
+  const imported = (key) => insert(db, "vendor_price_agreements", { org_id: orgId, company_id: company.id, cost_code_id: costCode.id, pricing_kind: "unit", uom: "sf", unit_cost_cents: 1, status: "active", source: "import", metadata: { import_key: key } })
+  await imported("abc")
+  await assert.rejects(imported("abc"), /vendor_price_agreements_import_key_uidx/)
+  await imported("def")
+
+  const community = await insert(db, "communities", { org_id: orgId, name: "Oak Ridge", code: "OR" })
+  const prospect = await insert(db, "prospects", { org_id: orgId, name: "Kitchen" })
+  const parcel = (extra) => insert(db, "bid_packages", { org_id: orgId, title: "Package", status: "draft", ...extra })
+  await assert.rejects(parcel({ award_target: "commitment", project_id: home.id, prospect_id: prospect.id }), /bid_packages_parent_context/)
+  await assert.rejects(parcel({ award_target: "price_agreement", community_id: community.id, prospect_id: prospect.id }), /bid_packages_award_target_context|bid_packages_parent_context/)
+  await assert.rejects(parcel({ award_target: "price_agreement" }), /bid_packages_award_target_context/)
+  await parcel({ award_target: "price_agreement", community_id: community.id })
+  await parcel({ award_target: "commitment", prospect_id: prospect.id })
 })
 
 // ---------------------------------------------------------------------------

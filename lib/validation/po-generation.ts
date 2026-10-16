@@ -3,7 +3,6 @@ import { z } from "zod"
 export const poGenerationInputSchema = z.object({
   projectId: z.string().uuid(),
   mode: z.enum(["dry_run", "commit"]),
-  asOfDate: z.string().date().optional(),
   expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).refine((input) => input.mode !== "commit" || input.expectedFingerprint !== undefined, {
   path: ["expectedFingerprint"],

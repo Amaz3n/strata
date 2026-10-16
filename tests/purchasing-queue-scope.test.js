@@ -1,23 +1,22 @@
 require('../scripts/register-ts-node-test')
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const ts = require('typescript')
 const { createClient } = require('@supabase/supabase-js')
-const { stubModule, ORG, ACTOR, PROJECT, COMMUNITY, PACKAGE } = require('./support/starts-harness')
-const z = require('zod').z
+const { ORG, ACTOR, PROJECT, COMMUNITY, PACKAGE } = require('./support/starts-harness')
+const { freshRequire, stubModule } = require('./support/modules')
 
-// Actual owners + SDK transport; no live organization. Join/RLS semantics require
-// the full-schema and authenticated QA gates and are not claimed by this suite.
-function declarations(file, names, bindings) {
-  const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
-  const selected = source.statements.filter(node => ts.isFunctionDeclaration(node) ? names.includes(node.name?.text) : ts.isVariableStatement(node) && node.declarationList.declarations.some(d => names.includes(d.name.getText(source))))
-  assert.equal(selected.length, names.length, 'Every tested owner declaration must exist')
-  const code = ts.transpileModule(selected.map(n => n.getText(source)).join('\n') + `\nexport { ${names.join(',')} };`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText
-  const exports = {}
-  new Function('exports', 'require', ...Object.keys(bindings), code)(exports, require, ...Object.values(bindings))
-  return exports
-}
+// The real queue services over the SDK's own transport (a fake fetch), with only the
+// session and the permission gate replaced; no live organization. Join/RLS semantics
+// require the full-schema and authenticated QA gates and are not claimed by this suite.
+let current = null
+stubModule('@/lib/services/context', { requireOrgContext: async () => current.context })
+stubModule('@/lib/services/authorization', {
+  getProjectReadScopeForUser: async () => current.scope,
+  requireAuthorization: async input => { current.gates.push(input); if (current.denied) throw new Error('Forbidden') },
+})
+const { listPoExceptions } = freshRequire('lib/services/po-generation.ts')
+const { listPoCompletions } = freshRequire('lib/services/po-completions.ts')
+
 function harness({ scope = { divisionIds: null, projectMembershipRequired: false }, denied = false, failure = false, rows = [] } = {}) {
   const calls = [], gates = []
   const supabase = createClient('https://purchasing.invalid', 'local-test-key', {
@@ -29,14 +28,12 @@ function harness({ scope = { divisionIds: null, projectMembershipRequired: false
       return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json', 'content-range': '100-149/1203' } })
     } },
   })
-  const context = { supabase, orgId: ORG, userId: ACTOR }
-  stubModule('@/lib/services/authorization', { getProjectReadScopeForUser: async () => scope })
-  delete require.cache[require.resolve('../lib/services/purchasing-queue-scope')]
-  const helpers = require('../lib/services/purchasing-queue-scope')
-  const bindings = { ...helpers, z, requireOrgContext: async () => context, requireAuthorization: async input => { gates.push(input); if (denied) throw new Error('Forbidden') }, hydrate: async data => data }
-  const exceptions = declarations('lib/services/po-generation.ts', ['poExceptionStatusSchema', 'poExceptionListSchema', 'authorizeGeneration', 'listPoExceptions'], bindings).listPoExceptions
-  const completions = declarations('lib/services/po-completions.ts', ['listPoCompletions'], bindings).listPoCompletions
-  return { queues: { exceptions, completions }, calls, gates }
+  const queues = {
+    exceptions: filters => { current = state; return listPoExceptions(filters) },
+    completions: filters => { current = state; return listPoCompletions(filters) },
+  }
+  const state = { context: { supabase, orgId: ORG, userId: ACTOR }, scope, gates, denied }
+  return { queues, calls, gates }
 }
 
 // The variance queue reads through the service client and resolves homes by lot-then-project division;

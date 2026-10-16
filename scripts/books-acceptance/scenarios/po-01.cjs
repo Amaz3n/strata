@@ -15,14 +15,17 @@
 //   po-canceled-order-is-reordered                a canceled order stays as it was and its lines are ordered again on a new draft
 //   po-deleted-draft-is-repaired                  a draft order a member deleted is re-created from the same lines by the next commit
 //   po-order-with-history-is-preserved            an order returned to draft after it was issued, answered and had a voided receipt is kept whole and reported; the run succeeds
-//   race-po-approval-against-regeneration         an approval (through the approval service) and a regeneration at once never leave an approved order whose total differs from its lines
+//   po-order-with-variance-order-is-preserved     a draft order carrying a variance order is kept whole and reported, and its variance order survives the regeneration
+//   po-fractional-quantity-generates-approves-and-issues   a 12.5-unit line generates a half-up cent total, the order is the sum of its lines, and it approves and issues with that same total
+//   race-po-approval-lands-first                  an approval forced to take the order's lock before a regeneration: approved at the total it was read at, regeneration preserves it and reports the change
+//   race-po-regeneration-lands-first              a regeneration forced to take the order's lock before an approval that already read it: the approval is refused plainly, the order keeps the new lines
 //   race-po-release-against-resolution            the starts release and a buyer's resolution at once order each line once
 //
 // Expected values are in expected/PO-01.json.
 const { randomUUID } = require("node:crypto")
 const seed = require("../production-seed.cjs")
 const { app } = require("./shared.cjs")
-const { race, asMember } = require("./sessions.cjs")
+const { race, asMember, psql } = require("./sessions.cjs")
 
 const lot = () => require("./lot-01.cjs").helpers
 const equal = (check, label, expected, observed) => lot().equal(check, label, expected, observed)
@@ -39,6 +42,7 @@ const REFUSALS = {
   "needs a reason": /zero price needs a note/i,
   "missing permission": /Missing permission/,
   "raw index error": /commitments_generated_po_number_uidx|duplicate key/,
+  "order changed": /changed while you were working/,
 }
 
 // Agreements are organisation-wide: lapsing or voiding one changes how every home is priced, and a home's
@@ -309,22 +313,131 @@ async function orderWithHistoryIsPreserved(kit, expected, check) {
   return { orgId: h.org.orgId, projectId: h.projectId }
 }
 
-async function raceApprovalAgainstRegeneration(kit, expected, check) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const HOLD_MARK = "po-01-hold"
+const lockWaiters = (kit) => Number(kit.sql("select count(*) from pg_stat_activity where wait_event_type = 'Lock'"))
+async function until(check, what) {
+  for (let i = 0; i < 400; i += 1) {
+    if (check()) return
+    await sleep(50)
+  }
+  throw new Error(`Timed out waiting for ${what}`)
+}
+
+/**
+ * Forces an interleaving: one session holds the order's row lock, the first mover queues behind it
+ * (waited for, not guessed), then the second mover queues behind the first, then the lock is released.
+ * Postgres grants a row lock in queue order, so the first mover always lands first.
+ */
+async function forcedOrder(kit, orderId, first, second) {
+  const baseline = lockWaiters(kit)
+  const holder = psql(kit, `begin; select 1 from public.commitments where id=${kit.q(orderId)} for update; select '${HOLD_MARK}', pg_sleep(120);`, "postgres")
+  await until(() => Number(kit.sql(`select count(*) from pg_stat_activity where query like '%${HOLD_MARK}%' and pid <> pg_backend_pid() and wait_event = 'PgSleep'`)) === 1, "the order lock to be held")
+  const firstResult = first()
+  await until(() => lockWaiters(kit) > baseline, "the first session to queue on the order")
+  const secondResult = second()
+  await until(() => lockWaiters(kit) > baseline + 1, "the second session to queue on the order")
+  kit.sql(`select pg_terminate_backend(pid) from pg_stat_activity where query like '%${HOLD_MARK}%' and pid <> pg_backend_pid()`, "supabase_admin")
+  await holder
+  return Promise.all([firstResult, secondResult])
+}
+
+const repriceFramingTo = (kit, h, unitCents) =>
+  kit_as(h, () => app("price-book").repriceAgreement(agreementOf(kit, h, "Palmetto Framing"), { effective_from: kit.rows("select current_date::text d")[0].d, unit_cost_cents: unitCents, reason: "PO-01 price moved" }))
+const repriceFraming = (kit, h, delta) =>
+  repriceFramingTo(kit, h, Number(kit.rows(`select unit_cost_cents u from public.vendor_price_agreements where id=${kit.q(agreementOf(kit, h, "Palmetto Framing"))}`)[0].u) + delta)
+const lineSumOf = (kit, id) => Number(kit.rows(`select coalesce(sum(scheduled_value_cents),0)::bigint n from public.commitment_lines where commitment_id=${kit.q(id)}`)[0].n)
+const approveAsOwner = (kit, h, id) => kit.as(h.org.owner, () => app("commitments").updateCommitment({ commitmentId: id, input: { status: "approved", prequal_override_note: OVERRIDE } }))
+
+async function raceApprovalLandsFirst(kit, expected, check) {
   const h = await home(kit)
   await issue(kit, h)
-  const target = orders(kit, h)[0]
-  await kit_as(h, () => app("price-book").repriceAgreement(agreementOf(kit, h, "Palmetto Framing"), { effective_from: kit.rows("select current_date::text d")[0].d, unit_cost_cents: 5100, reason: "PO-01 price moved" }))
+  const target = orders(kit, h).find((row) => row.vendor === "Palmetto Framing")
+  await repriceFraming(kit, h, 100)
   const seen = await preview(h)
-  const [regeneration, approval] = await Promise.all([
-    commit(h, seen.inputFingerprint).then(() => "regenerated", (error) => named(error.message, REFUSALS)),
-    kit.as(h.org.owner, () => app("commitments").updateCommitment({ commitmentId: target.id, input: { status: "approved", prequal_override_note: OVERRIDE } })).then(() => "approved", (error) => error.message),
-  ])
-  const approvedOrders = orders(kit, h).filter((row) => row.status === "approved")
-  const lineSum = (id) => Number(kit.rows(`select coalesce(sum(scheduled_value_cents),0)::bigint n from public.commitment_lines where commitment_id=${kit.q(id)}`)[0].n)
-  equal(check, "an approval through the approval service racing a regeneration is serial-equivalent: it is approved or told plainly to try again, never with a raw database error, and no approved order has a total different from its lines or no lines at all", expected.expected, {
-    regeneration, approvalWithoutRawError: approval === "approved" || !/violates|duplicate key|deadlock|internal/i.test(approval),
-    everyApprovedOrderHasLines: approvedOrders.every((row) => kit.rows(`select count(*)::int n from public.commitment_lines where commitment_id=${kit.q(row.id)}`)[0].n > 0),
-    everyApprovedTotalEqualsItsLines: approvedOrders.every((row) => Number(row.total_cents) === lineSum(row.id)),
+  const [approval, regeneration] = await forcedOrder(kit, target.id,
+    () => approveAsOwner(kit, h, target.id).then(() => "approved", (error) => named(error.message, REFUSALS)),
+    () => commit(h, seen.inputFingerprint).then((result) => result, (error) => named(error.message, REFUSALS)))
+  const after = orders(kit, h).find((row) => row.id === target.id)
+  equal(check, "an approval that takes the order's lock first lands at the total it was read at; the regeneration that was waiting behind it preserves the approved order, reports that it would now price differently, and no approved order's total differs from its lines", expected.expected, {
+    approval,
+    regenerationRan: typeof regeneration !== "string",
+    regenerationReportsTheApprovedOrder: typeof regeneration !== "string" && regeneration.preservedChanged.some((change) => change.commitmentId === target.id),
+    orderApprovedAtItsReadTotal: after.status === "approved" && after.total_cents === target.total_cents,
+    approvedTotalEqualsItsLines: Number(after.total_cents) === lineSumOf(kit, target.id),
+    ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function raceRegenerationLandsFirst(kit, expected, check) {
+  const h = await home(kit)
+  await issue(kit, h)
+  const target = orders(kit, h).find((row) => row.vendor === "Palmetto Framing")
+  await repriceFraming(kit, h, 100)
+  const seen = await preview(h)
+  const [regeneration, approval] = await forcedOrder(kit, target.id,
+    () => commit(h, seen.inputFingerprint).then(() => "regenerated", (error) => named(error.message, REFUSALS)),
+    () => approveAsOwner(kit, h, target.id).then(() => "approved", (error) => named(error.message, REFUSALS)))
+  const after = orders(kit, h).find((row) => row.id === target.id)
+  equal(check, "a regeneration that takes the order's lock first re-prices the draft; the approval that had already read the old order is refused plainly instead of approving a total it was never shown, and the order stays a draft whose total equals its new lines", expected.expected, {
+    regeneration, approval,
+    orderStillADraft: after.status === "draft",
+    orderRepriced: Number(after.total_cents) > Number(target.total_cents),
+    totalEqualsItsLines: Number(after.total_cents) === lineSumOf(kit, target.id),
+    ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function orderWithVarianceOrderIsPreserved(kit, expected, check) {
+  const h = await home(kit)
+  await issue(kit, h)
+  const framing = orders(kit, h).find((row) => row.vendor === "Palmetto Framing")
+  const reason = kit.rows(`select id from public.variance_reason_codes where org_id=${kit.q(h.org.orgId)} and is_active and not is_backcharge order by sort_order, code limit 1`)[0]?.id
+  const reasonCodeId = reason ?? randomUUID()
+  if (!reason) kit.sql(`insert into public.variance_reason_codes(id,org_id,code,label) values(${kit.q(reasonCodeId)},${kit.q(h.org.orgId)},'po_01_extra','Extra material')`)
+  const varianceId = randomUUID()
+  kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,company_id,title,total_cents,status,reason_code_id) values(${kit.q(varianceId)},${kit.q(h.org.orgId)},${kit.q(h.projectId)},${kit.q(framing.id)},${kit.q(h.org.vendorIds["Palmetto Framing"])},'Extra bundle',20000,'sent',${kit.q(reasonCodeId)})`)
+  const before = orders(kit, h).find((row) => row.id === framing.id)
+  await repriceFraming(kit, h, 100)
+  const seen = await preview(h)
+  const result = await commit(h, seen.inputFingerprint)
+  const after = orders(kit, h)
+  const kept = after.find((row) => row.id === framing.id)
+  const reportedFor = (reply) => reply.preservedChanged.some((change) => change.commitmentId === framing.id)
+  equal(check, "a draft order carrying a variance order is progressed: regeneration neither deletes it nor orders its lines again, the variance order is still there, and the repricing is reported by the preview and the commit", expected.expected, {
+    runSucceeded: result.status === "succeeded" || result.status === "succeeded_with_exceptions",
+    orderKept: Boolean(kept) && kept.status === "draft" && kept.total_cents === before.total_cents,
+    varianceOrderSurvives: Number(kit.rows(`select count(*)::int n from public.commitment_change_orders where id=${kit.q(varianceId)} and commitment_id=${kit.q(framing.id)}`)[0].n),
+    previewReportsIt: reportedFor(seen),
+    commitReportsIt: reportedFor(result),
+    oneFramingOrder: after.filter((row) => row.vendor === "Palmetto Framing").length === 1,
+    ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function fractionalQuantityGeneratesApprovesAndIssues(kit, expected, check) {
+  const h = await home(kit)
+  const agreement = agreementOf(kit, h, "Palmetto Framing")
+  const codeId = kit.rows(`select cost_code_id from public.vendor_price_agreements where id=${kit.q(agreement)}`)[0].cost_code_id
+  const takeoff = kit.rows(`select t.id from public.house_plan_takeoff_lines t where t.org_id=${kit.q(h.org.orgId)} and t.cost_code_id=${kit.q(codeId)} and t.house_plan_version_id=(select house_plan_version_id from public.lots where project_id=${kit.q(h.projectId)}) order by t.sort_order, t.id limit 1`)[0].id
+  // 12.5 units at 345 cents is 4,312.5 cents: the line is 4,313 (half up).
+  // The released plan's contents are immutable to everyone; this fixture bypasses that guard (triggers off for this one statement) to get a fractional takeoff quantity.
+  kit.sql(`set session_replication_role = replica; update public.house_plan_takeoff_lines set quantity=12.5 where id=${kit.q(takeoff)}`, "supabase_admin")
+  await repriceFramingTo(kit, h, 345)
+  await issue(kit, h)
+  const order = kit.rows(`select c.id from public.commitments c join public.commitment_lines l on l.commitment_id=c.id where c.project_id=${kit.q(h.projectId)} and l.metadata->>'source_ref'=${kit.q(takeoff)} and c.metadata->>'source'='po_generation'`)[0].id
+  const fractionalLine = () => Number(kit.rows(`select scheduled_value_cents::bigint n from public.commitment_lines where commitment_id=${kit.q(order)} and metadata->>'source_ref'=${kit.q(takeoff)}`)[0].n)
+  const total = () => Number(kit.rows(`select total_cents::bigint n from public.commitments where id=${kit.q(order)}`)[0].n)
+  const generated = { fractionalLineCents: fractionalLine(), orderTotalEqualsItsLines: total() === lineSumOf(kit, order) }
+  const approval = await approveAsOwner(kit, h, order).then(() => "approved", (error) => error.message)
+  equal(check, "a fractional takeoff quantity generates a line of round-half-up(quantity x unit cost), the draft order is the sum of its lines, and approving it through the approval service issues it at that same total", expected.expected, {
+    ...generated, approval,
+    approvedTotalEqualsItsLines: total() === lineSumOf(kit, order),
+    approvedLineUnchanged: fractionalLine() === 4313,
+    issueVersions: Number(kit.rows(`select count(*)::int n from public.po_issue_versions where commitment_id=${kit.q(order)}`)[0].n),
     ...shape(kit, h),
   })
   return { orgId: h.org.orgId, projectId: h.projectId }
@@ -357,7 +470,10 @@ const subcases = {
   "po-order-with-history-is-preserved": orderWithHistoryIsPreserved,
   "race-po-competing-commits": raceCompetingCommits,
   "race-po-duplicate-resolution": raceDuplicateResolution,
-  "race-po-approval-against-regeneration": raceApprovalAgainstRegeneration,
+  "po-order-with-variance-order-is-preserved": orderWithVarianceOrderIsPreserved,
+  "po-fractional-quantity-generates-approves-and-issues": fractionalQuantityGeneratesApprovesAndIssues,
+  "race-po-approval-lands-first": raceApprovalLandsFirst,
+  "race-po-regeneration-lands-first": raceRegenerationLandsFirst,
   "race-po-release-against-resolution": raceReleaseAgainstResolution,
 }
 

@@ -13,7 +13,9 @@ import { isPlanOffered, offeringOverrideFor, PLAN_OFFERING_REFUSAL, type PlanOff
 import { checkLotFits, type LotFitPin } from "@/lib/services/lot-fit"
 import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { requireOrgContext } from "@/lib/services/context"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { agreementWriteAllowed } from "@/lib/services/price-book"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import { recordAudit } from "@/lib/services/audit"
@@ -762,7 +764,40 @@ async function commitOptions(rows: ImportRowRecord[], context: ResolvedImportCon
   return results
 }
 
+/**
+ * The importer writes as the service client, which no policy fences, so a
+ * division-limited member's rows are checked here, whole batch, before the first
+ * write: an org-wide row or another division's row is the same refusal
+ * createPriceAgreement gives.
+ */
+async function assertPriceBookRowsInDivisions(rows: ImportRowRecord[], context: ResolvedImportContext) {
+  if (context.platform) return
+  const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  if (!access.assignedOnly) return
+  const communityIds = [...new Set(rows.flatMap((row) => (typeof row.parsed.community_id === "string" ? [row.parsed.community_id] : [])))]
+  const communityDivision = new Map<string, string | null>()
+  for (let index = 0; index < communityIds.length; index += 100) {
+    const { data, error } = await context.supabase.from("communities").select("id,division_id")
+      .eq("org_id", context.orgId).in("id", communityIds.slice(index, index + 100))
+    if (error) throw new Error(`Failed to check the communities' divisions: ${error.message}`)
+    for (const community of data ?? []) communityDivision.set(community.id, community.division_id ?? null)
+  }
+  const outside = rows.filter((row) => {
+    const communityId = typeof row.parsed.community_id === "string" ? row.parsed.community_id : null
+    return !agreementWriteAllowed(access, {
+      divisionId: typeof row.parsed.division_id === "string" ? row.parsed.division_id : null,
+      communityId,
+      communityDivisionId: communityId ? communityDivision.get(communityId) ?? null : null,
+    })
+  })
+  if (outside.length > 0) {
+    const shown = outside.slice(0, 5).map((row) => row.row_number).join(", ")
+    throw new Error(`Rows ${shown}${outside.length > 5 ? ` and ${outside.length - 5} more` : ""} are outside your divisions: a price needs a division or community you work in. Nothing was imported.`)
+  }
+}
+
 async function commitPriceBook(rows: ImportRowRecord[], context: ResolvedImportContext) {
+  await assertPriceBookRowsInDivisions(rows, context)
   const results = new Map<string, { id: string; action: string }>()
   for (const row of rows) {
     const companyId = await ensureCompany(context, row)

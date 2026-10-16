@@ -1,3 +1,4 @@
+import { poLineAmountCents } from "@/lib/purchasing/po-line-amount"
 import { claimedCompletionChangeOrderIds, claimedCompletionLineIds, hasWholeOrderClaim, type CompletionCoverage } from "@/lib/services/po-completions"
 import { loadPoIssueViews, type PoIssueView } from "@/lib/services/po-acknowledgments"
 import { PO_ISSUED_STATUSES } from "@/lib/purchasing/po-lock"
@@ -80,7 +81,11 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
       .map((line: Record<string, unknown>) => ({
         id: String(line.id), description: String(line.description ?? ""),
         quantity: Number(line.quantity ?? 0), unit: typeof line.unit === "string" ? line.unit : null,
-        scheduledValueCents: Number(line.scheduled_value_cents ?? 0),
+        scheduledValueCents: poLineAmountCents({
+          quantity: typeof line.quantity === "number" ? line.quantity : null,
+          unit_cost_cents: typeof line.unit_cost_cents === "number" ? line.unit_cost_cents : null,
+          scheduled_value_cents: typeof line.scheduled_value_cents === "number" ? line.scheduled_value_cents : null,
+        }),
         claimed: wholeOrderClaimed || claimedLineIds.has(String(line.id)),
       }))
     return {

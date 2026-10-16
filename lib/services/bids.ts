@@ -3375,15 +3375,24 @@ export async function previewRescindImpact({ bidPackageId, orgId }: { bidPackage
   if (awardError) throw new Error(`Failed to load the award: ${awardError.message}`)
   if (!award) return { agreementCount: 0, restorableCount: 0, affectedPoCount: 0 }
   const service = createServiceSupabaseClient()
-  const { data: minted, error: mintedError } = await service.from("vendor_price_agreements").select("id, metadata")
-    .eq("org_id", resolvedOrgId).eq("source_bid_award_id", award.id).in("status", ["draft", "active"])
+  const { data: minted, error: mintedError } = await service.from("vendor_price_agreements").select("id, status, metadata")
+    .eq("org_id", resolvedOrgId).eq("source_bid_award_id", award.id).in("status", ["draft", "active", "superseded"])
   if (mintedError) throw new Error(`Failed to load the agreements this award minted: ${mintedError.message}`)
-  const ids = (minted ?? []).map((row) => row.id as string)
-  const restorable = (minted ?? []).reduce((sum, row) => sum + (Array.isArray(row.metadata?.supersedes) ? row.metadata.supersedes.length : 0), 0)
-  if (ids.length === 0) return { agreementCount: 0, restorableCount: restorable, affectedPoCount: 0 }
-  const { data: affected, error: countError } = await service.rpc("price_agreement_order_count", { p_org_id: resolvedOrgId, p_agreement_ids: ids })
+  const chain = minted ?? []
+  const liveCount = chain.filter((row) => row.status !== "superseded").length
+  // A repriced price keeps the award, so the row the award displaced yields to the live end of the chain.
+  const successorOf = new Map<string, string>()
+  for (const row of chain) if (typeof row.metadata?.repriced_from_id === "string") successorOf.set(row.metadata.repriced_from_id, row.id)
+  const endsLive = (row: { id: string; status: string }): boolean => {
+    if (row.status !== "superseded") return true
+    const next = chain.find((candidate) => candidate.id === successorOf.get(row.id))
+    return next ? endsLive(next) : false
+  }
+  const restorable = chain.reduce((sum, row) => sum + (endsLive(row) && Array.isArray(row.metadata?.supersedes) ? row.metadata.supersedes.length : 0), 0)
+  if (liveCount === 0) return { agreementCount: 0, restorableCount: restorable, affectedPoCount: 0 }
+  const { data: affected, error: countError } = await service.rpc("price_agreement_order_count", { p_org_id: resolvedOrgId, p_agreement_ids: chain.map((row) => row.id) })
   if (countError || typeof affected !== "number") throw new Error(`Failed to count the orders priced from this award: ${countError?.message}`)
-  return { agreementCount: ids.length, restorableCount: restorable, affectedPoCount: affected }
+  return { agreementCount: liveCount, restorableCount: restorable, affectedPoCount: affected }
 }
 
 interface BidAwardRescindResult {

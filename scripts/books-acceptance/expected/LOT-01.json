@@ -2667,13 +2667,14 @@
       }
     },
     "purchase-order-commit-rejects-changed-inputs": {
-      "derivation": "EP08-06 #1. Committing generates real orders, so it must be the previewed orders: a commit with no fingerprint is refused (preview first), a malformed fingerprint is refused, a commit for a different as-of date than the preview is a different set of inputs and is refused, and so is a commit after prices moved (Palmetto's framing repriced from 44 to 45 dollars per sf after the preview); the sales consultant lacks po.generate; none of these writes an order. A fresh preview prices framing at 4,500 cents x 2,100 sf = 9,450,000, so committing it issues three orders: Bright 4,600,000, Cypress 3,400,000, Palmetto 9,450,000, one line each, numbered PO-<community>-<lot>-01..03, with budget lines only for the priced cost codes (06-100 9,450,000; 26-000 4,600,000; 31-000 3,400,000), one event and one audit row for the run, and the two exceptions left open. Committing the same fingerprint again returns the same run and issues nothing more.",
+      "derivation": "EP08-06 #1. Committing generates real orders, so it must be the previewed orders: a commit with no fingerprint is refused (preview first), a malformed fingerprint is refused, an as-of date sent by the client is ignored (the preview stamps its own, so previewing with a date a day later returns the same fingerprint), a commit for a fingerprint no preview recorded is refused as changed inputs, and so is a commit after prices moved (Palmetto's framing repriced from 44 to 45 dollars per sf after the preview); the sales consultant lacks po.generate; none of these writes an order. A fresh preview prices framing at 4,500 cents x 2,100 sf = 9,450,000, so committing it issues three orders: Bright 4,600,000, Cypress 3,400,000, Palmetto 9,450,000, one line each, numbered PO-<community>-<lot>-01..03, with budget lines only for the priced cost codes (06-100 9,450,000; 26-000 4,600,000; 31-000 3,400,000), one event and one audit row for the run, and the two exceptions left open. Committing the same fingerprint again returns the same run and issues nothing more.",
       "inputs": {},
       "expected": {
         "refusals": {
           "noFingerprint": "refused: preview first",
           "malformedFingerprint": "refused: malformed fingerprint",
-          "differentAsOfDate": "refused: inputs changed since the preview",
+          "clientAsOfDateIgnoredByPreview": "ignored",
+          "fingerprintWithNoPreviewOnRecord": "refused: inputs changed since the preview",
           "priceMovedAfterPreview": "refused: inputs changed since the preview",
           "wrongRole": "refused: missing permission",
           "purchaseOrdersWritten": 0

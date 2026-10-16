@@ -1,10 +1,8 @@
 require("../scripts/register-ts-node-test")
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const path = require("node:path")
 const test = require("node:test")
-const vm = require("node:vm")
-const ts = require("typescript")
+
+const { freshRequire, stubModule } = require("./support/modules")
 
 function workspace({ denied = false, deniedProject = false, exception = null, scope = { assignedOnly: false, divisionIds: [] }, lookupRows = [], homes = { rows: [], nextCursor: null }, vendors = { entries: [], total: 0, page: 1, pageSize: 25 } } = {}) {
   const calls = []
@@ -16,40 +14,30 @@ function workspace({ denied = false, deniedProject = false, exception = null, sc
     } }
     return query
   } } }
-  const stubs = {
-    zod: require("zod"),
-    "@/lib/land/scope": require("../lib/land/scope"),
-    "@/lib/services/desk-context": { getAmbientDeskContext: async () => ({ divisionId: null }) },
-    "@/lib/services/authorization": { getDivisionAccessForUser: async () => scope, requireAuthorization: async (input) => {
-      calls.push({ authorization: input })
-      if (deniedProject) throw new Error("Project forbidden")
-    } },
-    "@/lib/services/price-book": { listPriceAgreements: async (query) => {
-      calls.push({ agreements: query })
-      return { items: query.agreementIds.map((id) => ({ id })) }
-    } },
-    "@/lib/services/context": { requireOrgContext: async () => context },
-    "@/lib/services/permissions": { requirePermission: async (permission, ctx) => {
-      calls.push({ permission, context: ctx })
-      if (denied) throw new Error("Forbidden")
-    } },
-    "@/lib/services/project-directory": { loadProjectDirectory: async (query, ctx) => {
-      calls.push({ kind: "home", query, context: ctx })
-      return { page: homes }
-    } },
-    "@/lib/services/directory": { listDirectoryPage: async (query) => {
-      calls.push({ kind: "vendor", query })
-      return vendors
-    } },
-  }
-  const compiled = { exports: {} }
-  const source = fs.readFileSync(path.join(__dirname, "../lib/services/purchasing-workspace.ts"), "utf8")
-  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-  vm.runInNewContext(code, { module: compiled, exports: compiled.exports, require: (id) => {
-    assert.ok(stubs[id], `Unexpected dependency: ${id}`)
-    return stubs[id]
+  stubModule("@/lib/services/desk-context", { getAmbientDeskContext: async () => ({ divisionId: null }) })
+  stubModule("@/lib/services/authorization", { getDivisionAccessForUser: async () => scope, requireAuthorization: async (input) => {
+    calls.push({ authorization: input })
+    if (deniedProject) throw new Error("Project forbidden")
   } })
-  return { search: compiled.exports.searchPurchasingEntities, candidates: compiled.exports.getPoExceptionCandidates, calls, context }
+  stubModule("@/lib/services/price-book", { listPriceAgreements: async (query) => {
+    calls.push({ agreements: query })
+    return { items: query.agreementIds.map((id) => ({ id })) }
+  } })
+  stubModule("@/lib/services/context", { requireOrgContext: async () => context })
+  stubModule("@/lib/services/permissions", { requirePermission: async (permission, ctx) => {
+    calls.push({ permission, context: ctx })
+    if (denied) throw new Error("Forbidden")
+  } })
+  stubModule("@/lib/services/project-directory", { loadProjectDirectory: async (query, ctx) => {
+    calls.push({ kind: "home", query, context: ctx })
+    return { page: homes }
+  } })
+  stubModule("@/lib/services/directory", { listDirectoryPage: async (query) => {
+    calls.push({ kind: "vendor", query })
+    return vendors
+  } })
+  const workspace = freshRequire("lib/services/purchasing-workspace.ts")
+  return { search: workspace.searchPurchasingEntities, candidates: workspace.getPoExceptionCandidates, calls, context }
 }
 
 test("purchasing lookup denies access before reading either directory", async () => {

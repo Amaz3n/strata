@@ -189,7 +189,7 @@ test("the requester of a variance order cannot approve it, and the attempt is au
         { id: VPO, org_id: ORG, project_id: PROJECT, commitment_id: id(61), title: "VPO", status: "draft", total_cents: 25_000, reason_code_id: id(62), requested_by: ACTOR, metadata: {} },
       ],
       commitment_change_order_lines: [],
-      commitments: [],
+      commitments: [{ id: id(61), org_id: ORG, project_id: PROJECT, commitment_type: "purchase_order", status: "approved", title: "PO" }],
       authorization_audit_log: [],
     },
   })

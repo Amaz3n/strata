@@ -24,6 +24,7 @@ import {
 } from "@/lib/financials/commitment-position"
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, commitmentExecutionSchema, type CommitmentInput, type CommitmentUpdateInput, type CommitmentLineInput, type CommitmentLineUpdateInput, type CommitmentExecutionInput } from "@/lib/validation/commitments"
 import { commitmentCreatedByUserId } from "@/lib/financials/separation-of-duties"
+import { extendedLineCents, poLinesTotalCents } from "@/lib/purchasing/po-line-amount"
 import { assertCommitmentApprovalSeparated } from "@/lib/services/separation-of-duties"
 import { getCompanyPrequalificationWarning } from "@/lib/services/prequalification"
 import { getComplianceRules } from "@/lib/services/compliance"
@@ -412,6 +413,7 @@ async function gateCommitmentApproval({
   return warning
 }
 
+const PO_COMPLETION_PATH_MESSAGE = "A purchase order is completed by approving its completion report, not by changing its status."
 const PO_COMPLETE_FROM_APPROVED_MESSAGE = "A purchase order is completed from an approved order, not created or moved there directly. Approve it first."
 
 export async function createCommitment({ input, orgId }: { input: CommitmentInput; orgId?: string }): Promise<CommitmentSummary> {
@@ -541,6 +543,80 @@ async function assertNothingBilledAgainst(orgId: string, commitmentId: string) {
   }
 }
 
+/**
+ * The one-step create: an order is built as a draft, its line lands, and it is approved when the caller
+ * asked for that. An approved purchase order is locked, so it cannot be created with its line already on
+ * it. The approval gate is run before anything is written, and if the approval is still refused (it
+ * re-checks everything against the written order) the draft is removed again, so a refusal never leaves
+ * an unlabeled draft behind.
+ */
+export async function createCommitmentWithLine({
+  input,
+  line,
+  orgId,
+}: {
+  input: CommitmentInput
+  line: CommitmentLineInput
+  orgId?: string
+}): Promise<CommitmentSummary> {
+  const parsed = commitmentInputSchema.parse(input)
+  const validatedLine = commitmentLineInputSchema.parse(line)
+  const wantsApproval = parsed.status === "approved"
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  if (wantsApproval) {
+    await requireAuthorization({
+      permission: "commitment.write",
+      userId,
+      orgId: resolvedOrgId,
+      projectId: parsed.project_id,
+      supabase,
+      logDecision: true,
+      resourceType: "project",
+      resourceId: parsed.project_id,
+    })
+    await gateCommitmentApproval({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: parsed.project_id,
+      companyId: parsed.company_id,
+      creatorUserId: userId,
+      totalCents: poLinesTotalCents([validatedLine]),
+      overrideNote: parsed.prequal_override_note,
+    })
+  }
+
+  const created = await createCommitment({ input: { ...parsed, status: "draft" }, orgId: resolvedOrgId })
+  try {
+    await createCommitmentLine(created.id, validatedLine)
+    if (!wantsApproval) return created
+    return await updateCommitment({
+      commitmentId: created.id,
+      input: { status: "approved", prequal_override_note: parsed.prequal_override_note },
+      orgId: resolvedOrgId,
+    })
+  } catch (error) {
+    const service = createServiceSupabaseClient()
+    const { error: linesError } = await service.from("commitment_lines").delete().eq("org_id", resolvedOrgId).eq("commitment_id", created.id)
+    const { error: orderError } = linesError
+      ? { error: linesError }
+      : await service.from("commitments").delete().eq("org_id", resolvedOrgId).eq("id", created.id).eq("status", "draft")
+    await recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: orderError ? "commitment_create_discard_failed" : "commitment_create_discarded",
+      entityType: "commitment",
+      entityId: created.id,
+      payload: { project_id: parsed.project_id, reason: error instanceof Error ? error.message : "Unknown error" },
+    })
+    if (orderError) {
+      const detail = error instanceof Error ? error.message : "The order could not be completed"
+      throw new Error(`${detail} (a draft order was left on the project: ${created.title})`)
+    }
+    throw error
+  }
+}
+
 export async function updateCommitment({
   commitmentId,
   input,
@@ -584,6 +660,12 @@ export async function updateCommitment({
   const issued = isIssuedPurchaseOrder(existing.commitment_type, existing.status)
   if (parsed.status === "complete" && existing.status !== "approved" && existing.status !== "complete") {
     throw new Error(PO_COMPLETE_FROM_APPROVED_MESSAGE)
+  }
+  // A purchase order is completed by approving a completion report, never by editing its status, and an
+  // order that was completed is not reopened by editing it either: it is returned to draft or left alone.
+  if (existing.commitment_type === "purchase_order" && parsed.status !== undefined && parsed.status !== existing.status) {
+    if (parsed.status === "complete") throw new Error(PO_COMPLETION_PATH_MESSAGE)
+    if (existing.status === "complete" && isIssuedPurchaseOrder("purchase_order", parsed.status)) throw new Error(PO_COMPLETION_PATH_MESSAGE)
   }
   const unissues = issued && parsed.status !== undefined && !isIssuedPurchaseOrder("purchase_order", parsed.status)
   if (issued) {
@@ -871,6 +953,10 @@ export async function executeCommitment({
   if (existing.executed_at) {
     throw new Error("This commitment is already executed.")
   }
+  if (existing.commitment_type === "purchase_order" && existing.status === "draft") {
+    // Recording a signature must not issue an order that skipped the approval gate and its total re-roll.
+    throw new Error("Approve this purchase order first; recording a signed copy does not issue it.")
+  }
   if (existing.status === "draft") {
     await assertCommitmentApprovalSeparated({
       orgId: resolvedOrgId,
@@ -951,7 +1037,7 @@ function mapCommitmentLine(row: any): CommitmentLine {
     quantity: row.quantity ?? 1,
     unit: row.unit,
     unit_cost_cents: row.unit_cost_cents,
-    total_cents: (row.quantity ?? 1) * row.unit_cost_cents,
+    total_cents: extendedLineCents(row),
     scheduled_value_cents: row.scheduled_value_cents ?? null,
     retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : null,
     sort_order: row.sort_order ?? 0,
@@ -975,10 +1061,7 @@ async function getCommitmentLineRollup(
 
   return {
     lineCount: data?.length ?? 0,
-    totalCents: (data ?? []).reduce(
-      (sum, line) => sum + (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
-      0,
-    ),
+    totalCents: poLinesTotalCents(data ?? []),
   }
 }
 
@@ -1266,12 +1349,13 @@ export async function getCommitmentDetail(commitmentId: string, orgId?: string):
   if (error || !row) {
     throw new Error("Commitment not found or access denied")
   }
+  const stored = mapCommitment(row)
 
   await requireAuthorization({
     permission: "commitment.read",
     userId,
     orgId: resolvedOrgId,
-    projectId: (row as any).project_id,
+    projectId: stored.project_id,
     supabase,
     logDecision: true,
     resourceType: "commitment",
@@ -1279,7 +1363,7 @@ export async function getCommitmentDetail(commitmentId: string, orgId?: string):
   })
 
   const [enriched, linesResult, changeOrdersResult, billsResult] = await Promise.all([
-    enrichCommitments(db, resolvedOrgId, [mapCommitment(row)]),
+    enrichCommitments(db, resolvedOrgId, [stored]),
     db
       .from("commitment_lines")
       .select(

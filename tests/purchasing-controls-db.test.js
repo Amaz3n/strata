@@ -215,7 +215,7 @@ test("revise_commitment_change_order edits a pending order in one step and refus
   const row = (await w.db.query("select title, total_cents from commitment_change_orders where id = $1", [draft.id])).rows[0]
   assert.deepEqual([row.title, Number(row.total_cents)], ["Bigger", 9_000])
   await assert.rejects(rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: stamp, p_patch: { title: "Stale" }, p_lines: null }), /changed while you were editing/)
-  await w.db.query("update commitment_change_orders set status = 'approved' where id = $1", [draft.id])
+  await w.db.query("update commitment_change_orders set status = 'approved', approved_by = $2 where id = $1", [draft.id, w.owner])
   const fresh = (await w.db.query("select updated_at from commitment_change_orders where id = $1", [draft.id])).rows[0].updated_at
   await assert.rejects(rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: fresh, p_patch: {}, p_lines: lines }), /Only draft or sent/)
   await assert.rejects(rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: fresh, p_patch: {}, p_lines: null }, { role: "authenticated", userId: w.owner }), /permission denied/)
@@ -339,4 +339,136 @@ test("the variance report names a home's superintendent from either superintende
   const rows = await rpc(w.db, "get_variance_analysis", { p_org_id: w.orgId, p_start: "2000-01-01T00:00:00Z", p_end_exclusive: "2100-01-01T00:00:00Z" })
   const labels = rows.filter((row) => row.dimension === "superintendent").map((row) => row.dimension_id)
   assert.deepEqual(labels, [superintendent])
+})
+
+const createOrder = (w, header, lines) => rpc(w.db, "create_commitment_change_order", {
+  p_org_id: w.orgId,
+  p_header: { commitment_id: w.po.id, title: "Extra", reason_code_id: w.reason.id, requested_by: w.owner, ...header },
+  p_lines: lines,
+})
+const orderLine = (cents, extra = {}) => ({ description: "Extra", quantity: 1, unit: "ls", unit_cost_cents: cents, amount_cents: cents, sort_order: 0, ...extra })
+
+test("a variance order is created with its lines in one step, naming only its own home's and commitment's references", async (t) => {
+  const w = await purchasingWorld(t)
+  const budget = await insert(w.db, "budgets", { org_id: w.orgId, project_id: w.project.id })
+  const homeLine = await insert(w.db, "budget_lines", { org_id: w.orgId, budget_id: budget.id, description: "Framing" })
+  const otherProject = await insert(w.db, "projects", { org_id: w.orgId, name: "Lot 14" })
+  const otherBudget = await insert(w.db, "budgets", { org_id: w.orgId, project_id: otherProject.id })
+  const otherLine = await insert(w.db, "budget_lines", { org_id: w.orgId, budget_id: otherBudget.id, description: "Elsewhere" })
+  const otherPo = await insert(w.db, "commitments", { org_id: w.orgId, project_id: w.project.id, company_id: w.company.id, title: "Roofing PO", status: "approved", commitment_type: "purchase_order", total_cents: 1 })
+  const otherPoLine = await insert(w.db, "commitment_lines", { org_id: w.orgId, commitment_id: otherPo.id, description: "Shingles", quantity: 1, unit_cost_cents: 1, sort_order: 1 })
+  const { orgId: foreignOrg } = await seedMember(w.db)
+  const foreignCode = await insert(w.db, "cost_codes", { org_id: foreignOrg, code: "01", name: "Foreign" })
+
+  const id = await createOrder(w, {}, [orderLine(2_500, { budget_line_id: homeLine.id, commitment_line_id: w.lineA.id }), orderLine(500, { sort_order: 1 })])
+  const created = (await w.db.query("select total_cents, (select count(*)::int from commitment_change_order_lines where commitment_change_order_id = o.id) n from commitment_change_orders o where id = $1", [id])).rows[0]
+  assert.deepEqual([Number(created.total_cents), created.n], [3_000, 2])
+
+  for (const [reference, pattern] of [
+    [{ budget_line_id: otherLine.id }, /budget line must belong to the order's home/],
+    [{ commitment_line_id: otherPoLine.id }, /commitment line must belong to the order's commitment/],
+    [{ cost_code_id: foreignCode.id }, /cost code must belong to this organization/],
+  ]) {
+    await assert.rejects(createOrder(w, { title: "Bad references" }, [orderLine(100), orderLine(100, { sort_order: 1, ...reference })]), pattern)
+    await assert.rejects(w.db.query(`update commitment_change_order_lines set ${Object.keys(reference)[0]} = $2 where commitment_change_order_id = $1`, [id, Object.values(reference)[0]]), pattern)
+  }
+  assert.equal((await w.db.query("select count(*)::int n from commitment_change_orders where title = 'Bad references'")).rows[0].n, 0)
+  await assert.rejects(createOrder(w, { title: "No lines" }, []), /at least one line/)
+  await assert.rejects(createOrder(w, {}, [orderLine(1)]).then(() => w.db.query("update commitments set status = 'canceled' where id = $1", [w.po.id])).then(() => createOrder(w, { title: "Canceled" }, [orderLine(1)])), /issued purchase order/)
+})
+
+test("a closed change order never moves again, and a purchase-order change is approved only by a named approver on an issued order", async (t) => {
+  const w = await purchasingWorld(t)
+  const signed = await w.vpo(4_000, "draft")
+  await assert.rejects(w.db.query("update commitment_change_orders set status = 'approved', approved_at = now() where id = $1", [signed.id]), /named approver/)
+  await w.db.query("update commitment_change_orders set status = 'voided' where id = $1", [signed.id])
+  await assert.rejects(w.db.query("update commitment_change_orders set status = 'approved', approved_by = $2, approved_at = now() where id = $1", [signed.id, w.owner]), /closed and cannot move/)
+  const rejected = await w.vpo(5_000, "draft")
+  await w.db.query("update commitment_change_orders set status = 'rejected' where id = $1", [rejected.id])
+  await assert.rejects(w.db.query("update commitment_change_orders set status = 'draft' where id = $1", [rejected.id]), /closed and cannot move/)
+
+  const pending = await w.vpo(6_000, "draft")
+  await w.db.query("update commitments set status = 'canceled' where id = $1", [w.po.id])
+  await assert.rejects(w.db.query("update commitment_change_orders set status = 'approved', approved_by = $2, approved_at = now() where id = $1", [pending.id, w.owner]), /issued purchase order/)
+})
+
+test("deleting the pending variance order that resolved a shortage reopens the shortage", async (t) => {
+  const w = await purchasingWorld(t)
+  const order = await w.vpo(2_000, "draft")
+  const shortage = await insert(w.db, "po_shortages", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, commitment_line_id: w.lineB.id, short_quantity: 1, reason: "vendor_short" })
+  await w.db.query("update po_shortages set status = 'vpo', vpo_id = $2, resolved_by = $3, resolved_at = now() where id = $1", [shortage.id, order.id, w.owner])
+  await w.db.query("delete from commitment_change_orders where id = $1", [order.id])
+  const reopened = (await w.db.query("select status, vpo_id, resolved_at from po_shortages where id = $1", [shortage.id])).rows[0]
+  assert.deepEqual([reopened.status, reopened.vpo_id, reopened.resolved_at], ["open", null, null])
+})
+
+test("a bill rejected after its completion was approved gives the scope back, and the completion bills again", async (t) => {
+  const w = await purchasingWorld(t)
+  const completion = await w.completion({ commitment_line_ids: [w.lineA.id] })
+  const billed = await w.approve(completion.id)
+  await w.db.query("update vendor_bills set status = 'rejected', rejected_at = now(), rejected_by = $2, rejection_reason = 'Posted to the wrong order' where id = $1", [billed.vendor_bill_id, w.approver])
+  const reopened = (await w.db.query("select status, vendor_bill_id, amount_cents, approved_by from po_completions where id = $1", [completion.id])).rows[0]
+  assert.deepEqual([reopened.status, reopened.vendor_bill_id, reopened.amount_cents, reopened.approved_by], ["verified", null, null, null])
+  assert.equal((await w.db.query("select count(*)::int n from events where event_type = 'po_completion.reopened' and entity_id = $1", [completion.id])).rows[0].n, 1)
+  assert.equal((await w.db.query("select count(*)::int n from audit_log where entity_type = 'po_completion' and entity_id = $1 and source = 'bill_rejected'", [completion.id])).rows[0].n, 1)
+
+  const again = await w.approve(completion.id)
+  assert.equal(Number(again.amount_cents), 60_000)
+  assert.notEqual(again.vendor_bill_id, billed.vendor_bill_id)
+  const position = (await w.db.query("select billed_cents, completion_billed_cents from purchase_order_positions where commitment_id = $1", [w.po.id])).rows[0]
+  assert.deepEqual([position.billed_cents, position.completion_billed_cents].map(Number), [60_000, 60_000])
+})
+
+test("only credit variance orders close as a vendor credit, and the refusals say what to do", async (t) => {
+  const w = await purchasingWorld(t)
+  const credit = await w.vpo(-150_000)
+  // Lines netting below zero against a credit would be closed unbilled and never billable again.
+  const whole = await w.completion({ commitment_line_ids: null })
+  await assert.rejects(w.approve(whole.id), /net to a credit of 50000; report the credit variance order as its own completion/)
+  await w.db.query("delete from po_completions where id = $1", [whole.id])
+
+  // A line completion that the unclaimed credit pushes past the revised total names the credit.
+  await w.db.query("update commitment_change_orders set total_cents = -5000 where id = $1", [credit.id])
+  await w.db.query("update commitment_change_order_lines set unit_cost_cents = -5000, amount_cents = -5000 where commitment_change_order_id = $1", [credit.id])
+  const both = await w.completion({ commitment_line_ids: [w.lineA.id, w.lineB.id] })
+  await assert.rejects(w.approve(both.id), /approved credit variance order of 5000 is not claimed yet/)
+
+  // The credit alone closes as a credit, and the bill that nets it equals its lines.
+  const claim = await w.completion({ commitment_line_ids: [], change_order_ids: [credit.id] })
+  assert.equal(Number((await w.approve(claim.id)).credit_cents), 5_000)
+  const next = await w.approve(both.id)
+  assert.equal(Number(next.credit_applied_cents), 5_000)
+  const total = (await w.db.query("select total_cents from vendor_bills where id = $1", [next.vendor_bill_id])).rows[0].total_cents
+  const lines = (await w.db.query("select sum(round(quantity * unit_cost_cents))::int total from bill_lines where bill_id = $1", [next.vendor_bill_id])).rows[0].total
+  assert.deepEqual([Number(total), lines], [95_000, 95_000])
+})
+
+test("the variance queue's division lens pages in SQL and filters by status, community and membership", async (t) => {
+  const w = await purchasingWorld(t)
+  const north = await insert(w.db, "divisions", { org_id: w.orgId, name: "North" })
+  const south = await insert(w.db, "divisions", { org_id: w.orgId, name: "South" })
+  const community = await insert(w.db, "communities", { org_id: w.orgId, name: "Oaks" })
+  await w.db.query("update projects set division_id = $2 where id = $1", [w.project.id, north.id])
+  await insert(w.db, "lots", { org_id: w.orgId, community_id: community.id, project_id: w.project.id, lot_number: "1", status: "started" })
+  const second = await insert(w.db, "projects", { org_id: w.orgId, name: "Lot 15", division_id: south.id })
+  const secondPo = await insert(w.db, "commitments", { org_id: w.orgId, project_id: second.id, company_id: w.company.id, title: "Second PO", status: "approved", commitment_type: "purchase_order", total_cents: 1 })
+  const first = await w.vpo(1_000, "draft")
+  const other = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: second.id, commitment_id: secondPo.id, title: "Second VPO", reason_code_id: w.reason.id, total_cents: 5 })
+  await w.vpo(2_000)
+
+  const page = (division, args = {}) => rpc(w.db, "list_variance_order_page", {
+    p_org_id: w.orgId, p_division_ids: [division], p_statuses: null, p_reason_code_id: null, p_origin: null, p_project_id: null,
+    p_community_id: null, p_member_user_id: null, p_limit: 50, p_offset: 0, ...args,
+  })
+  const summary = (rows) => rows.map((row) => [row.id, Number(row.total_count)])
+  assert.deepEqual(summary(await page(south.id)), [[other.id, 1]])
+  const northRows = await page(north.id, { p_limit: 1 })
+  assert.equal(northRows.length, 1)
+  assert.equal(Number(northRows[0].total_count), 2)
+  assert.deepEqual((await page(north.id, { p_limit: 1, p_offset: 1 })).length, 1)
+  assert.deepEqual(summary(await page(north.id, { p_statuses: ["draft", "sent"] })), [[first.id, 1]])
+  assert.equal((await page(north.id, { p_community_id: community.id })).length, 2)
+  assert.deepEqual(await page(south.id, { p_community_id: community.id }), [])
+  assert.deepEqual(await page(north.id, { p_member_user_id: w.owner }), [])
+  await assert.rejects(rpc(w.db, "list_variance_order_page", { p_org_id: w.orgId, p_division_ids: [north.id], p_statuses: null, p_reason_code_id: null, p_origin: null, p_project_id: null, p_community_id: null, p_member_user_id: null, p_limit: 1, p_offset: 0 }, { role: "authenticated", userId: w.owner }), /permission denied/)
 })

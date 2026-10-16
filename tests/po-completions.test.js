@@ -18,7 +18,13 @@ stubModule("lib/services/accounting-sync.ts", {
   async recordPayableAccountingEnqueueResult() {},
 })
 
-const { approvePoCompletion, verifyPoCompletion } = freshRequire("lib/services/po-completions.ts")
+stubModule("lib/services/portal-access.ts", {
+  async assertPortalActionAccess() {
+    return { org_id: ORG, project_id: PROJECT, company_id: COMPANY, contact_id: id(9) }
+  },
+})
+
+const { approvePoCompletion, reportPoCompletionFromPortal, verifyPoCompletion } = freshRequire("lib/services/po-completions.ts")
 
 const PROJECT = id(1)
 const COMPANY = id(2)
@@ -177,5 +183,43 @@ describe("the money step needs a second person", () => {
     const service = setup({ status: "billed", vendor_bill_id: BILL, reported_by_user_id: ACTOR, verified_by: OTHER }, calls)
     await assert.rejects(service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionWaiverReason: "Rewrite the history" })), /someone else has to approve the payment/)
     assert.equal(calls.length, 0)
+  })
+})
+
+describe("reporting a completion from the trade portal", () => {
+  const portalHarness = ({ payOnPo = true, owner = COMPANY } = {}) => createServiceHarness({
+    permissions: [],
+    tables: {
+      purchasing_settings: [{ org_id: ORG, pay_on_po_enabled: payOnPo }],
+      commitments: [{ id: PO, org_id: ORG, project_id: PROJECT, company_id: owner, commitment_type: "purchase_order", status: "approved" }],
+      commitment_lines: [{ id: id(20), org_id: ORG, commitment_id: PO }],
+      commitment_change_orders: [],
+      po_completions: [],
+      files: [{ id: id(30), org_id: ORG, project_id: PROJECT, archived_at: null }],
+    },
+  })
+  const report = (service, scope, upload) => service.run(() => reportPoCompletionFromPortal("token", { commitment_id: PO, ...scope }, upload))
+
+  test("a refused report uploads nothing: another vendor's order, pay-on-PO off, or scope that does not exist", async () => {
+    let uploads = 0
+    const upload = async () => { uploads += 1; return [id(30)] }
+    await assert.rejects(report(portalHarness({ owner: id(99) }), { commitment_line_ids: [id(20)] }, upload), /Purchase order not found/)
+    await assert.rejects(report(portalHarness({ payOnPo: false }), { commitment_line_ids: [id(20)] }, upload), /Pay-on-PO is not enabled/)
+    await assert.rejects(report(portalHarness(), { commitment_line_ids: [id(21)] }, upload), /purchase-order lines are invalid/)
+    await assert.rejects(report(portalHarness(), { commitment_line_ids: [], change_order_ids: [id(22)] }, upload), /not approved on this purchase order/)
+    assert.equal(uploads, 0)
+  })
+
+  test("an accepted report uploads the photos once and files the completion against them", async () => {
+    let uploads = 0
+    const service = portalHarness()
+    const completion = await report(service, { commitment_line_ids: [id(20)] }, async (home) => {
+      uploads += 1
+      assert.deepEqual(home, { orgId: ORG, projectId: PROJECT })
+      return [id(30)]
+    })
+    assert.equal(uploads, 1)
+    assert.deepEqual(completion.photo_file_ids, [id(30)])
+    assert.equal(completion.status, "reported")
   })
 })

@@ -15,6 +15,9 @@
 //   credit-after-billing-nets-the-next-payable-and-void-needs-no-live-reliance   EP08-11  a credit approved after the work was billed closes as an open vendor
 //                                                        credit and nets the next payable; a void is refused while a completion or a bill relies on the order; voiding the
 //                                                        order that resolved a shortage reopens the shortage
+//   signature-and-references-cannot-bypass-the-variance-controls  EP08-09/11  an executed signature records evidence but never approves a purchase-order change or revives a closed one;
+//                                                        a line cannot name another home's budget line or another order's line, and a failed create leaves no order; deleting the
+//                                                        order that resolved a shortage reopens it; a bill rejected after approval gives the completion's scope back, to be billed again
 //   void-and-completion-approval-on-one-vpo-never-both-win   EP08-11  two database sessions: whichever holds the purchase order's lock wins; the other waits, then is refused or bills without the order
 //
 // The fixture is a production builder with a purchasing manager (requester), a second (verifier), a third
@@ -47,6 +50,8 @@ function why(outcome) {
   if (/without a variance reason cannot be approved/i.test(outcome)) return "refused: a reason-less purchase-order change is not approved"
   if (/project and organization of its commitment/i.test(outcome)) return "refused: not on its commitment's home"
   if (/completion already claims/i.test(outcome)) return "refused: a completion claims it"
+  if (/budget line does not belong/i.test(outcome)) return "refused: names another home's budget line"
+  if (/purchase order line does not belong/i.test(outcome)) return "refused: names another order's line"
   if (/another session|deadlock|timeout/i.test(outcome)) return "refused: lost the race"
   if (/A claimed variance order is not approved/i.test(outcome)) return "refused: the order was voided first"
   if (/exceed what it authorizes/i.test(outcome)) return "refused: bills already drawn on it"
@@ -288,7 +293,7 @@ async function payOnPoCompletionReconcilesToTheBill(kit, expected, check) {
     return { outstandingChanges: order.changes.filter((change) => !change.claimed).map((change) => change.totalCents), canReport: order.hasReportableScope }
   }
   observed.portalBefore = await portalView()
-  const portalClaim = await kit.service(() => completions().reportPoCompletionFromPortal(access.token, { commitment_id: h.orderId, commitment_line_ids: [], change_order_ids: [second.id], photo_file_ids: [h.fileId], notes: null }))
+  const portalClaim = await kit.service(() => completions().reportPoCompletionFromPortal(access.token, { commitment_id: h.orderId, commitment_line_ids: [], change_order_ids: [second.id], notes: null }, async () => [h.fileId]))
   observed.portalAfter = await portalView()
   await kit.as(org.buyerB, () => completions().verifyPoCompletion(portalClaim.id))
   observed.portalClaimApproval = why(await approveCompletion(kit, org.buyerC, portalClaim.id))
@@ -403,6 +408,63 @@ async function creditAfterBillingNetsTheNextPayableAndVoidNeedsNoLiveReliance(ki
   return { orgId: org.orgId, projectId: h.projectId }
 }
 
+async function signatureAndReferencesCannotBypassTheVarianceControls(kit, expected, check) {
+  const org = await payOrg(kit)
+  const h = home(kit, org, "Lot 10")
+  const other = home(kit, org, "Lot 11")
+  const { q } = kit
+  const observed = {}
+  const documentId = randomUUID(), envelopeId = randomUUID(), lineId = randomUUID()
+  kit.sql(`insert into public.budget_lines(id,org_id,budget_id,description,amount_cents) values(${q(lineId)},${q(org.orgId)},${q(other.budgetId)},'Other home line',1000);
+    insert into public.documents(id,org_id,project_id,document_type,title,source_file_id) values(${q(documentId)},${q(org.orgId)},${q(h.projectId)},'contract','Change order',${q(h.fileId)});
+    insert into public.envelopes(id,org_id,project_id,document_id) values(${q(envelopeId)},${q(org.orgId)},${q(h.projectId)},${q(documentId)});`)
+  const sign = (id) => kit.service(() => orders().markCommitmentChangeOrderExecutedFromEnvelope({ orgId: org.orgId, commitmentChangeOrderId: id, envelopeId, documentId, executedFileId: h.fileId, signerName: "Vendor", signerEmail: "vendor@example.com" }))
+  const signed = (id) => kit.rows(`select status, approved_by is not null approved, executed_file_id is not null recorded from public.commitment_change_orders where id=${q(id)}`).map((row) => ({ status: row.status, approved: row.approved, recorded: row.recorded }))[0]
+
+  // A 1,500.00 purchase-order change with no evidence: a signature is recorded and nothing else; a rejected order is closed to signatures and to writers.
+  const large = await raise(kit, org, h, { cents: 150_000, code: "plan_error" })
+  await sign(large.id)
+  observed.signatureOnVariance = signed(large.id)
+  await kit.as(org.buyerB, () => orders().rejectVarianceOrder({ commitmentChangeOrderId: large.id, reason: "Not needed" }))
+  await sign(large.id)
+  observed.signatureAfterRejection = signed(large.id).status
+  await attempt(() => kit.sql(`update public.commitment_change_orders set status='approved', approved_by=${q(org.buyerB.userId)}, approved_at=now() where id=${q(large.id)};`))
+  observed.writerRevivesRejected = signed(large.id).status
+
+  // A line names another home's budget line or another order's line: refused, and the failed create leaves no order.
+  const raiseWith = (line) => attempt(() => kit.as(org.buyerA, async () => orders().createCommitmentChangeOrder({ input: {
+    commitment_id: h.orderId, reason_code_id: await reasonId(kit, org.buyerA, "missed_scope"), title: "Bad references",
+    lines: [{ description: "Fine", quantity: 1, unit_cost_cents: 1_000 }, { description: "Bad", quantity: 1, unit_cost_cents: 1_000, ...line }],
+  } })))
+  observed.foreignBudgetLine = why(await raiseWith({ budget_line_id: lineId }))
+  observed.foreignOrderLine = why(await raiseWith({ commitment_line_id: other.lineIds[0] }))
+  observed.ordersLeftBehind = Number(kit.rows(`select count(*)::int n from public.commitment_change_orders where commitment_id=${q(h.orderId)} and title='Bad references'`)[0].n)
+
+  // Deleting the order that resolved a shortage reopens the shortage.
+  const replacement = await raise(kit, org, h, { cents: 10_000, code: "damage_theft" })
+  const shortage = randomUUID()
+  kit.sql(`insert into public.po_shortages(id,org_id,project_id,commitment_id,commitment_line_id,short_quantity,reason) values(${q(shortage)},${q(org.orgId)},${q(h.projectId)},${q(h.orderId)},${q(h.lineIds[1])},1,'vendor_short');
+    update public.po_shortages set status='vpo', vpo_id=${q(replacement.id)}, resolved_by=${q(org.buyerA.userId)}, resolved_at=now() where id=${q(shortage)};`)
+  const closed = kit.rows(`select status from public.po_shortages where id=${q(shortage)}`)[0].status
+  kit.sql(`delete from public.commitment_change_orders where id=${q(replacement.id)};`)
+  const reopened = kit.rows(`select status, vpo_id is null as no_vpo from public.po_shortages where id=${q(shortage)}`)[0]
+  observed.deleteReopensShortage = { resolvedBy: closed, afterDelete: { status: reopened.status, vpoCleared: reopened.no_vpo } }
+
+  // A bill rejected after the completion was approved gives the scope back, and the completion bills again.
+  const completion = await reportAndVerify(kit, org, h, {})
+  observed.firstApproval = why(await approveCompletion(kit, org.buyerC, completion.id))
+  kit.sql(`update public.vendor_bills set status='rejected', rejected_at=now(), rejected_by=${q(org.buyerC.userId)}, rejection_reason='Posted to the wrong order' where commitment_id=${q(h.orderId)};`)
+  const reopenedCompletion = kit.rows(`select status, vendor_bill_id is null as no_bill, amount_cents is null as no_amount from public.po_completions where id=${q(completion.id)}`)[0]
+  observed.afterBillRejected = {
+    status: reopenedCompletion.status, billCleared: reopenedCompletion.no_bill, amountCleared: reopenedCompletion.no_amount,
+    reopenEvents: Number(kit.rows(`select count(*)::int n from public.events where event_type='po_completion.reopened' and entity_id=${q(completion.id)}`)[0].n),
+  }
+  observed.secondApproval = why(await approveCompletion(kit, org.buyerC, completion.id))
+  observed.billsAfter = kit.rows(`select status, total_cents::bigint total from public.vendor_bills where commitment_id=${q(h.orderId)} order by status`).map((row) => [row.status, Number(row.total)])
+  equal(check, "a signature records but never approves a purchase-order change or revives a closed one; a line cannot name another home's references and a failed create leaves no order; deleting the resolving order reopens the shortage; a rejected bill gives the completion's scope back and it bills again", expected.expected, observed)
+  return { orgId: org.orgId, projectId: h.projectId }
+}
+
 /** A second database session that runs `statement` inside a transaction and keeps it open for `seconds`, holding every lock the statement took. */
 function holdOpen(kit, statement, seconds) {
   const session = spawn("docker", ["exec", "-i", kit.container, "psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"], { stdio: ["pipe", "pipe", "pipe"] })
@@ -455,6 +517,7 @@ const subcases = {
   "two-approvals-of-one-completion-bill-once": twoApprovalsOfOneCompletionBillOnce,
   "division-limited-manager-cannot-decide-another-divisions-vpo": divisionLimitedManagerCannotDecideAnotherDivisionsVpo,
   "credit-after-billing-nets-the-next-payable-and-void-needs-no-live-reliance": creditAfterBillingNetsTheNextPayableAndVoidNeedsNoLiveReliance,
+  "signature-and-references-cannot-bypass-the-variance-controls": signatureAndReferencesCannotBypassTheVarianceControls,
   "void-and-completion-approval-on-one-vpo-never-both-win": voidAndCompletionApprovalOnOneVpoNeverBothWin,
 }
 

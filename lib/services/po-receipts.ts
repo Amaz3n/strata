@@ -190,9 +190,20 @@ async function notifyShortages(input: {
   message: (count: number) => string
 }) {
   if (!input.shortages.length) return
-  const recipients = await shortageRecipients(input.orgId, Array.from(new Set(input.shortages.map((shortage) => shortage.projectId))), input.actorId)
+  const failed = (reason: string) => recordEvent({
+    orgId: input.orgId, actorId: input.actorId, eventType: "po_shortage.notification_failed", entityType: "po_shortage",
+    entityId: input.shortages[0].id, payload: { project_id: input.shortages[0].projectId, shortage_ids: input.shortages.map((shortage) => shortage.id), reason },
+  })
+  let recipients: Map<string, string[]>
+  try {
+    recipients = await shortageRecipients(input.orgId, Array.from(new Set(input.shortages.map((shortage) => shortage.projectId))), input.actorId)
+  } catch (error) {
+    // The shortage is recorded and shows on the desk; the lookup failure is on the record rather than lost.
+    await failed(error instanceof Error ? error.message : "The resolvers could not be looked up")
+    return
+  }
   const notifications = new NotificationService()
-  await Promise.allSettled(Array.from(recipients).map(([userId, projectIds]) => {
+  const results = await Promise.allSettled(Array.from(recipients).map(([userId, projectIds]) => {
     const mine = input.shortages.filter((shortage) => projectIds.includes(shortage.projectId))
     return notifications.createAndQueue({
       orgId: input.orgId, userId, type: "po_shortage_opened", title: input.title, message: input.message(mine.length),
@@ -200,6 +211,8 @@ async function notifyShortages(input: {
       entityType: "po_shortage", entityId: mine[0].id, metadata: { href: NOTIFICATION_HREF },
     })
   }))
+  const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+  if (rejected.length) await failed(`${rejected.length} of ${results.length} notifications failed: ${String(rejected[0].reason)}`)
 }
 
 const receiptResultSchema = z.object({
@@ -276,9 +289,10 @@ export async function closePoLineShort(input: unknown, orgId?: string) {
 }
 
 /**
- * A mistaken ticket comes off the books; its quantity is outstanding again. The
- * person who received it may void it the day they entered it; after that, or for
- * anyone else's ticket, it takes po_exception.resolve.
+ * A mistaken ticket comes off the books; its quantity is outstanding again, and the
+ * shortages it opened or closed follow it. The person who received it may void it
+ * within 24 hours of entering it; after that, or for anyone else's ticket, it takes
+ * po_exception.resolve.
  */
 export async function voidPoReceipt(input: unknown, orgId?: string) {
   const parsed = voidPoReceiptSchema.parse(input)

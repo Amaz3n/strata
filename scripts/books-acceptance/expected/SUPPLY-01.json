@@ -366,6 +366,28 @@
           "state": "received"
         }
       }
+    },
+    "decimal-quantity-order-approves-and-issues": {
+      "derivation": "The purchasing manager edits the draft's only line to 12.5 x 4567 cents (57087.5, rounds half up to 57088) with no scheduled value, and adds 1234.56 sf x 187 cents (230862.72, rounds to 230863). The draft totals to the sum of the rounded lines: 57088 + 230863 = 287951 cents, an integer. The owner approves it (a second person, the purchasing manager drafted it), so it issues as revision 1 'approved' with the same total. The vendor's portal list has no stored scheduled value to read and shows each line at its extended price, Studs 57088 and Sheathing 230863, and the order total 287951; the issued snapshot carries total 287951.",
+      "expected": {
+        "decimal": {
+          "draftTotal": 287951,
+          "approved": "allowed",
+          "order": {
+            "status": "approved",
+            "total_cents": 287951
+          },
+          "revisions": [
+            "1:approved"
+          ],
+          "portalLines": {
+            "Studs": 57088,
+            "Sheathing": 230863
+          },
+          "portalTotal": 287951,
+          "snapshotTotal": 287951
+        }
+      }
     }
   }
 }

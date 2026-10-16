@@ -55,6 +55,6 @@ export function PoGenerationPreview({ result }: { result: PoGenerationResult }) 
       <p className="font-medium">{result.preservedOrphaned.length} {result.preservedOrphaned.length === 1 ? "line" : "lines"} on orders in progress no longer come from the plan or options</p>
       <ul className="mt-2 space-y-1 text-xs text-muted-foreground">{result.preservedOrphaned.map((orphan) => <li key={orphan.sourceKey}>{orphan.contractNumber ?? "Order"} · {orphan.description} · {orphan.companyName} · <span className="tabular-nums">{formatMoneyCentsExact(orphan.cents)}</span></li>)}</ul>
     </div>}
-    {committed && result.status !== "failed" && <p className="text-sm text-success">Purchase order generation completed{result.exceptions.length ? " with exceptions" : ""}.</p>}
+    {committed && <p className="text-sm text-success">Purchase order generation completed{result.exceptions.length ? " with exceptions" : ""}.</p>}
   </div>
 }

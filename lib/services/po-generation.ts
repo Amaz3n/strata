@@ -33,7 +33,7 @@ type GenerationException = {
   candidates: string[]
 }
 
-export type ExpiringAgreementWarning = {
+type ExpiringAgreementWarning = {
   agreementId: string
   companyId: string
   companyName: string
@@ -48,7 +48,7 @@ export type ExpiringAgreementWarning = {
  * never rewrites it; when the vendor or amount would now differ purchasing
  * raises a variance order instead.
  */
-export type PreservedPoChange = {
+type PreservedPoChange = {
   sourceKey: string
   commitmentId: string
   contractNumber: string | null
@@ -60,7 +60,7 @@ export type PreservedPoChange = {
 }
 
 /** A line on an order in progress whose source (plan line or option) is no longer wanted. */
-export type PreservedPoOrphan = {
+type PreservedPoOrphan = {
   sourceKey: string
   commitmentId: string
   contractNumber: string | null
@@ -72,7 +72,7 @@ export type PreservedPoOrphan = {
 export type PoGenerationResult = {
   runId: string
   mode: "dry_run" | "commit"
-  status: "succeeded" | "succeeded_with_exceptions" | "failed"
+  status: "succeeded" | "succeeded_with_exceptions"
   inputFingerprint: string
   purchaseOrders: ReturnType<typeof groupPurchaseOrderLines>
   exceptions: GenerationException[]
@@ -84,7 +84,7 @@ export type PoGenerationResult = {
 }
 
 /** The commit found the house changed since it was prepared; nothing was written. */
-export class StalePoGenerationError extends Error {}
+class StalePoGenerationError extends Error {}
 
 const reconcileReportShape = {
   preserved_changed: z.array(z.object({
@@ -106,7 +106,7 @@ const commitResultSchema = z.object({
   ...reconcileReportShape,
 })
 
-const reconcileReportSchema = z.object({ changes: z.number().int(), ...reconcileReportShape })
+const reconcileReportSchema = z.object(reconcileReportShape)
 
 type ExceptionResolutionRun = {
   exceptionId: string
@@ -127,6 +127,9 @@ const poExceptionListSchema = purchasingQueueFiltersSchema.extend({
 const OPEN_EXCEPTION_SCAN_LIMIT = 1000
 const PO_NUMBER_TOKEN_LENGTH = 12
 const STALE_RETRY_LIMIT = 3
+/** A preview older than this is prepared against pricing the buyer has not seen. */
+const PREVIEW_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const STALE_PREVIEW_MESSAGE = "Pricing or selections changed since the preview. Preview the purchase orders again before generating."
 /** Largest amount the database stores in one cents column (integer). */
 const MAX_CENTS = 2_147_483_647
 
@@ -261,19 +264,39 @@ function exceptionSourceId(exception: GenerationException) {
     : exception.source_ref.project_selection_id
 }
 
+/**
+ * The as-of date of the preview a commit was prepared from: the run that produced
+ * this fingerprint, recorded by the server. Without a recent one the commit is
+ * refused, exactly like a preview whose inputs changed.
+ */
+async function loadPreviewAsOfDate(service: ReturnType<typeof createServiceSupabaseClient>, orgId: string, projectId: string, fingerprint: string) {
+  const since = new Date(Date.now() - PREVIEW_MAX_AGE_MS).toISOString()
+  const { data, error } = await service.from("po_generation_runs").select("as_of_date")
+    .eq("org_id", orgId).eq("project_id", projectId).eq("mode", "dry_run").eq("input_fingerprint", fingerprint)
+    .in("status", ["succeeded", "succeeded_with_exceptions"]).gte("created_at", since)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle()
+  if (error) throw new Error(`Failed to read the PO preview: ${error.message}`)
+  if (!data) throw new Error(STALE_PREVIEW_MESSAGE)
+  return data.as_of_date
+}
+
 async function runGeneration(
-  parsed: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string; expectedFingerprint?: string },
+  parsed: { projectId: string; mode: "dry_run" | "commit"; expectedFingerprint?: string },
   context: GenerationContext,
   options: { resolution?: ExceptionResolutionRun } = {},
 ): Promise<PoGenerationResult> {
   const { supabase, orgId, userId } = context
   await assertProjectConfiguration(orgId, parsed.projectId)
-  const service = createServiceSupabaseClient()
   const resolution = options.resolution
   // A resolution being applied right now is not on the exception row yet: the
   // commit marks it resolved in the same transaction that creates its order.
   const pendingResolutions = resolution ? new Map([[resolution.sourceKey, resolution.override]]) : undefined
-  const asOfDate = parsed.asOfDate ?? new Date().toISOString().slice(0, 10)
+  const service = createServiceSupabaseClient()
+  // The as-of date is stamped by the server at preview and carried by the preview's
+  // fingerprint; a commit prices as of that date and never takes one from the caller.
+  const asOfDate = parsed.mode === "commit" && parsed.expectedFingerprint
+    ? await loadPreviewAsOfDate(service, orgId, parsed.projectId, parsed.expectedFingerprint)
+    : new Date().toISOString().slice(0, 10)
 
   const { data: lot, error: lotError } = await supabase.from("lots").select(`
     id, project_id, community_id, division_id, lot_number, block, house_plan_id,
@@ -451,7 +474,7 @@ async function runGeneration(
   })
 
   if (parsed.mode === "commit" && parsed.expectedFingerprint && parsed.expectedFingerprint !== inputFingerprint) {
-    throw new Error("Pricing or selections changed since the preview. Preview the purchase orders again before generating.")
+    throw new Error(STALE_PREVIEW_MESSAGE)
   }
 
   // Runs are read as the commit reads them (every run of the house, whoever
@@ -497,9 +520,11 @@ async function runGeneration(
   try {
     if (parsed.mode === "dry_run") {
       if (newExceptions.length > 0) {
-        const { error: exceptionError } = await service.from("po_generation_exceptions").insert(newExceptions.map((item) => ({ ...item, org_id: orgId, run_id: run.id, project_id: parsed.projectId })))
-        // 23505: a concurrent preview already raised the same exception; one open row per source line is the rule.
-        if (exceptionError && exceptionError.code !== "23505") throw new Error(`Failed to record PO exceptions: ${exceptionError.message}`)
+        // One row at a time: 23505 means a concurrent preview already raised that exception (one open row
+        // per source line is the rule), and it must not cost the rest of this preview's exceptions.
+        const outcomes = await Promise.all(newExceptions.map((item) => service.from("po_generation_exceptions").insert({ ...item, org_id: orgId, run_id: run.id, project_id: parsed.projectId })))
+        const failed = outcomes.find(({ error }) => error && error.code !== "23505")
+        if (failed?.error) throw new Error(`Failed to record PO exceptions: ${failed.error.message}`)
       }
       const { data: report, error: reportError } = await service.rpc("po_generation_reconcile_report", { p_org_id: orgId, p_project_id: parsed.projectId, p_lines: desiredLines, p_scope: null })
       if (reportError) throw new Error(`Failed to compare the preview with the house's orders: ${reportError.message}`)
@@ -566,7 +591,7 @@ async function runGeneration(
   }
 }
 
-export async function generatePurchaseOrders(args: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string; expectedFingerprint?: string; orgId?: string }): Promise<PoGenerationResult> {
+export async function generatePurchaseOrders(args: { projectId: string; mode: "dry_run" | "commit"; expectedFingerprint?: string; orgId?: string }): Promise<PoGenerationResult> {
   const parsed = poGenerationInputSchema.parse(args)
   const context = await authorizeGeneration("po.generate", parsed.projectId, args.orgId)
   return runGeneration(parsed, context)

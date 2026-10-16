@@ -2,7 +2,6 @@ import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { readAllRows } from "@/lib/land/paging"
 import { requireOrgContext } from "@/lib/services/context"
 import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
 import { authorize, requireAuthorization } from "@/lib/services/authorization"
@@ -119,6 +118,46 @@ export async function assertProjectFiles(client: SupabaseClient, orgId: string, 
   const { data, error } = await client.from("files").select("id").eq("org_id", orgId).eq("project_id", projectId).is("archived_at", null).in("id", ids).limit(ids.length + 1)
   if (error) throw new Error(`Unable to verify ${label}: ${error.message}`)
   if (!data || ids.some((id) => !data.some((row) => row.id === id))) throw new Error(`${label[0].toUpperCase()}${label.slice(1)} must be available and belong to this home.`)
+}
+
+/**
+ * The cost code, budget line and commitment line a change order line names must be this organization's, the
+ * order's home's and the order's commitment's. The database refuses the same, so a bad reference never
+ * becomes a bill line and a cost posting on someone else's budget; this says which one is wrong.
+ */
+async function assertLineReferences(
+  client: SupabaseClient,
+  orgId: string,
+  target: { projectId: string; commitmentId: string },
+  lines: readonly CommitmentChangeOrderLineInput[],
+) {
+  const idsOf = (pick: (line: CommitmentChangeOrderLineInput) => string | null | undefined) =>
+    [...new Set(lines.map(pick).filter((id): id is string => Boolean(id)))]
+  const costCodeIds = idsOf((line) => line.cost_code_id)
+  const budgetLineIds = idsOf((line) => line.budget_line_id)
+  const commitmentLineIds = idsOf((line) => line.commitment_line_id)
+  const [costCodes, budgetLines, commitmentLines] = await Promise.all([
+    costCodeIds.length === 0 ? null : client.from("cost_codes").select("id").eq("org_id", orgId).in("id", costCodeIds),
+    budgetLineIds.length === 0 ? null : client.from("budget_lines").select("id, budget:budgets!inner(project_id)").eq("org_id", orgId).in("id", budgetLineIds),
+    commitmentLineIds.length === 0 ? null : client.from("commitment_lines").select("id").eq("org_id", orgId).eq("commitment_id", target.commitmentId).in("id", commitmentLineIds),
+  ])
+  for (const result of [costCodes, budgetLines, commitmentLines]) {
+    if (result?.error) throw new Error(`Unable to verify the change order lines: ${result.error.message}`)
+  }
+  if (costCodeIds.some((id) => !costCodes?.data?.some((row) => row.id === id))) throw new Error("A line's cost code was not found in this organization.")
+  const budgetOf = (row: { budget: unknown }) => (Array.isArray(row.budget) ? row.budget[0] : row.budget)
+  const homeBudgetLineIds = new Set(
+    (budgetLines?.data ?? []).filter((row) => (budgetOf(row) as { project_id?: string } | null | undefined)?.project_id === target.projectId).map((row) => row.id as string),
+  )
+  if (budgetLineIds.some((id) => !homeBudgetLineIds.has(id))) throw new Error("A line's budget line does not belong to this home.")
+  if (commitmentLineIds.some((id) => !commitmentLines?.data?.some((row) => row.id === id))) throw new Error("A line's purchase order line does not belong to this order.")
+}
+
+/** A variance order is raised and approved on an issued purchase order, never a draft, a canceled or a finished one. */
+function assertIssuedPurchaseOrder(commitment: Pick<ParentCommitmentRow, "commitment_type" | "status">) {
+  if (commitment.commitment_type === "purchase_order" && commitment.status !== "approved") {
+    throw new Error(`Variance orders are raised on issued purchase orders; this one is ${commitment.status ?? "not issued"}.`)
+  }
 }
 
 /**
@@ -345,7 +384,7 @@ async function loadSingle(
   return summaries[0] ?? null
 }
 
-function linePayload(line: CommitmentChangeOrderLineInput, index: number, orgId: string, changeOrderId: string) {
+function linePayload(line: CommitmentChangeOrderLineInput, index: number, orgId: string, changeOrderId: string | null) {
   const quantity = line.quantity ?? 1
   const unitCostCents = line.unit_cost_cents ?? 0
   return {
@@ -362,38 +401,6 @@ function linePayload(line: CommitmentChangeOrderLineInput, index: number, orgId:
     sort_order: line.sort_order ?? index,
     metadata: line.metadata ?? {},
   }
-}
-
-async function replaceLines({
-  supabase,
-  orgId,
-  changeOrderId,
-  lines,
-}: {
-  supabase: SupabaseClient
-  orgId: string
-  changeOrderId: string
-  lines: CommitmentChangeOrderLineInput[]
-}) {
-  const { error: deleteError } = await supabase
-    .from("commitment_change_order_lines")
-    .delete()
-    .eq("org_id", orgId)
-    .eq("commitment_change_order_id", changeOrderId)
-
-  if (deleteError) {
-    throw new Error(`Failed to replace commitment change order lines: ${deleteError.message}`)
-  }
-
-  const payload = lines.map((line, index) => linePayload(line, index, orgId, changeOrderId))
-  if (payload.length === 0) return 0
-
-  const { error: insertError } = await supabase.from("commitment_change_order_lines").insert(payload)
-  if (insertError) {
-    throw new Error(`Failed to create commitment change order lines: ${insertError.message}`)
-  }
-
-  return payload.reduce((sum, line) => sum + line.amount_cents, 0)
 }
 
 export async function listCommitmentChangeOrders({
@@ -458,42 +465,6 @@ export async function listCommitmentChangeOrders({
   return hydrate(data ?? [], supabase, resolvedOrgId)
 }
 
-/** A PostgREST `in (...)` list stays inside the URL limit at this size. */
-const DIVISION_LENS_PROJECT_LIMIT = 300
-const SCOPE_BATCH = 100
-
-/**
- * The homes among `projectIds` that sit in `divisionIds`. A home's division is its lot's, falling
- * back to the project's: the same rule `get_variance_analysis` applies, so this queue and the
- * variance report list the same homes. Reads through `supabase` (the service client) because the
- * member's division backstop hides a project row that carries no division of its own.
- */
-async function projectIdsInDivisions(
-  supabase: SupabaseClient,
-  orgId: string,
-  projectIds: string[],
-  divisionIds: string[],
-): Promise<string[]> {
-  const inScope = new Set<string>()
-  for (let offset = 0; offset < projectIds.length; offset += SCOPE_BATCH) {
-    const ids = projectIds.slice(offset, offset + SCOPE_BATCH)
-    const [projects, lots] = await Promise.all([
-      supabase.from("projects").select("id,division_id").eq("org_id", orgId).in("id", ids).limit(SCOPE_BATCH),
-      supabase.from("lots").select("project_id,division_id").eq("org_id", orgId).in("project_id", ids).limit(SCOPE_BATCH),
-    ])
-    if (projects.error) throw new Error(`Failed to scope variance orders: ${projects.error.message}`)
-    if (lots.error) throw new Error(`Failed to scope variance orders: ${lots.error.message}`)
-    const lotDivision = new Map<string, string | null>(
-      (lots.data ?? []).map((lot) => [lot.project_id as string, (lot.division_id as string | null) ?? null]),
-    )
-    for (const project of projects.data ?? []) {
-      const division = lotDivision.get(project.id as string) ?? (project.division_id as string | null) ?? null
-      if (division !== null && divisionIds.includes(division)) inScope.add(project.id as string)
-    }
-  }
-  return [...inScope]
-}
-
 export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   status?: CommitmentChangeOrderStatus | "pending"
   reasonCodeId?: string
@@ -514,39 +485,52 @@ export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   // division backstop would hide a home whose project has no division even when its lot is in the lens.
   const reader = createServiceSupabaseClient()
   const from = (parsed.page - 1) * parsed.pageSize
-  const orders = (select: string, count: boolean, projectIds: string[] | null) => {
-    let query = reader.from("commitment_change_orders").select(
-      `${select}, ${purchasingQueueProjectSelect("", scope, parsed.communityId)}`,
-      count ? { count: "exact" } : undefined,
-    ).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).eq("commitment.commitment_type", "purchase_order")
+  const columns: string = `
+    id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
+    approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id,
+    prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, evidence_file_ids, metadata, created_at, updated_at,
+    commitment:commitments!inner(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
+  `
+  const select: string = `${columns}, ${purchasingQueueProjectSelect("", scope, parsed.communityId)}`
+  const orders = (count: boolean) => {
+    let query = reader.from("commitment_change_orders").select(select, count ? { count: "exact" } : undefined).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).eq("commitment.commitment_type", "purchase_order")
     if (parsed.status === "pending") query = query.in("status", ["draft", "sent"])
     else if (parsed.status) query = query.eq("status", parsed.status)
     if (parsed.reasonCodeId) query = query.eq("reason_code_id", parsed.reasonCodeId)
     if (parsed.origin) query = query.eq("origin", parsed.origin)
     if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
-    if (projectIds) query = query.in("project_id", projectIds)
     if (parsed.communityId) query = query.eq("project.lot.community_id", parsed.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
     if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
     return query
   }
 
-  let projectIds: string[] | null = null
   if (scope.divisionIds) {
-    // Only the homes that have a matching order can appear, so the division lens resolves over those.
-    const candidates = await readAllRows<{ project_id: string }>((rangeFrom, rangeTo) => orders("project_id, commitment:commitments!inner(commitment_type)", false, null)
-      .order("id").range(rangeFrom, rangeTo).returns<{ project_id: string }[]>(), { cap: 100001, pageSize: 1000, label: "Failed to scope variance orders" })
-    if (candidates.truncated) throw new Error("Too many variance orders to scope; narrow the division or community lens")
-    projectIds = await projectIdsInDivisions(reader, resolvedOrgId, [...new Set(candidates.rows.map((row) => row.project_id))], scope.divisionIds)
-    if (projectIds.length > DIVISION_LENS_PROJECT_LIMIT) throw new Error("Too many homes have variance orders for this division; narrow the community lens or filter by status")
-    if (projectIds.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+    // The division lens (a home's division is its lot's, falling back to the project's) resolves in SQL, so a
+    // division of any size pages the same way: the function returns this page's ids and the lens's exact count.
+    const { data: page, error: pageError } = await reader.rpc("list_variance_order_page", {
+      p_org_id: resolvedOrgId,
+      p_division_ids: scope.divisionIds,
+      p_statuses: parsed.status === "pending" ? ["draft", "sent"] : parsed.status ? [parsed.status] : null,
+      p_reason_code_id: parsed.reasonCodeId ?? null,
+      p_origin: parsed.origin ?? null,
+      p_project_id: parsed.projectId ?? null,
+      p_community_id: parsed.communityId ?? null,
+      p_member_user_id: scope.projectMembershipRequired ? userId : null,
+      p_limit: parsed.pageSize,
+      p_offset: from,
+    })
+    const rows = z.array(z.object({ id: z.string().uuid(), total_count: z.coerce.number() })).safeParse(page)
+    if (pageError || !rows.success) throw new Error(`Failed to list variance orders: ${pageError?.message ?? "unexpected response"}`)
+    const ids = rows.data.map((row) => row.id)
+    if (ids.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+    const { data, error } = await orders(false).in("id", ids).returns<{ id: string }[]>()
+    if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
+    const byId = new Map((data ?? []).map((row) => [row.id, row]))
+    const ordered = ids.map((id) => byId.get(id)).filter((row) => row !== undefined)
+    return { items: await hydrate(ordered, reader, resolvedOrgId), count: rows.data[0].total_count, page: parsed.page, pageSize: parsed.pageSize }
   }
 
-  const { data, error, count } = await orders(`
-    id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-    approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id,
-    prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, evidence_file_ids, metadata, created_at, updated_at,
-    commitment:commitments!inner(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
-  `, true, projectIds).order("created_at", { ascending: false }).order("id", { ascending: false })
+  const { data, error, count } = await orders(true).order("created_at", { ascending: false }).order("id", { ascending: false })
     .range(from, from + parsed.pageSize - 1)
   if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
   return { items: await hydrate(data ?? [], reader, resolvedOrgId), count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
@@ -620,23 +604,21 @@ export async function createCommitmentChangeOrder({
   if (commitment.commitment_type === "purchase_order" && !parsed.reason_code_id) {
     throw new Error("A variance reason is required for purchase-order changes.")
   }
+  assertIssuedPurchaseOrder(commitment)
   if (parsed.reason_code_id) {
     const { data: reason, error: reasonError } = await supabase.from("variance_reason_codes")
       .select("is_backcharge").eq("org_id", resolvedOrgId).eq("id", parsed.reason_code_id).maybeSingle()
     if (reasonError || !reason) throw new Error("Variance reason not found.")
     if (reason.is_backcharge && totalCents >= 0) throw new Error("Trade back-charges must have a negative total.")
   }
-  const { data, error } = await supabase
-    .from("commitment_change_orders")
-    .insert({
-      org_id: resolvedOrgId,
-      project_id: commitment.project_id,
+  await assertLineReferences(supabase, resolvedOrgId, { projectId: commitment.project_id, commitmentId: commitment.id }, parsed.lines)
+  // Header and lines are written in one transaction: a failing line leaves no order behind.
+  const { data: createdId, error } = await supabase.rpc("create_commitment_change_order", {
+    p_org_id: resolvedOrgId,
+    p_header: {
       commitment_id: commitment.id,
-      company_id: commitment.company_id ?? null,
       title: parsed.title,
       description: parsed.description ?? null,
-      total_cents: totalCents,
-      currency: "usd",
       reason_code_id: parsed.reason_code_id ?? null,
       origin: parsed.origin ?? (parsed.reason_code_id ? "office" : null),
       // The requester is whoever is signed in — never a field the client sends,
@@ -645,22 +627,15 @@ export async function createCommitmentChangeOrder({
       photo_file_ids: parsed.photo_file_ids,
       evidence_file_ids: parsed.evidence_file_ids,
       metadata: parsed.metadata ?? {},
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to create commitment change order: ${error?.message}`)
+    },
+    p_lines: parsed.lines.map((line, index) => linePayload(line, index, resolvedOrgId, null)),
+  })
+  const changeOrderId = z.string().uuid().safeParse(createdId)
+  if (error || !changeOrderId.success) {
+    throw new Error(`Failed to create commitment change order: ${error?.message ?? "no order was returned"}`)
   }
 
-  await replaceLines({
-    supabase,
-    orgId: resolvedOrgId,
-    changeOrderId: data.id as string,
-    lines: parsed.lines,
-  })
-
-  const created = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, data.id as string)
+  const created = await loadSingle(createServiceSupabaseClient(), resolvedOrgId, changeOrderId.data)
   if (!created) throw new Error("Failed to reload commitment change order")
 
   await recordAudit({
@@ -739,6 +714,7 @@ export async function updateCommitmentChangeOrder({
     parsed.photo_file_ids ? assertProjectFiles(writer, resolvedOrgId, existing.project_id, parsed.photo_file_ids, "field photos") : null,
     parsed.evidence_file_ids ? assertProjectFiles(writer, resolvedOrgId, existing.project_id, parsed.evidence_file_ids, "cost evidence") : null,
   ])
+  if (parsed.lines) await assertLineReferences(writer, resolvedOrgId, { projectId: existing.project_id, commitmentId: existing.commitment_id }, parsed.lines)
   if (parsed.lines && existing.reason_code_id) {
     const { data: reason, error: reasonError } = await supabase.from("variance_reason_codes")
       .select("is_backcharge").eq("org_id", resolvedOrgId).eq("id", existing.reason_code_id).maybeSingle()
@@ -847,6 +823,7 @@ export async function approveCommitmentChangeOrder({
   if (commitment.commitment_type === "purchase_order" && !existing.reason_code_id) {
     throw new Error("A purchase-order change without a variance reason cannot be approved. Void it and raise a variance order.")
   }
+  assertIssuedPurchaseOrder(commitment)
 
   const approval = { status: existing.status, isVariance: Boolean(existing.reason_code_id), approverId: userId }
   const blocked = vpoApprovalBlockReason({ ...approval, requestedBy: null })
@@ -1088,6 +1065,13 @@ export async function markCommitmentChangeOrderExecutedFromEnvelope(input: {
   if (!existing) {
     throw new Error("Commitment change order not found for executed e-signature")
   }
+  // A rejected or voided order is closed: a late signature is not a decision.
+  if (!PENDING_STATUSES.includes(existing.status) && existing.status !== "approved") return existing
+  const commitment = await loadOrderCommitment(input.orgId, existing)
+  // A signature approves only a plain subcontract change order. A purchase-order change is approved by a
+  // named approver under the variance controls (band, evidence, separation of duties), so for it the
+  // signature is recorded as evidence and the status is left alone.
+  const approvesBySignature = PENDING_STATUSES.includes(existing.status) && commitment.commitment_type !== "purchase_order" && !existing.reason_code_id
 
   const nowIso = new Date().toISOString()
   const metadata = {
@@ -1103,23 +1087,25 @@ export async function markCommitmentChangeOrderExecutedFromEnvelope(input: {
     },
   }
 
-  const { error } = await supabase
+  // Conditional on the status read above, so a decision that lands first is never overwritten.
+  const { data: recorded, error } = await supabase
     .from("commitment_change_orders")
     .update({
-      status: "approved",
-      approved_at: existing.approved_at ?? nowIso,
+      ...(approvesBySignature ? { status: "approved", approved_at: existing.approved_at ?? nowIso, updated_at: nowIso } : {}),
       source_document_id: input.documentId,
       executed_file_id: input.executedFileId,
       signature_envelope_id: input.envelopeId,
       metadata,
-      updated_at: nowIso,
     })
     .eq("org_id", input.orgId)
     .eq("id", input.commitmentChangeOrderId)
+    .eq("status", existing.status)
+    .select("id")
 
   if (error) {
     throw new Error(`Failed to mark commitment change order executed: ${error.message}`)
   }
+  if (!recorded?.length) return existing
 
   const updated = await loadSingle(supabase, input.orgId, input.commitmentChangeOrderId)
   if (!updated) throw new Error("Failed to reload executed commitment change order")
@@ -1213,6 +1199,9 @@ export async function createCommitmentChangeOrderFromClientChangeOrder({
   const commitment = await loadParentCommitment(resolvedOrgId, parsed.commitment_id)
   if (commitment.project_id !== changeOrder.project_id) {
     throw new Error("Commitment must belong to the same project as the change order.")
+  }
+  if (commitment.commitment_type === "purchase_order") {
+    throw new Error("A purchase order's change is raised as a variance order from Purchasing, with a reason. Pick a subcontract here.")
   }
 
   await requireAuthorization({

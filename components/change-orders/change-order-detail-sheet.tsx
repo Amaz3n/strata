@@ -1374,13 +1374,13 @@ export function ChangeOrderDetailSheet({
           <DialogHeader>
             <DialogTitle>Create commitment change order</DialogTitle>
             <DialogDescription>
-              Select the subcontract or PO that should absorb this {ownerTermLower} change order.
+              Select the subcontract that should absorb this {ownerTermLower} change order.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {commitmentOptions.length === 0 ? (
               <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                No commitments found for this project.
+                No subcontracts found for this project.
               </p>
             ) : (
               <div className="space-y-2">

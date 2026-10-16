@@ -9,7 +9,7 @@ import { approvePoCompletion, rejectPoCompletion, verifyPoCompletion } from "@/l
 import { dismissPoException, generatePurchaseOrders, resolvePoException } from "@/lib/services/po-generation"
 import { createPriceAgreement, getAgreementImpact, repriceAgreement, setAgreementEnd, voidPriceAgreement } from "@/lib/services/price-book"
 import { poExceptionResolutionSchema, poGenerationInputSchema } from "@/lib/validation/po-generation"
-import { agreementEndSchema, agreementVoidSchema } from "@/lib/validation/price-book"
+import { agreementEndSchema, agreementVoidSchema, priceAgreementInputSchema, repriceAgreementSchema } from "@/lib/validation/price-book"
 import { getPoExceptionCandidates, searchPurchasingEntities } from "@/lib/services/purchasing-workspace"
 
 export async function getPoExceptionCandidatesAction(input: unknown) {
@@ -44,11 +44,11 @@ async function run<T>(operation: () => Promise<T>, projectId?: string): Promise<
 }
 
 export async function createPriceAgreementAction(input: unknown) {
-  return await run(() => createPriceAgreement(input as Parameters<typeof createPriceAgreement>[0]))
+  return await run(() => createPriceAgreement(priceAgreementInputSchema.parse(input)))
 }
 
 export async function repriceAgreementAction(agreementId: string, input: unknown) {
-  return await run(() => repriceAgreement(z.string().uuid().parse(agreementId), input as Parameters<typeof repriceAgreement>[1]))
+  return await run(() => repriceAgreement(z.string().uuid().parse(agreementId), repriceAgreementSchema.parse(input)))
 }
 
 export async function voidPriceAgreementAction(agreementId: string, input: unknown) {

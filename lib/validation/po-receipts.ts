@@ -14,7 +14,8 @@ const receiptLineSchema = z.object({
 export const recordPoReceiptSchema = z.object({
   commitmentId: z.string().uuid(),
   idempotencyKey: z.string().trim().min(1).max(200),
-  receivedAt: z.string().datetime({ offset: true }).optional(),
+  receivedAt: z.string().datetime({ offset: true })
+    .refine((value) => Date.parse(value) <= Date.now() + 10 * 60_000, "A delivery cannot be received in the future").optional(),
   ticketNumber: z.string().trim().max(120).optional(),
   note: z.string().trim().max(2000).optional(),
   photoFileIds: z.array(z.string().uuid()).max(20).default([]),
