@@ -101,6 +101,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
 
   const [acknowledgments, canResolveAcknowledgment] = acknowledgmentsRequest ? await acknowledgmentsRequest : [null, false]
   const [deliveries, canReceive, canResolveShortage] = deliveriesRequest ? await deliveriesRequest : [null, false, false]
+  const canAttachEvidence = tab === "vpos" && (await Promise.all([hasPermission("vpo.request"), hasPermission("vpo.approve")])).some(Boolean)
   const total = acknowledgments ? acknowledgments.total : deliveries ? deliveries.total : tab === "bids" ? bids.count : tab === "price-book" ? agreements.count : tab === "exceptions" ? exceptions.count : tab === "vpos" ? vpos.count : tab === "completions" ? completions.count : null
   const paginationParams = new URLSearchParams({ tab })
   if (tab === "bids" && search) paginationParams.set("q", search)
@@ -138,10 +139,10 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
     bids={bids.items}
     exceptions={exceptions.items.map((row) => ({ id: row.id, projectId: row.project_id, projectName: relationName(row.project, "Project"), description: row.description, reason: row.reason, quantity: Number(row.quantity ?? 0), uom: row.uom ?? null, costCode: relationName(row.cost_code, "Uncoded"), candidates: Array.isArray(row.candidates) ? row.candidates.filter((value: unknown): value is string => typeof value === "string") : [], createdAt: row.created_at }))}
     exceptionCount={exceptions.count}
-    vpos={vpos.items.map((row) => ({ id: row.id, title: row.title, projectId: row.project_id, commitmentId: row.commitment_id, evidenceCount: row.evidence_file_ids.length, vendor: row.company_name ?? "Unassigned", reason: row.reason_label ?? "Unclassified", origin: row.origin ?? "office", totalCents: row.total_cents, photoCount: row.photo_file_ids.length, createdAt: row.created_at }))}
+    vpos={vpos.items.map((row) => ({ id: row.id, title: row.title, projectId: row.project_id, evidenceCount: row.evidence_file_ids.length, vendor: row.company_name ?? "Unassigned", reason: row.reason_label ?? "Unclassified", origin: row.origin ?? "office", totalCents: row.total_cents, photoCount: row.photo_file_ids.length, createdAt: row.created_at }))}
     vpoCount={vpos.count}
     completions={completions.items.map((row) => ({ id: row.id, project: relationName(row.project, "Project"), po: relationName(row.commitment, "Purchase order"), status: row.status, amountCents: row.amount_cents ?? null, reportedAt: row.reported_at }))}
-    variance={variance} varianceRange={varianceRange} requiresInspection={settings?.po_completion_requires_inspection === true}
+    variance={variance} varianceRange={varianceRange} canAttachEvidence={canAttachEvidence} requiresInspection={settings?.po_completion_requires_inspection === true}
     costCodes={costCodes.map((row) => ({ id: row.id, name: row.name, code: row.code }))}
     acknowledgments={acknowledgments && <PoAcknowledgmentsTab rows={acknowledgments.rows} total={acknowledgments.total} pageSize={pageSize} canResolve={canResolveAcknowledgment}
       filters={acknowledgmentStates.map(([value, label]) => ({

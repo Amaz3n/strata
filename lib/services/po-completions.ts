@@ -65,14 +65,24 @@ export function claimedCompletionLineIds(existing: CompletionCoverage[]) {
   return claimed
 }
 
+/** The approved variance orders a live completion already claims. */
+export function claimedCompletionChangeOrderIds(existing: CompletionCoverage[]) {
+  const claimed = new Set<string>()
+  for (const completion of existing) {
+    if (!CLAIMING_COMPLETION_STATUSES.has(completion.status)) continue
+    for (const id of completion.change_order_ids ?? []) claimed.add(id)
+  }
+  return claimed
+}
+
 /** True when a whole-purchase-order completion is live, which claims every line. */
 export function hasWholeOrderClaim(existing: CompletionCoverage[]) {
   return existing.some((completion) => CLAIMING_COMPLETION_STATUSES.has(completion.status) && completion.commitment_line_ids == null)
 }
 
-async function requirePayOnPoEnabled(client: ReturnType<typeof createServiceSupabaseClient>, orgId: string, projectId: string) {
-  const { enabled, requiresVerification } = await resolvePayOnPo(client, orgId, projectId)
-  if (!enabled) throw new Error("Pay-on-PO is not enabled for this community.")
+async function requirePayOnPoEnabled(client: ReturnType<typeof createServiceSupabaseClient>, orgId: string) {
+  const { enabled, requiresVerification } = await resolvePayOnPo(client, orgId)
+  if (!enabled) throw new Error("Pay-on-PO is not enabled for this organization.")
   return { requiresVerification }
 }
 
@@ -100,7 +110,7 @@ async function createCompletion({
   const parsed = reportPoCompletionSchema.parse(input)
   const service = createServiceSupabaseClient()
   const commitment = await loadCommitment(service, orgId, parsed.commitment_id)
-  const { requiresVerification } = await requirePayOnPoEnabled(service, orgId, commitment.project_id)
+  const { requiresVerification } = await requirePayOnPoEnabled(service, orgId)
   if (parsed.reported_source === "trade_portal" && parsed.photo_file_ids.length === 0) {
     throw new Error("At least one completion photo is required.")
   }
@@ -153,6 +163,32 @@ export async function reportPoCompletion(input: ReportPoCompletionInput, orgId?:
   return createCompletion({ input: parsed, orgId: resolvedOrgId, reportedByUserId: userId })
 }
 
+/**
+ * Reports every approved variance order on a purchase order that no live completion
+ * claims yet, for a completion of its own (no PO line). This is how a variance order
+ * approved after the work was billed gets billed; the trade can claim the same orders
+ * from its portal, whichever happens first.
+ */
+export async function reportUnclaimedVariancePoCompletion(commitmentId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const service = createServiceSupabaseClient()
+  const commitment = await loadCommitment(service, resolvedOrgId, commitmentId)
+  await requireAuthorization({ permission: "po_completion.report", userId, orgId: resolvedOrgId, projectId: commitment.project_id, supabase, logDecision: true })
+  const [{ data: orders, error: orderError }, { data: completions, error: completionError }] = await Promise.all([
+    service.from("commitment_change_orders").select("id").eq("org_id", resolvedOrgId).eq("commitment_id", commitment.id).eq("status", "approved").limit(100),
+    service.from("po_completions").select("id,status,commitment_line_ids,change_order_ids").eq("org_id", resolvedOrgId).eq("commitment_id", commitment.id).limit(200),
+  ])
+  if (orderError) throw new Error(`Failed to load variance orders: ${orderError.message}`)
+  if (completionError) throw new Error(`Failed to load completions: ${completionError.message}`)
+  const claimed = claimedCompletionChangeOrderIds(completions ?? [])
+  const unclaimed = (orders ?? []).map((row) => String(row.id)).filter((id) => !claimed.has(id))
+  if (unclaimed.length === 0) throw new Error("Every approved variance order on this purchase order is already claimed by a completion.")
+  return createCompletion({
+    input: { commitment_id: commitment.id, commitment_line_ids: [], change_order_ids: unclaimed, reported_source: "office", photo_file_ids: [] },
+    orgId: resolvedOrgId, reportedByUserId: userId,
+  })
+}
+
 export async function reportPoCompletionFromPortal(token: string, input: Omit<ReportPoCompletionInput, "reported_source">) {
   const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, requireProject: true, permission: "can_report_po_completion" })
   const service = createServiceSupabaseClient()
@@ -160,8 +196,10 @@ export async function reportPoCompletionFromPortal(token: string, input: Omit<Re
   if (commitment.project_id !== access.project_id || commitment.company_id !== access.company_id) throw new Error("Purchase order not found")
   let contactId = access.contact_id ?? null
   if (!contactId) {
-    const { data: contact } = await service.from("contacts").select("id").eq("org_id", access.org_id).eq("company_id", access.company_id).order("created_at").limit(1).maybeSingle()
-    contactId = contact?.id ?? null
+    // A person belongs to a company through contact_company_links, never a column on the contact.
+    const { data: link } = await service.from("contact_company_links").select("contact_id").eq("org_id", access.org_id).eq("company_id", access.company_id)
+      .order("is_primary", { ascending: false }).order("created_at").limit(1).maybeSingle()
+    contactId = link?.contact_id ?? null
   }
   if (!contactId) throw new Error("A trade contact is required to report completion.")
   return createCompletion({ input: { ...input, reported_source: "trade_portal" }, orgId: access.org_id, reportedByContactId: contactId })
@@ -216,35 +254,6 @@ const approvePoCompletionSchema = z.object({
 })
 
 /**
- * Stores the inspection (or the waiver) the approval relies on, before the
- * approval RPC checks the org's policy against the stored row. Returns whether
- * a waiver was recorded.
- */
-async function recordInspectionEvidence({ service, orgId, userId, completion, input }: {
-  service: ReturnType<typeof createServiceSupabaseClient>
-  orgId: string
-  userId: string
-  completion: { id: string; project_id: string; inspection_id?: string | null }
-  input: z.infer<typeof approvePoCompletionSchema>
-}) {
-  if (!input.inspectionId && !input.inspectionWaiverReason) return false
-  const update: Record<string, unknown> = {}
-  if (input.inspectionId) {
-    const { data: inspection, error } = await service.from("inspections").select("id,status,result")
-      .eq("org_id", orgId).eq("project_id", completion.project_id).eq("id", input.inspectionId).maybeSingle()
-    if (error) throw new Error(`Failed to check the inspection: ${error.message}`)
-    if (!inspection) throw new Error("That inspection does not belong to this home.")
-    if (inspection.status !== "completed" || inspection.result !== "pass") throw new Error("Only a completed, passed inspection can back a completion.")
-    update.inspection_id = inspection.id
-  }
-  const waived = !input.inspectionId && Boolean(input.inspectionWaiverReason)
-  if (waived) Object.assign(update, { inspection_waived_reason: input.inspectionWaiverReason, inspection_waived_by: userId, inspection_waived_at: new Date().toISOString() })
-  const { error } = await service.from("po_completions").update(update).eq("org_id", orgId).eq("id", completion.id)
-  if (error) throw new Error(`Failed to record the inspection evidence: ${error.message}`)
-  return waived
-}
-
-/**
  * The money step. Whoever reported or verified the work does not also release
  * the payment for it. When the org requires a passed inspection, the approval
  * either names one (same home, completed, passed) or carries a waiver reason;
@@ -255,17 +264,20 @@ export async function approvePoCompletion(completionId: string, orgId?: string, 
   const { supabase, orgId: resolvedOrgId, userId, completion } = await loadCompletionForUser(completionId, orgId)
   await requireAuthorization({ permission: "bill.approve", userId, orgId: resolvedOrgId, projectId: completion.project_id, supabase, logDecision: true })
   const service = createServiceSupabaseClient()
-  if (completion.status !== "billed" && (completion.reported_by_user_id === userId || completion.verified_by === userId)) {
+  if (completion.reported_by_user_id === userId || completion.verified_by === userId) {
     await refuseSeparationOfDuties({
       orgId: resolvedOrgId, userId, actionKey: "bill.approve", resourceType: "po_completion", resourceId: completionId,
       projectId: completion.project_id, rule: "po_completion.approver_cannot_have_reported_or_verified",
       message: "You reported or verified this completion, so someone else has to approve the payment.",
     })
   }
-  const inspectionWaived = await recordInspectionEvidence({ service, orgId: resolvedOrgId, userId, completion, input: parsed })
-  const { data, error } = await service.rpc("approve_po_completion", { p_org_id: resolvedOrgId, p_completion_id: completionId, p_actor_id: userId })
+  // The inspection or waiver is written by the approval itself, only while the completion is open.
+  const { data, error } = await service.rpc("approve_po_completion", {
+    p_org_id: resolvedOrgId, p_completion_id: completionId, p_actor_id: userId,
+    p_inspection_id: parsed.inspectionId ?? null, p_waiver_reason: parsed.inspectionWaiverReason ?? null,
+  })
   if (error || !data?.vendor_bill_id) throw new Error(`Failed to approve PO completion: ${error?.message}`)
-  if (inspectionWaived) {
+  if (data.waived === true) {
     await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_completion", entityId: completionId, after: { inspection_waived_reason: parsed.inspectionWaiverReason, inspection_waived_by: userId }, critical: true })
   }
   try {

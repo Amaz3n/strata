@@ -85,12 +85,16 @@ export function PurchasingSettingsForm({ settings, reasons, canWrite }: { settin
     ? "Enter a dollar limit for every band except the last."
     : vpoBandsError(bandPayload)
 
+  const evidenceCents = toCents(evidenceOver)
+  const evidenceProblem = evidenceRequired && evidenceCents === null ? "Enter the dollar amount from which evidence is required." : null
+
   const save = () => run(async () => {
     unwrapAction(await updatePurchasingSettingsAction({
       ...flags,
       vpo_approval_thresholds: bandPayload,
-      vpo_evidence_required_over_cents: evidenceRequired ? toCents(evidenceOver) ?? 0 : null,
+      vpo_evidence_required_over_cents: evidenceRequired ? evidenceCents : null,
       expiring_agreement_lead_days: Number(leadDays),
+      expected_updated_at: settings.updated_at,
     }))
   }, "Purchasing settings saved")
 
@@ -105,8 +109,8 @@ export function PurchasingSettingsForm({ settings, reasons, canWrite }: { settin
     <div className="border-t" aria-busy={pending}>
       {!canWrite && <p className="border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">You can read these settings. Changing them needs the purchasing settings permission.</p>}
 
-      <Section title="Pay on purchase order" detail="Trades are paid on a verified field completion instead of an invoice. A community can override the default on its own record.">
-        <ToggleRow label="Pay-on-PO by default" detail="New completions can be reported against approved purchase orders in communities with no override." checked={flags.pay_on_po_enabled} disabled={locked} onChange={setFlag("pay_on_po_enabled")} />
+      <Section title="Pay on purchase order" detail="Trades are paid on a verified field completion instead of an invoice.">
+        <ToggleRow label="Pay on purchase order" detail="Completions can be reported against approved purchase orders, and a bill on one is paid only against an approved completion." checked={flags.pay_on_po_enabled} disabled={locked} onChange={setFlag("pay_on_po_enabled")} />
         <ToggleRow label="A second person verifies each report" detail="Office reports are not self-verified. Whoever reported or verified a completion can never approve the payment." checked={flags.po_completion_requires_verification} disabled={locked} onChange={setFlag("po_completion_requires_verification")} />
         <ToggleRow label="Require a passed inspection before approval" detail="Approval needs a completed, passed inspection on the home, or a waiver with a reason that is kept on the completion and in the audit trail." checked={flags.po_completion_requires_inspection} disabled={locked} onChange={setFlag("po_completion_requires_inspection")} />
       </Section>
@@ -158,6 +162,7 @@ export function PurchasingSettingsForm({ settings, reasons, canWrite }: { settin
               <Input id="evidence-over" inputMode="decimal" className="h-8 w-36 text-right tabular-nums" value={evidenceOver} disabled={locked} onChange={(event) => setEvidenceOver(event.target.value)} />
             </div>
           )}
+          {evidenceProblem && <p className="text-xs text-destructive">{evidenceProblem}</p>}
         </div>
       </Section>
 
@@ -171,7 +176,7 @@ export function PurchasingSettingsForm({ settings, reasons, canWrite }: { settin
 
       {canWrite && (
         <div className="flex justify-end border-b px-4 py-3">
-          <Button disabled={pending || Boolean(bandsProblem)} onClick={save}>{pending ? "Saving…" : "Save settings"}</Button>
+          <Button disabled={pending || Boolean(bandsProblem) || Boolean(evidenceProblem)} onClick={save}>{pending ? "Saving…" : "Save settings"}</Button>
         </div>
       )}
 

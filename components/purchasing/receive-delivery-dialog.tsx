@@ -103,7 +103,12 @@ export function ReceiveDeliveryDialog({ projectId, commitmentId, lineId, open, o
           upload.set("category", "photos")
           upload.set("visibility", "private")
           upload.set("description", "Delivery photo")
-          photoFileIds.push(unwrapAction(await uploadDocumentForm(upload)).id)
+          try {
+            photoFileIds.push(unwrapAction(await uploadDocumentForm(upload)).id)
+          } catch (uploadError) {
+            setError(`${photo.name} could not be uploaded${uploadError instanceof Error ? `: ${uploadError.message}` : ""}. Nothing was recorded; remove the photo or try again.`)
+            return
+          }
         }
         const result = await recordPoReceiptAction({
           commitmentId: orderId,

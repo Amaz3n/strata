@@ -6,6 +6,7 @@
 //   bid-and-price-book-writes-are-fenced-at-the-data-api  EP08-03  members forging writes with their own JWT are refused; the services still work
 //   rebid-by-a-different-vendor-ends-the-incumbent-on-the-chosen-date  EP08-05  preview, chosen effective date, one resolvable price either side, notices to every bidder
 //   rescinding-restores-the-prior-price-and-void-end-need-a-reason  EP08-05  rescind by the purchasing manager restores the incumbent; void and end carry a reason inside the member's division
+//   bid-lines-price-only-their-own-package / rescind-restores-an-incumbent-the-sweep-expired / plan-only-packages-need-unrestricted-division-scope   review round 1
 //   concurrent-awards-for-the-same-scope-leave-one-active-price  EP08-05  two sessions award two packages of one scope and date; exactly one price takes effect
 const { randomUUID } = require("node:crypto")
 const seed = require("../production-seed.cjs")
@@ -37,8 +38,8 @@ insert into public.membership_divisions(membership_id, division_id) select id, $
 }
 
 /** A package on the community and plan with one priced unit line, invited bidders and their bids. */
-async function pricedPackage(kit, w, { title, bidders }) {
-  const bids = app("bids"), buyer = w.org.team.purchasing, costCode = w.org.costCodeIds["06-100"]
+async function pricedPackage(kit, w, { title, bidders, costCodeKey = "06-100" }) {
+  const bids = app("bids"), buyer = w.org.team.purchasing, costCode = w.org.costCodeIds[costCodeKey]
   const pkg = await kit.as(buyer, () => bids.createBidPackage({ input: { community_id: w.communityA, house_plan_id: w.plan.id, title, trade: "Framing", due_at: new Date(Date.now() + 14 * 86_400_000).toISOString() } }))
   const scope = await kit.as(buyer, () => bids.saveBidScopeItems({ input: { bid_package_id: pkg.id, items: [{ item_type: "base", description: "Frame the shell", quantity: 1000, unit: "sf", cost_code_id: costCode }] } }))
   await kit.as(buyer, () => bids.updateBidPackage({ bidPackageId: pkg.id, input: { status: "open" } }))
@@ -170,9 +171,9 @@ async function rescindingRestoresThePriorPrice(kit, expected, check) {
   const reAward = await award(kit, w, r.replacement.submissions["Palmetto Framing"].id, { effective_from: day(10) })
   const rescindedAgain = await kit.as(buyer, () => bids.rescindBidAward({ input: { bid_package_id: r.replacement.pkg.id, reason: "Second thoughts" } }))
 
-  const noReason = await attempt(() => kit.as(buyer, () => book.setAgreementEnd(r.incumbentId, { effective_to: day(200), reason: "" })))
-  const outsideDivision = await attempt(() => kit.as(w.buyerB, () => book.setAgreementEnd(r.incumbentId, { effective_to: day(200), reason: "Not my division" })))
-  const ended = await kit.as(w.buyerA, () => book.setAgreementEnd(r.incumbentId, { effective_to: day(200), reason: "Seasonal contract ends" }))
+  const noReason = await attempt(() => kit.as(buyer, () => book.setAgreementEnd(r.incumbentId, { effective_to: day(30), reason: "" })))
+  const outsideDivision = await attempt(() => kit.as(w.buyerB, () => book.setAgreementEnd(r.incumbentId, { effective_to: day(30), reason: "Not my division" })))
+  const ended = await kit.as(w.buyerA, () => book.setAgreementEnd(r.incumbentId, { effective_to: day(30), reason: "Seasonal contract ends" }))
   const voidOnVoid = await attempt(() => kit.as(buyer, () => book.voidPriceAgreement(r.mintedId, { reason: "Already void" })))
   const endedRow = agreement(kit, r.incumbentId)
   const trail = kit.rows(`select metadata->'state_change'->>'reason' reason from public.vendor_price_agreements where id=${q(r.incumbentId)}`)[0].reason
@@ -186,7 +187,7 @@ async function rescindingRestoresThePriorPrice(kit, expected, check) {
   eq(check, "ending an agreement needs a reason and a member inside its division, and records why", expected.expected.end, {
     noReason: /Say why/.test(noReason) ? "refused: reason required" : noReason,
     otherDivisionBuyer: /outside your divisions|not found/.test(outsideDivision) ? "refused: outside division" : outsideDivision,
-    divisionBuyerEndsIt: { status: ended.agreement.status, endsOn: ended.agreement.effective_to === day(200), recordedEndedOn: endedRow.effective_to === day(200), reason: trail },
+    divisionBuyerEndsIt: { status: ended.agreement.status, endsOn: ended.agreement.effective_to === day(30), recordedEndedOn: endedRow.effective_to === day(30), reason: trail },
     voidingAVoidRow: /Only draft or active/.test(voidOnVoid) ? "refused: not active" : voidOnVoid,
   })
   return { orgId: w.org.orgId }
@@ -205,6 +206,63 @@ async function concurrentAwardsLeaveOneActivePrice(kit, expected, check) {
   return { orgId: w.org.orgId }
 }
 
+// ---------------------------------------------------------------------------
+// Review round 1
+
+async function bidLinesPriceOnlyTheirOwnPackage(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q, buyer = org.team.purchasing
+  const a = await pricedPackage(kit, w, { title: "BID-01 ancestry A", bidders: [{ vendor: "Palmetto Framing", email: "palmetto@bid01.example.test", amountCents: 5_000_000 }] })
+  const b = await pricedPackage(kit, w, { title: "BID-01 ancestry B", bidders: [{ vendor: "Gulf Concrete", email: "gulf@bid01.example.test", amountCents: 4_000_000 }] })
+  const own = kit.rows(`select id from public.bid_scope_items where bid_package_id=${q(a.pkg.id)}`)[0].id
+  const foreign = kit.rows(`select id from public.bid_scope_items where bid_package_id=${q(b.pkg.id)}`)[0].id
+  const submission = a.submissions["Palmetto Framing"].id
+  const line = kit.rows(`select id from public.bid_submission_items where bid_submission_id=${q(submission)}`)[0].id
+  const outcome = {
+    repointLineToAnotherPackage: dataApi(kit, buyer, `update public.bid_submission_items set bid_scope_item_id=${q(foreign)} where id=${q(line)}`),
+    insertLineOnAnotherPackage: dataApi(kit, buyer, `insert into public.bid_submission_items(org_id,bid_submission_id,bid_scope_item_id,response,amount_cents,description) values(${q(org.orgId)},${q(submission)},${q(foreign)},'priced',1,'Planted')`),
+    repointLineWithinItsOwnPackage: dataApi(kit, buyer, `update public.bid_submission_items set bid_scope_item_id=${q(own)} where id=${q(line)}`),
+  }
+  const awarded = await award(kit, w, submission)
+  const minted = kit.rows(`select cost_code_id = ${q(org.costCodeIds["06-100"])} as from_own_scope from public.vendor_price_agreements where id=${q(awarded.agreementIds[0])}`)[0]
+  eq(check, "a member cannot re-point or plant a bid line on another package's scope item, and the award mints only from the package's own scope", expected.expected, { ...outcome, awardMintsFromOwnScope: minted.from_own_scope === true })
+  return { orgId: org.orgId }
+}
+
+async function rescindRestoresAnIncumbentTheSweepExpired(kit, expected, check) {
+  const w = await world(kit), { org } = w, buyer = org.team.purchasing
+  const incumbent = await pricedPackage(kit, w, { title: "BID-01 sweep incumbent", costCodeKey: "26-000", bidders: [{ vendor: "Bright Electric", email: "bright@bid01.example.test", amountCents: 2_000_000 }] })
+  const incumbentAward = await award(kit, w, incumbent.submissions["Bright Electric"].id)
+  await kit.as(buyer, () => app("price-book").setAgreementEnd(incumbentAward.agreementIds[0], { effective_to: day(60), reason: "Annual electrical contract" }))
+  const rebid = await pricedPackage(kit, w, { title: "BID-01 sweep rebid", costCodeKey: "26-000", bidders: [{ vendor: "Coastal Plumbing", email: "coastal@bid01.example.test", amountCents: 1_800_000 }] })
+  const awarded = await award(kit, w, rebid.submissions["Coastal Plumbing"].id, { effective_from: day(10) })
+  // The maintenance sweep expires an active row once its end date passes; here the date has passed.
+  kit.sql(`update public.vendor_price_agreements set status='expired' where id=${kit.q(incumbentAward.agreementIds[0])}`)
+  const rescinded = await kit.as(buyer, () => app("bids").rescindBidAward({ input: { bid_package_id: rebid.pkg.id, reason: "Coastal withdrew" } }))
+  const row = agreement(kit, incumbentAward.agreementIds[0])
+  eq(check, "rescinding after the sweep expired the displaced incumbent still restores it, active, with its original end date", expected.expected, {
+    voided: rescinded.voidedAgreementCount, restored: rescinded.restoredAgreementCount, skipped: rescinded.skippedAgreementCount,
+    incumbent: { status: row.status, endsOnItsOriginalDate: row.effective_to === day(60), replacedBy: row.superseded_by_id },
+    mintedRow: agreement(kit, awarded.agreementIds[0]).status,
+  })
+  return { orgId: org.orgId }
+}
+
+async function planOnlyPackagesNeedUnrestrictedDivisionScope(kit, expected, check) {
+  const w = await world(kit), { org } = w, q = kit.q
+  const create = (actor, input) => kit.as(actor, () => app("bids").createBidPackage({ input }))
+  const service = {
+    divisionLimitedPlanOnly: await attempt(() => create(w.buyerA, { title: "Plan only (limited)", house_plan_id: w.plan.id })),
+    divisionLimitedCommunityAndPlan: await attempt(() => create(w.buyerA, { title: "Community and plan (limited)", community_id: w.communityA, house_plan_id: w.plan.id })),
+    unrestrictedPlanOnly: await attempt(() => create(org.team.purchasing, { title: "Plan only (unrestricted)", house_plan_id: w.plan.id })),
+  }
+  const dataApiRefusal = dataApi(kit, w.buyerA, `insert into public.bid_packages(org_id,house_plan_id,award_target,title,status) values(${q(org.orgId)},${q(w.plan.id)},'price_agreement','Planted plan-only','draft')`)
+  eq(check, "a division-limited buyer cannot create a plan-only package through the service or the data API; community-scoped and unrestricted creation still work", expected.expected, {
+    service: { ...service, divisionLimitedPlanOnly: /outside your division access/.test(service.divisionLimitedPlanOnly) ? "refused: outside division access" : service.divisionLimitedPlanOnly },
+    dataApi: /row-level security/.test(dataApiRefusal) ? "refused: row-level security" : dataApiRefusal,
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "BID-01",
   subcases: {
@@ -212,5 +270,8 @@ module.exports = {
     "rebid-by-a-different-vendor-ends-the-incumbent-on-the-chosen-date": rebidByADifferentVendorEndsTheIncumbent,
     "rescinding-restores-the-prior-price-and-void-end-need-a-reason": rescindingRestoresThePriorPrice,
     "concurrent-awards-for-the-same-scope-leave-one-active-price": concurrentAwardsLeaveOneActivePrice,
+    "bid-lines-price-only-their-own-package": bidLinesPriceOnlyTheirOwnPackage,
+    "rescind-restores-an-incumbent-the-sweep-expired": rescindRestoresAnIncumbentTheSweepExpired,
+    "plan-only-packages-need-unrestricted-division-scope": planOnlyPackagesNeedUnrestrictedDivisionScope,
   },
 }

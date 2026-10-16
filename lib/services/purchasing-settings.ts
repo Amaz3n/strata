@@ -5,7 +5,7 @@ import { z } from "zod"
 import { parseVpoApprovalBands } from "@/lib/financials/vpo-approval-thresholds"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import {
@@ -45,6 +45,8 @@ export type PurchasingSettings = {
   vpo_evidence_required_over_cents: number | null
   vpo_approval_thresholds: ReturnType<typeof parseVpoApprovalBands>
   expiring_agreement_lead_days: number
+  /** Null until the organization saves settings for the first time. */
+  updated_at: string | null
 }
 
 export type VarianceReasonCode = {
@@ -85,6 +87,7 @@ function mapSettings(orgId: string, data: Record<string, unknown> | null): Purch
     expiring_agreement_lead_days: typeof data?.expiring_agreement_lead_days === "number"
       ? data.expiring_agreement_lead_days
       : DEFAULT_EXPIRING_AGREEMENT_LEAD_DAYS,
+    updated_at: typeof data?.updated_at === "string" ? data.updated_at : null,
   }
 }
 
@@ -98,49 +101,58 @@ export async function getPurchasingSettings(orgId?: string): Promise<PurchasingS
 }
 
 export async function updatePurchasingSettings(input: PurchasingSettingsUpdate, orgId?: string): Promise<PurchasingSettings> {
-  const parsed = purchasingSettingsUpdateSchema.parse(input)
+  const { expected_updated_at: expectedUpdatedAt, ...parsed } = purchasingSettingsUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "purchasing_settings.write", userId, orgId: resolvedOrgId, supabase, logDecision: true, resourceType: "purchasing_settings", resourceId: resolvedOrgId })
+  await requireOrgWideScope(resolvedOrgId, userId)
   const service = createServiceSupabaseClient()
   const { data: current, error: readError } = await service.from("purchasing_settings").select("*").eq("org_id", resolvedOrgId).maybeSingle()
   if (readError) throw new Error(`Failed to load purchasing settings: ${readError.message}`)
+  if (expectedUpdatedAt !== undefined && (current?.updated_at ?? null) !== expectedUpdatedAt) {
+    throw new Error("Purchasing settings changed while you were editing them. Reload and try again.")
+  }
   const before = mapSettings(resolvedOrgId, current)
   const next = { ...before, ...parsed }
-  const { error } = await service.from("purchasing_settings").upsert({
-    org_id: resolvedOrgId,
-    pay_on_po_enabled: next.pay_on_po_enabled,
-    po_completion_requires_verification: next.po_completion_requires_verification,
-    po_completion_requires_inspection: next.po_completion_requires_inspection,
-    vpo_reason_code_required: next.vpo_reason_code_required,
-    vpo_evidence_required_over_cents: next.vpo_evidence_required_over_cents,
-    vpo_approval_thresholds: next.vpo_approval_thresholds,
-    expiring_agreement_lead_days: next.expiring_agreement_lead_days,
-  }, { onConflict: "org_id" })
+  // Only the columns this save names are written, so two people saving different fields do not undo each other.
+  const { data: saved, error } = current
+    ? await service.from("purchasing_settings").update(parsed).eq("org_id", resolvedOrgId).eq("updated_at", current.updated_at).select("updated_at")
+    : await service.from("purchasing_settings").insert({
+      org_id: resolvedOrgId,
+      pay_on_po_enabled: next.pay_on_po_enabled,
+      po_completion_requires_verification: next.po_completion_requires_verification,
+      po_completion_requires_inspection: next.po_completion_requires_inspection,
+      vpo_reason_code_required: next.vpo_reason_code_required,
+      vpo_evidence_required_over_cents: next.vpo_evidence_required_over_cents,
+      vpo_approval_thresholds: next.vpo_approval_thresholds,
+      expiring_agreement_lead_days: next.expiring_agreement_lead_days,
+    }).select("updated_at")
   if (error) throw new Error(`Failed to save purchasing settings: ${error.message}`)
+  if (!saved?.length) throw new Error("Purchasing settings changed while you were editing them. Reload and try again.")
   await Promise.all([
     seedReasonCodes(resolvedOrgId),
     recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "purchasing_settings.updated", entityType: "purchasing_settings", entityId: resolvedOrgId, payload: { changed: Object.keys(parsed) } }),
   ])
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: current ? "update" : "insert", entityType: "purchasing_settings", entityId: resolvedOrgId, before: { ...before }, after: { ...next }, critical: true })
-  return next
+  return { ...next, updated_at: String(saved[0].updated_at) }
+}
+
+/** Approval bands and policy are the organization's, so a manager limited to some divisions does not set them. */
+async function requireOrgWideScope(orgId: string, userId: string) {
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (access.assignedOnly) throw new Error("Purchasing settings apply to the whole organization, so they are changed by someone who is not limited to a division.")
 }
 
 /**
- * Whether pay-on-PO applies to a home, and whether its completions need a
- * verification step. The community's own flag wins over the org default. Payment
- * holds and completion creation both ask this, so they cannot disagree.
+ * Whether pay-on-PO applies, and whether its completions need a verification step.
+ * One organization setting: payment holds and completion creation both ask this, so
+ * they cannot disagree.
  */
-export async function resolvePayOnPo(client: SupabaseClient, orgId: string, projectId: string) {
-  const [{ data: lot, error: lotError }, { data: settings, error: settingsError }] = await Promise.all([
-    client.from("lots").select("community:communities(pay_on_po_enabled)").eq("org_id", orgId).eq("project_id", projectId).limit(1).maybeSingle(),
-    client.from("purchasing_settings").select("pay_on_po_enabled,po_completion_requires_verification").eq("org_id", orgId).maybeSingle(),
-  ])
-  if (lotError) throw new Error(`Failed to resolve the lot's pay-on-PO setting: ${lotError.message}`)
-  if (settingsError) throw new Error(`Failed to resolve purchasing settings: ${settingsError.message}`)
-  const community = Array.isArray(lot?.community) ? lot.community[0] : lot?.community
+export async function resolvePayOnPo(client: SupabaseClient, orgId: string) {
+  const { data, error } = await client.from("purchasing_settings").select("pay_on_po_enabled,po_completion_requires_verification").eq("org_id", orgId).maybeSingle()
+  if (error) throw new Error(`Failed to resolve purchasing settings: ${error.message}`)
   return {
-    enabled: community?.pay_on_po_enabled ?? settings?.pay_on_po_enabled ?? false,
-    requiresVerification: settings?.po_completion_requires_verification ?? true,
+    enabled: data?.pay_on_po_enabled ?? false,
+    requiresVerification: data?.po_completion_requires_verification ?? true,
   }
 }
 

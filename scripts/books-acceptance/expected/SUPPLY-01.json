@@ -34,6 +34,42 @@
         }
       }
     },
+    "po-issue-cannot-be-forged-or-erased": {
+      "derivation": "A superintendent on the house team forges through the data API. Inserting an order as approved and moving a draft to approved are refused (issuing is the approval service's act, not a row edit); no forged order exists. After the owner approves the draft, moving it to complete, stripping the generation provenance from the order or its line, changing a line's needed_by and reordering a line are all refused, so the hash is unchanged and the vendor can still answer the version. Returned to draft, the order keeps its issue history, so the member's delete is refused and the one version survives; with a recorded receipt the return to draft is refused for the owner too. A purchasing manager on no team adds a line (4 x $1) and edits the other (100 to 7 at $50) on a draft, so the total follows the lines: 35400 cents; after approval the sheet reads revision 1. An open-WIP imported order approved by the database gets a backfill version, queues no email and reads 'unrequested'.",
+      "expected": {
+        "forged": {
+          "forgedDraft": {
+            "insertAsApproved": "refused",
+            "draftToApproved": "refused"
+          },
+          "forgedIssued": {
+            "toComplete": "refused",
+            "stripOrderSource": "refused",
+            "stripLineSource": "refused",
+            "neededBy": "refused",
+            "sortOrder": "refused"
+          },
+          "forgedOrders": 0,
+          "vendorStillAnswers": "allowed"
+        },
+        "history": {
+          "deleteWithHistory": "refused",
+          "versionsAfterDelete": 1,
+          "returnWithReceipt": "refused: deliveries"
+        },
+        "desk": {
+          "created": "allowed",
+          "edited": "allowed",
+          "deskTotal": 35400,
+          "issuanceRevision": 1,
+          "importedVersions": [
+            "backfill"
+          ],
+          "importedEmailJobs": 0,
+          "importedState": "unrequested"
+        }
+      }
+    },
     "vendor-receives-and-answers-an-issued-version": {
       "derivation": "No version exists before approval; approval writes revision 1 and queues one vendor email job. A stale hash, a dispute with no reason, a dispute with no line facts, and a link without can_acknowledge_purchase_orders are refused. The vendor accepts (queue: accepted), then disputes (one open disputed answer; queue: disputed).",
       "expected": {
@@ -293,6 +329,31 @@
             "totalIsAtLeastBothHomes": true,
             "pageSize": 1
           }
+        }
+      }
+    },
+    "receipt-void-policy-and-vpo-quantity": {
+      "derivation": "The superintendent receives 10 and purchasing 5 against a line of 100. The superintendent voids their own 10 the same day (allowed); voiding purchasing's 5 is refused (not their ticket), a sales agent has no po_receipt.record, and a ticket dated two days ago is refused to its receiver but voided by purchasing (po_exception.resolve), who may void any. The 5 purchasing received stays recorded. Closing the line short and raising a VPO for 60 more at $5, then having the owner (a second person) approve it: 156 more is refused at 100 ordered (5 in, room for 95) and refused at 160 ordered (5 in, room for 155), and the remaining 155 is then received in full without a reason: ordered 160, received 160, state received.",
+      "expected": {
+        "voidPolicy": {
+          "otherUsersTicket": "refused: not their ticket",
+          "unrelatedRole": "refused: needs po_receipt.record",
+          "ownSameDay": "allowed",
+          "ownLater": "refused: not the same day",
+          "purchasingAny": "allowed",
+          "statuses": {
+            "mine": "void",
+            "buyers": "recorded",
+            "second": "void"
+          }
+        },
+        "vpoQuantity": {
+          "overBefore": "refused: over 100 ordered",
+          "overAfter": "refused: over 160 ordered",
+          "remaining": "allowed",
+          "ordered": 160,
+          "received": 160,
+          "state": "received"
         }
       }
     }

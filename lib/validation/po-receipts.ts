@@ -2,7 +2,7 @@ import { z } from "zod"
 
 const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a calendar date")
 
-export const receiptLineSchema = z.object({
+const receiptLineSchema = z.object({
   commitmentLineId: z.string().uuid(),
   quantity: z.number().positive("Received quantity must be more than zero").max(1_000_000_000),
   condition: z.enum(["ok", "damaged", "wrong_item"]).default("ok"),
@@ -27,8 +27,6 @@ export const recordPoReceiptSchema = z.object({
   }
 })
 
-export type RecordPoReceiptInput = z.input<typeof recordPoReceiptSchema>
-
 export const closeLineShortSchema = z.object({
   commitmentLineId: z.string().uuid(),
   reason: z.enum(["vendor_short", "not_delivered"]),
@@ -46,7 +44,7 @@ export const setLineNeededBySchema = z.object({
 }).strict()
 
 /** The replacement a VPO buys, raised from the shortage it answers. */
-export const shortageVpoSchema = z.object({
+const shortageVpoSchema = z.object({
   reasonCodeId: z.string().uuid(),
   title: z.string().trim().min(2).max(255).optional(),
   quantity: z.number().positive().max(1_000_000_000),

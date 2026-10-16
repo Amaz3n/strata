@@ -1,10 +1,6 @@
-require("../scripts/register-ts-node-test")
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const path = require("node:path")
-const Module = require("node:module")
-const ts = require("typescript")
 const test = require("node:test")
+const { stubModule, freshRequire } = require("./support/modules")
 const math = require("../lib/financials/po-generation-math")
 
 const projectId = "00000000-0000-4000-8000-000000000001"
@@ -17,6 +13,7 @@ const asOfDate = "2026-10-02"
 function generation({ prior = null, exception = null, configurationError = null, takeoffs = [], candidates = [], companies = [], recordRuns = false, rpcResults = [] } = {}) {
   const writes = []
   const rpcCalls = []
+  const trail = []
   const writeKinds = []
   const authorizations = []
   const rows = {
@@ -52,17 +49,13 @@ function generation({ prior = null, exception = null, configurationError = null,
     "@/lib/supabase/server": { createServiceSupabaseClient: () => supabase },
     "@/lib/services/context": { requireOrgContext: async () => ({ supabase, orgId: "org-a", userId: "user-a" }) },
     "@/lib/services/authorization": { requireAuthorization: async (input) => authorizations.push(input) },
-    "@/lib/services/audit": { recordAudit: async () => {} }, "@/lib/services/events": { recordEvent: async () => {} },
-    "@/lib/services/price-book": { loadPriceAgreementCandidates: async () => candidates, collectPagedRows: require("../lib/services/price-book").collectPagedRows },
+    "@/lib/services/audit": { recordAudit: async () => { trail.push("audit") } }, "@/lib/services/events": { recordEvent: async () => { trail.push("event") } },
+    "@/lib/services/price-book": { loadPriceAgreementCandidates: async () => candidates, collectPagedRows: async ({ fetchPage }) => (await fetchPage(0, 999)).data },
     "@/lib/services/purchasing-settings": { getExpiringAgreementLeadDays: async () => 30 },
   }
-  const filename = path.resolve(__dirname, "../lib/services/po-generation.ts")
-  const compiled = new Module(filename, module)
-  compiled.filename = filename
-  compiled.paths = module.paths
-  compiled.require = (id) => stubs[id] ?? require(id)
-  compiled._compile(ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, filename)
-  return { service: compiled.exports, writes, writeKinds, authorizations, rpcCalls }
+  for (const [request, exports] of Object.entries(stubs)) stubModule(request, exports)
+  const service = freshRequire("lib/services/po-generation.ts")
+  return { service, writes, writeKinds, authorizations, rpcCalls, trail }
 }
 
 test("a changed preview is rejected before a generation run or PO is written", async () => {
@@ -73,12 +66,12 @@ test("a changed preview is rejected before a generation run or PO is written", a
   assert.equal(authorizations[0].projectId, projectId)
 })
 
-test("a matching preview can recover a previously committed run without duplicate writes", async () => {
+test("an identical preview still goes through the database commit, so a draft a member deleted is repaired", async () => {
   const fingerprint = math.createPoGenerationFingerprint({ asOfDate, lines: [] })
-  const { service, writes } = generation({ prior: { id: "prior-run", input_fingerprint: fingerprint, status: "succeeded" } })
+  const { service, rpcCalls } = generation({ prior: { id: "prior-run", input_fingerprint: fingerprint, status: "succeeded" }, recordRuns: true, rpcResults: [{ data: { run_id: "00000000-0000-4000-8000-0000000000b2", already_generated: true }, error: null }] })
   const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: fingerprint })
-  assert.equal(result.runId, "prior-run")
-  assert.equal(writes.length, 0)
+  assert.equal(rpcCalls.length, 1)
+  assert.equal(result.runId, "00000000-0000-4000-8000-0000000000b2")
 })
 
 test("manual exception pricing rejects a vendor outside the organization before generation", async () => {
@@ -108,25 +101,26 @@ test("an interactive commit without a preview fingerprint is refused before anyt
 })
 
 test("the starts release commits on its own fingerprint and is authorized for the release org", async () => {
-  const fingerprint = math.createPoGenerationFingerprint({ asOfDate: new Date().toISOString().slice(0, 10), lines: [] })
-  const { service, writes, authorizations } = generation({ prior: { id: "prior-run", input_fingerprint: fingerprint, status: "succeeded" } })
-  const result = await service.generatePurchaseOrdersForStartsRelease({ projectId, orgId: "org-a" })
-  assert.equal(result.runId, "prior-run")
-  assert.equal(writes.length, 0)
+  const { service, authorizations, rpcCalls } = generation({ recordRuns: true, rpcResults: [{ data: { run_id: "00000000-0000-4000-8000-0000000000b3" }, error: null }] })
+  await service.generatePurchaseOrdersForStartsRelease({ projectId, orgId: "org-a" })
   assert.equal(authorizations[0].permission, "po.generate")
+  assert.equal(rpcCalls[0].name, "run_po_generation_commit")
 })
 
 test("a preview lists the priced lines, the lines it could not price, and the agreements about to lapse", async () => {
   const line = (id, costCodeId, quantity) => ({ id, cost_code_id: costCodeId, cost_type: null, description: `Line ${id}`, quantity, uom: "sf", elevation_id: null })
   const agreement = { id: agreementId, company_id: ownVendorId, cost_code_id: "framing", cost_type: null, division_id: null, community_id: null, house_plan_id: null, house_plan_version_id: null, pricing_kind: "unit", uom: "sf", unit_cost_cents: 250, lump_sum_cents: null, effective_from: "2026-01-01", effective_to: "2026-10-20", status: "active" }
-  const { service, writes } = generation({
+  const { service, writes, trail } = generation({
     takeoffs: [line("priced", "framing", 100), line("unpriced", "roofing", 40)],
     candidates: [agreement],
     companies: [{ id: ownVendorId, name: "Framing Co" }],
     recordRuns: true,
+    rpcResults: [{ data: { changes: 0, preserved_changed: [{ source_key: "takeoff_line:priced", commitment_id: "00000000-0000-4000-8000-0000000000aa", contract_number: "PO-CYP-1-01", description: "Line priced", was_company_id: ownVendorId, now_company_id: ownVendorId, was_cents: 20_000, now_cents: 25_000 }], preserved_orphaned: [] }, error: null }],
   })
 
   const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
+  assert.deepEqual(result.preservedChanged.map((change) => [change.contractNumber, change.wasCents, change.nowCents]), [["PO-CYP-1-01", 20_000, 25_000]])
+  assert.deepEqual(trail, [])
 
   assert.equal(result.mode, "dry_run")
   assert.equal(result.purchaseOrders.length, 1)
@@ -156,6 +150,7 @@ test("a manual price that is negative, fractional or for a malformed vendor is r
 const framing = { id: "line-1", cost_code_id: "framing", cost_type: null, description: "Frame the shell", quantity: 100, uom: "sf", elevation_id: null }
 const framingAgreement = { id: agreementId, company_id: ownVendorId, cost_code_id: "framing", cost_type: null, division_id: null, community_id: null, house_plan_id: null, house_plan_version_id: null, pricing_kind: "unit", uom: "sf", unit_cost_cents: 250, lump_sum_cents: null, effective_from: "2026-01-01", effective_to: null, status: "active" }
 const pricedHome = (extra = {}) => generation({ takeoffs: [framing], candidates: [framingAgreement], companies: [{ id: ownVendorId, name: "Framing Co" }], recordRuns: true, ...extra })
+const report = { data: { changes: 0 }, error: null }
 const committed = (data = {}) => ({ data: { run_id: "00000000-0000-4000-8000-0000000000b1", budget_line_count: 1, ...data }, error: null })
 
 test("a zero price is allowed only with a reason of at least ten characters", async () => {
@@ -164,12 +159,12 @@ test("a zero price is allowed only with a reason of at least ten characters", as
 })
 
 test("a commit hands the database the whole desired line set and the run it was prepared against", async () => {
-  const { service, rpcCalls } = pricedHome({ prior: { id: "prior-run", input_fingerprint: "a".repeat(64), status: "succeeded" }, rpcResults: [committed({ preserved_changed: [{ source_key: "takeoff_line:line-1", commitment_id: "00000000-0000-4000-8000-0000000000aa", contract_number: "PO-CYP-1-01", description: "Frame the shell", was_company_id: ownVendorId, now_company_id: ownVendorId, was_cents: 20_000, now_cents: 25_000 }] })] })
+  const { service, rpcCalls } = pricedHome({ prior: { id: "prior-run", input_fingerprint: "a".repeat(64), status: "succeeded" }, rpcResults: [report, committed({ preserved_changed: [{ source_key: "takeoff_line:line-1", commitment_id: "00000000-0000-4000-8000-0000000000aa", contract_number: "PO-CYP-1-01", description: "Frame the shell", was_company_id: ownVendorId, now_company_id: ownVendorId, was_cents: 20_000, now_cents: 25_000 }] })] })
   const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
   const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: preview.inputFingerprint })
 
-  assert.equal(rpcCalls.length, 1)
-  const payload = rpcCalls[0].args.p_payload
+  assert.equal(rpcCalls.length, 2)
+  const payload = rpcCalls[1].args.p_payload
   assert.equal(payload.prior_run_id, "prior-run")
   assert.equal(payload.scope_source_keys, null)
   assert.deepEqual(payload.lines.map((line) => [line.source_kind, line.source_id, line.company_id, line.total_cents]), [["takeoff_line", "line-1", ownVendorId, 25_000]])
@@ -195,7 +190,7 @@ test("a resolution that lost the race is refused plainly and its run is not reco
 })
 
 test("an identical commit that lost the race returns the winner's run without a second trail", async () => {
-  const { service } = pricedHome({ rpcResults: [committed({ run_id: "00000000-0000-4000-8000-0000000000b2", already_generated: true })] })
+  const { service } = pricedHome({ rpcResults: [report, committed({ run_id: "00000000-0000-4000-8000-0000000000b2", already_generated: true })] })
   const preview = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
   const result = await service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: preview.inputFingerprint })
   assert.equal(result.runId, "00000000-0000-4000-8000-0000000000b2")
@@ -213,8 +208,32 @@ test("the starts release reads the house again when a resolution lands first, an
   assert.equal(hopeless.rpcCalls.length, 3)
 
   // An interactive commit is never retried behind the buyer's back.
-  const interactive = pricedHome({ rpcResults: [stale] })
+  const interactive = pricedHome({ rpcResults: [report, stale] })
   const preview = await interactive.service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
   await assert.rejects(interactive.service.generatePurchaseOrders({ projectId, mode: "commit", asOfDate, expectedFingerprint: preview.inputFingerprint }), /preview again/)
-  assert.equal(interactive.rpcCalls.length, 1)
+  assert.equal(interactive.rpcCalls.length, 2)
+})
+
+test("a price whose total cannot be stored is a message to the buyer, before any run is written", async () => {
+  const { service, writes } = pricedHome({ candidates: [{ ...framingAgreement, unit_cost_cents: 30_000_000 }] })
+  await assert.rejects(service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate }), /totals more than the system can record/)
+  assert.equal(writes.length, 0)
+})
+
+test("a manual price's reason stays on the resolution and never reaches the vendor's order scope", async () => {
+  const { service, rpcCalls } = pricedHome({ exception: { id: exceptionId, project_id: projectId, status: "open", source_kind: "takeoff_line", source_ref: { takeoff_line_id: "line-1" } }, companies: [{ id: vendorId, name: "Owner supplied" }], rpcResults: [committed()] })
+  await service.resolvePoException(exceptionId, { kind: "manual", company_id: vendorId, unit_cost_cents: 0, note: "Owner supplied, no charge to the order" })
+  assert.equal(rpcCalls[0].args.p_payload.lines[0].scope_text, null)
+  assert.equal(rpcCalls[0].args.p_payload.resolve_exception.resolution.note, "Owner supplied, no charge to the order")
+})
+
+test("a dismissed exception is not raised again by the next preview for the same reason", async () => {
+  const { service, writeKinds } = generation({
+    takeoffs: [{ id: "line-x", cost_code_id: "roofing", cost_type: null, description: "Roofing", quantity: 10, uom: "sf", elevation_id: null }],
+    exception: { id: exceptionId, project_id: projectId, status: "dismissed", reason: "no_agreement", source_kind: "takeoff_line", source_ref: { takeoff_line_id: "line-x" } },
+    recordRuns: true, rpcResults: [{ data: { changes: 0 }, error: null }],
+  })
+  const result = await service.generatePurchaseOrders({ projectId, mode: "dry_run", asOfDate })
+  assert.equal(result.exceptions.length, 1)
+  assert.ok(!writeKinds.includes("po_generation_exceptions:insert"))
 })

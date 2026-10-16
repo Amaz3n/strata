@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
       },
     })
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to export variance analysis" }, { status: 400 })
+    const forbidden = typeof error === "object" && error !== null && Reflect.get(error, "code") === "AUTH_FORBIDDEN"
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to export variance analysis" }, { status: forbidden ? 403 : 400 })
   }
 }

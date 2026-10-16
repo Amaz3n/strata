@@ -155,9 +155,9 @@ test("closing a line short opens one shortage and a receipt cannot be edited, on
 
   await assert.rejects(f.db.query("update po_receipts set note = 'edited' where id = $1", [delivered.id]), /cannot be changed/)
   await assert.rejects(f.db.query("update po_receipt_lines set quantity_received = 99"), /cannot be changed/)
-  await rpc(f.db, "void_po_receipt", { p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_receipt_id: delivered.id, p_reason: "Wrong PO" })
+  await rpc(f.db, "void_po_receipt", { p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_receipt_id: delivered.id, p_reason: "Wrong PO", p_any_receipt: true })
   await assert.rejects(
-    rpc(f.db, "void_po_receipt", { p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_receipt_id: delivered.id, p_reason: "Again" }),
+    rpc(f.db, "void_po_receipt", { p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_receipt_id: delivered.id, p_reason: "Again", p_any_receipt: true }),
     /already voided/,
   )
   assert.equal(Number((await rowFor(f, f.studs)).received), 0)
@@ -214,7 +214,7 @@ test("a variance order links to its own purchase order and nowhere else", async 
     p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_shortage_id: shortageId, p_resolution: "vpo",
     p_backorder_date: null, p_note: null, p_vpo_id: vpoId,
   })
-  await assert.rejects(resolve(foreign.id), /not on this purchase order/)
+  await assert.rejects(resolve(foreign.id), /not live on this purchase order/)
   await resolve(own.id)
   const { rows: [shortage] } = await f.db.query("select status, vpo_id from po_shortages where id = $1", [shortageId])
   assert.deepEqual(shortage, { status: "vpo", vpo_id: own.id })
@@ -258,4 +258,50 @@ test("a back-ordered line reads by its promised date, not as short", async (t) =
   assert.deepEqual([waiting.state, waiting.shortage_status], ["partial", "backordered"])
   await f.db.query("update po_shortages set backorder_date = $2 where id = $1", [closed.id, day(-1)])
   assert.equal((await rowFor(f, f.studs)).state, "late")
+})
+
+test("quantity an approved variance order added counts as ordered; a credit or an unapproved one does not", async (t) => {
+  const f = await fixture(t)
+  const vpo = async (status, quantity, unitCost) => {
+    const order = await insert(f.db, "commitment_change_orders", { org_id: f.orgId, project_id: f.project.id, commitment_id: f.po.id, title: "More studs", total_cents: 0, status })
+    await insert(f.db, "commitment_change_order_lines", {
+      org_id: f.orgId, commitment_change_order_id: order.id, commitment_line_id: f.studs.id, description: "Studs", quantity, unit_cost_cents: unitCost, amount_cents: 0,
+    })
+  }
+  await vpo("approved", 20, 500)
+  await vpo("draft", 50, 500)
+  await vpo("approved", 30, -500)
+  await assert.rejects(receive(f, [{ line: f.studs, quantity: 121 }]), /over the 120 ordered; say why/)
+  await receive(f, [{ line: f.studs, quantity: 120 }])
+  const row = await rowFor(f, f.studs)
+  assert.deepEqual([Number(row.ordered), Number(row.outstanding), row.state], [120, 0, "received"])
+})
+
+test("the receiver voids their own ticket the same day; anyone else needs purchasing", async (t) => {
+  const f = await fixture(t)
+  const mine = await receive(f, [{ line: f.studs, quantity: 10 }])
+  const void_ = (actor, receipt, any = false) => rpc(f.db, "void_po_receipt", {
+    p_org_id: f.orgId, p_actor_id: actor.userId, p_receipt_id: receipt, p_reason: "Wrong PO", p_any_receipt: any,
+  })
+  await assert.rejects(void_(f.owner, mine.id), /Only the person who received it, the same day, or purchasing/)
+  await void_(f.superintendent, mine.id)
+  const old = await receive(f, [{ line: f.studs, quantity: 5 }])
+  await f.db.exec("set session_replication_role = replica")
+  await f.db.query("update po_receipts set received_at = now() - interval '2 days' where id = $1", [old.id])
+  await f.db.exec("set session_replication_role = origin")
+  await assert.rejects(void_(f.superintendent, old.id), /same day/)
+  await void_(f.buyer, old.id, true)
+  assert.equal(Number((await rowFor(f, f.studs)).received), 0)
+})
+
+test("a shortage links only a live variance order", async (t) => {
+  const f = await fixture(t)
+  await f.db.query("update commitment_lines set needed_by = $2 where id = $1", [f.studs.id, day(-3)])
+  const [{ id: shortageId }] = await rpc(f.db, "sweep_late_po_deliveries", { p_today: day(0), p_limit: 500 })
+  const voided = await insert(f.db, "commitment_change_orders", { org_id: f.orgId, project_id: f.project.id, commitment_id: f.po.id, title: "Replacement", total_cents: 0, status: "voided" })
+  await assert.rejects(rpc(f.db, "resolve_po_shortage", {
+    p_org_id: f.orgId, p_actor_id: f.buyer.userId, p_shortage_id: shortageId, p_resolution: "vpo", p_backorder_date: null, p_note: null, p_vpo_id: voided.id,
+  }), /not live/)
+  const { rows: [shortage] } = await f.db.query("select status from po_shortages where id = $1", [shortageId])
+  assert.equal(shortage.status, "open")
 })

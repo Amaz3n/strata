@@ -31,12 +31,17 @@ export interface TradeNoticeDraft {
  * notice is about one house, else their vendor-account token. A paused, expired
  * or revoked token is not a link; with none, the email carries no button.
  */
-export async function resolveTradePortalLink(supabase: SupabaseClient, orgId: string, companyId: string, projectId: string | null) {
-  const { data, error } = await supabase.from("portal_access_tokens").select("token_encrypted,project_id,created_at")
+export async function resolveTradePortalLink(
+  supabase: SupabaseClient, orgId: string, companyId: string, projectId: string | null,
+  /** Portal permissions the link must hold for the page the email opens; a link without them would land on a 404. */
+  requiredPermissions: readonly string[] = [],
+) {
+  let query = supabase.from("portal_access_tokens").select("token_encrypted,project_id,created_at")
     .eq("org_id", orgId).eq("company_id", companyId).eq("portal_type", "sub")
     .is("revoked_at", null).is("paused_at", null)
     .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
-    .order("created_at", { ascending: false }).limit(50)
+  for (const permission of requiredPermissions) query = query.eq(permission, true)
+  const { data, error } = await query.order("created_at", { ascending: false }).limit(50)
   if (error) throw new Error(`Failed to load trade portal access: ${error.message}`)
   // Only the encrypted copy of a token can be turned back into a link; a token minted before
   // encryption has none, and is skipped rather than guessed at.

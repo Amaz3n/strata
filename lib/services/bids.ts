@@ -1021,7 +1021,7 @@ async function ensureProspectInOrg(prospectId: string, orgId: string, supabase: 
 async function ensureBidPackageInOrg(bidPackageId: string, orgId: string, supabase: any) {
   const { data: bidPackage, error } = await supabase
     .from("bid_packages")
-    .select("id, project_id, prospect_id, community_id, house_plan_id, cost_code_id, budget_line_id")
+    .select("id, project_id, prospect_id, community_id, house_plan_id, award_target, cost_code_id, budget_line_id")
     .eq("org_id", orgId)
     .eq("id", bidPackageId)
     .maybeSingle()
@@ -1749,7 +1749,7 @@ export async function updateBidPackage({
 
   const { data: existing, error: existingError } = await supabase
     .from("bid_packages")
-    .select("id, org_id, project_id, prospect_id, community_id, house_plan_id, award_target, status, due_at, title, cost_code_id, budget_line_id")
+    .select("id, org_id, project_id, prospect_id, community_id, house_plan_id, award_target, status, due_at, title, cost_code_id, budget_line_id, scope, instructions, mode")
     .eq("org_id", resolvedOrgId)
     .eq("id", bidPackageId)
     .maybeSingle()
@@ -1761,7 +1761,8 @@ export async function updateBidPackage({
   await assertProductionBidAccess(existing, { supabase, orgId: resolvedOrgId, userId })
   await assertProductionBidAccess({ community_id: parsed.community_id === undefined ? existing.community_id : parsed.community_id, house_plan_id: parsed.house_plan_id === undefined ? existing.house_plan_id : parsed.house_plan_id }, { supabase, orgId: resolvedOrgId, userId })
 
-  if (existing.status !== "draft" && (parsed.scope !== undefined || parsed.instructions !== undefined || parsed.mode !== undefined)) {
+  const changed = (next: string | null | undefined, current: string | null) => next !== undefined && (next ?? "") !== (current ?? "")
+  if (existing.status !== "draft" && (changed(parsed.scope, existing.scope) || changed(parsed.instructions, existing.instructions) || changed(parsed.mode, existing.mode))) {
     throw new Error("Start a scope revision before changing an issued package's scope or instructions.")
   }
   const changesParent = (parsed.community_id !== undefined && parsed.community_id !== existing.community_id)
@@ -1797,11 +1798,11 @@ export async function updateBidPackage({
   if (resolvedUpdateCostCodeId !== undefined) updates.cost_code_id = resolvedUpdateCostCodeId
   if (parsed.budget_line_id !== undefined) updates.budget_line_id = parsed.budget_line_id
   if (parsed.trade !== undefined) updates.trade = parsed.trade
-  if (parsed.scope !== undefined) updates.scope = parsed.scope
-  if (parsed.instructions !== undefined) updates.instructions = parsed.instructions
+  if (changed(parsed.scope, existing.scope)) updates.scope = parsed.scope
+  if (changed(parsed.instructions, existing.instructions)) updates.instructions = parsed.instructions
   if (parsed.due_at !== undefined) updates.due_at = parsed.due_at
   if (parsed.due_tz !== undefined) updates.due_tz = parsed.due_tz
-  if (parsed.mode !== undefined) updates.mode = parsed.mode
+  if (changed(parsed.mode, existing.mode)) updates.mode = parsed.mode
   if (parsed.bond_required !== undefined) updates.bond_required = parsed.bond_required
   if (parsed.status !== undefined) {
     assertBidPackageTransition(existing.status as BidPackageStatus, parsed.status)
@@ -3367,7 +3368,8 @@ export async function updateBidSubmissionItemLeveling({
 export async function previewRescindImpact({ bidPackageId, orgId }: { bidPackageId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
-  await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
+  const pkg = await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
+  if (pkg.award_target === "price_agreement") await requirePermission("price_book.write", { supabase, orgId: resolvedOrgId, userId })
   const { data: award, error: awardError } = await supabase.from("bid_awards").select("id")
     .eq("org_id", resolvedOrgId).eq("bid_package_id", bidPackageId).is("rescinded_at", null).maybeSingle()
   if (awardError) throw new Error(`Failed to load the award: ${awardError.message}`)
@@ -3407,7 +3409,8 @@ export async function rescindBidAward({
   const parsed = rescindBidAwardInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
-  await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
+  const pkg = await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
+  if (pkg.award_target === "price_agreement") await requirePermission("price_book.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: award, error: awardError } = await supabase
     .from("bid_awards")
@@ -3756,7 +3759,7 @@ export async function getBidPackageAward(bidPackageId: string, orgId?: string): 
 
 /** Tell the winner they won and everyone else who bid that they were not selected. A failure to queue a notice never undoes the award. */
 async function queueAwardNotices({ supabase, orgId, bidPackage, winnerInviteId, awardId }: {
-  supabase: any
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
   bidPackage: { id: string; title: string; project_id: string | null; prospect_id: string | null; community_id: string | null; house_plan_id: string | null }
   winnerInviteId: string
@@ -3802,6 +3805,10 @@ async function queueAwardNotices({ supabase, orgId, bidPackage, winnerInviteId, 
     }
   } catch (noticeError) {
     console.error("Failed to queue bid award notices", noticeError)
+    await recordEvent({
+      orgId, eventType: "bid_award.notices_failed", entityType: "bid_package", entityId: bidPackage.id,
+      payload: { award_id: awardId, error: noticeError instanceof Error ? noticeError.message : "unknown" },
+    })
   }
 }
 
@@ -3876,6 +3883,7 @@ export async function awardBidSubmission({
   if (warnings.length && !parsed.readiness_exception?.trim()) throw new Error("Resolve pre-award warnings or record an authorized exception reason.")
 
   if (bidPackage.award_target === "price_agreement") {
+    await requirePermission("price_book.write", { supabase, orgId: resolvedOrgId, userId })
     await assertProductionBidAccess(bidPackage, { supabase, orgId: resolvedOrgId, userId })
     const service = createServiceSupabaseClient()
     const { data: result, error: awardError } = await service.rpc("run_bid_award_price_agreements", {
@@ -4038,35 +4046,37 @@ export async function previewPriceBookAward({ input, orgId }: { input: unknown; 
     : { data: null }
   if (!bidPackage) throw new Error("Bid package not found")
   if (bidPackage.award_target !== "price_agreement") throw new Error("Only a price-book package replaces standing prices")
+  await requirePermission("price_book.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: items, error: itemsError } = await supabase.from("bid_submission_items")
     .select("amount_cents, unit_rate_cents, quantity, description, scope:bid_scope_items!inner(id, cost_code_id, item_type, unit, position)")
     .eq("org_id", resolvedOrgId).eq("bid_submission_id", parsed.bid_submission_id).eq("response", "priced").not("amount_cents", "is", null)
   if (itemsError) throw new Error(`Failed to load the bid's priced lines: ${itemsError.message}`)
 
-  const lines = (items ?? []).flatMap((item: any) => {
+  type PreviewLine = { position: number; costCodeId: string; costCode: string | null; description: string; price: PriceLine }
+  const lines = (items ?? []).flatMap((item): PreviewLine[] => {
     const scope = Array.isArray(item.scope) ? item.scope[0] : item.scope
     if (!scope?.cost_code_id) return []
     if (scope.item_type === "alternate" && !parsed.accepted_alternate_ids.includes(scope.id)) return []
     const price: PriceLine = scope.unit == null
       ? { kind: "lump_sum", uom: null, cents: Number(item.amount_cents) }
       : { kind: "unit", uom: scope.unit, cents: Number(item.unit_rate_cents ?? Math.round(Number(item.amount_cents) / Math.max(Number(item.quantity ?? 1), 1))) }
-    return [{ position: Number(scope.position ?? 0), costCodeId: String(scope.cost_code_id), costCode: null as string | null, description: String(item.description), price }]
-  }).sort((a: { position: number }, b: { position: number }) => a.position - b.position)
+    return [{ position: Number(scope.position ?? 0), costCodeId: String(scope.cost_code_id), costCode: null, description: String(item.description), price }]
+  }).sort((a, b) => a.position - b.position)
   if (lines.length === 0) return []
 
   const { data: codes, error: codesError } = await supabase.from("cost_codes").select("id, code")
-    .eq("org_id", resolvedOrgId).in("id", Array.from(new Set(lines.map((line: { costCodeId: string }) => line.costCodeId))))
+    .eq("org_id", resolvedOrgId).in("id", Array.from(new Set(lines.map((line) => line.costCodeId))))
   if (codesError) throw new Error(`Failed to load the cost codes: ${codesError.message}`)
-  const codeById = new Map((codes ?? []).map((row: { id: string; code: string }) => [row.id, row.code]))
+  const codeById = new Map((codes ?? []).map((row) => [row.id, row.code]))
   for (const line of lines) line.costCode = codeById.get(line.costCodeId) ?? null
 
   const { data: standing, error: standingError } = await supabase.from("vendor_price_agreements")
     .select("*, company:companies(name)")
-    .eq("org_id", resolvedOrgId).eq("status", "active").in("cost_code_id", Array.from(new Set(lines.map((line: { costCodeId: string }) => line.costCodeId))))
+    .eq("org_id", resolvedOrgId).eq("status", "active").in("cost_code_id", Array.from(new Set(lines.map((line) => line.costCodeId))))
   if (standingError) throw new Error(`Failed to load the standing prices: ${standingError.message}`)
 
-  return lines.map((line: { costCodeId: string; costCode: string | null; description: string; price: PriceLine }) => ({
+  return lines.map((line) => ({
     costCodeId: line.costCodeId,
     costCode: line.costCode,
     description: line.description,

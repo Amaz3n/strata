@@ -19,7 +19,12 @@ export function DeliveryAdvisoryBannerSkeleton() {
  * or nothing is at risk.
  */
 export async function DeliveryAdvisoryBanner({ projectId }: { projectId: string }) {
-  const advisories = await listHomeDeliveryAdvisories(projectId)
+  const advisories = await listHomeDeliveryAdvisories(projectId).catch(() => "failed" as const)
+  if (advisories === "failed") {
+    return <section role="alert" className="border-b bg-warning/5 px-4 py-2 text-xs text-muted-foreground">
+      Delivery advisories could not be loaded. The schedule is unaffected; reload to check late deliveries.
+    </section>
+  }
   if (!advisories?.length) return null
   const shown = advisories.slice(0, SHOWN)
   return <section aria-label="Deliveries that put scheduled work at risk" className="border-b bg-warning/5 px-4 py-2">

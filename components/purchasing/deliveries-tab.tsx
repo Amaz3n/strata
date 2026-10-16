@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn } from "@/lib/utils"
 import type { DeliveryLine } from "@/lib/services/po-receipts"
 
-export interface DeliveryFilter { value: string; label: string; href: string; active: boolean }
+interface DeliveryFilter { value: string; label: string; href: string; active: boolean }
 
 /**
  * Lines still owed across the homes in scope, soonest expected first. The desk

@@ -905,6 +905,16 @@ export async function submitBidFromPortal({
     })
   }
 
+  // Only files this invite uploaded can hang off its submission; checked before anything is written.
+  const attachments: string[] = []
+  if (input.file_ids && input.file_ids.length > 0) {
+    const { data: ownFiles, error: filesError } = await supabase.from("files").select("id")
+      .eq("org_id", access.org_id).eq("metadata->>bid_invite_id", access.bid_invite_id).in("id", input.file_ids)
+    if (filesError) throw new Error(`Failed to verify the bid's attachments: ${filesError.message}`)
+    if ((ownFiles ?? []).length !== new Set(input.file_ids).size) throw new Error("An attachment does not belong to this bid")
+    attachments.push(...(ownFiles ?? []).map((file) => file.id))
+  }
+
   const { data: rpcResult, error: rpcError } = await supabase.rpc("create_bid_submission_version", {
     p_org_id: access.org_id,
     p_bid_invite_id: access.bid_invite_id,
@@ -938,14 +948,11 @@ export async function submitBidFromPortal({
   const now = new Date().toISOString()
 
   // Link uploaded files to the submission
-  if (input.file_ids && input.file_ids.length > 0) {
-    const fileLinks = input.file_ids.map((fileId) => ({
-      org_id: access.org_id,
-      file_id: fileId,
-      entity_type: "bid_submission",
-      entity_id: createdId,
-    }))
-    await supabase.from("file_links").insert(fileLinks)
+  if (attachments.length > 0) {
+    const { error: linkError } = await supabase.from("file_links").insert(
+      attachments.map((fileId) => ({ org_id: access.org_id, file_id: fileId, entity_type: "bid_submission", entity_id: createdId })),
+    )
+    if (linkError) throw new Error(`Failed to attach files to the bid: ${linkError.message}`)
   }
 
   const submission: BidPortalSubmission = {

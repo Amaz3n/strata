@@ -165,6 +165,8 @@ export function BidPackageWorkbench({
   const [rescindOpen, setRescindOpen] = useState(false)
   const [rescindReason, setRescindReason] = useState("")
   const [rescindImpact, setRescindImpact] = useState<{ agreementCount: number; restorableCount: number; affectedPoCount: number } | null>(null)
+  const [rescindImpactError, setRescindImpactError] = useState<string | null>(null)
+  const [rescindImpactTry, setRescindImpactTry] = useState(0)
   const [revisionOpen, setRevisionOpen] = useState(false)
   const [revisionReason, setRevisionReason] = useState("")
   const [mounted, setMounted] = useState(false)
@@ -430,13 +432,16 @@ export function BidPackageWorkbench({
     if (!rescindOpen || !isPriceBook) return
     let active = true
     previewRescindImpactAction(pkg.id).then((result) => {
-      if (active && result.success) setRescindImpact(result.data)
+      if (!active) return
+      if (result.success) setRescindImpact(result.data)
+      else setRescindImpactError(result.error)
     })
     return () => {
       active = false
       setRescindImpact(null)
+      setRescindImpactError(null)
     }
-  }, [rescindOpen, isPriceBook, pkg.id])
+  }, [rescindOpen, isPriceBook, pkg.id, rescindImpactTry])
 
   function rescind() {
     if (rescindReason.trim().length < 3) return
@@ -799,6 +804,12 @@ export function BidPackageWorkbench({
                 : `Cancels the subcontract${award?.commitment?.contract_number ? ` ${award.commitment.contract_number}` : ""} and puts the package back into comparison. The trade is not notified automatically.`}
             </DialogDescription>
           </DialogHeader>
+          {isPriceBook && rescindImpactError ? (
+            <p role="alert" className="flex items-center justify-between gap-3 border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              Could not read what this award set: {rescindImpactError}
+              <Button size="sm" variant="outline" onClick={() => setRescindImpactTry((n) => n + 1)}>Retry</Button>
+            </p>
+          ) : null}
           {isPriceBook && rescindImpact ? (
             <dl className="grid grid-cols-3 gap-px border bg-border text-sm">
               {[
@@ -819,7 +830,7 @@ export function BidPackageWorkbench({
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRescindOpen(false)}>Keep the award</Button>
-            <Button variant="destructive" onClick={rescind} disabled={isPending || rescindReason.trim().length < 3}>Rescind</Button>
+            <Button variant="destructive" onClick={rescind} disabled={isPending || rescindReason.trim().length < 3 || (isPriceBook && !rescindImpact)}>Rescind</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

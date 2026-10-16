@@ -92,7 +92,7 @@ test("an approved purchase order is locked against a member's data-API writes; a
 
   // What an issued order may still carry: metadata and a status move among issued states.
   await asUser(f, f.superintendent.userId, (tx) => tx.query("update commitments set metadata = metadata || '{\"note\":1}'::jsonb where id = $1", [po.id]))
-  await asUser(f, f.superintendent.userId, (tx) => tx.query("update commitments set status = 'complete' where id = $1", [po.id]))
+  await f.db.query("update commitments set status = 'complete' where id = $1", [po.id])
   await f.db.query("update commitments set status = 'approved' where id = $1", [po.id])
 
   // The service path (service role, or a definer function) returns it to draft.
@@ -287,4 +287,63 @@ test("the queue derives each order's state from its current version, counts in S
   assert.equal(assigned.total, 0)
   const own = await queue(f, { p_member_user_id: f.superintendent.userId })
   assert.equal(own.total, 6)
+})
+
+test("a member cannot issue an order: insert-as-approved, draft to approved and approved to complete are refused", async (t) => {
+  const f = await fixture(t)
+  const { po } = await purchaseOrder(f)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query(
+    "insert into commitments (org_id, project_id, company_id, commitment_type, title, status, total_cents) values ($1, $2, $3, 'purchase_order', 'Forged', 'approved', 99999999)",
+    [f.orgId, f.home.id, f.vendor.id],
+  )), /issued by approving/)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query("update commitments set status = 'approved', total_cents = 77700000 where id = $1", [po.id])), /issued by approving/)
+  assert.deepEqual(await versions(f, po.id), [])
+  await approve(f, po.id)
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query("update commitments set status = 'complete' where id = $1", [po.id])), /issued by approving/)
+  assert.equal((await f.db.query("select count(*)::int n from commitments where title = 'Forged'")).rows[0].n, 0)
+})
+
+test("provenance, needed_by and sort_order of an approved order are locked to members; other metadata is not", async (t) => {
+  const f = await fixture(t)
+  const { po, line } = await purchaseOrder(f, { metadata: { source: "po_generation", note: 1 } })
+  await f.db.query("update commitment_lines set metadata = '{\"source\":\"po_generation\",\"source_ref\":\"a\"}' where id = $1", [line.id])
+  await approve(f, po.id)
+  for (const sql of [
+    ["update commitments set metadata = metadata - 'source' where id = $1", po.id],
+    ["update commitments set metadata = metadata || '{\"created_by_user_id\":\"x\"}' where id = $1", po.id],
+    ["update commitment_lines set metadata = metadata - 'source_ref' where id = $1", line.id],
+    ["update commitment_lines set needed_by = '2030-01-01' where id = $1", line.id],
+    ["update commitment_lines set sort_order = 5 where id = $1", line.id],
+  ]) await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query(sql[0], [sql[1]])), /locked/, sql[0])
+  await asUser(f, f.superintendent.userId, (tx) => tx.query("update commitments set metadata = metadata || '{\"note\":2}' where id = $1", [po.id]))
+  const [v1] = await versions(f, po.id)
+  assert.equal(await f.db.query("select public.po_terms_hash($1, $2) h", [f.orgId, po.id]).then((r) => r.rows[0].h), v1.terms_hash)
+})
+
+test("issue history survives: a member cannot delete an order that has it, and receipts block un-issuing", async (t) => {
+  const f = await fixture(t)
+  const { po } = await purchaseOrder(f)
+  await approve(f, po.id)
+  await f.db.query("update commitments set status = 'draft' where id = $1", [po.id])
+  await assert.rejects(asUser(f, f.superintendent.userId, (tx) => tx.query("delete from commitments where id = $1", [po.id])), /keeps its history/)
+  assert.equal((await versions(f, po.id)).length, 1)
+  const fresh = await purchaseOrder(f, { title: "Never issued" })
+  await asUser(f, f.superintendent.userId, (tx) => tx.query("delete from commitments where id = $1", [fresh.po.id]))
+
+  await approve(f, po.id)
+  await f.db.query("insert into po_receipts (org_id, project_id, commitment_id, idempotency_key) values ($1, $2, $3, 'k1')", [f.orgId, f.home.id, po.id])
+  await assert.rejects(f.db.query("update commitments set status = 'draft' where id = $1", [po.id]), /deliveries received/)
+  await assert.rejects(f.db.query("update commitments set status = 'canceled' where id = $1", [po.id]), /deliveries received/)
+  await assert.rejects(f.db.query("delete from commitments where id = $1", [po.id]), /foreign key|violates/)
+  await f.db.query("update po_receipts set status = 'void', voided_at = now(), voided_by = $2, void_reason = 'mistyped' where commitment_id = $1", [po.id, f.owner.userId])
+  await f.db.query("update commitments set status = 'draft' where id = $1", [po.id])
+})
+
+test("an open-WIP imported order is a backfill version: no email job, and the vendor is not asked", async (t) => {
+  const f = await fixture(t)
+  const { po } = await purchaseOrder(f, { metadata: { imported_open_wip: true } })
+  await approve(f, po.id)
+  assert.deepEqual((await versions(f, po.id)).map((v) => v.reason), ["backfill"])
+  assert.equal((await f.db.query("select count(*)::int n from outbox where job_type = 'po_issue_notice'")).rows[0].n, 0)
+  assert.equal((await queue(f)).rows[0].state, "unrequested")
 })

@@ -73,9 +73,9 @@ describe("the money step needs a second person", () => {
       vendor_bills: [],
     },
     rpc: {
-      approve_po_completion: () => {
-        rpcCalls.push(true)
-        return { data: { completion_id: COMPLETION, vendor_bill_id: BILL, amount_cents: 1_000 }, error: null }
+      approve_po_completion: (args) => {
+        rpcCalls.push(args)
+        return { data: { completion_id: COMPLETION, vendor_bill_id: BILL, amount_cents: 1_000, waived: Boolean(args.p_waiver_reason) }, error: null }
       },
     },
   })
@@ -99,26 +99,30 @@ describe("the money step needs a second person", () => {
     assert.equal(calls.length, 1)
   })
 
-  test("an inspection that did not pass cannot back an approval", async () => {
+  test("the inspection or waiver travels into the approval itself, which alone writes it", async () => {
     const calls = []
     const service = setup({ verified_by: OTHER }, calls)
-    await assert.rejects(service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionId: id(11) })), /completed, passed inspection/)
-    assert.equal(calls.length, 0)
-  })
-
-  test("a passed inspection is stored with the completion before the approval runs", async () => {
-    const service = setup({ verified_by: OTHER })
     await service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionId: INSPECTION }))
-    assert.equal(service.db.po_completions[0].inspection_id, INSPECTION)
+    assert.equal(calls[0].p_inspection_id, INSPECTION)
+    assert.equal(calls[0].p_waiver_reason, null)
+    assert.equal(service.db.po_completions[0].inspection_id ?? null, null, "the service writes no evidence of its own")
+    assert.equal(service.audits.some((entry) => entry.critical === true), false)
   })
 
-  test("a waiver is recorded with who and why, and is audited as critical", async () => {
-    const service = setup({ verified_by: OTHER })
+  test("a waiver is a reason of real length, passed to the approval, and audited as critical only when the approval recorded it", async () => {
+    const calls = []
+    const service = setup({ verified_by: OTHER }, calls)
     await assert.rejects(service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionWaiverReason: "no" })))
+    assert.equal(calls.length, 0)
     await service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionWaiverReason: "Punch-list trade, nothing to inspect" }))
-    const [row] = service.db.po_completions
-    assert.equal(row.inspection_waived_reason, "Punch-list trade, nothing to inspect")
-    assert.equal(row.inspection_waived_by, ACTOR)
+    assert.equal(calls[0].p_waiver_reason, "Punch-list trade, nothing to inspect")
     assert.ok(service.audits.some((entry) => entry.critical === true && entry.after?.inspection_waived_reason === "Punch-list trade, nothing to inspect"))
+  })
+
+  test("a billed completion refuses its reporter too: a repeat call is not an approval path", async () => {
+    const calls = []
+    const service = setup({ status: "billed", vendor_bill_id: BILL, reported_by_user_id: ACTOR, verified_by: OTHER }, calls)
+    await assert.rejects(service.run(() => approvePoCompletion(COMPLETION, undefined, { inspectionWaiverReason: "Rewrite the history" })), /someone else has to approve the payment/)
+    assert.equal(calls.length, 0)
   })
 })

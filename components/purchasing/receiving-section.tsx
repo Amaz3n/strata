@@ -98,7 +98,7 @@ export function ReceivingSection({ commitmentId }: { commitmentId: string }) {
       {data.receipts.map((receipt) => <div key={receipt.id} className={cn("border-b px-3 py-2 text-sm last:border-b-0", receipt.status === "void" && "text-muted-foreground")}>
         <div className="flex items-baseline justify-between gap-3">
           <span className={cn("font-medium", receipt.status === "void" && "line-through")}>{formatDay(receipt.receivedAt.slice(0, 10))}{receipt.ticketNumber ? ` · Ticket ${receipt.ticketNumber}` : ""}</span>
-          {receipt.status === "recorded" && data.canResolve && voiding?.id !== receipt.id
+          {receipt.canVoid && voiding?.id !== receipt.id
             ? <Button size="sm" variant="ghost" className="h-6 text-xs" disabled={pending} onClick={() => setVoiding({ id: receipt.id, reason: "" })}>Void</Button>
             : receipt.status === "void" ? <span className="text-xs">Void: {receipt.voidReason}</span> : null}
         </div>

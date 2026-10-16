@@ -198,7 +198,8 @@ async function observePickers(kit) {
 
   const byDueThenId = (a, b) => (a.due === null) - (b.due === null) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   const listed = dataset.filter((row) => !row.cancelled).sort(byDueThenId)
-  const visibleTo = (division) => listed.filter((row) => row.communityId === null || (row.communityId === f.communityA ? division === f.divisionA : division === f.divisionB)).map((row) => row.id)
+  // A plan-only package prices every division's homes, so a division-limited buyer never lists it.
+  const visibleTo = (division) => listed.filter((row) => row.communityId !== null && (row.communityId === f.communityA ? division === f.divisionA : division === f.divisionB)).map((row) => row.id)
   const read = (actor, input) => kit.as(actor, () => queue.listProductionBidQueue(input))
   // A page past the end is an ordinary state (the list shrank while the reader sat on its last page).
   const readPage = (actor, input) => read(actor, input).catch((error) => ({ items: [], count: error.message }))

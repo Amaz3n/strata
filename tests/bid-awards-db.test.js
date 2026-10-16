@@ -336,3 +336,40 @@ test("price agreements are division-fenced and members can only insert", async (
   assert.equal(gulfSees.rows.length, 0)
   assert.equal((await db.query("select status from vendor_price_agreements where id = $1", [incumbent.id])).rows[0].status, "active")
 })
+
+test("a bid line can only price a scope item of its own package, for any writer", async (t) => {
+  const { db, orgId, pkg, submission, community, costCode, buyerId, as } = await fenced(t)
+  const other = await insert(db, "bid_packages", { org_id: orgId, community_id: community.id, award_target: "price_agreement", title: "Elsewhere", status: "draft" })
+  const foreign = await insert(db, "bid_scope_items", { org_id: orgId, bid_package_id: other.id, description: "Foreign", cost_code_id: costCode.id, unit: "sf" })
+  const own = (await db.query("select id from bid_scope_items where bid_package_id = $1", [pkg.id])).rows[0]
+  const line = (await db.query("select id from bid_submission_items where bid_submission_id = $1", [submission.id])).rows[0]
+
+  await assert.rejects(as(buyerId, (tx) => tx.query("update bid_submission_items set bid_scope_item_id = $2 where id = $1", [line.id, foreign.id])), /scope item of the package/)
+  await assert.rejects(insert(db, "bid_submission_items", { org_id: orgId, bid_submission_id: submission.id, bid_scope_item_id: foreign.id, response: "priced", amount_cents: 1, description: "x" }), /scope item of the package/)
+  await db.query("update bid_submission_items set bid_scope_item_id = $2 where id = $1", [line.id, own.id])
+})
+
+test("rescinding restores an incumbent the sweep expired after the new price started", async (t) => {
+  const { db, orgId, userId, incumbent, award, row } = await rebid(t)
+  const result = await award(daysFrom(10))
+  await db.query("update vendor_price_agreements set status = 'expired' where id = $1", [incumbent.id])
+
+  const [rescinded] = await rpc(db, "rescind_bid_award", { p_org_id: orgId, p_bid_award_id: result.award_id, p_actor_id: userId, p_reason: "Trade withdrew" })
+
+  assert.deepEqual(rescinded.restored_agreement_ids, [incumbent.id])
+  const after = await row(incumbent.id)
+  assert.deepEqual({ status: after.status, effective_to: after.effective_to }, { status: "active", effective_to: "2099-12-31" })
+})
+
+test("a division-limited member cannot write a plan-only package, and ending can only shorten", async (t) => {
+  const { db, orgId, userId, incumbent, gulfBuyerId, buyerId, as } = await fenced(t)
+  const plan = await insert(db, "house_plans", { org_id: orgId, name: "Mangrove", code: "MG" })
+  const plan_only = (id) => as(id, (tx) => tx.query("insert into bid_packages (org_id, house_plan_id, award_target, title, status) values ($1, $2, 'price_agreement', 'Plan only', 'draft') returning id", [orgId, plan.id]))
+
+  await assert.rejects(plan_only(gulfBuyerId), /row-level security/)
+  assert.equal((await plan_only(buyerId)).rows.length, 1)
+  await assert.rejects(
+    rpc(db, "price_agreement_state", { p_org_id: orgId, p_agreement_id: incumbent.id, p_action: "end", p_effective_to: "2100-06-01", p_reason: "Extend", p_actor_id: userId }),
+    /ended earlier, not extended/,
+  )
+})

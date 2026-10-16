@@ -141,6 +141,45 @@
         "activeFromTheDate": 1,
         "supersededOutright": 1
       }
+    },
+    "bid-lines-price-only-their-own-package": {
+      "derivation": "Two packages each hold one bid. As a purchasing manager in their own session, re-pointing package A's bid line to package B's scope item is refused by the line trigger, as is inserting a line on A's submission that prices B's scope item; re-pointing to A's own scope item lands (the guard block reports rows touched). Awarding A mints its agreement from A's own cost code (06-100).",
+      "expected": {
+        "repointLineToAnotherPackage": "A bid line must price a scope item of the package it bids on",
+        "insertLineOnAnotherPackage": "A bid line must price a scope item of the package it bids on",
+        "repointLineWithinItsOwnPackage": "landed",
+        "awardMintsFromOwnScope": true
+      }
+    },
+    "rescind-restores-an-incumbent-the-sweep-expired": {
+      "derivation": "Bright Electric holds an electrical price ending in 60 days; a rebid by Coastal Plumbing is awarded from day 10. The incumbent stays active until day 9; the maintenance sweep flips an active row to expired once its end date passes, which the scenario stands in for by setting the status directly. The purchasing manager's rescind voids Coastal's row and restores the incumbent: active again with its original end date and no successor, none skipped.",
+      "expected": {
+        "voided": 1,
+        "restored": 1,
+        "skipped": 0,
+        "incumbent": {
+          "status": "active",
+          "endsOnItsOriginalDate": true,
+          "replacedBy": null
+        },
+        "mintedRow": "void"
+      }
+    },
+    "plan-only-packages-need-unrestricted-division-scope": {
+      "derivation": "The seeded plans are organisation-wide. A buyer limited to the community's division creating a plan-only package is refused by the service (the plan is shared only beside one of the member's own communities) and by the data API (restrictive policy: row-level security); the same buyer with a community and the plan succeeds, and an unrestricted buyer's plan-only package succeeds.",
+      "expected": {
+        "service": {
+          "divisionLimitedPlanOnly": "refused: outside division access",
+          "divisionLimitedCommunityAndPlan": "allowed",
+          "unrestrictedPlanOnly": "allowed"
+        },
+        "dataApi": "refused: row-level security"
+      }
+    },
+    "bidder-uses-the-portal-on-a-community-package": {
+      "status": "NOT_IMPLEMENTED",
+      "requires": "storage",
+      "reason": "The bid portal needs BID_PORTAL_SECRET and file storage, which the stack has only under --storage-env. Rules to prove when available: the quote upload row has no project or prospect and carries the invite in its metadata (it used to put the community id in files.project_id and violate the foreign key); a project RFI is refused for a package with no project; submission file_ids must be files uploaded under that invite. They are covered by the service code and unit tests, not yet by the stack."
     }
   }
 }

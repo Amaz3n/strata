@@ -8,6 +8,7 @@
 //   late-delivery-sweep-opens-one-shortage-and-an-advisory
 //                                                      an overdue line gets one late shortage however often the sweep runs (one notification), the home's task on the same cost code gets an advisory, the schedule is not written, a full receipt closes both
 //   shortage-resolution-reaches-purchasing             back-order restarts the clock, a VPO is raised and linked, accept-short stops the sweep; a reader without po_exception.resolve and a coordinator of another division are refused
+//   receipt-void-policy-and-vpo-quantity               the receiver voids their own ticket the same day, anyone else needs purchasing; an approved VPO's quantity counts as ordered for over-receipt
 //   deliveries-desk-is-scoped-and-capped               the desk shows the reader's divisions only, with the total when the page is cut; a role without price_book.read is refused
 //
 // Fixture: one production builder (`supplyOrg`, built once per run) with two divisions. Every home is a
@@ -279,6 +280,42 @@ async function deliveriesDeskIsScopedAndCapped(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+async function receiptVoidPolicyAndVpoQuantity(kit, expected, check) {
+  const org = await supplyOrg(kit)
+  const h = home(kit, org, "Lot 9")
+  await setNeededBy(kit, org, h, 5)
+  const mineTicket = await receive(kit, org, h, { 0: 10 })
+  const buyerTicket = await receive(kit, org, h, { 0: 5 }, { actor: org.team.purchasing })
+  const voidReceipt = (actor, id) => attempt(() => kit.as(actor, () => receipts().voidPoReceipt({ receiptId: id, reason: "Entered against the wrong order" })))
+  const status = (id) => kit.rows(`select status from public.po_receipts where id=${kit.q(id)}`)[0].status
+  const otherUsersTicket = labelled(await voidReceipt(org.team.superintendent, buyerTicket.id), /Only the person who received it|po_receipt/, "refused: not their ticket")
+  const unrelatedRole = labelled(await voidReceipt(org.team.sales, mineTicket.id), /po_receipt\.record|Missing permission/, "refused: needs po_receipt.record")
+  const ownSameDay = await voidReceipt(org.team.superintendent, mineTicket.id)
+  const second = await receive(kit, org, h, { 0: 4 })
+  kit.sql(`set session_replication_role = replica; update public.po_receipts set received_at = now() - interval '2 days' where id=${kit.q(second.id)}; set session_replication_role = origin;`)
+  const ownLater = labelled(await voidReceipt(org.team.superintendent, second.id), /same day/, "refused: not the same day")
+  const purchasingAny = await voidReceipt(org.team.purchasing, second.id)
+  // 100 ordered, 5 in. A VPO for 60 more on the same line, approved by a second person, raises what can be received without a reason.
+  const reasons = await kit.as(org.team.purchasing, () => app("purchasing-settings").listVarianceReasonCodes())
+  const reason = reasons.find((candidate) => !candidate.is_backcharge)
+  await kit.as(org.team.superintendent, () => receipts().closePoLineShort({ commitmentLineId: h.lineIds[0], reason: "vendor_short", note: "Mill is out" }))
+  const shortage = kit.rows(`select id from public.po_shortages where commitment_line_id=${kit.q(h.lineIds[0])} and status='open'`)[0].id
+  const raised = await kit.as(org.team.purchasing, () => receipts().resolvePoShortage({ shortageId: shortage, resolution: "vpo", vpo: { reasonCodeId: reason.id, quantity: 60, unitCostCents: 500 } }))
+  const overBefore = labelled(await attempt(() => receive(kit, org, h, { 0: 156 })), /over the 100 ordered/, "refused: over 100 ordered")
+  await kit.as(org.owner, () => app("commitment-change-orders").approveCommitmentChangeOrder({ commitmentChangeOrderId: raised.vpoId }))
+  const overAfter = labelled(await attempt(() => receive(kit, org, h, { 0: 156 })), /over the 160 ordered/, "refused: over 160 ordered")
+  const full = await attempt(() => receive(kit, org, h, { 0: 155 }))
+  const [row] = mine((await desk(kit, org.team.purchasing, { state: "all", pageSize: 100 })).rows, h)
+  equal(check, "the receiver voids their own ticket the same day; another member's ticket, an unrelated role and an older ticket are refused; purchasing voids any", expected.expected.voidPolicy, {
+    otherUsersTicket, unrelatedRole, ownSameDay, ownLater, purchasingAny,
+    statuses: { mine: status(mineTicket.id), buyers: status(buyerTicket.id), second: status(second.id) },
+  })
+  equal(check, "quantity an approved VPO added to the line counts as ordered: 156 more is refused at 100 ordered, and at 160 once approved, while the remaining 155 is received without a reason", expected.expected.vpoQuantity, {
+    overBefore, overAfter, remaining: full, ordered: row.ordered, received: row.received, state: row.state,
+  })
+  return { orgId: org.orgId, projectId: h.projectId }
+}
+
 const subcases = {
   "partial-receipts-and-shortage-by-home-and-line": partialReceiptsAndShortageByHomeAndLine,
   "receipts-are-written-only-through-the-service": receiptsAreWrittenOnlyThroughTheService,
@@ -286,6 +323,7 @@ const subcases = {
   "late-delivery-sweep-opens-one-shortage-and-an-advisory": lateDeliverySweepOpensOneShortageAndAnAdvisory,
   "shortage-resolution-reaches-purchasing": shortageResolutionReachesPurchasing,
   "deliveries-desk-is-scoped-and-capped": deliveriesDeskIsScopedAndCapped,
+  "receipt-void-policy-and-vpo-quantity": receiptVoidPolicyAndVpoQuantity,
 }
 
 module.exports = { subcases }

@@ -112,7 +112,7 @@ async function requireImporterPermission(importer: ImporterKey, context: Resolve
   // Platform onboarding runs every importer on the customer's behalf, whatever tier they're on.
   if (context.platform) return
   if (importer === "open_wip") throw new Error("Open-WIP cutover is restricted to the platform onboarding workbench")
-  if (importer === "price_book") await requireAnyPermission(["price_book.write", "commitment.write"], context)
+  if (importer === "price_book") await requirePermission("price_book.write", context)
   if (importer === "plan_library") await requirePermission("plan.write", context)
   if (importer === "option_catalog") await requirePermission("selections.catalog.manage", context)
   if (importer === "communities_lots") await requireAnyPermission(["community.write", "lot.write"], context)
@@ -994,8 +994,8 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
         if (error || !commitment) throw new Error(`Failed to create imported PO: ${error?.message}`)
         const { error: lineError } = await context.supabase.from("commitment_lines").insert({ org_id: context.orgId, commitment_id: commitment.id, cost_code_id: item.parsed?.cost_code_id, description: item.parsed?.description, quantity: 1, unit: "remaining", unit_cost_cents: item.parsed?.remaining_cents, metadata: { imported_open_wip: true } })
         if (lineError) throw new Error(`Failed to create imported PO lines: ${lineError.message}`)
-        // An approved purchase order is locked, so it is approved once its line is on it.
-        const { error: approveError } = await context.supabase.from("commitments").update({ status: "approved" }).eq("org_id", context.orgId).eq("id", commitment.id)
+        // An approved purchase order is locked and only the service issues one, so it is approved once its line is on it. The order is open WIP, so its version is a backfill: no vendor email.
+        const { error: approveError } = await createServiceSupabaseClient().from("commitments").update({ status: "approved" }).eq("org_id", context.orgId).eq("id", commitment.id)
         if (approveError) throw new Error(`Failed to approve imported PO: ${approveError.message}`)
       }
       if (!row.parsed.schedule_template_id) throw new Error(`Lot ${row.parsed.lot_number}: the plan has no schedule template, so the current stage cannot be placed`)

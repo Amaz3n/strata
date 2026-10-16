@@ -1,4 +1,4 @@
-import { claimedCompletionLineIds, hasWholeOrderClaim, type CompletionCoverage } from "@/lib/services/po-completions"
+import { claimedCompletionChangeOrderIds, claimedCompletionLineIds, hasWholeOrderClaim, type CompletionCoverage } from "@/lib/services/po-completions"
 import { loadPoIssueViews, type PoIssueView } from "@/lib/services/po-acknowledgments"
 import { PO_ISSUED_STATUSES } from "@/lib/purchasing/po-lock"
 import { resolvePayOnPo } from "@/lib/services/purchasing-settings"
@@ -18,7 +18,7 @@ export type PortalPurchaseOrder = {
   contractNumber: string | null
   scope: string | null
   lines: Array<{ id: string; description: string; quantity: number; unit: string | null; scheduledValueCents: number; claimed: boolean }>
-  changes: Array<{ id: string; title: string; status: string; totalCents: number; reasonLabel: string | null }>
+  changes: Array<{ id: string; title: string; status: string; totalCents: number; reasonLabel: string | null; claimed: boolean }>
   completions: Array<{ id: string; status: string; reportedAt: string; amountCents: number | null; rejectedReason: string | null; vendorBill: { status: string; paidCents: number; totalCents: number } | null }>
   /** False once every line is claimed by a live completion — a rejected one is not. */
   hasReportableScope: boolean
@@ -50,7 +50,7 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
     project:projects(name),
     lines:commitment_lines(id,description,quantity,unit,unit_cost_cents,scheduled_value_cents,sort_order),
     changes:commitment_change_orders(id,title,status,total_cents,reason:variance_reason_codes(label)),
-    completions:po_completions(id,status,reported_at,rejected_reason,amount_cents,commitment_line_ids,vendor_bill:vendor_bills(status,paid_cents,total_cents))
+    completions:po_completions(id,status,reported_at,rejected_reason,amount_cents,commitment_line_ids,change_order_ids,vendor_bill:vendor_bills(status,paid_cents,total_cents))
   `, { count: "exact" }).eq("org_id", access.org_id).eq("company_id", access.company_id)
     .eq("commitment_type", "purchase_order")// Drafts were never sent and cancelled orders no longer bind anyone, so neither reaches the portal.
     .in("status", [...PO_ISSUED_STATUSES])
@@ -59,7 +59,7 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
     query.order("created_at", { ascending: false }).order("id").range(0, PORTAL_PURCHASE_ORDER_CAP - 1),
     // Completion is reported against one home, so only a home's link can report it.
     access.project_id && access.permissions.can_report_po_completion === true
-      ? resolvePayOnPo(service, access.org_id, access.project_id).then((setting) => setting.enabled)
+      ? resolvePayOnPo(service, access.org_id).then((setting) => setting.enabled)
       : false,
   ])
   if (error) throw new Error(`Failed to load portal purchase orders: ${error.message}`)
@@ -69,7 +69,9 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
     const rawCompletions: CompletionCoverage[] = (row.completions ?? []).map((completion: Record<string, unknown>) => ({
       id: String(completion.id), status: String(completion.status),
       commitment_line_ids: Array.isArray(completion.commitment_line_ids) ? completion.commitment_line_ids.map(String) : null,
+      change_order_ids: Array.isArray(completion.change_order_ids) ? completion.change_order_ids.map(String) : null,
     }))
+    const claimedChangeIds = claimedCompletionChangeOrderIds(rawCompletions)
     const claimedLineIds = claimedCompletionLineIds(rawCompletions)
     const wholeOrderClaimed = hasWholeOrderClaim(rawCompletions)
     const lines = (row.lines ?? [])
@@ -95,6 +97,7 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
         id: String(change.id), title: String(change.title ?? ""), status: String(change.status),
         totalCents: Number(change.total_cents ?? 0),
         reasonLabel: typeof firstRelation(change.reason)?.label === "string" ? String(firstRelation(change.reason)?.label) : null,
+        claimed: claimedChangeIds.has(String(change.id)),
       })),
       completions: (row.completions ?? [])
         .map((completion: Record<string, unknown>) => {
@@ -108,7 +111,7 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
           }
         })
         .sort((a: { reportedAt: string }, b: { reportedAt: string }) => b.reportedAt.localeCompare(a.reportedAt)),
-      hasReportableScope: lines.some((line) => !line.claimed),
+      hasReportableScope: lines.some((line) => !line.claimed) || (row.changes ?? []).some((change: Record<string, unknown>) => change.status === "approved" && !claimedChangeIds.has(String(change.id))),
       issue: issues.get(String(row.id)) ?? null,
     }
   })

@@ -3,7 +3,7 @@
   "reviewedFrom": "EP08-09 and EP08-11 (docs/enterprise-production/completion-checklist.json) and the EP08 owner decisions of 2026-10-15: approved VPOs leave the budget baseline alone and show as variance against it; approved POs change only through VPOs; the person who reported or verified a completion cannot approve the money step; an org setting (default off) requires a passed inspection before approval, otherwise an audited waiver with a reason. Code: lib/services/{commitment-change-orders,po-completions,purchasing-settings,po-positions,payment-holds}.ts, lib/financials/vpo-approval-thresholds.ts, lib/purchasing/po-position.ts; migration 20261015120000_purchasing_controls. Values are derived from each subcase's inputs and confirmed by the first run on the acceptance stack.",
   "subcases": {
     "vpo-approval-follows-bands-evidence-and-separation": {
-      "derivation": "The org's default bands are up to 1,000.00 for vpo.approve and above for vpo.approve_large; evidence is required from 1,000.00 up and always for a back-charge. A purchasing manager raises a 500.00 order (a project lead who holds only vpo.approve approves it), a 1,500.00 order and a -200.00 back-charge. The lead cannot approve or reject the large order or the back-charge (band). A second manager is refused without evidence; the requester is refused as approver (and the refusal is audited once); evidence from another home is refused; with the home's own quote attached the second manager approves both. The budget total is read before and after and does not move.",
+      "derivation": "The org's default bands are up to 1,000.00 for vpo.approve and above for vpo.approve_large; evidence is required from 1,000.00 up and always for a back-charge. A purchasing manager raises a 500.00 order (a project lead who holds only vpo.approve approves it), a 1,500.00 order and a -200.00 back-charge. The lead cannot approve or reject the large order or the back-charge (band). A second manager is refused without evidence; the requester is refused as approver (and the refusal is audited once); evidence from another home is refused; with the home's own quote attached the second manager approves both. The budget total is read before and after and does not move. A further 1,500.00 order with evidence is approved by the second manager: the project lead cannot void it (band), a void without a reason is refused, an edit of the approved order is refused, and the second manager voids it with a reason (one critical audit entry; the row keeps its total and its approver).",
       "expected": {
         "smallByStandardApprover": "allowed",
         "largeByStandardApprover": "refused: not permitted",
@@ -22,11 +22,21 @@
         },
         "requesterRefusalAudited": 1,
         "budgetBaselineUnchanged": true,
-        "approvalsAudited": 3
+        "approvalsAudited": 3,
+        "voidByStandardApprover": "refused: not permitted",
+        "voidWithoutReason": "refused: needs a reason",
+        "editDecidedOrder": "refused: decided order is not edited",
+        "voidByLargeApprover": "allowed",
+        "voidAudited": 1,
+        "voidedOrder": {
+          "status": "voided",
+          "total": 150000,
+          "approved": true
+        }
       }
     },
     "purchasing-controls-cannot-be-forged-through-the-data-api": {
-      "derivation": "A draft 400.00 order, an approved 300.00 order and a reported completion exist. The requesting manager and a sales agent each try, with their own session, to approve and reprice the draft, reprice the approved order, rewrite its lines, insert an approved VPO, switch off completion verification, retire reasons, verify the completion and mark it billed: all refuse and the rows are unchanged. A sales agent and a manager asking for a band that names commitment.read are refused by the settings service; the manager's valid save succeeds and is audited. The legitimate paths then work: a second manager approves the draft and verifies the completion.",
+      "derivation": "A draft 400.00 order, an approved 300.00 order and a reported completion exist. The requesting manager and a sales agent each try, with their own session, to approve and reprice the draft, reprice the approved order, rewrite its lines, insert an approved VPO, switch off completion verification, retire reasons, verify the completion and mark it billed: all refuse and the rows are unchanged. A sales agent and a manager asking for a band that names commitment.read are refused by the settings service; the manager's valid save succeeds and is audited. The legitimate paths then work: a second manager approves the draft and verifies the completion. The same members also try, with a reason-less change order: inserting one already approved at 50,000.00, approving a plain 200.00 draft and repricing it: all refuse, no forged row exists and the draft is unchanged.",
       "expected": {
         "forge": {
           "requesterApprovesAndReprices": "refused",
@@ -44,7 +54,13 @@
           "salesAgentChangesSettings": "refused",
           "salesAgentEditsReasons": "refused",
           "salesAgentVerifiesCompletion": "refused",
-          "salesAgentMarksCompletionBilled": "refused"
+          "salesAgentMarksCompletionBilled": "refused",
+          "requesterInsertsReasonlessApproved": "refused",
+          "requesterApprovesReasonlessDraft": "refused",
+          "requesterRepricesReasonlessDraft": "refused",
+          "salesAgentInsertsReasonlessApproved": "refused",
+          "salesAgentApprovesReasonlessDraft": "refused",
+          "salesAgentRepricesReasonlessDraft": "refused"
         },
         "state": {
           "draft": {
@@ -58,7 +74,13 @@
             "approved": true
           },
           "settingsRequireVerification": true,
-          "completion": "reported"
+          "completion": "reported",
+          "reasonlessDraft": {
+            "status": "draft",
+            "total": 20000,
+            "approved": false
+          },
+          "forgedRows": 0
         },
         "writers": {
           "salesAgentSavesSettings": "refused: not permitted",
@@ -102,7 +124,7 @@
       }
     },
     "pay-on-po-completion-reconciles-to-the-bill": {
-      "derivation": "A whole-order completion on the 1,000.00 PO is approved and bills 1,000.00. A 150.00 VPO (price increase, below the evidence threshold) is raised and approved afterwards; it cannot ride the billed whole-order completion, so a completion for the VPO alone (no PO lines) is reported, verified and approved and bills 150.00; claiming the VPO again is refused. The position reads original 1,000.00, approved VPOs 150.00, billed 1,150.00, paid 0 and no exception. An off-book 100.00 bill with 120.00 paid then makes the order billed 1,250.00: over the approved 1,150.00 and over the completions' 1,150.00, so the position names overbilled and billed_without_completion, and the Purchasing desk lists the same single row with the same figures.",
+      "derivation": "A whole-order completion on the 1,000.00 PO is approved and bills 1,000.00. A 150.00 VPO (below the evidence threshold) is approved afterwards; it cannot ride the billed completion, so the office uses the purchase order sheet's action, which reports every unclaimed approved VPO as a completion with no PO line: it is verified by a second person and approved by a third and bills 150.00; the action then finds nothing left, and claiming the VPO by hand is refused. A second VPO of 200.00 is approved; the trade's portal link lists it as outstanding scope (and Mark complete is offered), the trade claims it with a photo, the portal then lists nothing outstanding, and it is verified and approved and bills 200.00. The position reads original 1,000.00, approved VPOs 350.00, billed 1,350.00, paid 0 and no exception. An off-book 100.00 bill with 120.00 paid makes billed 1,450.00: over the approved 1,350.00 and over the completions' 1,350.00, so the position names overbilled and billed_without_completion and the Purchasing desk lists the same single row with the same figures.",
       "expected": {
         "wholeOrderApproval": "allowed",
         "billedAfterPo": [
@@ -113,10 +135,26 @@
         ],
         "lateVpoApproved": "allowed",
         "lateVpoCompletionApproval": "allowed",
+        "nothingLeftToClaim": "refused: nothing left to claim",
         "lateVpoClaimedAgain": "refused: scope already covered",
+        "portalBefore": {
+          "outstandingChanges": [
+            20000
+          ],
+          "canReport": true
+        },
+        "portalAfter": {
+          "outstandingChanges": [],
+          "canReport": false
+        },
+        "portalClaimApproval": "allowed",
         "billedAfterVpo": [
           [
             15000,
+            "approved"
+          ],
+          [
+            20000,
             "approved"
           ],
           [
@@ -126,16 +164,16 @@
         ],
         "reconciled": {
           "original": 100000,
-          "approvedVpos": 15000,
-          "billed": 115000,
+          "approvedVpos": 35000,
+          "billed": 135000,
           "paid": 0,
           "exceptions": []
         },
         "offBookBill": {
           "workbench": {
             "original": 100000,
-            "approvedVpos": 15000,
-            "billed": 125000,
+            "approvedVpos": 35000,
+            "billed": 145000,
             "paid": 12000,
             "exceptions": [
               "billed_without_completion",
@@ -158,6 +196,19 @@
         ],
         "completionBilled": "billed",
         "succeeded": true
+      }
+    },
+    "division-limited-manager-cannot-decide-another-divisions-vpo": {
+      "derivation": "A home stands in division A with a 400.00 VPO requested by a purchasing manager. A manager limited to division B tries to approve and to void it: both are refused, the authorization log records the division-scope denial, and the order is still pending. A manager limited to division A approves it (400.00 is inside the standard band, evidence is not required below 1,000.00). The same division-A manager is refused when changing purchasing settings, which apply to the whole organization.",
+      "expected": {
+        "otherDivisionApproves": "refused: not permitted",
+        "otherDivisionVoids": "refused: not permitted",
+        "denyReasons": [
+          "deny_division_scope"
+        ],
+        "afterRefusals": "draft",
+        "ownDivisionApproves": "allowed",
+        "divisionLimitedSavesSettings": "refused: settings are organization-wide"
       }
     }
   }

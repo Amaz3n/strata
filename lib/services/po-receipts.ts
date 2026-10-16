@@ -3,7 +3,7 @@ import { z } from "zod"
 import { deliveryAdvisories, type AdvisoryLine, type DeliveryAdvisory } from "@/lib/purchasing/delivery-advisory"
 import { readAllRows } from "@/lib/land/paging"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { createCommitmentChangeOrder } from "@/lib/services/commitment-change-orders"
+import { createCommitmentChangeOrder, voidCommitmentChangeOrder } from "@/lib/services/commitment-change-orders"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -273,7 +273,11 @@ export async function closePoLineShort(input: unknown, orgId?: string) {
   return { shortageId: result.id }
 }
 
-/** A mistaken ticket comes off the books; its quantity is outstanding again. */
+/**
+ * A mistaken ticket comes off the books; its quantity is outstanding again. The
+ * person who received it may void it the day they entered it; after that, or for
+ * anyone else's ticket, it takes po_exception.resolve.
+ */
 export async function voidPoReceipt(input: unknown, orgId?: string) {
   const parsed = voidPoReceiptSchema.parse(input)
   const context = await requireOrgContext(orgId)
@@ -281,12 +285,16 @@ export async function voidPoReceipt(input: unknown, orgId?: string) {
     .select("id,project_id").eq("org_id", context.orgId).eq("id", parsed.receiptId).maybeSingle()
   if (receiptError) throw new Error(`Failed to load the receipt: ${receiptError.message}`)
   if (!receipt) throw new Error("Receipt not found")
-  await requireAuthorization({
-    permission: "po_exception.resolve", userId: context.userId, orgId: context.orgId, projectId: receipt.project_id,
-    supabase: context.supabase, logDecision: true, resourceType: "po_receipt", resourceId: receipt.id,
-  })
+  const purchasing = await hasProjectPermission(context.userId, receipt.project_id, "po_exception.resolve")
+  if (!purchasing) {
+    await requireAuthorization({
+      permission: "po_receipt.record", userId: context.userId, orgId: context.orgId, projectId: receipt.project_id,
+      supabase: context.supabase, logDecision: true, resourceType: "po_receipt", resourceId: receipt.id,
+    })
+  }
   const { error } = await createServiceSupabaseClient().rpc("void_po_receipt", {
     p_org_id: context.orgId, p_actor_id: context.userId, p_receipt_id: parsed.receiptId, p_reason: parsed.reason,
+    p_any_receipt: purchasing,
   })
   if (error) throw new Error(error.message)
 }
@@ -310,34 +318,54 @@ export async function resolvePoShortage(input: unknown, orgId?: string) {
     throw new Error("A back-order cannot be promised for a day that has passed")
   }
 
+  // The VPO and the shortage's link to it cannot share a transaction (the VPO is
+  // raised through its own service), so the pair is kept whole two ways: a VPO
+  // already raised for this shortage by an earlier, interrupted attempt is reused
+  // rather than raised twice, and a VPO raised here is voided if the link is refused.
   let vpoId: string | null = null
+  let raisedHere = false
   if (parsed.resolution === "vpo" && parsed.vpo) {
-    const { line, order } = await loadLineOrder(context.orgId, shortage.commitment_line_id)
-    const vpo = await createCommitmentChangeOrder({
-      orgId: context.orgId,
-      input: {
-        commitment_id: shortage.commitment_id,
-        reason_code_id: parsed.vpo.reasonCodeId,
-        origin: "office",
-        photo_file_ids: [],
-        evidence_file_ids: [],
-        title: parsed.vpo.title ?? `Replacement: ${line.description}`.slice(0, 255),
-        description: parsed.note ?? `Raised from a delivery shortage on ${order.title}.`,
-        metadata: { po_shortage_id: shortage.id },
-        lines: [{
-          commitment_line_id: line.id, cost_code_id: line.cost_code_id, budget_line_id: line.budget_line_id,
-          description: line.description, quantity: parsed.vpo.quantity, unit: line.unit, unit_cost_cents: parsed.vpo.unitCostCents,
-        }],
-      },
-    })
-    vpoId = vpo.id
+    const service = createServiceSupabaseClient()
+    const { data: earlier, error: earlierError } = await service.from("commitment_change_orders").select("id")
+      .eq("org_id", context.orgId).eq("commitment_id", shortage.commitment_id).eq("metadata->>po_shortage_id", shortage.id)
+      .in("status", ["draft", "sent", "approved"]).order("created_at").limit(1).maybeSingle()
+    if (earlierError) throw new Error(`Failed to check for an earlier variance order: ${earlierError.message}`)
+    if (earlier) vpoId = earlier.id
+    else {
+      const { line, order } = await loadLineOrder(context.orgId, shortage.commitment_line_id)
+      const vpo = await createCommitmentChangeOrder({
+        orgId: context.orgId,
+        input: {
+          commitment_id: shortage.commitment_id,
+          reason_code_id: parsed.vpo.reasonCodeId,
+          origin: "office",
+          photo_file_ids: [],
+          evidence_file_ids: [],
+          title: parsed.vpo.title ?? `Replacement: ${line.description}`.slice(0, 255),
+          description: parsed.note ?? `Raised from a delivery shortage on ${order.title}.`,
+          metadata: { po_shortage_id: shortage.id },
+          lines: [{
+            commitment_line_id: line.id, cost_code_id: line.cost_code_id, budget_line_id: line.budget_line_id,
+            description: line.description, quantity: parsed.vpo.quantity, unit: line.unit, unit_cost_cents: parsed.vpo.unitCostCents,
+          }],
+        },
+      })
+      vpoId = vpo.id
+      raisedHere = true
+    }
   }
 
   const { error } = await createServiceSupabaseClient().rpc("resolve_po_shortage", {
     p_org_id: context.orgId, p_actor_id: context.userId, p_shortage_id: shortage.id, p_resolution: parsed.resolution,
     p_backorder_date: parsed.backorderDate ?? null, p_note: parsed.note ?? null, p_vpo_id: vpoId,
   })
-  if (error) throw new Error(error.message)
+  if (error) {
+    if (raisedHere && vpoId) {
+      await voidCommitmentChangeOrder({ commitmentChangeOrderId: vpoId, reason: "The shortage it was raised for was resolved another way", orgId: context.orgId })
+        .catch(() => undefined)
+    }
+    throw new Error(error.message)
+  }
   return { vpoId }
 }
 
@@ -374,7 +402,7 @@ export async function setLineNeededBy(input: unknown, orgId?: string) {
 // The purchase order's receiving section.
 // ----------------------------------------------------------------------------
 
-export interface ReceiptHistoryLine {
+interface ReceiptHistoryLine {
   commitmentLineId: string
   description: string
   unit: string | null
@@ -384,7 +412,7 @@ export interface ReceiptHistoryLine {
   overReceiptReason: string | null
 }
 
-export interface ReceiptHistory {
+interface ReceiptHistory {
   id: string
   receivedAt: string
   ticketNumber: string | null
@@ -392,10 +420,12 @@ export interface ReceiptHistory {
   status: "recorded" | "void"
   voidReason: string | null
   photoCount: number
+  /** The reader may void it: purchasing, or the person who entered it, the same day. */
+  canVoid: boolean
   lines: ReceiptHistoryLine[]
 }
 
-export interface UntrackedLine {
+interface UntrackedLine {
   id: string
   description: string
   quantity: number
@@ -410,12 +440,12 @@ export interface PoReceiving {
   untracked: UntrackedLine[]
   receipts: ReceiptHistory[]
   canRecord: boolean
-  canResolve: boolean
   canSetDates: boolean
 }
 
 const receiptRowSchema = z.object({
   id: z.string().uuid(),
+  received_by: z.string().uuid().nullable(),
   received_at: z.string(),
   ticket_number: z.string().nullable(),
   note: z.string().nullable(),
@@ -457,7 +487,7 @@ export async function getPoReceiving(commitmentId: string, orgId?: string): Prom
     service.from("commitment_lines").select("id,description,quantity,unit").eq("org_id", context.orgId).eq("commitment_id", id)
       .is("needed_by", null).order("sort_order").order("id").limit(ORDER_LINE_CAP),
     service.from("po_receipts")
-      .select("id,received_at,ticket_number,note,status,void_reason,photo_file_ids,lines:po_receipt_lines(commitment_line_id,quantity_received,condition,note,over_receipt_reason,line:commitment_lines(description,unit))")
+      .select("id,received_by,received_at,ticket_number,note,status,void_reason,photo_file_ids,lines:po_receipt_lines(commitment_line_id,quantity_received,condition,note,over_receipt_reason,line:commitment_lines(description,unit))")
       .eq("org_id", context.orgId).eq("commitment_id", id).order("received_at", { ascending: false }).order("id").limit(RECEIPT_HISTORY_CAP),
   ])
   if (untracked.error) throw new Error(`Failed to load the order's lines: ${untracked.error.message}`)
@@ -471,13 +501,13 @@ export async function getPoReceiving(commitmentId: string, orgId?: string): Prom
     receipts: z.array(receiptRowSchema).parse(receipts.data ?? []).map((row) => ({
       id: row.id, receivedAt: row.received_at, ticketNumber: row.ticket_number, note: row.note, status: row.status,
       voidReason: row.void_reason, photoCount: row.photo_file_ids.length,
+      canVoid: row.status === "recorded" && (canResolve || (canRecord && row.received_by === context.userId && row.received_at.slice(0, 10) === today())),
       lines: row.lines.map((line) => ({
         commitmentLineId: line.commitment_line_id, description: line.line?.description ?? "Line", unit: line.line?.unit ?? null,
         quantity: line.quantity_received, condition: line.condition, note: line.note, overReceiptReason: line.over_receipt_reason,
       })),
     })),
     canRecord,
-    canResolve,
     canSetDates,
   }
 }
@@ -496,7 +526,8 @@ export async function listPoDeliveries(filters: DeliveryQueueFilters & { orgId?:
   const context = await requireOrgContext(filters.orgId)
   await requireAuthorization({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: true })
   const scope = await resolvePurchasingQueueReadScope(context, parsed.divisionId)
-  const empty = { rows: [] as DeliveryLine[], total: 0, page: parsed.page, pageSize: parsed.pageSize }
+  const none: DeliveryLine[] = []
+  const empty = { rows: none, total: 0, page: parsed.page, pageSize: parsed.pageSize }
   if (scope.divisionIds?.length === 0) return empty
   const queue = await readQueue(context.orgId, {
     divisionIds: scope.divisionIds, memberUserId: scope.projectMembershipRequired ? context.userId : null,

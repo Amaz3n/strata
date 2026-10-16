@@ -146,15 +146,19 @@ test("a trade's link is its token for the house, else its vendor token, never a 
   process.env.PORTAL_ACCESS_SECRET ??= "trade-notice-test-secret-with-32-plus-chars"
   const { encryptPortalToken } = freshRequire("lib/services/portal-credentials.ts")
   const token = (value, fields) => ({ id: value, org_id: org, company_id: company, portal_type: "sub", project_id: null, revoked_at: null, paused_at: null, expires_at: null, created_at: "2026-10-01T00:00:00Z", token_encrypted: encryptPortalToken(value), ...fields })
-  const links = async (tokens, project) => {
+  const links = async (tokens, project, required = []) => {
     stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => null })
     const { resolveTradePortalLink } = freshRequire("lib/services/trade-notices.ts")
-    return resolveTradePortalLink(createFakeSupabase({ portal_access_tokens: tokens }), org, company, project)
+    return resolveTradePortalLink(createFakeSupabase({ portal_access_tokens: tokens }), org, company, project, required)
   }
   assert.match(await links([token("vendor"), token("house", { project_id: house })], house), /\/s\/house$/)
   assert.match(await links([token("vendor"), token("house", { project_id: house })], null), /\/s\/vendor$/, "a multi-house notice opens the vendor workspace")
   assert.match(await links([token("vendor"), token("paused", { project_id: house, paused_at: "2026-10-02T00:00:00Z" })], house), /\/s\/vendor$/)
   assert.match(await links([token("vendor"), token("expired", { project_id: house, expires_at: "2020-01-01T00:00:00Z" })], house), /\/s\/vendor$/)
   assert.equal(await links([token("revoked", { revoked_at: "2026-10-02T00:00:00Z" }), token("other-house", { project_id: "x" })], house), null)
+  const can = { can_view_purchase_orders: true, can_acknowledge_purchase_orders: true }
+  const needs = ["can_view_purchase_orders", "can_acknowledge_purchase_orders"]
+  assert.match(await links([token("vendor", can), token("house", { project_id: house })], house, needs), /\/s\/vendor$/, "a house link without the permissions would land on a page the vendor cannot open")
+  assert.equal(await links([token("vendor"), token("house", { project_id: house })], house, needs), null)
   assert.match(await links([token("vendor"), token("unreadable", { project_id: house, token_encrypted: null })], house), /\/s\/vendor$/, "a token with no stored copy cannot become a link")
 })

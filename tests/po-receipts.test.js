@@ -25,10 +25,15 @@ stubModule("@/lib/services/notifications", {
   },
 })
 const raised = []
+const voided = []
 stubModule("@/lib/services/commitment-change-orders", {
   createCommitmentChangeOrder: async (args) => {
     raised.push(args)
     return { id: id(70) }
+  },
+  voidCommitmentChangeOrder: async (args) => {
+    voided.push(args)
+    return { id: args.commitmentChangeOrderId }
   },
 })
 
@@ -52,6 +57,7 @@ const tables = () => ({
 function harness({ permissions = ["po_receipt.record"], rpc = {} } = {}) {
   notified.length = 0
   raised.length = 0
+  voided.length = 0
   const service = createServiceHarness({
     tables: tables(),
     permissions,
@@ -176,15 +182,37 @@ describe("purchasing answers a shortage", () => {
     assert.deepEqual(raised, [])
   })
 
-  test("voiding a receipt needs po_exception.resolve and a reason", async () => {
-    const service = harness({ permissions: ["po_receipt.record"] })
-    service.db.po_receipts = [{ id: id(10), org_id: ORG, project_id: PROJECT }]
-    await assert.rejects(service.run(() => receipts.voidPoReceipt({ receiptId: id(10), reason: "Wrong PO" })), /po_exception\.resolve/)
+  test("a VPO raised for a shortage is voided if the link is refused, and never raised twice", async () => {
+    const service = harness({
+      permissions: ["po_exception.resolve"],
+      rpc: { resolve_po_shortage: () => ({ data: null, error: { message: "This shortage was already resolved" } }) },
+    })
+    await assert.rejects(resolve(service, { resolution: "vpo", vpo: { reasonCodeId: REASON, quantity: 1, unitCostCents: 1 } }), /already resolved/)
+    assert.deepEqual(voided.map((call) => call.commitmentChangeOrderId), [id(70)])
+
+    const retry = harness({ permissions: ["po_exception.resolve"] })
+    retry.db.commitment_change_orders = [{ id: id(71), org_id: ORG, commitment_id: PO, status: "draft", created_at: "2026-10-01T00:00:00Z", metadata: { po_shortage_id: SHORTAGE } }]
+    const result = await resolve(retry, { resolution: "vpo", vpo: { reasonCodeId: REASON, quantity: 1, unitCostCents: 1 } })
+    assert.equal(result.vpoId, id(71))
+    assert.deepEqual([raised.length, voided.length], [0, 0], "the interrupted attempt's VPO is linked, not duplicated")
+  })
+
+  test("a receipt is voided by purchasing, or by the person who received it", async () => {
+    const stored = { id: id(10), org_id: ORG, project_id: PROJECT }
+    const bare = harness({ permissions: ["commitment.read"] })
+    bare.db.po_receipts = [stored]
+    await assert.rejects(bare.run(() => receipts.voidPoReceipt({ receiptId: id(10), reason: "Wrong PO" })), /po_receipt\.record/)
+
+    const receiver = harness({ permissions: ["po_receipt.record"] })
+    receiver.db.po_receipts = [stored]
+    await receiver.run(() => receipts.voidPoReceipt({ receiptId: id(10), reason: "Wrong PO" }))
+    assert.equal(calls(receiver, "void_po_receipt")[0].payload.p_any_receipt, false)
+
     const buyer = harness({ permissions: ["po_exception.resolve"] })
-    buyer.db.po_receipts = [{ id: id(10), org_id: ORG, project_id: PROJECT }]
+    buyer.db.po_receipts = [stored]
     await assert.rejects(buyer.run(() => receipts.voidPoReceipt({ receiptId: id(10), reason: "x" })), /Say why/)
     await buyer.run(() => receipts.voidPoReceipt({ receiptId: id(10), reason: "Wrong PO" }))
-    assert.equal(calls(buyer, "void_po_receipt").length, 1)
+    assert.equal(calls(buyer, "void_po_receipt")[0].payload.p_any_receipt, true)
   })
 })
 

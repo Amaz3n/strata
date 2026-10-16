@@ -14,6 +14,8 @@ export async function reportPurchaseOrderCompleteAction(token: string, formData:
     const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, requireProject: true, permission: "can_report_po_completion" })
     const commitmentId = String(formData.get("commitment_id") ?? "")
     const lineIds = formData.getAll("commitment_line_id").map(String).filter(Boolean)
+    const changeOrderIds = formData.getAll("change_order_id").map(String).filter(Boolean)
+    if (lineIds.length === 0 && changeOrderIds.length === 0 && formData.get("scope_listed") === "true") throw new Error("Choose what is complete.")
     const files = formData.getAll("photos").filter((value): value is File => value instanceof File && value.size > 0)
     if (files.length === 0) throw new Error("Attach at least one completion photo.")
     if (files.length > 20) throw new Error("Attach no more than 20 photos.")
@@ -23,7 +25,9 @@ export async function reportPurchaseOrderCompleteAction(token: string, formData:
     })))
     const result = await reportPoCompletionFromPortal(token, {
       commitment_id: commitmentId,
-      commitment_line_ids: lineIds.length ? lineIds : undefined,
+      // Variance orders alone are reported against no PO line (an empty list), never as the whole order.
+      commitment_line_ids: lineIds.length ? lineIds : changeOrderIds.length ? [] : undefined,
+      change_order_ids: changeOrderIds.length ? changeOrderIds : undefined,
       notes: String(formData.get("notes") ?? "").trim() || null,
       photo_file_ids: photoFileIds.filter((id): id is string => Boolean(id)),
     })

@@ -4,6 +4,7 @@ import { derivePoAckState, describeVersionChanges, poAckVendorSentence, poAckWar
 import { requireOrgContext } from "@/lib/services/context"
 import { NotificationService } from "@/lib/services/notifications"
 import { requirePermission } from "@/lib/services/permissions"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { purchasingQueueFiltersSchema, resolvePurchasingQueueReadScope } from "@/lib/services/purchasing-queue-scope"
 import { projectPermissionHolders } from "@/lib/services/trade-responses"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -267,12 +268,18 @@ export interface PoIssuance {
 /** What was issued on one purchase order and how the vendor answered, for its workbench. */
 export async function getPoIssuance(commitmentId: string, orgId?: string): Promise<PoIssuance> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("commitment.read", context)
-  // Row security on commitments carries the project and division wall.
-  const { data: order, error } = await context.supabase.from("commitments").select("id")
-    .eq("org_id", context.orgId).eq("id", z.string().uuid().parse(commitmentId)).maybeSingle()
+  const id = z.string().uuid().parse(commitmentId)
+  // A purchasing manager reads orders across houses without being on a team, so the
+  // order is read by the service scoped to the org; the authorization below carries
+  // the project and division scope.
+  const { data: order, error } = await createServiceSupabaseClient().from("commitments").select("id,project_id")
+    .eq("org_id", context.orgId).eq("id", id).maybeSingle()
   if (error) throw new Error(`Failed to load the purchase order: ${error.message}`)
   if (!order) throw new Error("Purchase order not found")
+  await requireAuthorization({
+    permission: "commitment.read", userId: context.userId, orgId: context.orgId, projectId: order.project_id,
+    supabase: context.supabase, logDecision: true, resourceType: "commitment", resourceId: id,
+  })
   const [views, history] = await Promise.all([
     loadPoIssueViews(context.orgId, [commitmentId]),
     createServiceSupabaseClient().from("po_issue_versions").select("revision,reason,created_at")

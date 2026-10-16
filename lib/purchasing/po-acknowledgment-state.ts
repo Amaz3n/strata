@@ -30,9 +30,6 @@ export function derivePoAckState(input: {
   return answer.resolution === "withdrawn" ? "closed" : "pending"
 }
 
-/** States that put a purchase order on someone's list. */
-export const PO_ACK_ACTION_STATES: readonly PoAckState[] = ["disputed", "revised", "pending"]
-
 export const PO_ACK_STATE_LABELS: Record<PoAckState, string> = {
   unrequested: "Not requested",
   pending: "Awaiting vendor",

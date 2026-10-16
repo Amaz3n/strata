@@ -777,8 +777,10 @@ export function CommitmentLinesDialog({
                                 variant="ghost"
                                 className="h-7 px-2 text-xs text-destructive"
                                 onClick={async () => {
+                                  const reason = window.prompt("Why is this change order being voided?")
+                                  if (!reason) return
                                   try {
-                                    unwrapAction(await voidCommitmentChangeOrderAction(projectId, changeOrder.id))
+                                    unwrapAction(await voidCommitmentChangeOrderAction(projectId, changeOrder.id, reason))
                                     await reloadChangeOrders()
                                     toast({ title: "CCO voided" })
                                   } catch (error) {

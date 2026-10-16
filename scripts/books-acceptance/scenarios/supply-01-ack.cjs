@@ -3,6 +3,7 @@
 // and acts through `kit.as` (members, row security real), `kit.service` (the portal) or `race`.
 //
 //   approved-purchase-order-cannot-be-edited-in-place   a project-member superintendent forging through the data API is refused; the VPO and return-to-draft paths work
+//   po-issue-cannot-be-forged-or-erased                 a member cannot issue, re-source, re-date or reorder an approved order, or erase its history; a team-less purchasing manager edits a draft's lines; imported WIP is a backfill
 //   vendor-receives-and-answers-an-issued-version       approval = revision 1 + one queued email job; accept at the hash; stale hash refused; dispute needs a reason and line facts
 //   approved-vpo-requests-reacknowledgment              VPO approval = revision 2 and "revised"; the obligation is PO + VPO; voiding = revision 3
 //   acknowledgment-queue-is-scoped-and-capped           a division-limited reader sees their division only with a total; a non-holder is refused; a sales agent cannot write answers
@@ -88,6 +89,63 @@ async function approvedPurchaseOrderCannotBeEditedInPlace(kit, expected, check) 
     serviceHeaderEdit: /locked/.test(serviceHeader) ? "refused: locked" : serviceHeader, unchanged: before,
   })
   eq(check, "a VPO approved against the order is the way to change it (revision 2), and the owner's return to draft un-issues it", expected.expected.paths, { versionsAfterVpo: afterVpo, returned })
+  return { orgId: org.orgId, projectId: h.projectId }
+}
+
+async function poIssueCannotBeForgedOrErased(kit, expected, check) {
+  const h = await house(kit)
+  const { org } = h
+  const sup = org.team.superintendent
+  kit.sql(`insert into public.project_members(org_id,project_id,user_id,role_id,status) select ${kit.q(org.orgId)},${kit.q(h.projectId)},${kit.q(sup.userId)},id,'active' from public.roles where key='pm' on conflict (project_id,user_id) do nothing`)
+  const draft = await h.purchaseOrder("Forgery draft")
+  kit.sql(`update public.commitments set metadata = metadata || '{"source":"po_generation"}'::jsonb where id=${kit.q(draft.id)};
+    update public.commitment_lines set metadata = '{"source":"po_generation","source_ref":"line-1"}'::jsonb where id=${kit.q(draft.lineId)}`)
+  const forgedDraft = {
+    insertAsApproved: await viaDataApi(kit, sup, (db) => db.from("commitments").insert({ org_id: org.orgId, project_id: h.projectId, company_id: h.vendorId, commitment_type: "purchase_order", title: `QA-${h.tag} Forged`, status: "approved", total_cents: 99999999 }).select("id")),
+    draftToApproved: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ status: "approved", total_cents: 77700000 }).eq("id", draft.id).select("id")),
+  }
+  await h.approve(draft.id)
+  const forgedIssued = {
+    toComplete: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ status: "complete" }).eq("id", draft.id).select("id")),
+    stripOrderSource: await viaDataApi(kit, sup, (db) => db.from("commitments").update({ metadata: {} }).eq("id", draft.id).select("id")),
+    stripLineSource: await viaDataApi(kit, sup, (db) => db.from("commitment_lines").update({ metadata: {} }).eq("id", draft.lineId).select("id")),
+    neededBy: await viaDataApi(kit, sup, (db) => db.from("commitment_lines").update({ needed_by: "2030-01-01" }).eq("id", draft.lineId).select("id")),
+    sortOrder: await viaDataApi(kit, sup, (db) => db.from("commitment_lines").update({ sort_order: 9 }).eq("id", draft.lineId).select("id")),
+  }
+  const [v1] = await h.versions(draft.id)
+  const stillAnswerable = await h.answer(draft.id, v1)
+  const forgedCount = Number(kit.rows(`select count(*)::int n from public.commitments where title=${kit.q(`QA-${h.tag} Forged`)}`)[0].n)
+
+  // History is never destroyed: back to draft, the order still cannot be deleted by a member; receipts stop the return itself.
+  await kit.as(org.owner, () => app("commitments").updateCommitment({ commitmentId: draft.id, input: { status: "draft" } }))
+  const deleteWithHistory = await viaDataApi(kit, sup, (db) => db.from("commitments").delete().eq("id", draft.id).select("id"))
+  const versionsAfterDelete = (await h.versions(draft.id)).length
+  await h.approve(draft.id)
+  kit.sql(`insert into public.po_receipts(org_id,project_id,commitment_id,idempotency_key) values(${kit.q(org.orgId)},${kit.q(h.projectId)},${kit.q(draft.id)},${kit.q(`wd-${h.tag}`)})`)
+  const returnWithReceipt = await attempt(() => kit.as(org.owner, () => app("commitments").updateCommitment({ commitmentId: draft.id, input: { status: "draft" } })))
+
+  // A purchasing manager on no team edits a draft's lines and reads the issued version; an imported open-WIP order is history.
+  const lines = await h.purchaseOrder("Desk lines")
+  const desk = org.team.purchasing
+  const created = await attempt(() => kit.as(desk, () => app("commitments").createCommitmentLine(lines.id, { description: "Sheathing", quantity: 4, unit: "ea", unit_cost_cents: 100 })))
+  const edited = await attempt(() => kit.as(desk, () => app("commitments").updateCommitmentLine(lines.lineId, { quantity: 7 })))
+  const deskTotal = Number(kit.rows(`select total_cents from public.commitments where id=${kit.q(lines.id)}`)[0].total_cents)
+  await h.approve(lines.id)
+  const issuance = await kit.as(desk, () => app("po-acknowledgments").getPoIssuance(lines.id))
+  const imported = await h.purchaseOrder("Imported")
+  kit.sql(`update public.commitments set metadata = metadata || '{"imported_open_wip":true}'::jsonb where id=${kit.q(imported.id)}; update public.commitments set status='approved' where id=${kit.q(imported.id)}`)
+  eq(check, "a member cannot insert an order as approved or move a draft to approved; once issued, complete, provenance metadata, needed_by and sort_order are all refused and the vendor can still answer the version", expected.expected.forged, {
+    forgedDraft, forgedIssued, forgedOrders: forgedCount, vendorStillAnswers: stillAnswerable,
+  })
+  eq(check, "an order with history cannot be deleted by a member, and one with receipts cannot go back to draft", expected.expected.history, {
+    deleteWithHistory, versionsAfterDelete, returnWithReceipt: /deliveries/.test(returnWithReceipt) ? "refused: deliveries" : returnWithReceipt,
+  })
+  eq(check, "a purchasing manager on no team edits a draft's lines (total follows: 4x$1 + 7x$50) and reads the issued version; an imported open-WIP order is a backfill with no email", expected.expected.desk, {
+    created, edited, deskTotal, issuanceRevision: issuance.current?.revision ?? null,
+    importedVersions: (await h.versions(imported.id)).map((row) => row.reason),
+    importedEmailJobs: Number(kit.rows(`select count(*)::int n from public.outbox where job_type='po_issue_notice' and payload->>'commitment_id'=${kit.q(imported.id)}`)[0].n),
+    importedState: stateOf(await h.queue(org.team.purchasing), imported.id),
+  })
   return { orgId: org.orgId, projectId: h.projectId }
 }
 
@@ -214,6 +272,7 @@ async function raceTwoVendorAnswersAndARevision(kit, expected, check) {
 
 const subcases = {
   "approved-purchase-order-cannot-be-edited-in-place": approvedPurchaseOrderCannotBeEditedInPlace,
+  "po-issue-cannot-be-forged-or-erased": poIssueCannotBeForgedOrErased,
   "vendor-receives-and-answers-an-issued-version": vendorReceivesAndAnswersAnIssuedVersion,
   "approved-vpo-requests-reacknowledgment": approvedVpoRequestsReacknowledgment,
   "acknowledgment-queue-is-scoped-and-capped": acknowledgmentQueueIsScopedAndCapped,

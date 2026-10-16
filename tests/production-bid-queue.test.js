@@ -14,6 +14,7 @@ function harness({ scope = { assignedOnly: false, divisionIds: [] }, denied = fa
     const query = {
       select(columns, options) { call.columns = columns; call.options = options; return query },
       eq(...args) { call.filters.push(["eq", ...args]); return query }, neq(...args) { call.filters.push(["neq", ...args]); return query },
+      not(...args) { call.filters.push(["not", ...args]); return query },
       ilike(...args) { call.filters.push(["ilike", ...args]); return query },
       in(...args) { call.filters.push(["in", ...args]); return query }, or(...args) { call.filters.push(["or", ...args]); return query },
       order(...args) { call.filters.push(["order", ...args]); return query }, range(from, to) { call.range = [from, to]; return query },
@@ -55,6 +56,7 @@ test("assigned division scope filters both parents without loading org ID roster
   assert.equal(calls.length, 1)
   assert.ok(calls[0].filters.some(([op, key, values]) => op === "in" && key === "community.division_id" && values[0] === division))
   assert.ok(calls[0].filters.some(([op, expression]) => op === "or" && expression.includes("plan.not.is.null")))
+  assert.ok(calls[0].filters.some(([op, key, , value]) => op === "not" && key === "community_id" && value === null), "a plan-only package is not listed to a division-limited member")
 })
 
 test("forbidden and empty division access never read bid rows", async () => {

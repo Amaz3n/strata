@@ -7,6 +7,7 @@
 //   po-generation-tables-refuse-data-api-writes   a member cannot forge runs or exception resolutions; the buyer's path still works
 //   po-preview-lists-expiring-agreements          the preview names every agreement ending in the window (vendor, date, days)
 //   po-regeneration-preserves-progressed-orders   approved orders stay, differences are reported, drafts re-price, nothing is ordered twice
+//   po-dismissed-exceptions-stay-dismissed        a dismissed exception is not raised again; one open exception per line
 //   po-resolutions-keep-one-budget                three resolutions leave one generated budget equal to the commitments
 //   po-zero-price-needs-a-reason                  a $0 manual price is refused without a reason and accepted with one
 //   race-po-competing-commits                     two sessions commit one preview: one run, one set of orders
@@ -130,21 +131,40 @@ async function regenerationPreservesProgressedOrders(kit, expected, check) {
   const h = await home(kit)
   const first = await issue(kit, h)
   const before = orders(kit, h)
-  const approved = before[0]
-  kit.sql(`update public.commitments set status='approved' where id=${kit.q(approved.id)}`)
-  const framing = before.find((row) => row.vendor === "Palmetto Framing") ?? before[before.length - 1]
-  await kit_as(h, () => app("price-book").repriceAgreement(agreementOf(kit, h, "Palmetto Framing"), { effective_from: kit.rows("select current_date::text d")[0].d, unit_cost_cents: 4800, reason: "PO-01 price moved" }))
-  const second = await issue(kit, h)
+  const framing = before.find((row) => row.vendor === "Palmetto Framing")
+  const other = before.find((row) => row.id !== framing.id)
+  // Framing is approved; another vendor's order is complete (no bill yet); the rest stay drafts.
+  kit.sql(`update public.commitments set status='approved' where id=${kit.q(framing.id)}; update public.commitments set status='complete' where id=${kit.q(other.id)}`)
+  const unitCents = Number(kit.rows(`select unit_cost_cents u from public.vendor_price_agreements where id=${kit.q(agreementOf(kit, h, "Palmetto Framing"))}`)[0].u)
+  await kit_as(h, () => app("price-book").repriceAgreement(agreementOf(kit, h, "Palmetto Framing"), { effective_from: kit.rows("select current_date::text d")[0].d, unit_cost_cents: unitCents + 100, reason: "PO-01 price moved" }))
+  const seen = await preview(h)
+  const second = await commit(h, seen.inputFingerprint)
   const after = orders(kit, h)
-  const approvedAfter = after.find((row) => row.id === approved.id)
-  const framingAfter = after.find((row) => row.id === framing.id)
-  equal(check, "regenerating after a price moved leaves the approved order untouched and reports the difference, re-prices drafts in place, and orders nothing twice", expected.expected, {
-    approvedOrderUntouched: approvedAfter.status === "approved" && approvedAfter.total_cents === approved.total_cents,
+  const framingAfter = after.find((row) => row.id === framing.id), otherAfter = after.find((row) => row.id === other.id)
+  const reported = (result) => result.preservedChanged.map((change) => change.commitmentId === framing.id)
+  equal(check, "the preview and the commit both report the approved order that would now price differently; the approved and the completed order keep their lines and totals, nothing is ordered twice", expected.expected, {
+    previewReportsApprovedOrder: reported(seen).length > 0 && reported(seen).every(Boolean),
+    commitReportsApprovedOrder: reported(second).length > 0 && reported(second).every(Boolean),
+    approvedOrderUntouched: framingAfter.status === "approved" && framingAfter.total_cents === framing.total_cents,
+    completedOrderUntouched: otherAfter.status === "complete" && otherAfter.total_cents === other.total_cents,
     orderCountUnchanged: after.length === before.length,
-    reportedForPurchasing: approved.id === framing.id ? second.preservedChanged.length > 0 : second.preservedChanged.every((change) => change.commitmentId === approved.id),
-    draftsRepriced: approved.id === framing.id ? true : framingAfter.total_cents !== framing.total_cents,
     firstRunWasWhole: first.status === "succeeded",
     ...shape(kit, h),
+  })
+  return { orgId: h.org.orgId, projectId: h.projectId }
+}
+
+async function dismissedExceptionsStayDismissed(kit, expected, check) {
+  const h = await homeWithExceptions(kit)
+  const target = h.open[0], others = h.open.slice(1)
+  await kit_as(h, () => generation().dismissPoException(target.id, "Builder supplies this item"))
+  const seen = await preview(h)
+  await commit(h, seen.inputFingerprint)
+  const count = (status) => kit.rows(`select count(*)::int n from public.po_generation_exceptions where project_id=${kit.q(h.projectId)} and status=${kit.q(status)}`)[0].n
+  const openFor = (id) => kit.rows(`select count(*)::int n from public.po_generation_exceptions where project_id=${kit.q(h.projectId)} and status='open' and source_ref=(select source_ref from public.po_generation_exceptions where id=${kit.q(id)})`)[0].n
+  equal(check, "a dismissed exception is not raised again by a later preview or commit, and no line has more than one open exception", expected.expected, {
+    dismissed: count("dismissed"), reopenedForTheDismissedLine: openFor(target.id), othersStillOpen: others.every((item) => openFor(item.id) === 1),
+    maxOpenPerLine: Number(kit.rows(`select coalesce(max(n),0) n from (select count(*) n from public.po_generation_exceptions where project_id=${kit.q(h.projectId)} and status='open' group by source_kind, source_ref) t`)[0].n),
   })
   return { orgId: h.org.orgId, projectId: h.projectId }
 }
@@ -247,6 +267,7 @@ const subcases = {
   "po-generation-tables-refuse-data-api-writes": tablesRefuseDataApiWrites,
   "po-preview-lists-expiring-agreements": previewListsExpiringAgreements,
   "po-regeneration-preserves-progressed-orders": regenerationPreservesProgressedOrders,
+  "po-dismissed-exceptions-stay-dismissed": dismissedExceptionsStayDismissed,
   "po-resolutions-keep-one-budget": resolutionsKeepOneBudget,
   "po-zero-price-needs-a-reason": zeroPriceNeedsAReason,
   "race-po-competing-commits": raceCompetingCommits,

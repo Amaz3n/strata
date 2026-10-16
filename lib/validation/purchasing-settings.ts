@@ -32,6 +32,8 @@ export const purchasingSettingsUpdateSchema = z.object({
   vpo_evidence_required_over_cents: z.number().int().min(0).max(1_000_000_000_000).nullable().optional(),
   expiring_agreement_lead_days: z.number().int().min(1).max(365).optional(),
   vpo_approval_thresholds: z.array(vpoApprovalBandSchema).min(1).max(MAX_APPROVAL_BANDS).optional(),
+  /** The `updated_at` the form was loaded with; a save over a newer one is refused instead of overwriting it. */
+  expected_updated_at: z.string().nullable().optional(),
 }).superRefine((value, context) => {
   if (!value.vpo_approval_thresholds) return
   const message = vpoBandsError(value.vpo_approval_thresholds)

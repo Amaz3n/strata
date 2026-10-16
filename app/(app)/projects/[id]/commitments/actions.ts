@@ -162,7 +162,7 @@ export async function approveCommitmentChangeOrderAction(
 export async function voidCommitmentChangeOrderAction(
   projectId: string,
   commitmentChangeOrderId: string,
-  reason?: string | null,
+  reason: string,
 ) {
   return run(async () => {
     const result = await voidCommitmentChangeOrder({ commitmentChangeOrderId, reason })

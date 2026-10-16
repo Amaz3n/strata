@@ -53,6 +53,8 @@ export type VarianceFact = {
   superintendent_name: string | null
 }
 
+/** The role keys that make a project member the home's superintendent; the report function applies the same set. */
+const SUPERINTENDENT_ROLE_KEYS = ["field", "org_superintendent"]
 const BENCHMARK_LOW = 0.01
 const BENCHMARK_HIGH = 0.02
 /** Matches the RPC: only approved orders carrying a variance reason count. */
@@ -260,7 +262,7 @@ async function loadSuperintendents({
 }): Promise<Map<string, { userId: string; label: string }>> {
   const byProject = new Map<string, { userId: string; label: string }>()
   // roles is a catalog the member client cannot read; the lookup carries no org data.
-  const { data: roles, error: roleError } = await createServiceSupabaseClient().from("roles").select("id").eq("key", "field")
+  const { data: roles, error: roleError } = await createServiceSupabaseClient().from("roles").select("id").in("key", SUPERINTENDENT_ROLE_KEYS)
   if (roleError) throw new Error(`Failed to load the superintendent role: ${roleError.message}`)
   const roleIds = (roles ?? []).map((row) => row.id as string)
   if (roleIds.length === 0) return byProject

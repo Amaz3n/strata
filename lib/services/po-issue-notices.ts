@@ -21,7 +21,7 @@ const payloadSchema = z.object({
 const money = (cents: number | null) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format((cents ?? 0) / 100)
 
 /** The dedupe key of one version's email: a version is mailed once, whoever asks. */
-export const poIssuedNoticeDedupeKey = (versionId: string) => `po_issued:${versionId}`
+const poIssuedNoticeDedupeKey = (versionId: string) => `po_issued:${versionId}`
 
 /**
  * Mails the vendor one issued version of a purchase order, from the outbox job
@@ -53,7 +53,7 @@ export async function processPoIssueNotice(jobId: number, orgId: string, payload
         homeLabel(supabase, orgId, job.project_id),
         supabase.from("orgs").select("name,slug,logo_url").eq("id", orgId).maybeSingle(),
         supabase.from("companies").select("name").eq("org_id", orgId).eq("id", job.company_id).maybeSingle(),
-        resolveTradePortalLink(supabase, orgId, job.company_id, job.project_id),
+        resolveTradePortalLink(supabase, orgId, job.company_id, job.project_id, ["can_view_purchase_orders", "can_acknowledge_purchase_orders"]),
       ])
       if (orgResult.error || companyResult.error) throw new Error(`Failed to load the purchase order notice: ${(orgResult.error ?? companyResult.error)?.message}`)
       if (!recipients.length) return null

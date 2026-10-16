@@ -22,7 +22,7 @@ export interface AdvisoryLine {
   state: "expected" | "late" | "partial" | "short"
 }
 
-export interface AdvisoryTask {
+interface AdvisoryTask {
   id: string
   name: string
   costCodeId: string | null

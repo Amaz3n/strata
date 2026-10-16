@@ -36,6 +36,8 @@ export function AgreementChangeDialog({ change, onClose }: { change: AgreementCh
   const [price, setPrice] = useState("")
   const [date, setDate] = useState("")
   const [impact, setImpact] = useState<{ affectedPoCount: number } | null>(null)
+  const [impactError, setImpactError] = useState<string | null>(null)
+  const [impactTry, setImpactTry] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const agreement = change?.agreement
 
@@ -46,20 +48,23 @@ export function AgreementChangeDialog({ change, onClose }: { change: AgreementCh
     setPrice("")
     setError(null)
     setImpact(null)
+    setImpactError(null)
     setDate(change?.kind === "reprice" ? new Date().toISOString().slice(0, 10) : agreement.effective_to ?? new Date().toISOString().slice(0, 10))
     getAgreementImpactAction(agreement.id).then((result) => {
-      if (active && result.success) setImpact(result.data)
+      if (!active) return
+      if (result.success) setImpact(result.data)
+      else setImpactError(result.error)
     })
     return () => {
       active = false
     }
-  }, [agreement, change?.kind])
+  }, [agreement, change?.kind, impactTry])
 
   if (!change || !agreement) return null
   const cents = parseMoneyToCents(price)
   const minDate = change.kind === "reprice" ? dayAfter(agreement.effective_from) : agreement.effective_from
-  const dateOk = change.kind === "void" || (date >= minDate && (change.kind === "end" || !agreement.effective_to || date <= agreement.effective_to))
-  const valid = reason.trim().length >= 3 && dateOk && (change.kind !== "reprice" || (price.trim() !== "" && cents !== null && cents >= 0))
+  const dateOk = change.kind === "void" || (date >= minDate && (!agreement.effective_to || date <= agreement.effective_to))
+  const valid = impact !== null && reason.trim().length >= 3 && dateOk && (change.kind !== "reprice" || (price.trim() !== "" && cents !== null && cents >= 0))
 
   function submit() {
     if (!change || !agreement || !valid) return
@@ -100,14 +105,16 @@ export function AgreementChangeDialog({ change, onClose }: { change: AgreementCh
         </div>}
         {change.kind !== "void" && <div className="space-y-1.5">
           <Label htmlFor="agreement-date">{change.kind === "reprice" ? "Effective from" : "Ends on"}</Label>
-          <Input id="agreement-date" type="date" min={minDate} max={change.kind === "reprice" ? agreement.effective_to ?? undefined : undefined} value={date} disabled={pending} onChange={(event) => setDate(event.target.value)} className="w-44" aria-invalid={!dateOk} />
-          {!dateOk && <p className="text-xs text-destructive">{change.kind === "reprice" ? "The new price starts after the current one and before it ends." : "The end date cannot fall before the agreement starts."}</p>}
+          <Input id="agreement-date" type="date" min={minDate} max={agreement.effective_to ?? undefined} value={date} disabled={pending} onChange={(event) => setDate(event.target.value)} className="w-44" aria-invalid={!dateOk} />
+          {!dateOk && <p className="text-xs text-destructive">{change.kind === "reprice" ? "The new price starts after the current one and before it ends." : "An agreement can end earlier, not later, and not before it starts."}</p>}
         </div>}
         <div className="space-y-1.5">
           <Label htmlFor="agreement-reason">Why</Label>
           <Textarea id="agreement-reason" rows={3} maxLength={1000} value={reason} disabled={pending} onChange={(event) => setReason(event.target.value)} />
         </div>
-        {impact === null
+        {impactError
+          ? <p role="alert" className="flex items-center justify-between gap-3 border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">Could not count the orders priced from this agreement: {impactError}<Button size="sm" variant="outline" onClick={() => setImpactTry((n) => n + 1)}>Retry</Button></p>
+          : impact === null
           ? <div className="h-9 animate-pulse bg-muted" aria-busy="true" />
           : <p className="border bg-muted/30 px-3 py-2 text-sm">
               <span className="font-semibold tabular-nums">{impact.affectedPoCount}</span> open purchase order{impact.affectedPoCount === 1 ? "" : "s"} priced from this agreement{impact.affectedPoCount ? "; they keep their price and the change applies to orders generated from now on" : ""}.

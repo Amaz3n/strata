@@ -11,6 +11,7 @@
 //   pay-on-po-completion-reconciles-to-the-bill          EP08-11  report -> verify -> approve bills the PO; a VPO approved later is billed by its own
 //                                                        completion; an off-book bill makes the position and the desk band agree on the exceptions
 //   two-approvals-of-one-completion-bill-once            EP08-11  two sessions approving one completion mint one bill
+//   division-limited-manager-cannot-decide-another-divisions-vpo   EP08-09  the division fence on approving and voiding; settings are organization-wide
 //
 // The fixture is a production builder with a purchasing manager (requester), a second (verifier), a third
 // (approver) and a project lead who holds only the standard VPO approval. Amounts are cents; dates do not matter.
@@ -25,6 +26,10 @@ const attempt = async (work) => { try { await work(); return "allowed" } catch (
 /** Names what stopped an action, so the expectation reads as a rule rather than as a sentence. */
 function why(outcome) {
   if (outcome === "allowed") return "allowed"
+  if (/why this change order is being voided/i.test(outcome)) return "refused: needs a reason"
+  if (/Only draft or sent/i.test(outcome)) return "refused: decided order is not edited"
+  if (/whole organization/i.test(outcome)) return "refused: settings are organization-wide"
+  if (/already claimed/i.test(outcome)) return "refused: nothing left to claim"
   if (/someone other than/i.test(outcome)) return "refused: requester cannot approve"
   if (/back-charge needs cost evidence/i.test(outcome)) return "refused: back-charge needs evidence"
   if (/cost evidence must be available/i.test(outcome)) return "refused: evidence is not the home's"
@@ -124,6 +129,15 @@ async function vpoApprovalFollowsBandsEvidenceAndSeparation(kit, expected, check
   await kit.as(org.buyerA, () => orders().updateCommitmentChangeOrder({ commitmentChangeOrderId: backcharge.id, input: { evidence_file_ids: [h.fileId] } }))
   observed.backchargeWithEvidence = why(await approveOrder(kit, org.buyerB, backcharge.id))
 
+  const voidable = await raise(kit, org, h, { cents: 150_000, code: "plan_error", evidence: [h.fileId] })
+  await approveOrder(kit, org.buyerB, voidable.id)
+  observed.voidByStandardApprover = why(await attempt(() => kit.as(org.lead, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: voidable.id, reason: "Entered against the wrong order" }))))
+  observed.voidWithoutReason = why(await attempt(() => kit.as(org.buyerB, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: voidable.id, reason: "" }))))
+  observed.editDecidedOrder = why(await attempt(() => kit.as(org.buyerA, () => orders().updateCommitmentChangeOrder({ commitmentChangeOrderId: voidable.id, input: { lines: [{ description: "Bigger", quantity: 1, unit_cost_cents: 9_000_000 }] } }))))
+  observed.voidByLargeApprover = why(await attempt(() => kit.as(org.buyerB, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: voidable.id, reason: "Entered against the wrong order" }))))
+  observed.voidAudited = Number(kit.rows(`select count(*)::int n from public.audit_log where org_id=${kit.q(org.orgId)} and entity_type='commitment_change_order' and entity_id=${kit.q(voidable.id)} and after_data->>'status'='voided'`)[0].n)
+  observed.voidedOrder = statusOf(kit, voidable.id)
+
   observed.final = { small: statusOf(kit, small.id).status, large: statusOf(kit, large.id).status, backcharge: statusOf(kit, backcharge.id).status }
   observed.requesterRefusalAudited = Number(kit.rows(`select count(*)::int n from public.authorization_audit_log where org_id=${kit.q(org.orgId)} and context->>'rule'='variance_order.requester_cannot_approve' and resource_id=${kit.q(large.id)}`)[0].n)
   observed.budgetBaselineUnchanged = budgetTotal(kit, h) === baseline
@@ -140,12 +154,17 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
   await approveOrder(kit, org.buyerB, done.id)
   const completion = await kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, commitment_line_ids: [h.lineIds[0]], reported_source: "office", photo_file_ids: [] }))
   const forge = {}
+  const reasonless = randomUUID()
+  kit.sql(`insert into public.commitment_change_orders(id,org_id,project_id,commitment_id,title,status,total_cents) values(${kit.q(reasonless)},${kit.q(org.orgId)},${kit.q(h.projectId)},${kit.q(h.orderId)},'Plain change','draft',20000)`)
   const members = { requester: org.buyerA, salesAgent: org.team.sales }
   for (const [who, actor] of Object.entries(members)) {
     forge[`${who}ApprovesAndReprices`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").update({ status: "approved", approved_by: actor.userId, total_cents: 99_000_000 }).eq("id", draft.id).select("id")))
     forge[`${who}RepricesApproved`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").update({ total_cents: 1 }).eq("id", done.id).select("id")))
     forge[`${who}RewritesLines`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_order_lines").update({ amount_cents: 1 }).eq("commitment_change_order_id", draft.id).select("id")))
     forge[`${who}RaisesApprovedVpo`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").insert({ org_id: org.orgId, project_id: h.projectId, commitment_id: h.orderId, title: "Forged", status: "approved", total_cents: 1, reason_code_id: draft.reason_code_id }).select("id")))
+    forge[`${who}InsertsReasonlessApproved`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").insert({ org_id: org.orgId, project_id: h.projectId, commitment_id: h.orderId, title: "Forged", status: "approved", total_cents: 5_000_000, approved_by: actor.userId, approved_at: new Date().toISOString() }).select("id")))
+    forge[`${who}ApprovesReasonlessDraft`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").update({ status: "approved", approved_by: actor.userId, approved_at: new Date().toISOString() }).eq("id", reasonless).select("id")))
+    forge[`${who}RepricesReasonlessDraft`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("commitment_change_orders").update({ total_cents: 1 }).eq("id", reasonless).select("id")))
     forge[`${who}ChangesSettings`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("purchasing_settings").update({ po_completion_requires_verification: false }).eq("org_id", org.orgId).select("org_id")))
     forge[`${who}EditsReasons`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("variance_reason_codes").update({ is_active: false }).eq("org_id", org.orgId).select("id")))
     forge[`${who}VerifiesCompletion`] = dataApi(await viaDataApi(kit, actor, (db) => db.from("po_completions").update({ status: "verified", verified_by: actor.userId }).eq("id", completion.id).select("id")))
@@ -155,6 +174,8 @@ async function purchasingControlsCannotBeForgedThroughTheDataApi(kit, expected, 
     draft: statusOf(kit, draft.id), done: statusOf(kit, done.id),
     settingsRequireVerification: kit.rows(`select po_completion_requires_verification v from public.purchasing_settings where org_id=${kit.q(org.orgId)}`)[0]?.v ?? "default",
     completion: kit.rows(`select status from public.po_completions where id=${kit.q(completion.id)}`)[0].status,
+    reasonlessDraft: statusOf(kit, reasonless),
+    forgedRows: Number(kit.rows(`select count(*)::int n from public.commitment_change_orders where project_id=${kit.q(h.projectId)} and title='Forged'`)[0].n),
   }
   const writers = {
     salesAgentSavesSettings: why(await attempt(() => kit.as(org.team.sales, () => settings().updatePurchasingSettings({ pay_on_po_enabled: false })))),
@@ -213,11 +234,33 @@ async function payOnPoCompletionReconcilesToTheBill(kit, expected, check) {
   observed.wholeOrderApproval = why(await approveCompletion(kit, org.buyerC, whole.id))
   observed.billedAfterPo = billsOf(kit, h)
 
+  // A variance order approved after the work was billed: the office claims it from the purchase order sheet's own action.
   const late = await raise(kit, org, h, { cents: 15_000, code: "price_increase" })
   observed.lateVpoApproved = why(await approveOrder(kit, org.lead, late.id))
-  const lateOnly = await reportAndVerify(kit, org, h, { commitment_line_ids: [], change_order_ids: [late.id] })
-  observed.lateVpoCompletionApproval = why(await approveCompletion(kit, org.buyerC, lateOnly.id))
+  const officeClaim = await kit.as(org.buyerA, () => completions().reportUnclaimedVariancePoCompletion(h.orderId))
+  await kit.as(org.buyerB, () => completions().verifyPoCompletion(officeClaim.id))
+  observed.lateVpoCompletionApproval = why(await approveCompletion(kit, org.buyerC, officeClaim.id))
+  observed.nothingLeftToClaim = why(await attempt(() => kit.as(org.buyerA, () => completions().reportUnclaimedVariancePoCompletion(h.orderId))))
   observed.lateVpoClaimedAgain = why(await attempt(() => kit.as(org.buyerA, () => completions().reportPoCompletion({ commitment_id: h.orderId, commitment_line_ids: [], change_order_ids: [late.id], reported_source: "office", photo_file_ids: [] }))))
+
+  // A second one is claimed by the trade from its portal, which lists it as outstanding scope.
+  const trade = Object.values(org.vendorIds)[0]
+  const contact = randomUUID()
+  kit.sql(`insert into public.contacts(id,org_id,full_name,email) values(${kit.q(contact)},${kit.q(org.orgId)},'Foreman','foreman-${h.tag}@acceptance.example.test');
+    insert into public.contact_company_links(org_id,contact_id,company_id,is_primary) values(${kit.q(org.orgId)},${kit.q(contact)},${kit.q(trade)},true);`)
+  const access = await kit.as(org.owner, () => app("portal-access").createPortalAccessToken({ projectId: h.projectId, portalType: "sub", companyId: trade, orgId: org.orgId, permissions: { can_view_purchase_orders: true, can_report_po_completion: true } }))
+  const second = await raise(kit, org, h, { cents: 20_000, code: "price_increase" })
+  await approveOrder(kit, org.lead, second.id)
+  const portalView = async () => {
+    const view = await kit.service(() => app("portal-purchase-orders").listPortalPurchaseOrders(access))
+    const order = view.orders.find((row) => row.id === h.orderId)
+    return { outstandingChanges: order.changes.filter((change) => !change.claimed).map((change) => change.totalCents), canReport: order.hasReportableScope }
+  }
+  observed.portalBefore = await portalView()
+  const portalClaim = await kit.service(() => completions().reportPoCompletionFromPortal(access.token, { commitment_id: h.orderId, commitment_line_ids: [], change_order_ids: [second.id], photo_file_ids: [h.fileId], notes: null }))
+  observed.portalAfter = await portalView()
+  await kit.as(org.buyerB, () => completions().verifyPoCompletion(portalClaim.id))
+  observed.portalClaimApproval = why(await approveCompletion(kit, org.buyerC, portalClaim.id))
   observed.billedAfterVpo = billsOf(kit, h)
 
   const positions = () => kit.as(org.team.purchasing, () => app("po-positions").getProjectPoPositions(h.projectId))
@@ -251,12 +294,39 @@ async function twoApprovalsOfOneCompletionBillOnce(kit, expected, check) {
   return { orgId: org.orgId, projectId: h.projectId }
 }
 
+async function divisionLimitedManagerCannotDecideAnotherDivisionsVpo(kit, expected, check) {
+  const org = await payOrg(kit)
+  const h = home(kit, org, "Lot 6")
+  const divisions = { a: randomUUID(), b: randomUUID() }
+  kit.sql(`insert into public.divisions(id,org_id,name) values(${kit.q(divisions.a)},${kit.q(org.orgId)},'VPO-01 A ${h.tag}'),(${kit.q(divisions.b)},${kit.q(org.orgId)},'VPO-01 B ${h.tag}');
+    update public.projects set division_id=${kit.q(divisions.a)} where id=${kit.q(h.projectId)};`)
+  const limited = (division) => {
+    const member = kit.addMember(org, "org_purchasing_manager", {})
+    const membership = kit.rows(`select id from public.memberships where org_id=${kit.q(org.orgId)} and user_id=${kit.q(member.userId)}`)[0].id
+    kit.sql(`update public.memberships set division_scope='assigned' where id=${kit.q(membership)}; insert into public.membership_divisions(membership_id,division_id) values(${kit.q(membership)},${kit.q(division)});`)
+    return member
+  }
+  const otherDivision = limited(divisions.b), ownDivision = limited(divisions.a)
+  const order = await raise(kit, org, h, { cents: 40_000 })
+  const observed = {
+    otherDivisionApproves: why(await attempt(() => kit.as(otherDivision, () => orders().approveCommitmentChangeOrder({ commitmentChangeOrderId: order.id })))),
+    otherDivisionVoids: why(await attempt(() => kit.as(otherDivision, () => orders().voidCommitmentChangeOrder({ commitmentChangeOrderId: order.id, reason: "Not mine to void" })))),
+    denyReasons: kit.rows(`select distinct reason_code from public.authorization_audit_log where org_id=${kit.q(org.orgId)} and actor_user_id=${kit.q(otherDivision.userId)} and decision='deny' and resource_id=${kit.q(order.id)}`).map((row) => row.reason_code),
+    afterRefusals: statusOf(kit, order.id).status,
+    ownDivisionApproves: why(await attempt(() => kit.as(ownDivision, () => orders().approveCommitmentChangeOrder({ commitmentChangeOrderId: order.id })))),
+    divisionLimitedSavesSettings: why(await attempt(() => kit.as(ownDivision, () => settings().updatePurchasingSettings({ expiring_agreement_lead_days: 20 })))),
+  }
+  equal(check, "a purchasing manager limited to another division can neither approve nor void a home's variance order, one limited to its own division can, and settings that apply to the whole organization are not theirs to change", expected.expected, observed)
+  return { orgId: org.orgId, projectId: h.projectId }
+}
+
 const subcases = {
   "vpo-approval-follows-bands-evidence-and-separation": vpoApprovalFollowsBandsEvidenceAndSeparation,
   "purchasing-controls-cannot-be-forged-through-the-data-api": purchasingControlsCannotBeForgedThroughTheDataApi,
   "completion-money-step-needs-a-second-person-and-an-inspection": completionMoneyStepNeedsASecondPersonAndAnInspection,
   "pay-on-po-completion-reconciles-to-the-bill": payOnPoCompletionReconcilesToTheBill,
   "two-approvals-of-one-completion-bill-once": twoApprovalsOfOneCompletionBillOnce,
+  "division-limited-manager-cannot-decide-another-divisions-vpo": divisionLimitedManagerCannotDecideAnotherDivisionsVpo,
 }
 
 module.exports = { id: "VPO-01", subcases }

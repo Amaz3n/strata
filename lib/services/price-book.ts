@@ -192,7 +192,7 @@ export async function listPriceAgreements(filters: Partial<PriceAgreementFilters
   if (parsed.status) query = query.eq("status", parsed.status)
   if (parsed.expiringWithinDays) {
     const end = new Date(Date.now() + parsed.expiringWithinDays * 86_400_000).toISOString().slice(0, 10)
-    query = query.eq("status", "active").gte("effective_to", new Date().toISOString().slice(0, 10)).lte("effective_to", end)
+    query = query.eq("status", "active").is("superseded_by_id", null).gte("effective_to", new Date().toISOString().slice(0, 10)).lte("effective_to", end)
   }
   const { data, error, count } = await query.range(from, from + parsed.pageSize - 1)
   if (error) throw new Error(`Failed to list price agreements: ${error.message}`)
@@ -559,7 +559,7 @@ export async function getPriceBookHealth(filters: { divisionId?: string } = {}, 
   ])
   const divisionFilter = filters.divisionId ? await agreementDivisionFilter(supabase, resolvedOrgId, filters.divisionId) : null
   let activeQuery = supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active")
-  let expiringQuery = supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active").gte("effective_to", today).lte("effective_to", expiring)
+  let expiringQuery = supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active").is("superseded_by_id", null).gte("effective_to", today).lte("effective_to", expiring)
   if (accessFilter) {
     activeQuery = activeQuery.or(accessFilter)
     expiringQuery = expiringQuery.or(accessFilter)

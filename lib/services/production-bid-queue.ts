@@ -36,7 +36,8 @@ export async function listProductionBidQueue(raw: unknown = {}) {
   if (input.search) query = query.ilike("title", `%${input.search.replace(/[\\%_]/g, "\\$&")}%`)
   if (input.communityId) query = query.eq("community_id", input.communityId)
   if (scope.kind === "limited") {
-    query = query.in("community.division_id", scope.divisionIds)
+    // A plan-only package is org-wide pricing; a division-limited member neither opens nor lists it.
+    query = query.not("community_id", "is", null).in("community.division_id", scope.divisionIds)
       .or(`division_id.is.null,division_id.in.(${scope.divisionIds.join(",")})`, { referencedTable: "plan" })
   }
   const from = (input.page - 1) * input.pageSize

@@ -39,18 +39,28 @@
       }
     },
     "po-regeneration-preserves-progressed-orders": {
-      "derivation": "A home is generated, its first order is approved, and the framing agreement is repriced. Regenerating keeps the approved order's status and total, reports it for a variance order when it is the repriced vendor's, re-prices the other draft orders in place, keeps the same number of orders, and leaves one line per source line and one budget equal to the commitments.",
+      "derivation": "A home is generated; Palmetto Framing's order is approved and another vendor's order is marked complete (no bill). The framing agreement is repriced by $1 per unit. The preview already reports the approved order as pricing differently, and so does the commit; the approved and completed orders keep status and total, the number of orders is unchanged, and the house keeps one line per source and one budget equal to the commitments.",
       "expected": {
+        "previewReportsApprovedOrder": true,
+        "commitReportsApprovedOrder": true,
         "approvedOrderUntouched": true,
+        "completedOrderUntouched": true,
         "orderCountUnchanged": true,
-        "reportedForPurchasing": true,
-        "draftsRepriced": true,
         "firstRunWasWhole": true,
         "oneOrderPerSourceLine": true,
         "noOrderWithoutLines": true,
         "oneBudget": true,
         "budgetEqualsCommitments": true,
         "noRunFailedOnARace": true
+      }
+    },
+    "po-dismissed-exceptions-stay-dismissed": {
+      "derivation": "A home with two price exceptions is generated; one is dismissed with a note. A later preview and commit raise the same exceptions again for the same reasons: the dismissed one stays dismissed (one dismissed row, none open for its line), the other stays open exactly once, and no line has two open exceptions.",
+      "expected": {
+        "dismissed": 1,
+        "reopenedForTheDismissedLine": 0,
+        "othersStillOpen": true,
+        "maxOpenPerLine": 1
       }
     },
     "po-resolutions-keep-one-budget": {

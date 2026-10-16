@@ -85,11 +85,7 @@ export type PoGenerationResult = {
 /** The commit found the house changed since it was prepared; nothing was written. */
 export class StalePoGenerationError extends Error {}
 
-const commitResultSchema = z.object({
-  run_id: z.string().uuid(),
-  already_generated: z.boolean().optional(),
-  refused: z.literal("exception_closed").optional(),
-  budget_line_count: z.number().int().default(0),
+const reconcileReportShape = {
   preserved_changed: z.array(z.object({
     source_key: z.string(), commitment_id: z.string().uuid(), contract_number: z.string().nullable(),
     description: z.string(), was_company_id: z.string().uuid().nullable(), now_company_id: z.string().uuid(),
@@ -99,7 +95,17 @@ const commitResultSchema = z.object({
     source_key: z.string(), commitment_id: z.string().uuid(), contract_number: z.string().nullable(),
     description: z.string(), company_id: z.string().uuid().nullable(), cents: z.number().int(),
   })).default([]),
+}
+
+const commitResultSchema = z.object({
+  run_id: z.string().uuid(),
+  already_generated: z.boolean().optional(),
+  refused: z.literal("exception_closed").optional(),
+  budget_line_count: z.number().int().default(0),
+  ...reconcileReportShape,
 })
+
+const reconcileReportSchema = z.object({ changes: z.number().int(), ...reconcileReportShape })
 
 type ExceptionResolutionRun = {
   exceptionId: string
@@ -120,6 +126,8 @@ const poExceptionListSchema = purchasingQueueFiltersSchema.extend({
 const OPEN_EXCEPTION_SCAN_LIMIT = 1000
 const PO_NUMBER_TOKEN_LENGTH = 12
 const STALE_RETRY_LIMIT = 3
+/** Largest amount the database stores in one cents column (integer). */
+const MAX_CENTS = 2_147_483_647
 
 function relation<T extends Record<string, unknown>>(value: unknown): T | null {
   const row = Array.isArray(value) ? value[0] : value
@@ -213,15 +221,21 @@ async function authorizeExceptionAction(exceptionId: string, orgId?: string) {
   return { ...context, existing }
 }
 
-async function loadOpenExceptionKeys(context: GenerationContext, projectId: string) {
-  const { data, error } = await createServiceSupabaseClient().from("po_generation_exceptions").select("source_kind,source_ref")
-    .eq("org_id", context.orgId).eq("project_id", projectId).eq("status", "open").limit(OPEN_EXCEPTION_SCAN_LIMIT)
-  if (error) throw new Error(`Failed to load open PO exceptions: ${error.message}`)
+/**
+ * Exceptions that must not be raised again: one already open for the same
+ * source line, and a dismissed one while it would be raised for the same reason.
+ */
+async function loadSuppressedExceptionKeys(context: GenerationContext, projectId: string) {
+  const { data, error } = await createServiceSupabaseClient().from("po_generation_exceptions").select("source_kind,source_ref,status,reason")
+    .eq("org_id", context.orgId).eq("project_id", projectId).in("status", ["open", "dismissed"]).limit(OPEN_EXCEPTION_SCAN_LIMIT)
+  if (error) throw new Error(`Failed to load PO exceptions: ${error.message}`)
   const keys = new Set<string>()
   for (const row of data ?? []) {
     const sourceRef = row.source_ref as Record<string, unknown>
     const sourceId = row.source_kind === "takeoff_line" ? sourceRef.takeoff_line_id : sourceRef.project_selection_id
-    if (typeof sourceId === "string") keys.add(generationSourceKey(row.source_kind, sourceId))
+    if (typeof sourceId !== "string") continue
+    const key = generationSourceKey(row.source_kind, sourceId)
+    keys.add(row.status === "open" ? key : `${key}|${row.reason}`)
   }
   return keys
 }
@@ -319,7 +333,7 @@ async function runGeneration(
     const override = resolutionBySource.get(generationSourceKey("takeoff_line", line.id))
     if (override?.kind === "manual" && typeof override.company_id === "string" && typeof override.unit_cost_cents === "number") {
       const totalCents = Math.round(Number(line.quantity) * override.unit_cost_cents)
-      resolvedLines.push({ sourceKind: "takeoff_line", sourceId: line.id, companyId: override.company_id, companyName: companyNames.get(override.company_id) ?? "Unknown vendor", agreementId: `manual:${line.id}`, costCodeId: line.cost_code_id, costType: line.cost_type, description: line.description, quantity: Number(line.quantity), unit: line.uom, unitCostCents: override.unit_cost_cents, totalCents, scopeText: typeof override.note === "string" ? override.note : undefined })
+      resolvedLines.push({ sourceKind: "takeoff_line", sourceId: line.id, companyId: override.company_id, companyName: companyNames.get(override.company_id) ?? "Unknown vendor", agreementId: `manual:${line.id}`, costCodeId: line.cost_code_id, costType: line.cost_type, description: line.description, quantity: Number(line.quantity), unit: line.uom, unitCostCents: override.unit_cost_cents, totalCents })
       continue
     }
     const chosenAgreement = override?.kind === "agreement" && typeof override.agreement_id === "string"
@@ -365,7 +379,7 @@ async function runGeneration(
     const input = { costCodeId, costType: null, uom: "ea", quantity: 1, housePlanId: lot.house_plan_id, housePlanVersionId: lot.house_plan_version_id, communityId: lot.community_id, divisionId: lot.division_id, asOfDate }
     const override = resolutionBySource.get(generationSourceKey("option", sourceId))
     if (override?.kind === "manual" && typeof override.company_id === "string" && typeof override.unit_cost_cents === "number") {
-      resolvedLines.push({ sourceKind: "option", sourceId, companyId: override.company_id, companyName: companyNames.get(override.company_id) ?? "Unknown vendor", agreementId: `manual:${sourceId}`, costCodeId, costType: null, description: descriptor, quantity: 1, unit: "ea", unitCostCents: override.unit_cost_cents, totalCents: override.unit_cost_cents, optionDescriptor: descriptor, scopeText: typeof override.note === "string" ? override.note : undefined })
+      resolvedLines.push({ sourceKind: "option", sourceId, companyId: override.company_id, companyName: companyNames.get(override.company_id) ?? "Unknown vendor", agreementId: `manual:${sourceId}`, costCodeId, costType: null, description: descriptor, quantity: 1, unit: "ea", unitCostCents: override.unit_cost_cents, totalCents: override.unit_cost_cents, optionDescriptor: descriptor })
       continue
     }
     const candidatePool = hintedCompanyId ? candidates.filter((candidate) => candidate.company_id === hintedCompanyId) : candidates
@@ -404,6 +418,11 @@ async function runGeneration(
     if (!resolvedSourceKeys.has(key)) throw new Error("This exception could not be priced, or its source is no longer active. Refresh the queue before resolving it.")
   }
 
+  // Cents are stored as integers: a price typed with an extra zero is a message to the buyer, not a database error.
+  const oversized = resolvedLines.find((line) => !Number.isSafeInteger(line.totalCents) || line.totalCents > MAX_CENTS)
+  if (oversized) throw new Error(`"${oversized.description}" totals more than the system can record. Check the quantity and unit price.`)
+  if (resolvedLines.reduce((sum, line) => sum + line.totalCents, 0) > MAX_CENTS) throw new Error("This home's purchase orders total more than the system can record. Check the quantities and unit prices.")
+
   const purchaseOrders = groupPurchaseOrderLines(resolvedLines)
   const agreementEndsById = new Map<string, string | null>(
     candidates.map((candidate: PriceAgreementCandidate) => [candidate.id, candidate.effective_to ?? null]),
@@ -423,22 +442,26 @@ async function runGeneration(
 
   // Runs are read as the commit reads them (every run of the house, whoever
   // started it), not through the caller's row security.
-  const { data: prior, error: priorError } = await service.from("po_generation_runs").select("id,input_fingerprint,status")
+  const { data: prior, error: priorError } = await service.from("po_generation_runs").select("id")
     .eq("org_id", orgId).eq("project_id", parsed.projectId).eq("mode", "commit")
     .in("status", ["succeeded", "succeeded_with_exceptions"]).order("created_at", { ascending: false }).order("id", { ascending: false })
     .limit(1).maybeSingle()
   if (priorError) throw new Error(`Failed to read the last PO generation run: ${priorError.message}`)
   const vendorName = (companyId: string | null) => (companyId ? companyNames.get(companyId) : undefined) ?? "Unknown vendor"
-  if (parsed.mode === "commit" && !resolution && prior?.input_fingerprint === inputFingerprint) {
-    return { runId: prior.id, mode: "commit", status: prior.status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: 0, expiringAgreements, preservedChanged: [], preservedOrphaned: [] }
-  }
-
-  const openExceptionKeys = await loadOpenExceptionKeys(context, parsed.projectId)
-  // An exception already sitting open for the same source line is the same
-  // exception; re-inserting it every run buries the queue in duplicates.
+  const desiredLines = resolvedLines.map((line) => ({
+    source_kind: line.sourceKind, source_id: line.sourceId, company_id: line.companyId,
+    cost_code_id: line.costCodeId, cost_type: line.costType ?? null, description: line.description,
+    quantity: line.quantity, unit: line.unit, unit_cost_cents: line.unitCostCents, total_cents: line.totalCents,
+    agreement_id: line.agreementId, scope_text: line.scopeText ?? null, option_descriptor: line.optionDescriptor ?? null,
+  }))
+  const suppressedExceptions = await loadSuppressedExceptionKeys(context, parsed.projectId)
+  // An exception already open for the same source line is the same exception, and a dismissed one stays
+  // dismissed while it would be raised for the same reason; re-inserting buries the queue.
   const newExceptions = exceptions.filter((item) => {
     const sourceId = exceptionSourceId(item)
-    return !sourceId || !openExceptionKeys.has(generationSourceKey(item.source_kind, sourceId))
+    if (!sourceId) return true
+    const key = generationSourceKey(item.source_kind, sourceId)
+    return !suppressedExceptions.has(key) && !suppressedExceptions.has(`${key}|${item.reason}`)
   })
 
   const summary = {
@@ -461,8 +484,12 @@ async function runGeneration(
     if (parsed.mode === "dry_run") {
       if (newExceptions.length > 0) {
         const { error: exceptionError } = await service.from("po_generation_exceptions").insert(newExceptions.map((item) => ({ ...item, org_id: orgId, run_id: run.id, project_id: parsed.projectId })))
-        if (exceptionError) throw new Error(`Failed to record PO exceptions: ${exceptionError.message}`)
+        // 23505: a concurrent preview already raised the same exception; one open row per source line is the rule.
+        if (exceptionError && exceptionError.code !== "23505") throw new Error(`Failed to record PO exceptions: ${exceptionError.message}`)
       }
+      const { data: report, error: reportError } = await service.rpc("po_generation_reconcile_report", { p_org_id: orgId, p_project_id: parsed.projectId, p_lines: desiredLines, p_scope: null })
+      if (reportError) throw new Error(`Failed to compare the preview with the house's orders: ${reportError.message}`)
+      committedRaw = reconcileReportSchema.parse(report)
       const status = exceptions.length ? "succeeded_with_exceptions" : "succeeded"
       const { error: finishError } = await service.from("po_generation_runs").update({ status, completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", run.id)
       if (finishError) throw new Error(`Failed to finish the PO preview: ${finishError.message}`)
@@ -479,12 +506,7 @@ async function runGeneration(
         lot_label: `${community?.name ?? "Community"} Lot ${lot.lot_number}${lot.block ? ` Block ${lot.block}` : ""}`,
         plan_name: typeof plan?.name === "string" ? plan.name : null,
         summary: { ...summary, scoped: Boolean(resolution) },
-        lines: resolvedLines.map((line) => ({
-          source_kind: line.sourceKind, source_id: line.sourceId, company_id: line.companyId,
-          cost_code_id: line.costCodeId, cost_type: line.costType ?? null, description: line.description,
-          quantity: line.quantity, unit: line.unit, unit_cost_cents: line.unitCostCents, total_cents: line.totalCents,
-          agreement_id: line.agreementId, scope_text: line.scopeText ?? null, option_descriptor: line.optionDescriptor ?? null,
-        })),
+        lines: desiredLines,
         exceptions: resolution ? [] : newExceptions,
         resolve_exception: resolution
           ? { id: resolution.exceptionId, status: resolution.status, resolution: resolution.stored, resolved_by: userId }
@@ -504,18 +526,23 @@ async function runGeneration(
 
   const status = exceptions.length ? "succeeded_with_exceptions" : "succeeded"
   const committed = parsed.mode === "commit" ? commitResultSchema.parse(committedRaw) : null
+  const previewed = parsed.mode === "dry_run" ? reconcileReportSchema.parse(committedRaw) : null
   if (committed?.refused) throw new Error("This PO exception has already been resolved or dismissed.")
-  const preservedChanged = (committed?.preserved_changed ?? []).map((item) => ({
+  const preservedChanged = ((committed ?? previewed)?.preserved_changed ?? []).map((item) => ({
     sourceKey: item.source_key, commitmentId: item.commitment_id, contractNumber: item.contract_number, description: item.description,
     wasCompanyName: vendorName(item.was_company_id), nowCompanyName: vendorName(item.now_company_id), wasCents: item.was_cents, nowCents: item.now_cents,
   }))
-  const preservedOrphaned = (committed?.preserved_orphaned ?? []).map((item) => ({
+  const preservedOrphaned = ((committed ?? previewed)?.preserved_orphaned ?? []).map((item) => ({
     sourceKey: item.source_key, commitmentId: item.commitment_id, contractNumber: item.contract_number,
     description: item.description, companyName: vendorName(item.company_id), cents: item.cents,
   }))
   // An identical commit that lost the race: the winner's run is the answer, and it already wrote the trail.
   if (committed?.already_generated) {
     return { runId: committed.run_id, mode: "commit", status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: 0, expiringAgreements, preservedChanged, preservedOrphaned }
+  }
+  // A preview creates nothing, so it leaves nothing in the activity trail.
+  if (parsed.mode === "dry_run") {
+    return { runId: run.id, mode: parsed.mode, status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: 0, expiringAgreements, preservedChanged, preservedOrphaned }
   }
   await recordAudit({ orgId, actorId: userId, action: "insert", entityType: "po_generation_run", entityId: run.id, after: { ...summary, mode: parsed.mode, status, scoped: Boolean(resolution), preserved_changed: preservedChanged.length, preserved_orphaned: preservedOrphaned.length } })
   await recordEvent({ orgId, actorId: userId, eventType: "po_generation.completed", entityType: "po_generation_run", entityId: run.id, payload: { project_id: parsed.projectId, mode: parsed.mode, scoped: Boolean(resolution), preserved_changed: preservedChanged.length, ...summary } })

@@ -103,18 +103,38 @@ describe("variance reasons", () => {
 describe("pay-on-PO resolution", () => {
   const resolve = (tables) => {
     const service = createServiceHarness({ permissions: ["price_book.read"], tables })
-    return service.run(() => resolvePayOnPo(service.client, ORG, PROJECT))
+    return service.run(() => resolvePayOnPo(service.client, ORG))
   }
 
-  test("the community's own flag beats the org default, in both directions", async () => {
-    const lot = (flag) => [{ org_id: ORG, project_id: PROJECT, community: { pay_on_po_enabled: flag } }]
-    assert.equal((await resolve({ lots: lot(false), purchasing_settings: [{ org_id: ORG, pay_on_po_enabled: true }] })).enabled, false)
-    assert.equal((await resolve({ lots: lot(true), purchasing_settings: [{ org_id: ORG, pay_on_po_enabled: false }] })).enabled, true)
+  test("one organization setting decides, and no settings means off", async () => {
+    assert.equal((await resolve({ purchasing_settings: [{ org_id: ORG, pay_on_po_enabled: true }] })).enabled, true)
+    assert.equal((await resolve({ purchasing_settings: [{ org_id: ORG, pay_on_po_enabled: false }] })).enabled, false)
+    assert.equal((await resolve({ purchasing_settings: [] })).enabled, false)
   })
 
-  test("a community with no override follows the org default, and no settings means off", async () => {
-    const lots = [{ org_id: ORG, project_id: PROJECT, community: { pay_on_po_enabled: null } }]
-    assert.equal((await resolve({ lots, purchasing_settings: [{ org_id: ORG, pay_on_po_enabled: true }] })).enabled, true)
-    assert.equal((await resolve({ lots, purchasing_settings: [] })).enabled, false)
+  test("verification defaults to required", async () => {
+    assert.equal((await resolve({ purchasing_settings: [] })).requiresVerification, true)
+    assert.equal((await resolve({ purchasing_settings: [{ org_id: ORG, po_completion_requires_verification: false }] })).requiresVerification, false)
+  })
+})
+
+describe("who saves settings, and over whom", () => {
+  test("a manager limited to a division does not set organization-wide policy", async () => {
+    const service = createServiceHarness({
+      permissions: ["price_book.read", "purchasing_settings.write"], divisions: [id(60)],
+      tables: { purchasing_settings: [], variance_reason_codes: [] },
+    })
+    await assert.rejects(service.run(() => updatePurchasingSettings({ pay_on_po_enabled: true })), /whole organization/)
+    assert.deepEqual(service.writes("purchasing_settings"), [])
+  })
+
+  test("a save over a newer one is refused, and a save writes only what it names", async () => {
+    const manager = harness({ settings: [{ org_id: ORG, pay_on_po_enabled: false, expiring_agreement_lead_days: 30, updated_at: "2026-10-01T00:00:00Z" }] })
+    await assert.rejects(manager.run(() => updatePurchasingSettings({ pay_on_po_enabled: true, expected_updated_at: "2026-09-30T00:00:00Z" })), /changed while you were editing/)
+    assert.equal(manager.db.purchasing_settings[0].pay_on_po_enabled, false)
+    await manager.run(() => updatePurchasingSettings({ expiring_agreement_lead_days: 14, expected_updated_at: "2026-10-01T00:00:00Z" }))
+    const [row] = manager.db.purchasing_settings
+    assert.equal(row.expiring_agreement_lead_days, 14)
+    assert.equal(row.pay_on_po_enabled, false)
   })
 })

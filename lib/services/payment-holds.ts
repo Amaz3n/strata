@@ -347,7 +347,7 @@ export async function assertBillReleasable(
       supabase.from("commitment_change_orders").select("total_cents").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id).in("status", ["approved", "executed"]),
       supabase.from("vendor_bills").select("id,total_cents,status").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id),
       supabase.from("po_completions").select("id,status,amount_cents").eq("org_id", resolvedOrgId).eq("vendor_bill_id", billId).in("status", ["approved", "billed"]).order("approved_at", { ascending: false }).limit(1).maybeSingle(),
-      resolvePayOnPo(supabase, resolvedOrgId, bill.project_id),
+      resolvePayOnPo(supabase, resolvedOrgId),
     ])
     if (commitmentError || !commitment) throw new Error("The payable's commitment could not be validated")
     if (!["approved", "complete"].includes(commitment.status)) throw new Error("The payable commitment is not approved or complete")

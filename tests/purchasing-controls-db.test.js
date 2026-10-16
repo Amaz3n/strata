@@ -49,12 +49,12 @@ async function purchasingWorld(t) {
     org_id: orgId, project_id: project.id, commitment_id: po.id, status: "verified", reported_source: "office",
     reported_by_user_id: reporter, verified_by: verifier, verified_at: new Date().toISOString(), ...fields,
   })
-  const approve = (completionId, actor = approver) => rpc(db, "approve_po_completion", { p_org_id: orgId, p_completion_id: completionId, p_actor_id: actor })
+  const approve = (completionId, actor = approver, evidence = {}) => rpc(db, "approve_po_completion", { p_org_id: orgId, p_completion_id: completionId, p_actor_id: actor, ...evidence })
   const asUser = (userId, fn) => asRole(db, { role: "authenticated", userId }, fn)
   return { db, orgId, owner, reporter, verifier, approver, agent, project, company, po, lineA, lineB, reason, vpo, completion, approve, asUser }
 }
 
-const refused = /permission denied|row-level security|purchasing|cannot|authorized|void it instead/i
+const refused = /permission denied|row-level security|purchasing|cannot|authorized|void it instead|through its approval|is not edited/i
 
 test("a member cannot rewrite the settings, the reason codes or a completion through the data API", async (t) => {
   const w = await purchasingWorld(t)
@@ -95,11 +95,39 @@ test("a member cannot raise, approve, reprice, re-reason or delete a variance or
   await as("update commitment_change_orders set status = 'sent' where id = $1", [draft.id])
 })
 
-test("a subcontract change order with no variance reason is untouched by the lock", async (t) => {
+test("a change order with no variance reason is fenced the same way: no forged approval, no repricing, no decided edit", async (t) => {
   const w = await purchasingWorld(t)
-  const order = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, title: "CCO", total_cents: 100 })
-  await w.asUser(w.owner, (tx) => tx.query("update commitment_change_orders set total_cents = 200 where id = $1", [order.id]))
-  assert.equal(Number((await w.db.query("select total_cents from commitment_change_orders where id = $1", [order.id])).rows[0].total_cents), 200)
+  const as = (sql, args) => w.asUser(w.owner, (tx) => tx.query(sql, args))
+  const draft = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, title: "CCO", total_cents: 100 })
+  await assert.rejects(as("insert into commitment_change_orders (org_id, project_id, commitment_id, title, status, total_cents, approved_by, approved_at) values ($1, $2, $3, 'Forged', 'approved', 5000000, $4, now())", [w.orgId, w.project.id, w.po.id, w.owner]), refused)
+  await assert.rejects(as("update commitment_change_orders set status = 'approved', approved_by = $2, approved_at = now() where id = $1", [draft.id, w.owner]), refused)
+  await assert.rejects(as("update commitment_change_orders set total_cents = 200 where id = $1", [draft.id]), refused)
+  await as("update commitment_change_orders set title = 'Renamed', status = 'sent' where id = $1", [draft.id])
+
+  const decided = await insert(w.db, "commitment_change_orders", { org_id: w.orgId, project_id: w.project.id, commitment_id: w.po.id, title: "Done", total_cents: 300, status: "approved", approved_by: w.owner, approved_at: new Date().toISOString() })
+  await insert(w.db, "commitment_change_order_lines", { org_id: w.orgId, commitment_change_order_id: decided.id, description: "Extra", quantity: 1, unit: "ls", unit_cost_cents: 300, amount_cents: 300 })
+  await assert.rejects(as("update commitment_change_orders set metadata = '{}'::jsonb, title = 'Rewritten' where id = $1", [decided.id]), refused)
+  await assert.rejects(as("update commitment_change_orders set status = 'voided' where id = $1", [decided.id]), refused)
+  await assert.rejects(as("delete from commitment_change_orders where id = $1", [decided.id]), refused)
+  await assert.rejects(as("update commitment_change_order_lines set amount_cents = 1 where commitment_change_order_id = $1", [decided.id]), refused)
+  const { rows } = await w.db.query("select count(*)::int n from commitment_change_orders where title = 'Forged'")
+  assert.equal(rows[0].n, 0)
+})
+
+test("revise_commitment_change_order edits a pending order in one step and refuses a decided or stale one", async (t) => {
+  const w = await purchasingWorld(t)
+  const draft = await w.vpo(5_000, "draft")
+  const stamp = (await w.db.query("select updated_at from commitment_change_orders where id = $1", [draft.id])).rows[0].updated_at
+  const lines = [{ description: "Bigger", quantity: 1, unit: "ls", unit_cost_cents: 9_000, amount_cents: 9_000, sort_order: 0 }]
+  const total = await rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: stamp, p_patch: { title: "Bigger" }, p_lines: lines })
+  assert.equal(Number(total), 9_000)
+  const row = (await w.db.query("select title, total_cents from commitment_change_orders where id = $1", [draft.id])).rows[0]
+  assert.deepEqual([row.title, Number(row.total_cents)], ["Bigger", 9_000])
+  await assert.rejects(rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: stamp, p_patch: { title: "Stale" }, p_lines: null }), /changed while you were editing/)
+  await w.db.query("update commitment_change_orders set status = 'approved' where id = $1", [draft.id])
+  const fresh = (await w.db.query("select updated_at from commitment_change_orders where id = $1", [draft.id])).rows[0].updated_at
+  await assert.rejects(rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: fresh, p_patch: {}, p_lines: lines }), /Only draft or sent/)
+  await assert.rejects(rpc(w.db, "revise_commitment_change_order", { p_org_id: w.orgId, p_id: draft.id, p_expected_updated_at: fresh, p_patch: {}, p_lines: null }, { role: "authenticated", userId: w.owner }), /permission denied/)
 })
 
 test("approving a completion refuses whoever reported or verified it, and bills once for the right people", async (t) => {
@@ -157,14 +185,23 @@ test("an org that requires a passed inspection approves only with one, or with a
 
   const first = await w.completion({ commitment_line_ids: [w.lineA.id] })
   await assert.rejects(w.approve(first.id), /passed inspection or a recorded waiver/)
-  await w.db.query("update po_completions set inspection_id = $1 where id = $2", [failed.id, first.id])
-  await assert.rejects(w.approve(first.id), /passed inspection or a recorded waiver/)
-  await w.db.query("update po_completions set inspection_id = $1 where id = $2", [passed.id, first.id])
-  assert.equal(Number((await w.approve(first.id)).amount_cents), 60_000)
+  await assert.rejects(w.approve(first.id, w.approver, { p_inspection_id: failed.id }), /completed, passed inspection/)
+  await assert.rejects(w.approve(first.id, w.approver, { p_waiver_reason: "no" }), /Say why/)
+  const approved = await w.approve(first.id, w.approver, { p_inspection_id: passed.id })
+  assert.equal(Number(approved.amount_cents), 60_000)
+  assert.equal((await w.db.query("select inspection_id from po_completions where id = $1", [first.id])).rows[0].inspection_id, passed.id)
 
   const second = await w.completion({ commitment_line_ids: [w.lineB.id] })
-  await w.db.query("update po_completions set inspection_waived_reason = 'Punch-list trade' where id = $1", [second.id])
-  assert.equal(Number((await w.approve(second.id)).amount_cents), 40_000)
+  const waived = await w.approve(second.id, w.approver, { p_waiver_reason: "Punch-list trade" })
+  assert.equal(Number(waived.amount_cents), 40_000)
+  assert.equal(waived.waived, true)
+  const stored = (await w.db.query("select inspection_waived_reason r, inspection_waived_by by from po_completions where id = $1", [second.id])).rows[0]
+  assert.deepEqual([stored.r, stored.by], ["Punch-list trade", w.approver])
+
+  // A billed completion is history: a later call rewrites nothing, and its reporter is refused outright.
+  await w.approve(second.id, w.approver, { p_waiver_reason: "Rewrite the history" })
+  assert.equal((await w.db.query("select inspection_waived_reason r from po_completions where id = $1", [second.id])).rows[0].r, "Punch-list trade")
+  await assert.rejects(w.approve(second.id, w.reporter), /cannot approve/)
 })
 
 test("only the service role may approve a completion", async (t) => {
@@ -198,4 +235,17 @@ test("the new permission goes to the roles that run purchasing, and no one else"
   const { rows } = await w.db.query("select r.key from role_permissions rp join roles r on r.id = rp.role_id where rp.permission_key = 'purchasing_settings.write' order by r.key")
   assert.deepEqual(rows.map((row) => row.key), ["org_admin", "org_owner", "org_purchasing_manager"])
   assert.ok(uuid())
+})
+
+test("the variance report names a home's superintendent from either superintendent role", async (t) => {
+  const w = await purchasingWorld(t)
+  const { userId: superintendent } = await seedMember(w.db, { orgId: w.orgId, role: "org_superintendent" })
+  await w.db.query(
+    "insert into project_members (org_id, project_id, user_id, role_id, status) select $1, $2, $3, id, 'active' from roles where key = 'org_superintendent'",
+    [w.orgId, w.project.id, superintendent],
+  )
+  await w.vpo(12_000)
+  const rows = await rpc(w.db, "get_variance_analysis", { p_org_id: w.orgId, p_start: "2000-01-01T00:00:00Z", p_end_exclusive: "2100-01-01T00:00:00Z" })
+  const labels = rows.filter((row) => row.dimension === "superintendent").map((row) => row.dimension_id)
+  assert.deepEqual(labels, [superintendent])
 })

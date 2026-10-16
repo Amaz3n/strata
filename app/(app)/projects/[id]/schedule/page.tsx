@@ -68,7 +68,7 @@ async function ProjectScheduleData({ id }: { id: string }) {
       ]}
     >
       <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} initialDependencies={dependencies}
-        banner={<Suspense fallback={<DeliveryAdvisoryBannerSkeleton />}><DeliveryAdvisoryBanner projectId={project.id} /></Suspense>} />
+        banner={<Suspense key="delivery-advisories" fallback={<DeliveryAdvisoryBannerSkeleton />}><DeliveryAdvisoryBanner projectId={project.id} /></Suspense>} />
     </PageLayout>
   )
 }

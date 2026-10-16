@@ -75,6 +75,9 @@ const OPEN_SUBCASES = {
     "agreement-signs-through-an-envelope": "EP14-01",
     "release-copies-the-plan-set": "EP14-01",
   },
+  "BID-01": {
+    "bidder-uses-the-portal-on-a-community-package": "EP08-03",
+  },
 }
 
 module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, OPEN_SUBCASES, PRODUCTION }

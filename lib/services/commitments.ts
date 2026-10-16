@@ -440,7 +440,8 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
         })
       : null
 
-  const { data, error } = await supabase
+  // An order enters an issued status only through the service, after the checks above.
+  const { data, error } = await (isIssuedPurchaseOrder(parsed.commitment_type, status) ? createServiceSupabaseClient() : supabase)
     .from("commitments")
     .insert({
       org_id: resolvedOrgId,
@@ -520,15 +521,18 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
  */
 async function assertNothingBilledAgainst(orgId: string, commitmentId: string) {
   const service = createServiceSupabaseClient()
-  const [completions, bills] = await Promise.all([
+  const [completions, bills, receipts] = await Promise.all([
     service.from("po_completions").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("commitment_id", commitmentId).in("status", ["reported", "verified", "approved", "billed"]),
     service.from("vendor_bills").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("commitment_id", commitmentId).neq("status", "rejected"),
+    service.from("po_receipts").select("id", { count: "exact", head: true })
+      .eq("org_id", orgId).eq("commitment_id", commitmentId).neq("status", "void"),
   ])
-  if (completions.error || bills.error) throw new Error(`Failed to check the purchase order's activity: ${(completions.error ?? bills.error)?.message}`)
-  if ((completions.count ?? 0) > 0 || (bills.count ?? 0) > 0) {
-    throw new Error("This purchase order has completions or bills against it, so it cannot be returned to draft or cancelled. Raise a variance order instead.")
+  const failure = completions.error ?? bills.error ?? receipts.error
+  if (failure) throw new Error(`Failed to check the purchase order's activity: ${failure.message}`)
+  if ((completions.count ?? 0) > 0 || (bills.count ?? 0) > 0 || (receipts.count ?? 0) > 0) {
+    throw new Error("This purchase order has completions, bills or deliveries against it, so it cannot be returned to draft or cancelled. Raise a variance order instead.")
   }
 }
 
@@ -711,7 +715,8 @@ async function applyCommitmentExecution({
    */
   approvesDraft: boolean
 }): Promise<CommitmentSummary> {
-  const { data, error } = await supabase
+  // The callers have authorized the execution; approving a draft order is the service's write.
+  const { data, error } = await createServiceSupabaseClient()
     .from("commitments")
     .update({
       status: existing.status === "draft" && approvesDraft ? "approved" : existing.status,
@@ -984,26 +989,46 @@ async function syncCommitmentTotalFromLines(
   return rollup
 }
 
+const LINE_FIELDS = "id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order"
+const LINE_SELECT = `${LINE_FIELDS}, cost_code:cost_codes(code, name)`
+
+/**
+ * The order a line belongs to, read by the service scoped to the org: a purchasing
+ * manager works across houses from the desk without being on a home's team, so
+ * row security would hide the order. Every caller authorizes on the home (project
+ * and division scope) before it reads or writes a line.
+ */
+async function loadOrderForLines(orgId: string, commitmentId: string) {
+  const { data, error } = await createServiceSupabaseClient()
+    .from("commitments")
+    .select("id, project_id, commitment_type, status")
+    .eq("id", commitmentId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+  if (error || !data) throw new Error("Commitment not found or access denied")
+  return data
+}
+
 /** The lines of an issued purchase order are locked; a line is edited on a draft. */
-function assertLineEditable(commitment: { commitment_type?: string; status?: string } | null | undefined) {
-  if (commitment?.commitment_type && commitment.status && isIssuedPurchaseOrder(commitment.commitment_type, commitment.status)) {
-    throw new Error(PO_LOCKED_MESSAGE)
-  }
+function assertLineEditable(order: { commitment_type: string; status: string }) {
+  if (isIssuedPurchaseOrder(order.commitment_type, order.status)) throw new Error(PO_LOCKED_MESSAGE)
+}
+
+async function loadLineForWrite(orgId: string, lineId: string) {
+  const { data: line, error } = await createServiceSupabaseClient()
+    .from("commitment_lines")
+    .select(LINE_FIELDS)
+    .eq("id", lineId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+  if (error || !line) throw new Error("Commitment line not found or access denied")
+  const order = await loadOrderForLines(orgId, String(line.commitment_id))
+  return { line, order }
 }
 
 export async function listCommitmentLines(commitmentId: string): Promise<CommitmentLine[]> {
   const { supabase, orgId, userId } = await requireOrgContext()
-
-  const { data: commitment, error: commitmentError } = await supabase
-    .from("commitments")
-    .select("id, project_id")
-    .eq("id", commitmentId)
-    .eq("org_id", orgId)
-    .maybeSingle()
-
-  if (commitmentError || !commitment) {
-    throw new Error("Commitment not found or access denied")
-  }
+  const commitment = await loadOrderForLines(orgId, commitmentId)
 
   await requireAuthorization({
     permission: "commitment.read",
@@ -1016,12 +1041,9 @@ export async function listCommitmentLines(commitmentId: string): Promise<Commitm
     resourceId: commitmentId,
   })
 
-  const { data, error } = await supabase
+  const { data, error } = await createServiceSupabaseClient()
     .from("commitment_lines")
-    .select(`
-      id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
-      cost_code:cost_codes(code, name)
-    `)
+    .select(LINE_SELECT)
     .eq("org_id", orgId)
     .eq("commitment_id", commitmentId)
     .order("sort_order", { ascending: true })
@@ -1035,19 +1057,7 @@ export async function listCommitmentLines(commitmentId: string): Promise<Commitm
 
 export async function createCommitmentLine(commitmentId: string, input: CommitmentLineInput): Promise<CommitmentLine> {
   const { supabase, orgId, userId } = await requireOrgContext()
-
-  // Verify commitment exists and belongs to org
-  const { data: commitment, error: commitmentError } = await supabase
-    .from("commitments")
-    .select("id, project_id, commitment_type, status")
-    .eq("id", commitmentId)
-    .eq("org_id", orgId)
-    .single()
-
-  if (commitmentError || !commitment) {
-    throw new Error("Commitment not found or access denied")
-  }
-  if (isIssuedPurchaseOrder(commitment.commitment_type, commitment.status)) throw new Error(PO_LOCKED_MESSAGE)
+  const commitment = await loadOrderForLines(orgId, commitmentId)
 
   await requireAuthorization({
     permission: "commitment.write",
@@ -1059,20 +1069,19 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
     resourceType: "commitment",
     resourceId: commitmentId,
   })
+  assertLineEditable(commitment)
 
   const validated = commitmentLineInputSchema.parse(input)
+  const service = createServiceSupabaseClient()
 
-  const { data, error } = await supabase
+  const { data, error } = await service
     .from("commitment_lines")
     .insert({
       org_id: orgId,
       commitment_id: commitmentId,
       ...validated,
     })
-    .select(`
-      id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
-      cost_code:cost_codes(code, name)
-    `)
+    .select(LINE_SELECT)
     .single()
 
   if (error || !data) {
@@ -1099,7 +1108,7 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
     },
   })
 
-  await syncCommitmentTotalFromLines(supabase, orgId, commitmentId)
+  await syncCommitmentTotalFromLines(service, orgId, commitmentId)
 
   return mapCommitmentLine(data)
 }
@@ -1108,43 +1117,27 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
   const { supabase, orgId, userId } = await requireOrgContext()
 
   const validated = commitmentLineUpdateSchema.parse(input)
-
-  // Get existing line for audit
-  const { data: existing, error: existingError } = await supabase
-    .from("commitment_lines")
-    .select(`
-      id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
-      commitment:commitments(project_id, commitment_type, status)
-    `)
-    .eq("id", lineId)
-    .eq("org_id", orgId)
-    .single()
-
-  if (existingError || !existing) {
-    throw new Error("Commitment line not found or access denied")
-  }
-  assertLineEditable((existing as any).commitment)
+  const { line: existing, order } = await loadLineForWrite(orgId, lineId)
 
   await requireAuthorization({
     permission: "commitment.write",
     userId,
     orgId,
-    projectId: (existing as any).commitment?.project_id,
+    projectId: order.project_id,
     supabase,
     logDecision: true,
     resourceType: "commitment_line",
     resourceId: lineId,
   })
+  assertLineEditable(order)
 
-  const { data, error } = await supabase
+  const service = createServiceSupabaseClient()
+  const { data, error } = await service
     .from("commitment_lines")
     .update(validated)
     .eq("id", lineId)
     .eq("org_id", orgId)
-    .select(`
-      id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
-      cost_code:cost_codes(code, name)
-    `)
+    .select(LINE_SELECT)
     .single()
 
   if (error || !data) {
@@ -1165,48 +1158,35 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
     orgId,
     eventType: "commitment_line_updated",
     payload: {
-      project_id: (existing as any).commitment?.project_id,
-      commitment_id: (existing as any).commitment_id,
+      project_id: order.project_id,
+      commitment_id: existing.commitment_id,
       commitment_line_id: data.id,
     },
   })
 
-  await syncCommitmentTotalFromLines(supabase, orgId, data.commitment_id as string)
+  await syncCommitmentTotalFromLines(service, orgId, data.commitment_id as string)
 
   return mapCommitmentLine(data)
 }
 
 export async function deleteCommitmentLine(lineId: string): Promise<void> {
   const { supabase, orgId, userId } = await requireOrgContext()
-
-  // Get existing line for audit
-  const { data: existing, error: existingError } = await supabase
-    .from("commitment_lines")
-    .select(`
-      id, commitment_id,
-      commitment:commitments(project_id, commitment_type, status)
-    `)
-    .eq("id", lineId)
-    .eq("org_id", orgId)
-    .single()
-
-  if (existingError || !existing) {
-    throw new Error("Commitment line not found or access denied")
-  }
-  assertLineEditable((existing as any).commitment)
+  const { line: existing, order } = await loadLineForWrite(orgId, lineId)
 
   await requireAuthorization({
     permission: "commitment.write",
     userId,
     orgId,
-    projectId: (existing as any).commitment?.project_id,
+    projectId: order.project_id,
     supabase,
     logDecision: true,
     resourceType: "commitment_line",
     resourceId: lineId,
   })
+  assertLineEditable(order)
 
-  const { error } = await supabase
+  const service = createServiceSupabaseClient()
+  const { error } = await service
     .from("commitment_lines")
     .delete()
     .eq("id", lineId)
@@ -1229,17 +1209,13 @@ export async function deleteCommitmentLine(lineId: string): Promise<void> {
     orgId,
     eventType: "commitment_line_deleted",
     payload: {
-      project_id: (existing as any).commitment?.project_id,
-      commitment_id: (existing as any).commitment_id,
+      project_id: order.project_id,
+      commitment_id: existing.commitment_id,
       commitment_line_id: lineId,
     },
   })
 
-  await syncCommitmentTotalFromLines(
-    supabase,
-    orgId,
-    (existing as any).commitment_id as string,
-  )
+  await syncCommitmentTotalFromLines(service, orgId, String(existing.commitment_id))
 }
 
 // ============================================================================

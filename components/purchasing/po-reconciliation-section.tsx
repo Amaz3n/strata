@@ -2,8 +2,11 @@
 
 import { useEffect, useState } from "react"
 
-import { getProjectPoPositionsAction } from "@/app/(app)/purchasing/vpo-actions"
+import { getProjectPoPositionsAction, reportVariancePoCompletionAction } from "@/app/(app)/purchasing/vpo-actions"
+import { toast } from "sonner"
+
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PO_POSITION_EXCEPTION_LABELS, poRemainingCents, poRevisedCents } from "@/lib/purchasing/po-position"
 import type { PoPositionRow } from "@/lib/services/po-positions"
@@ -15,6 +18,8 @@ type State = { kind: "loading" } | { kind: "error"; message: string } | { kind: 
 /** What a purchase order authorizes against what has been billed and paid, and where the two disagree. */
 export function PoReconciliationSection({ projectId, commitmentId }: { projectId: string; commitmentId: string }) {
   const [state, setState] = useState<State>({ kind: "loading" })
+  const [busy, setBusy] = useState(false)
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -25,7 +30,7 @@ export function PoReconciliationSection({ projectId, commitmentId }: { projectId
       else setState({ kind: "ready", row: result.data.rows.find((row) => row.commitmentId === commitmentId) ?? null })
     }).catch(() => { if (!cancelled) setState({ kind: "error", message: "Unable to load the reconciliation." }) })
     return () => { cancelled = true }
-  }, [projectId, commitmentId])
+  }, [projectId, commitmentId, reload])
 
   return (
     <div className="space-y-2 border-t pt-3">
@@ -59,6 +64,15 @@ export function PoReconciliationSection({ projectId, commitmentId }: { projectId
               <Badge key={exception.kind} variant="destructive" className="rounded-none">{PO_POSITION_EXCEPTION_LABELS[exception.kind]} · {money(exception.cents)}</Badge>
             ))}
             {state.row.exceptions.length === 0 && <span className="text-xs text-success">Books agree with this order.</span>}
+            {state.row.payOnPo && state.row.unclaimedVpoCents !== 0 && (
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => {
+                setBusy(true)
+                reportVariancePoCompletionAction(projectId, commitmentId).then((result) => {
+                  if (result.success) { toast.success("Variance orders reported for verification"); setReload((n) => n + 1) }
+                  else toast.error(result.error)
+                }).finally(() => setBusy(false))
+              }}>Report variance orders complete</Button>
+            )}
             {state.row.pendingVpoCount > 0 && <span className="text-xs text-muted-foreground">{state.row.pendingVpoCount} variance {state.row.pendingVpoCount === 1 ? "order" : "orders"} awaiting approval</span>}
           </div>
         </>

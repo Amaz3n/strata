@@ -2211,7 +2211,7 @@
       }
     },
     "bid-and-vendor-pickers-page-and-count": {
-      "derivation": "EP08-02 #0 (#1, retry and selection preservation, is a browser component behaviour). Fifty packages are created: i%5==0 in community B (10), else i%4==0 plan-only on an organisation-wide plan (10: i=4,8,12,16,24,28,32,36,44,48), the rest in community A with a plan (30); three are cancelled (3, 13, 23), so 47 are listed. Pages of 20 give 20, 20, 7 and an empty fourth page, with a stable total of 47 and the order due date first (the first thirty tie, the rest have none and sort last) then id. Titles with i%9==0 (0,9,18,27,36,45) carry a literal '50%'; a search for '50%' must match those six and a search for '_' none, because the percent and underscore are literal text, not wildcards. Community B filters to its ten. A buyer limited to division A sees community A (27 uncancelled) plus the shared-plan packages (10) = 37 and one limited to B sees 10 + 10 = 20, each in due-date order; asking for another division's lens returns nothing rather than widening. Queue 01 has three invitations and two bidders (one revised), so 3 invites and 2 responses. Vendors: 53 'Vendor NNN' are 3 pages of 25, 25, 3 with more true, true, false; 25 'Boundary Co' companies are exactly one full page so more is false; 'Vendor 04' matches Vendor 040 to 049; walking every page of the unfiltered picker sees each company once, 83 in all (5 trades, 53, 25).",
+      "derivation": "EP08-02 #0 (#1, retry and selection preservation, is a browser component behaviour). Fifty packages are created: i%5==0 in community B (10), else i%4==0 plan-only on an organisation-wide plan (10: i=4,8,12,16,24,28,32,36,44,48), the rest in community A with a plan (30); three are cancelled (3, 13, 23), so 47 are listed. Pages of 20 give 20, 20, 7 and an empty fourth page, with a stable total of 47 and the order due date first (the first thirty tie, the rest have none and sort last) then id. Titles with i%9==0 (0,9,18,27,36,45) carry a literal '50%'; a search for '50%' must match those six and a search for '_' none, because the percent and underscore are literal text, not wildcards. Community B filters to its ten. A buyer limited to division A sees only community A (27 uncancelled) and one limited to B only community B (10): a plan-only package on an organisation-wide plan prices every division's homes, so a division-limited buyer neither lists nor opens it (the ten plan-only packages stay visible to an org-wide buyer, inside the 47); each list is in due-date order; asking for another division's lens returns nothing rather than widening. Queue 01 has three invitations and two bidders (one revised), so 3 invites and 2 responses. Vendors: 53 'Vendor NNN' are 3 pages of 25, 25, 3 with more true, true, false; 25 'Boundary Co' companies are exactly one full page so more is false; 'Vendor 04' matches Vendor 040 to 049; walking every page of the unfiltered picker sees each company once, 83 in all (5 trades, 53, 25).",
       "inputs": {},
       "expected": {
         "queue": {
@@ -2239,8 +2239,8 @@
           "literalUnderscoreMatches": 0,
           "communityFilter": 10,
           "divisionScope": {
-            "buyerA": 37,
-            "buyerB": 20,
+            "buyerA": 27,
+            "buyerB": 10,
             "buyerAItemsAreHerOwn": true,
             "buyerBItemsAreHisOwn": true,
             "lensOutsideScope": {

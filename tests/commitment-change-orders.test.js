@@ -11,6 +11,8 @@ const {
   listVarianceOrders,
   rejectVarianceOrder,
   updateCommitmentChangeOrder,
+  voidCommitmentChangeOrder,
+  attachVarianceOrderEvidence,
 } = freshRequire("lib/services/commitment-change-orders.ts")
 
 const PROJECT = id(1)
@@ -40,8 +42,26 @@ const vpo = (overrides = {}) => ({
 const HOME_FILE = id(8)
 const FOREIGN_FILE = id(9)
 
-function harness({ orders = [vpo()], permissions = ["project.read", "commitment.write", "vpo.request", "vpo.approve", "vpo.approve_large"] } = {}) {
-  return createServiceHarness({
+/** The locked edit the database performs: refuses a decided order or a stale revision, replaces lines, totals them. */
+function reviseOrder(service) {
+  return (args) => {
+    const order = service.db.commitment_change_orders.find((row) => row.id === args.p_id)
+    if (!order) return { data: null, error: { message: "Commitment change order not found" } }
+    if (!["draft", "sent"].includes(order.status)) return { data: null, error: { message: "Only draft or sent commitment change orders can be edited." } }
+    if ((order.updated_at ?? null) !== args.p_expected_updated_at) return { data: null, error: { message: "This change order changed while you were editing it. Reload and try again." } }
+    if (args.p_lines) {
+      service.db.commitment_change_order_lines = service.db.commitment_change_order_lines.filter((row) => row.commitment_change_order_id !== args.p_id)
+      service.db.commitment_change_order_lines.push(...args.p_lines)
+      order.total_cents = args.p_lines.reduce((sum, row) => sum + row.amount_cents, 0)
+    }
+    Object.assign(order, args.p_patch)
+    return { data: order.total_cents, error: null }
+  }
+}
+
+function harness({ orders = [vpo()], completions = [], permissions = ["project.read", "commitment.write", "vpo.request", "vpo.approve", "vpo.approve_large"] } = {}) {
+  const service = createServiceHarness({
+    rpc: { revise_commitment_change_order: (args) => reviseOrder(service)(args) },
     permissions,
     tables: {
       files: [
@@ -57,8 +77,10 @@ function harness({ orders = [vpo()], permissions = ["project.read", "commitment.
       purchasing_settings: [],
       commitment_change_orders: orders,
       commitment_change_order_lines: [],
+      po_completions: completions,
     },
   })
+  return service
 }
 
 const line = (unit_cost_cents) => ({ description: "Blocking", quantity: 1, unit_cost_cents })
@@ -265,5 +287,61 @@ describe("cost evidence and who may decide", () => {
 
     const approver = harness({ orders: [large({ evidence_file_ids: [HOME_FILE] })] })
     assert.equal((await approver.run(() => rejectVarianceOrder({ commitmentChangeOrderId: VPO, reason: "No" }))).status, "rejected")
+  })
+})
+
+describe("voiding, editing and evidence on a decided order", () => {
+  const approved = (overrides = {}) => vpo({ status: "approved", total_cents: 150_000, evidence_file_ids: [HOME_FILE], ...overrides })
+
+  test("voiding needs the order's band permission and a reason, and is announced and audited", async () => {
+    const small = harness({ orders: [approved()], permissions: ["project.read", "commitment.write", "vpo.approve"] })
+    await assert.rejects(small.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong vendor" })))
+    assert.equal(small.db.commitment_change_orders[0].status, "approved")
+
+    const approver = harness({ orders: [approved()] })
+    await assert.rejects(approver.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "" })), /why/i)
+    const voided = await approver.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong vendor" }))
+    assert.equal(voided.status, "voided")
+    assert.equal(voided.metadata.void_reason, "Wrong vendor")
+    assert.equal(approver.events.at(-1).eventType, "vpo.voided")
+    assert.equal(approver.audits.at(-1).critical, true)
+  })
+
+  test("an order a live completion claims cannot be voided, and a rejected one is closed", async () => {
+    const claimed = harness({ orders: [approved()], completions: [{ id: id(30), org_id: ORG, commitment_id: PO, status: "billed", change_order_ids: [VPO] }] })
+    await assert.rejects(claimed.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong vendor" })), /completion already claims/)
+    assert.equal(claimed.db.commitment_change_orders[0].status, "approved")
+    const rejected = harness({ orders: [vpo({ status: "rejected" })] })
+    await assert.rejects(rejected.run(() => voidCommitmentChangeOrder({ commitmentChangeOrderId: VPO, reason: "Wrong vendor" })), /already closed/)
+  })
+
+  test("an edit never lands on an order approved while it was being edited", async () => {
+    const service = harness({ orders: [vpo({ updated_at: "2026-10-01T00:00:00Z" })] })
+    service.tamper("commitment_change_orders", (result) => {
+      service.db.commitment_change_orders[0].status = "approved"
+      return result
+    }, { on: "select", times: 1 })
+    await assert.rejects(service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { lines: [line(9_000_000)] } })), /Only draft or sent/)
+    assert.equal(service.db.commitment_change_orders[0].total_cents, 25_000)
+  })
+
+  test("a stale edit is refused rather than overwriting a newer one", async () => {
+    const service = harness({ orders: [vpo({ updated_at: "2026-10-01T00:00:00Z" })] })
+    service.tamper("commitment_change_orders", (result) => {
+      service.db.commitment_change_orders[0].updated_at = "2026-10-02T00:00:00Z"
+      return result
+    }, { on: "select", times: 1 })
+    await assert.rejects(service.run(() => updateCommitmentChangeOrder({ commitmentChangeOrderId: VPO, input: { title: "Renamed" } })), /changed while you were editing/)
+  })
+
+  test("a requester or an approver attaches evidence to a pending order; a decided order is a record", async () => {
+    const requester = harness({ permissions: ["project.read", "vpo.request"] })
+    const attached = await requester.run(() => attachVarianceOrderEvidence({ commitmentChangeOrderId: VPO, fileIds: [HOME_FILE] }))
+    assert.deepEqual(attached.evidence_file_ids, [HOME_FILE])
+    const nobody = harness({ permissions: ["project.read"] })
+    await assert.rejects(nobody.run(() => attachVarianceOrderEvidence({ commitmentChangeOrderId: VPO, fileIds: [HOME_FILE] })))
+    const decided = harness({ orders: [approved({ evidence_file_ids: [] })] })
+    await assert.rejects(decided.run(() => attachVarianceOrderEvidence({ commitmentChangeOrderId: VPO, fileIds: [HOME_FILE] })), /before a variance order is decided/)
+    await assert.rejects(requester.run(() => attachVarianceOrderEvidence({ commitmentChangeOrderId: VPO, fileIds: [FOREIGN_FILE] })), /belong to this home/i)
   })
 })

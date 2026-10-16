@@ -104,13 +104,15 @@ async function setupCommit(t) {
       add column created_at timestamptz default clock_timestamp();
     alter table po_generation_exceptions add column cost_code_id uuid, add column source_kind text, add column source_ref jsonb,
       add column description text, add column quantity numeric, add column uom text, add column reason text, add column candidates jsonb,
-      add column status text default 'open', add column resolution jsonb, add column resolved_by uuid, add column resolved_at timestamptz;
+      add column status text default 'open', add column resolution jsonb, add column resolved_by uuid, add column resolved_at timestamptz,
+      add column created_at timestamptz default clock_timestamp();
     alter table project_vendors add column role text, add column scope text, add column status text, add column notes text, add unique (project_id, company_id);
     create table vendor_bills (id uuid primary key default gen_random_uuid(), org_id uuid, commitment_id uuid references commitments(id));
   `)
   await h.db.query("insert into companies values ($1, $2)", [SECOND_VENDOR, ORG])
   await h.db.exec(fs.readFileSync(require.resolve("../supabase/migrations/20260817120100_po_generation_serialization.sql"), "utf8"))
   await h.db.exec(migrationSql("20261015110000_po_generation_reconcile"))
+  await h.db.exec(migrationSql("20261015161000_po_generation_review_fixes"))
 
   let fingerprints = 0
   const run = async (fingerprint = `${String(++fingerprints).padStart(64, "0")}`) =>
@@ -268,10 +270,10 @@ test("an order emptied of lines is removed, and numbers are never reissued", asy
 
   // The second vendor comes back: its order is new, and 02 is not handed out twice.
   await h.commit(await h.run(), { prior: second, lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
-  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-02`])
-  await h.db.query("update commitments set status = 'voided' where contract_number = $1", [`${PREFIX}-02`])
+  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-03`])
+  await h.db.query("update commitments set status = 'canceled' where contract_number = $1", [`${PREFIX}-03`])
   await h.commit(await h.run(), { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })], prior: (await h.db.query("select id from po_generation_runs where status = 'succeeded' order by created_at desc limit 1")).rows[0].id })
-  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-02`, `${PREFIX}-03`])
+  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-03`, `${PREFIX}-04`])
   assert.deepEqual((await h.lineKeys()).map((row) => row.key), ["takeoff_line:a", "takeoff_line:b", "takeoff_line:b"])
 })
 
@@ -340,12 +342,12 @@ test("a resolution leaves a line that already has an order alone", async (t) => 
   assert.deepEqual((await h.lineKeys()).map((row) => Number(row.cents)), [999])
 })
 
-test("lines on a voided order do not count as ordered", async (t) => {
+test("lines on a canceled order do not count as ordered", async (t) => {
   const h = await setupCommit(t)
   await h.commit(await h.run(), { lines: [h.line("a")] })
-  await h.setStatus("voided")
+  await h.setStatus("canceled")
   await h.commit(await h.run(), { lines: [h.line("a")], scope: ["takeoff_line:a"] })
-  assert.deepEqual((await h.orders()).map((order) => [order.status, order.contract_number]), [["voided", `${PREFIX}-01`], ["draft", `${PREFIX}-02`]])
+  assert.deepEqual((await h.orders()).map((order) => [order.status, order.contract_number]), [["canceled", `${PREFIX}-01`], ["draft", `${PREFIX}-02`]])
 })
 
 test("the living budget follows the commitments, and a budget past draft is reported rather than edited", async (t) => {
@@ -461,4 +463,80 @@ test("members read generation runs and exceptions but cannot write them, even if
   await h.db.exec("reset role; grant insert, update, delete on po_generation_runs, po_generation_exceptions to authenticated; set role authenticated")
   await assert.rejects(h.db.query("update po_generation_exceptions set status = 'resolved_manual'"), /written by the generation service/)
   await assert.rejects(h.db.query("insert into po_generation_runs(org_id, project_id, lot_id, input_fingerprint) values ($1, $2, $3, 'x')", [ORG, HOME, LOT]), /written by the generation service/)
+})
+
+test("a completed order with no bill is preserved, not stripped and re-ordered", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a")] })
+  await h.setStatus("complete")
+  const result = await h.commit(await h.run(), { prior: first, lines: [h.line("a", { unit_cost_cents: 130, total_cents: 130 })] })
+  assert.equal(result.preserved_changed.length, 1)
+  assert.equal(result.removed_line_count, 0)
+  assert.deepEqual((await h.orders()).map((order) => [order.status, order.lines]), [["complete", 1]])
+})
+
+test("the read-only report names what a commit would change and writes nothing", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  const lines = [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })]
+  await h.commit(first, { lines })
+  const report = async (wanted, scope = null) => (await h.db.query("select po_generation_reconcile_report($1, $2, $3, $4) r", [ORG, HOME, JSON.stringify(wanted), scope])).rows[0].r
+  assert.equal((await report(lines)).changes, 0)
+  assert.equal((await report([h.line("a", { unit_cost_cents: 5, total_cents: 5 }), lines[1]])).changes, 1)
+  assert.equal((await report([lines[0]])).changes, 1)
+  assert.equal((await report([...lines, h.line("c")])).changes, 1)
+  await h.db.query("update commitments set status = 'approved' where company_id = $1", [VENDOR])
+  const progressed = await report([h.line("a", { total_cents: 175, unit_cost_cents: 175 }), lines[1]])
+  assert.equal(progressed.changes, 0)
+  assert.deepEqual(progressed.preserved_changed.map((change) => [change.source_key, change.was_cents, change.now_cents]), [["takeoff_line:a", 100, 175]])
+  assert.equal((await h.orders()).length, 2)
+})
+
+test("an identical commit repairs a draft order a member deleted instead of trusting the last run", async (t) => {
+  const h = await setupCommit(t)
+  const fingerprint = "e".repeat(64)
+  const first = await h.run(fingerprint)
+  const lines = [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })]
+  await h.commit(first, { lines })
+  await h.headers(false)
+  await h.db.query("delete from commitments where company_id = $1", [SECOND_VENDOR])
+  const second = await h.run("d".repeat(64))
+  await h.db.query("update po_generation_runs set input_fingerprint = $1 where id = $2", [fingerprint, second])
+  // Same fingerprint as the last run, but the house no longer matches it.
+  const result = await h.commit(second, { prior: first, lines })
+  assert.equal(result.already_generated, undefined)
+  assert.equal(result.created_line_count, 1)
+  assert.deepEqual((await h.lineKeys()).map((row) => row.key), ["takeoff_line:a", "takeoff_line:b"])
+})
+
+test("an order number is not given twice after its order was deleted", async (t) => {
+  const h = await setupCommit(t)
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
+  const second = await h.run()
+  await h.commit(second, { prior: first, lines: [h.line("a")] })
+  const third = await h.run()
+  await h.commit(third, { prior: second, lines: [h.line("a"), h.line("b", { company_id: SECOND_VENDOR })] })
+  assert.deepEqual((await h.orders()).map((order) => order.contract_number), [`${PREFIX}-01`, `${PREFIX}-03`])
+})
+
+test("exceptions: a line that is now ordered closes its exception, a dismissed one stays dismissed, one is open per line", async (t) => {
+  const h = await setupCommit(t)
+  const raised = (key, reason = "no_agreement") => ({ source_kind: "takeoff_line", source_ref: { takeoff_line_id: key }, description: key, reason, quantity: 1, uom: "ea" })
+  const first = await h.run()
+  await h.commit(first, { lines: [h.line("a")], exceptions: [raised("b"), raised("c")] })
+  const idOf = async (key) => (await h.db.query("select id from po_generation_exceptions where source_ref->>'takeoff_line_id' = $1 order by created_at desc limit 1", [key])).rows[0].id
+  await h.db.query("update po_generation_exceptions set status = 'dismissed', resolution = '{\"note\": \"n\"}' where id = $1", [await idOf("c")])
+
+  // Next whole-house commit: b is priceable now, c is raised again for the same reason, d is new.
+  const second = await h.run()
+  await h.commit(second, { prior: first, lines: [h.line("a"), h.line("b")], exceptions: [raised("c"), raised("d"), raised("d")] })
+  const states = (await h.db.query("select source_ref->>'takeoff_line_id' k, status from po_generation_exceptions order by k, created_at")).rows.map((row) => [row.k, row.status])
+  assert.deepEqual(states, [["b", "resolved_agreement"], ["c", "dismissed"], ["d", "open"]])
+
+  // A different reason is a new exception.
+  await h.commit(await h.run(), { prior: second, lines: [h.line("a"), h.line("b")], exceptions: [raised("c", "expired_agreement")] })
+  assert.equal((await h.db.query("select count(*)::int n from po_generation_exceptions where source_ref->>'takeoff_line_id' = 'c' and status = 'open'")).rows[0].n, 1)
+  await assert.rejects(h.db.query("insert into po_generation_exceptions(org_id, project_id, run_id, source_kind, source_ref, status) select org_id, project_id, run_id, source_kind, source_ref, 'open' from po_generation_exceptions where status = 'open' limit 1"), /po_generation_exceptions_open_source_uidx/)
 })
