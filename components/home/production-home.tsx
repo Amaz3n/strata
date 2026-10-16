@@ -1,6 +1,7 @@
 import Link from "next/link"
 
 import { AssignedTile } from "@/components/home/assigned-tile"
+import { FieldRecordsBand } from "@/components/home/field-records-band"
 import { NowActivities } from "@/components/home/now-activities"
 import { shortDate } from "@/components/home/short-date"
 import { LinkTile, type TileContent } from "@/components/home/stat-tile"
@@ -179,6 +180,8 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
           )}
         </section>
       </div>
+
+      {assigned && <FieldRecordsBand assigned={assigned} />}
     </div>
   )
 }

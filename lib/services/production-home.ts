@@ -51,6 +51,7 @@ export type ProductionHomeData = {
     houseCount: number
     lateCount: number
     missingLogCount: number
+    newPhotoCount: number
     houses: MyHouseDTO[]
   } | null
   stats: {
@@ -285,6 +286,7 @@ async function loadAssignedHouses(
     houseCount: total,
     lateCount: houses.reduce((sum, house) => sum + house.lateCount, 0),
     missingLogCount: houses.filter((house) => !house.lastDailyLogDate || house.lastDailyLogDate < today).length,
+    newPhotoCount: houses.reduce((sum, house) => sum + house.newPhotoCount, 0),
     houses,
   }
 }

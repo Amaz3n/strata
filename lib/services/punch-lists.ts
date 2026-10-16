@@ -20,7 +20,7 @@ import {
   type PunchItemUpdateInput,
 } from "@/lib/validation/punch-items"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import type { z } from "zod"
+import { z } from "zod"
 
 const PORTAL_PUNCH_SELECT =
   "id, org_id, project_id, title, description, status, due_date, severity, location, location_id, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, verification_notes, created_at"
@@ -408,23 +408,43 @@ export async function createProjectPunchItem(projectId: string, input: PunchItem
 /**
  * The corrective punch item a deficient inspection item spawns. The inspection
  * path has already authorized the actor on this project (`inspection.write`), so
- * this skips the `punch.write` gate and keeps everything else: validation,
- * assignee and location checks, event, audit and dispatch.
+ * this skips the `punch.write` gate. The punch item, its link on the failed
+ * item, the photo as "before" evidence, the event and the audit row are written
+ * by one database function in one transaction; dispatch follows the commit.
  */
 export async function createPunchItemFromInspection(
   context: { supabase: SupabaseClient; orgId: string; userId: string },
   projectId: string,
   input: PunchItemCreateInput,
-  inspectionId: string,
+  inspectionItemId: string,
 ): Promise<ProjectPunchItem> {
-  return insertPunchItem(context, projectId, punchItemCreateSchema.parse(input), { inspectionId })
+  const parsed = punchItemCreateSchema.parse(input)
+  const { supabase, orgId, userId } = context
+  const location = await resolveProjectLocation(projectId, parsed.location_id, orgId)
+  const { data: raised, error } = await supabase.rpc("raise_inspection_corrective_work", {
+    p_org: orgId, p_home: projectId, p_actor: userId, p_item: inspectionItemId,
+    p_punch: {
+      title: parsed.title, description: parsed.description ?? null, due_date: parsed.due_date ?? null, severity: parsed.severity ?? null,
+      location_id: location?.id ?? null, location: location?.full_path ?? parsed.location ?? null,
+      assigned_to: parsed.assigned_to ?? null, assigned_company_id: parsed.assigned_company_id ?? null,
+    },
+  })
+  if (error) throw new Error(error.message)
+  const punchItemId = z.object({ punchItemId: z.string().uuid() }).parse(raised).punchItemId
+  const { data, error: readError } = await supabase.from("punch_items").select(PROJECT_PUNCH_ITEM_SELECT)
+    .eq("org_id", orgId).eq("project_id", projectId).eq("id", punchItemId).single()
+  if (readError || !data) throw new Error(`Corrective work was raised but could not be read: ${readError?.message}`)
+  const item = mapProjectPunchItem(data)
+  if (item.assigned_company_id) {
+    await sendPunchDispatchEmail({ supabase, orgId, projectId, companyId: item.assigned_company_id, items: [item], createdBy: userId })
+  }
+  return item
 }
 
 async function insertPunchItem(
   context: { supabase: SupabaseClient; orgId: string; userId: string },
   projectId: string,
   parsed: z.output<typeof punchItemCreateSchema>,
-  origin: { inspectionId?: string } = {},
 ): Promise<ProjectPunchItem> {
   const { supabase, orgId: resolvedOrgId, userId } = context
   const [location] = await Promise.all([
@@ -448,7 +468,6 @@ async function insertPunchItem(
       assigned_company_id: parsed.assigned_company_id ?? null,
       dispatched_at: parsed.assigned_company_id ? new Date().toISOString() : null,
       verification_required: parsed.verification_required ?? false,
-      created_from_inspection: origin.inspectionId !== undefined,
       created_by: userId,
     })
     .select(PROJECT_PUNCH_ITEM_SELECT)
@@ -461,7 +480,7 @@ async function insertPunchItem(
     eventType: "punch_item_created",
     entityType: "punch_item",
     entityId: data.id,
-    payload: { project_id: projectId, title: data.title, ...(origin.inspectionId ? { from_inspection: origin.inspectionId } : {}) },
+    payload: { project_id: projectId, title: data.title },
   })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "punch_item", entityId: data.id, after: data })
 

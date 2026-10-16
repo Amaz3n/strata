@@ -1,0 +1,336 @@
+{
+  "scenario": "FIELD-01",
+  "subcases": {
+    "released-set-labels": {
+      "derivation": "A home's drawing set has revision Plan v1 and Plan v2 published and Plan v3 a draft copy. Sheet A-101 is current at v2 and also carries v1, so v1 is superseded; A-102 and A-104 are current at v1; A-103 exists only in the draft v3, so it is pending review. Rows sort by sheet number, current before superseded. Of three selections only the confirmed (Flooring, LVP Oak) and the ordered (Cabinets, Shaker White) are released; the merely selected Fixtures choice is not, and the lists are by category. Awarded scope is the approved framing package (two lines in order) and the approved concrete package; a draft and a canceled commitment are not scope. A superintendent limited to another division is refused. The superintendent role holds drawing.read but neither commitment.read nor selections.read, so for them the five sheet rows are returned and options and scope are withheld (null); the owner, who holds all three, sees the full lists above.",
+      "expected": {
+        "sheets": [
+          [
+            "A-101",
+            "Plan v2",
+            "current"
+          ],
+          [
+            "A-101",
+            "Plan v1",
+            "superseded"
+          ],
+          [
+            "A-102",
+            "Plan v1",
+            "current"
+          ],
+          [
+            "A-103",
+            "Plan v3",
+            "pending_review"
+          ],
+          [
+            "A-104",
+            "Plan v1",
+            "current"
+          ]
+        ],
+        "options": [
+          [
+            "Cabinets",
+            "Shaker White"
+          ],
+          [
+            "Flooring",
+            "LVP Oak"
+          ]
+        ],
+        "scope": [
+          [
+            "Framing package",
+            [
+              "Frame walls 2400 sf",
+              "Install trusses 24 ea"
+            ]
+          ],
+          [
+            "Concrete package",
+            [
+              "Pour slab 1800 sf"
+            ]
+          ]
+        ],
+        "outsideDivision": "refused",
+        "superintendent": {
+          "sheets": 5,
+          "options": null,
+          "scope": null
+        }
+      }
+    },
+    "trade-portal-released": {
+      "derivation": "On the same home the framer's link shows only sheets shared with trades and only their published revisions: A-101 v2 current and v1 superseded, A-102 v1 current. A-103 is shared but exists only in the draft copy, and A-104 is published but not shared, so neither appears. The framer's scope is the framing package alone (the draft and canceled commitments are not awarded; the concrete package is another trade's). The concrete trade sees only the slab line. The framer's link on a second home shows that home's one framing line and no drawings (none exist there). A client-portal link and a revoked link are refused. The trade also sees the home's confirmed and ordered options by name (never the merely selected one, never prices); the second home has none. A paused link is refused as well as a revoked one.",
+      "expected": {
+        "framerSheets": [
+          [
+            "A-101",
+            "Plan v2",
+            "current"
+          ],
+          [
+            "A-101",
+            "Plan v1",
+            "superseded"
+          ],
+          [
+            "A-102",
+            "Plan v1",
+            "current"
+          ]
+        ],
+        "framerScope": [
+          [
+            "Framing package",
+            [
+              "Frame walls 2400 sf",
+              "Install trusses 24 ea"
+            ]
+          ]
+        ],
+        "concreteScope": [
+          [
+            "Concrete package",
+            [
+              "Pour slab 1800 sf"
+            ]
+          ]
+        ],
+        "otherHomeSheets": [],
+        "otherHomeScope": [
+          [
+            "Framing other home",
+            [
+              "Frame garage 600 sf"
+            ]
+          ]
+        ],
+        "wrongPortal": "refused",
+        "revoked": "refused",
+        "framerOptions": [
+          [
+            "Cabinets",
+            "Shaker White"
+          ],
+          [
+            "Flooring",
+            "LVP Oak"
+          ]
+        ],
+        "paused": "refused"
+      }
+    },
+    "cross-home-review-band": {
+      "derivation": "A division-A superintendent is assigned 13 active production houses H01-H13. H01-H03 logged today; H04 logged today and has two photos from today, which that log covers (photo day is not after log day), so 0 new. H05 last logged yesterday and has two photos today: missing today, 2 new. H06 last logged 3 days ago with photos 2 and 4 days ago: 1 new (the 4-day-old one predates the log). H07 never logged, photos 1, 3, 5 and 10 days old: 3 new (the 10-day-old is past the 7-day look-back). H08-H13 have no photos, no log today (H09 logged yesterday). Missing today = H05-H13 = 9. New photos = 2 + 1 + 3 = 6. A division-B house still assigned to them and a colleague's division-A house are not listed, so houses = 13. The band lists houses needing review worst first: 9 need review (missing log or new photos), the cap is 8 so 8 are shown and 1 hidden, led by H07 (3), H05 (2), H06 (1).",
+      "expected": {
+        "houses": [
+          "H01",
+          "H02",
+          "H03",
+          "H04",
+          "H05",
+          "H06",
+          "H07",
+          "H08",
+          "H09",
+          "H10",
+          "H11",
+          "H12",
+          "H13"
+        ],
+        "counts": {
+          "houses": 13,
+          "missingLog": 9,
+          "newPhotos": 6
+        },
+        "newPhotos": {
+          "H05": 2,
+          "H06": 1,
+          "H07": 3
+        },
+        "band": {
+          "head": [
+            "H07",
+            "H05",
+            "H06"
+          ],
+          "shown": 8,
+          "hidden": 1
+        }
+      }
+    },
+    "photo-retry-dedupe": {
+      "derivation": "An earlier attempt left one file row (client id F) for home A's daily log: one files row, one photos record, on home A and log A. Retrying the upload with the same id on home A and log A is accepted as a replay of that record (without storage it then cannot sign the download link, which happens after the duplicate decision; with storage it returns the same record) and adds nothing. The same id naming home B and its log is refused (id already used by another file) and the row stays on home A. The web queue derives its id from the content and the home's log context: a restored draft yields the same id, another home's log a different one.",
+      "expected": {
+        "before": {
+          "files": 1,
+          "onHomeA": true,
+          "onLogA": true,
+          "photoRecords": 1
+        },
+        "afterRetry": {
+          "files": 1,
+          "onHomeA": true,
+          "onLogA": true,
+          "photoRecords": 1,
+          "replay": "accepted (signing needs storage)"
+        },
+        "afterWrongHome": {
+          "files": 1,
+          "onHomeA": true,
+          "onLogA": true,
+          "photoRecords": 1,
+          "refused": true
+        },
+        "queueIds": {
+          "stable": true,
+          "otherHomeDiffers": true
+        }
+      }
+    },
+    "orphan-storage-reconciliation": {
+      "derivation": "Not built. An upload that wrote its storage object and failed before the files insert leaves an object with no row; proving a sweep needs real storage, so the subcase reports BLOCKED without --storage-env.",
+      "requires": "storage",
+      "expected": {}
+    },
+    "failed-item-raises-owned-linked-corrective-work": {
+      "derivation": "EP09-04 #0. A superintendent runs a 3-item framing checklist for a company (Palmetto Framing): the header passes, 'Fire blocking installed' fails with a note and a photo, 'Anchor bolts spaced' fails with a note. Refusals: the sales desk lacks inspection.write; the passing item is not deficient; a company id outside the org is unknown; none of them leaves a punch item or a link, so the home has 0 punch items and the bolts item is unlinked. The superintendent then raises the fire-blocking work naming the company and a due date 5 days out: one punch item, open, due in 5 days, assigned to that company (so dispatched), created by the superintendent, verification required, flagged from-inspection, in the same home, with the item's photo as the single 'before' file link, exactly one punch_item_created event carrying the inspection and item ids and exactly one insert audit row; a second raise on the item is refused. Completing the failed inspection raises the work for the one failed item that has none: owned by the inspection's company (Palmetto), no due date, no photo so no evidence file, one event, one audit; the passing item gets no work. A member's own data-API writes cannot link the passing item, re-point the fire-blocking item to the bolts item's work, clear its link (all refused by the link guard), or link work of another home (refused: belongs to another home); calling the raise function naming a second house the superintendent is also assigned to, with an item of the first house, is refused because the item's inspection is not in the named home (the cross-project link cannot be made), and calling it as another actor (the JWT subject differs) is refused; all three items keep exactly the links they had.",
+      "inputs": {
+        "checklistItems": 3,
+        "failedItems": 2,
+        "dueInDays": 5
+      },
+      "expected": {
+        "refusals": {
+          "salesRaises": "refused",
+          "passingItem": "refused",
+          "unknownCompany": "refused",
+          "punchItems": 0,
+          "boltsLinked": false
+        },
+        "chosen": {
+          "status": "open",
+          "dueInDays": 5,
+          "company": true,
+          "createdBy": true,
+          "dispatched": true,
+          "verificationRequired": true,
+          "fromInspection": true,
+          "sameHome": true,
+          "evidence": [
+            {
+              "photo": true,
+              "role": "before"
+            }
+          ],
+          "events": 1,
+          "audits": 1,
+          "secondRaise": "refused"
+        },
+        "automatic": {
+          "status": "open",
+          "dueInDays": null,
+          "company": true,
+          "createdBy": true,
+          "dispatched": true,
+          "verificationRequired": true,
+          "fromInspection": true,
+          "sameHome": true,
+          "evidence": [],
+          "events": 1,
+          "audits": 1,
+          "headerLinked": false
+        },
+        "fence": {
+          "forgeLinkOnPassingItem": "Corrective work links are written only when the work is raised",
+          "repointToAnotherItemsWork": "Corrective work links are written only when the work is raised",
+          "clearLink": "Corrective work links are written only when the work is raised",
+          "linkToAnotherHome": "Corrective punch work belongs to another home",
+          "raiseInAnotherHome": "Inspection item belongs to another home or is unavailable",
+          "raiseAsSomeoneElse": "Inspection actor identity differs from authenticated session",
+          "untouched": {
+            "blocking": true,
+            "bolts": true,
+            "header": true
+          }
+        }
+      }
+    },
+    "reinspection-retains-prior-and-resolves-the-failure": {
+      "derivation": "EP09-04 #1. A required framing inspection (attempt 1) fails on 'Fire blocking installed', which raises corrective work. A reinspection is refused while that work is open; once it is closed with an 'after' file the reinspection is attempt 2 with the same three prompts and no answers. Attempt 2 fails again (same item), so the obligation stays unaccepted and accepting that failed attempt is refused (only a passing current attempt can be reviewed). Its new corrective work is resolved and attempt 3 is started; an org admin answers all three items pass and completes it. The superintendent cannot accept (no inspection.review), the admin who completed it cannot accept its own attempt (an independent reviewer is required), and the owner accepts: decision accept, the obligation's accepted inspection is attempt 3 and it stays required for closing. Retained: three completed attempts with results fail, fail, pass; attempt 2's prior is attempt 1 and attempt 3's prior is attempt 2; each reinspection's correction evidence names the resolved punch item of the attempt before it; attempt 1 is still completed with result fail, its failed response, note and punch link intact; the obligations list shows 1 obligation with 3 attempts.",
+      "inputs": {
+        "attempts": 3,
+        "failedAttempts": 2
+      },
+      "expected": {
+        "failedReinspection": {
+          "whileOpen": "refused",
+          "attemptNumber": 2,
+          "secondStart": [
+            {
+              "prompt": "Header sizes match plan",
+              "response": null
+            },
+            {
+              "prompt": "Fire blocking installed",
+              "response": null
+            },
+            {
+              "prompt": "Anchor bolts spaced",
+              "response": null
+            }
+          ],
+          "secondResult": "fail",
+          "reviewFailedAttempt": "refused",
+          "accepted": null
+        },
+        "acceptance": {
+          "attemptNumber": 3,
+          "superintendentAccepts": "refused",
+          "completerAccepts": "refused",
+          "decision": "accept",
+          "acceptedIsThirdAttempt": true,
+          "requiredForClosing": true
+        },
+        "retained": {
+          "attempts": [
+            {
+              "n": 1,
+              "status": "completed",
+              "result": "fail",
+              "prior": null
+            },
+            {
+              "n": 2,
+              "status": "completed",
+              "result": "fail",
+              "prior": 1
+            },
+            {
+              "n": 3,
+              "status": "completed",
+              "result": "pass",
+              "prior": 2
+            }
+          ],
+          "secondRelied": true,
+          "thirdRelied": true,
+          "original": {
+            "status": "completed",
+            "result": "fail",
+            "response": "fail",
+            "note": "Fire blocking still missing at the stair wall",
+            "punchKept": true
+          },
+          "listedObligations": 1,
+          "attemptsListed": 3
+        }
+      }
+    }
+  }
+}

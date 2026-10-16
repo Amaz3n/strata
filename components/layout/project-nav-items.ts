@@ -14,6 +14,7 @@ export type ProjectSection =
   | "overview"
   | "documents"
   | "drawings"
+  | "released"
   | "bids"
   | "signatures"
   | "permits"
@@ -113,7 +114,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "selections",
 ])
 
-export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures", "permits"])
+export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "released", "specs", "bids", "signatures", "permits"])
 
 export function getProjectIdFromPath(pathname: string): string | null {
   const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
@@ -159,6 +160,7 @@ export function getProjectSection(pathname: string): ProjectSection {
   switch (segment) {
     case "documents":
     case "drawings":
+    case "released":
     case "bids":
     case "signatures":
     case "permits":
@@ -321,6 +323,14 @@ export function buildProjectNavGroups({
       url: url("/drawings"),
       isActive: section === "drawings",
       requiredAny: ["drawing.read", "docs.read"],
+    },
+    {
+      title: "Released",
+      moduleKey: "drawings",
+      url: url("/released"),
+      isActive: section === "released",
+      requiredAny: ["drawing.read"],
+      postures: ["production"],
     },
     {
       title: "Specifications",

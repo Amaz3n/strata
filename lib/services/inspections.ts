@@ -732,11 +732,11 @@ async function raiseCorrectivePunch(
   item: InspectionItem,
   owner: CorrectivePunchOwner,
 ): Promise<InspectionItem> {
-  const { supabase, orgId, userId } = context
+  const { supabase, orgId } = context
   const companyId = owner.companyId ?? (owner.assignedTo ? null : inspection.company_id)
   if (!companyId && !owner.assignedTo) throw new Error("Choose the company or person responsible for this corrective work")
 
-  const punchItem = await createPunchItemFromInspection(context, inspection.project_id, {
+  await createPunchItemFromInspection(context, inspection.project_id, {
     title: item.prompt,
     description: [item.note, `From inspection: ${inspection.title}`].filter(Boolean).join("\n"),
     location: inspection.location ?? null,
@@ -745,31 +745,11 @@ async function raiseCorrectivePunch(
     assigned_company_id: companyId,
     assigned_to: owner.assignedTo,
     verification_required: true,
-  }, inspection.id)
+  }, item.id)
 
-  const { data: updated, error: updateError } = await supabase
-    .from("inspection_items")
-    .update({ punch_item_id: punchItem.id })
-    .eq("org_id", orgId)
-    .eq("id", item.id)
-    .is("punch_item_id", null)
-    .select(ITEM_SELECT)
-    .single()
-  if (updateError || !updated) throw new Error(`Punch item created but link failed: ${updateError?.message ?? "Inspection item already has a punch item"}`)
-
-  if (item.photo_file_id) {
-    const { error: linkError } = await supabase.from("file_links").insert({
-      org_id: orgId,
-      project_id: inspection.project_id,
-      file_id: item.photo_file_id,
-      entity_type: "punch_item",
-      entity_id: punchItem.id,
-      link_role: "before",
-      created_by: userId,
-    })
-    if (linkError) throw new Error(`Punch item created but the inspection photo could not be attached: ${linkError.message}`)
-  }
-  return updated as InspectionItem
+  const { data: linked, error: readError } = await supabase.from("inspection_items").select(ITEM_SELECT).eq("org_id", orgId).eq("id", item.id).single()
+  if (readError || !linked) throw new Error(`Corrective work was raised but the item could not be read: ${readError?.message}`)
+  return linked as InspectionItem
 }
 
 /**

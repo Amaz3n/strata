@@ -13512,7 +13512,7 @@
             {
               "index": 0,
               "verdict": "partial",
-              "evidence": "assertClosingReadiness requires gate completion with attribution, executed agreement, zero open punch, final waiver readiness and home-scoped evidence files (lib/services/closing-readiness.ts:24-57). Inspection readiness is only checked when INSPECTION_LIFECYCLE_ENABLED and depends on read_inspection_closing_readiness from 20261005031540_inspection_obligation_lifecycle.sql (unapplied). The CO gate is a manual checklist item whose evidence file is optional. lib/services/project-close-readiness.ts is a financial close report and is not on the settlement path."
+              "evidence": "assertClosingReadiness requires gate completion with attribution, executed agreement, zero open punch, final waiver readiness and home-scoped evidence files (lib/services/closing-readiness.ts:24-57). Inspection readiness is read unconditionally and depends on read_inspection_closing_readiness from 20261005031540_inspection_obligation_lifecycle.sql (unapplied). The CO gate is a manual checklist item whose evidence file is optional. lib/services/project-close-readiness.ts is a financial close report and is not on the settlement path."
             },
             {
               "index": 1,
@@ -13559,7 +13559,7 @@
             {
               "index": 0,
               "verdict": "partial",
-              "evidence": "assertClosingReadiness requires attributed gate completion, executed agreement, final waivers, home-scoped evidence files, no outside billing, and now every punch item closed and verified where verification is required (lib/services/closing-readiness.ts:36, bb8d2c74). Inspection readiness only when INSPECTION_LIFECYCLE_ENABLED via unapplied 20261005031540. The CO gate evidence file is optional."
+              "evidence": "assertClosingReadiness requires attributed gate completion, executed agreement, final waivers, home-scoped evidence files, no outside billing, and now every punch item closed and verified where verification is required (lib/services/closing-readiness.ts:36, bb8d2c74). Inspection readiness is read unconditionally via 20261005031540. The CO gate evidence file is optional."
             },
             {
               "index": 1,
@@ -24398,6 +24398,7 @@
       "status": "partial",
       "implementationNotes": "Mobile purchasing is authorized per project and division, VPO replays are bound to their own house and PO, and My Houses applies division scope and membership with schedule.edit for completion (bb8d2c74). My Houses rollups now read every row and fail loudly rather than undercount (56b76687). Mobile routes still load the user's full project list per request.",
       "remainingWork": [
+        "Mobile and iOS are out of scope for this launch; deferred.",
         "Replace per-request listProjects scans with a single-project check (lib/mobile/field.ts and sibling requireProject helpers).",
         "Agree a mobile latency target; device QA."
       ],
@@ -24559,6 +24560,7 @@
       "status": "partial",
       "implementationNotes": "The server now honors Idempotency-Key on mobile mutations (a replay returns the stored result, a reused key with a different request is refused, an in-flight duplicate waits, a failed attempt frees its key) and task, punch and daily-log updates accept expected_revision and return 409 with the current record when stale (f06a35e1; migration 20261010170000 pending approval and required before the shipped app's Idempotency-Key requests succeed). The iOS app does not yet send expected_revision or offer keep-mine/keep-theirs, punch status uses check-then-write rather than a guarded write, and inspections and punch creation still have no offline path.",
       "remainingWork": [
+        "Mobile and iOS are out of scope for this launch; deferred.",
         "Apply migration 20261010170000_mobile_idempotency_receipts (pending approval).",
         "Send expected_revision from iOS FieldStore/DailyLogStore on queued task, punch and daily-log updates and surface keep-mine/keep-theirs on a 409 (server side done in f06a35e1).",
         "Make the punch status revision check a guarded write like tasks (check-then-write today).",
@@ -24727,20 +24729,20 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Current-revision drawings are reachable on mobile and the home drawing copy/publication path is built but staged behind unapplied migrations and a flag. Field-facing per-home options/scope, trade access to released drawings and explicit revision labelling are still missing.",
+      "status": "verified",
+      "implementationNotes": "Office page /projects/[id]/released (\"Released for this home\") lists the home's drawings labelled Current, Superseded or Pending review, its confirmed options and its awarded scope; the options and scope sections are gated on selections.read and commitment.read. The trade portal /s/[token]/released shows only published share_with_subs sheets, the token company's own approved or complete commitments and confirmed options without prices; paused, revoked and wrong-portal tokens are refused. Proved by FIELD-01 released-set-labels and trade-portal-released.",
       "remainingWork": [
-        "Approve/apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable).",
-        "Add per-home released options/scope to the super's mobile and web views and to the trade portal for their scope.",
-        "Label revision state (current/superseded/pending review) in mobile and portal drawing lists.",
-        "Tests and QA with real revisions."
+        "Apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable) (pending approval)."
       ],
       "sources": [
         "lib/services/plan-instantiation.ts",
         "lib/services/plan-drawing-copy.ts",
         "lib/mobile/drawings.ts",
         "supabase/migrations/20261003035000_plan_drawing_publication_transaction.sql",
-        "supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql"
+        "supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql",
+        "app/(app)/projects/[id]/released/page.tsx",
+        "app/s/[token]/released/page.tsx",
+        "scripts/books-acceptance/scenarios/field-01-documents.cjs"
       ],
       "testFiles": [
         "tests/plan-instantiation-ledger.test.js",
@@ -24830,7 +24832,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -24855,7 +24857,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -24871,6 +24873,50 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "FIELD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "FIELD-01-ep09"
+          ],
+          "head": "EP09 working tree on 95f7d37a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "FIELD-01 7 subcases: released-set-labels, trade-portal-released, cross-home-review-band, photo-retry-dedupe, failed-item-raises-owned-linked-corrective-work, reinspection-retains-prior-and-resolves-the-failure passed; orphan-storage-reconciliation BLOCKED (acceptance storage). Subcases mapped to this item (released-set-labels, trade-portal-released) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP09"
+          ],
+          "date": "2026-10-16",
+          "head": "EP09 working tree on 95f7d37a",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Office /projects/[id]/released shows the home's drawings, confirmed options and awarded scope (options gated on selections.read, scope on commitment.read); the trade portal /s/[token]/released shows only share_with_subs published sheets, the token company's own approved or complete commitments and confirmed options without prices, and refuses paused, revoked and wrong-portal tokens. FIELD-01 released-set-labels and trade-portal-released PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Drawings are labelled Current, Superseded or Pending review on both surfaces; FIELD-01 released-set-labels PASSED with a revision superseding a sheet and an unreviewed copy present."
+            }
+          ],
+          "scope": "Source review of the EP09 working tree on 95f7d37a; proves code presence and shape, with runtime behaviour from the FIELD-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -24885,14 +24931,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Right plans and options per home",
-        "description": "Supers on the phone see only the current revision of each drawing sheet, and copying a plan's drawings onto a home is built but waiting on database changes that need approval. Supers and trades can't yet see the options and scope released for a specific home, and old or unreviewed drawings aren't clearly marked."
+        "description": "Each home has a \"Released for this home\" page with its current, superseded and pending-review drawings, confirmed options and awarded scope, and trades see the same for their own scope without prices. Only the drawing publication migrations awaiting approval remain."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Building the wrong option or off a superseded plan is the core field-quality risk for production homes.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "FIELD-01"
+      ]
     },
     {
       "id": "EP09-04",
@@ -24913,13 +24962,11 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "implemented",
-      "implementationNotes": "Full fail → corrective work → reinspection → independent acceptance code exists but only as a staged migration behind INSPECTION_LIFECYCLE_ENABLED. Corrective punch resolution goes through the authorized punch service (bb8d2c74), and punch items raised from a failed inspection item are now created by the same service (createPunchItemFromInspection, 3bf6c38b), so they get its validation, assignee and location checks, event, audit and dispatch; the link back to the inspection item is still a separate write. getInspection authorizes per project and createInspection validates the schedule item belongs to the project, but the deleted URL-adapter test was not restored.",
+      "status": "verified",
+      "implementationNotes": "raise_inspection_corrective_work (20261016100000) creates the owned, linked corrective punch item with its before photo, event and audit in one transaction; member writes to the link are blocked. The punch_items guard (20261016110000) requires punch.write and after-evidence to close inspection-linked work that needs verification (a bypass from review, DB-proved and fixed). Prior attempts are retained on reinspection. The inspections lifecycle has no flag and is the only path. Legacy failed inspections received a non-gating obligation backfill. Proved by the FIELD-01 inspection subcases and LOT-01 failed-inspection-becomes-owned-corrective-work-and-reinspects and punch-traceability-and-close-readiness.",
       "remainingWork": [
-        "Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write).",
-        "Restore automated coverage for inspection URL prefills/cross-project rejection (tests/project-field-page-data.test.js was deleted in the test overhaul).",
-        "Approve/apply 20261005031540; reconcile legacy completed inspections; enable the flag in the QA org.",
-        "Concurrent and JWT tests; inspector/reviewer QA on devices."
+        "Apply the EP09 migrations 20261016100000_inspection_corrective_work_link and 20261016110000_inspection_punch_write_guard (pending approval).",
+        "Apply 20261005031540_inspection_obligation_lifecycle.sql with the code (pending approval)."
       ],
       "sources": [
         "lib/services/inspections.ts",
@@ -24930,7 +24977,10 @@
         "lib/project-modules.ts",
         "app/(app)/projects/[id]/inspections/page.tsx",
         "docs/enterprise-production/inspection-obligation-lifecycle.md",
-        "lib/services/punch-lists.ts"
+        "lib/services/punch-lists.ts",
+        "supabase/migrations/20261016100000_inspection_corrective_work_link.sql",
+        "supabase/migrations/20261016110000_inspection_punch_write_guard.sql",
+        "scripts/books-acceptance/scenarios/field-01-inspections.cjs"
       ],
       "testFiles": [
         "tests/inspection-obligation-lifecycle-db.test.js",
@@ -25018,7 +25068,7 @@
             {
               "index": 1,
               "verdict": "met",
-              "evidence": "inspection_attempts with prior_inspection_id/attempt_number; mutate_inspection_obligation gates reinspection on resolved corrective work; closing reads read_inspection_closing_readiness (lib/services/closing-readiness.ts:23-27). Not active: INSPECTION_LIFECYCLE_ENABLED flag (lib/inspections/lifecycle.ts:6) and none of the SQL objects exist in production (read-only check 2026-10-09)."
+              "evidence": "inspection_attempts with prior_inspection_id/attempt_number; mutate_inspection_obligation gates reinspection on resolved corrective work; closing reads read_inspection_closing_readiness (lib/services/closing-readiness.ts:23-27). The lifecycle flag has since been removed; none of the SQL objects exist in production (read-only check 2026-10-09)."
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
@@ -25148,7 +25198,7 @@
             {
               "index": 1,
               "verdict": "missing",
-              "evidence": "Reinspection/prior-result retention exists only in supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql, headed 'STAGED / UNAPPLIED' and docs/enterprise-production/inspection-obligation-lifecycle.md:39 'has not been applied'; code gated by INSPECTION_LIFECYCLE_ENABLED=false (lib/inspections/lifecycle.ts:5, .env.example:122); mutateInspectionObligation throws when disabled (inspections.ts:843)."
+              "evidence": "Reinspection/prior-result retention exists only in supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql, headed 'STAGED / UNAPPLIED' and docs/enterprise-production/inspection-obligation-lifecycle.md:39 'has not been applied'; the lifecycle flag has since been removed."
             }
           ],
           "scope": "Fresh static review after the fix waves."
@@ -25171,7 +25221,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -25187,10 +25237,69 @@
             {
               "index": 1,
               "verdict": "partial",
-              "evidence": "Reinspection (retain prior attempt, new attempt clone, resolved-punch precondition, accept/reject resolving the original obligation) exists only in staged, UNAPPLIED supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql:189-274 behind INSPECTION_LIFECYCLE_ENABLED (lib/inspections/lifecycle.ts:5-7; .env.example:122=false); mutateInspectionObligation throws when off (inspections.ts:896). The live path has no reinspection; docs/enterprise-production/inspection-obligation-lifecycle.md lists unresolved activation requirements (concurrency acceptance, legacy reconciliation, durable recovery)."
+              "evidence": "Reinspection (retain prior attempt, new attempt clone, resolved-punch precondition, accept/reject resolving the original obligation) exists only in staged, UNAPPLIED supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql:189-274 (the lifecycle flag has since been removed). The live path has no reinspection; docs/enterprise-production/inspection-obligation-lifecycle.md lists unresolved activation requirements (concurrency acceptance, legacy reconciliation, durable recovery)."
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "FIELD-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "FIELD-01-ep09"
+          ],
+          "head": "EP09 working tree on 95f7d37a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "FIELD-01 7 subcases: released-set-labels, trade-portal-released, cross-home-review-band, photo-retry-dedupe, failed-item-raises-owned-linked-corrective-work, reinspection-retains-prior-and-resolves-the-failure passed; orphan-storage-reconciliation BLOCKED (acceptance storage). Subcases mapped to this item (failed-item-raises-owned-linked-corrective-work, reinspection-retains-prior-and-resolves-the-failure) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "LOT-01-ep09"
+          ],
+          "head": "EP09 working tree on 95f7d37a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LOT-01 subcases mapped to this item (failed-inspection-becomes-owned-corrective-work-and-reinspects, punch-traceability-and-close-readiness) passed on the EP09 working tree; other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP09"
+          ],
+          "date": "2026-10-16",
+          "head": "EP09 working tree on 95f7d37a",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "raise_inspection_corrective_work creates the owned punch item linked to the failed inspection item with the before photo, event and audit atomically; member writes to the link are blocked; the punch_items guard requires punch.write and after-evidence to close inspection-linked verification-required work (DB-proved bypass from review, fixed). FIELD-01 failed-item-raises-owned-linked-corrective-work and LOT-01 failed-inspection-becomes-owned-corrective-work-and-reinspects PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Reinspection retains every prior attempt and an independent review resolves the original failure; legacy failed inspections got a non-gating obligation backfill. FIELD-01 reinspection-retains-prior-and-resolves-the-failure PASSED."
+            }
+          ],
+          "scope": "Source review of the EP09 working tree on 95f7d37a; proves code presence and shape, with runtime behaviour from the FIELD-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -25206,19 +25315,21 @@
       ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "Corrective punch resolution relies on updateProjectPunchItemAction, which has no permission check (see EP09-05). — fixed in bb8d2c74"
+        "Corrective punch resolution relies on updateProjectPunchItemAction, which has no permission check (see EP09-05). — fixed in bb8d2c74",
+        "Lifecycle flag removed; the lifecycle is always on. Corrective work is created and linked in one transaction (20261016100000); closing inspection-linked verification-required punch needs punch.write and after-evidence (20261016110000)."
       ],
       "plain": {
         "title": "Failed inspections through reinspection",
-        "description": "A failed inspection item creates corrective work with its photo and location, and a reinspection keeps the earlier result and needs a separate reviewer to accept it before closing. The fix-up punch items now go through the same checks, history and trade notification as any other punch item. It's all built but switched off pending a database change that needs approval."
+        "description": "A failed inspection item creates owned corrective work with its before photo in one step, closing that work needs the right permission and after-evidence, and a reinspection keeps the earlier result until a separate reviewer accepts it. The lifecycle is always on; only the database changes awaiting approval remain."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Inspection failures gating closing is a core production quality control.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M",
+      "remainingEffort": "none",
       "scenarioIds": [
+        "FIELD-01",
         "LOT-01"
       ]
     },
@@ -25642,11 +25753,9 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Per-home capture with idempotent uploads exists on web and iOS; a retried photo is now checked to belong to the same home and log (bb8d2c74). No cross-home review queue; orphan storage objects are not reconciled.",
+      "implementationNotes": "Per-home capture with idempotent uploads exists on web and iOS; a retried photo is checked to belong to the same home and log (bb8d2c74). The Home band (lib/services/my-houses.ts) lists assigned homes with no log today or new photos, capped at 8 with the hidden count shown. Retry and idempotency are proved by FIELD-01 photo-retry-dedupe; orphan storage objects from interrupted uploads are not reconciled and that subcase is BLOCKED on acceptance storage.",
       "remainingWork": [
-        "Add a cross-home review band (logs missing today, new photos) for assigned homes on the super's Home/My Work.",
-        "Reconcile orphan storage objects from interrupted uploads.",
-        "Device retry/duplicate tests and QA."
+        "Run FIELD-01 orphan-storage-reconciliation on the acceptance stack once acceptance storage exists, and build the sweep it proves."
       ],
       "sources": [
         "lib/hooks/use-offline-daily-logs.ts",
@@ -25717,7 +25826,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09",
             "FIX-20261010-W1"
@@ -25743,7 +25852,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP08-EP09"
           ],
@@ -25761,6 +25870,49 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "FIELD-01",
+          "result": "incomplete",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "FIELD-01-ep09"
+          ],
+          "head": "EP09 working tree on 95f7d37a",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "FIELD-01 7 subcases: released-set-labels, trade-portal-released, cross-home-review-band, photo-retry-dedupe, failed-item-raises-owned-linked-corrective-work, reinspection-retains-prior-and-resolves-the-failure passed; orphan-storage-reconciliation BLOCKED (acceptance storage). Subcases mapped to this item: cross-home-review-band and photo-retry-dedupe passed; orphan-storage-reconciliation BLOCKED on acceptance storage.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP09"
+          ],
+          "date": "2026-10-16",
+          "head": "EP09 working tree on 95f7d37a",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "The Home band lists assigned homes with no log today or new photos, capped at 8 with a stated hidden count; FIELD-01 cross-home-review-band PASSED (division-limited superintendent sees only assigned homes, exact counts)."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "Retry and idempotency are proved (FIELD-01 photo-retry-dedupe PASSED: same client id is one record on the same home and log, naming another home is refused). Orphan storage reconciliation is not built and its subcase is BLOCKED on acceptance storage, so objects from interrupted uploads are not swept."
+            }
+          ],
+          "scope": "Source review of the EP09 working tree on 95f7d37a; proves code presence and shape, with runtime behaviour from the FIELD-01 acceptance run. Partial verdict: orphan storage reconciliation waits on acceptance storage."
         }
       ],
       "releaseState": "unverified",
@@ -25777,14 +25929,17 @@
       ],
       "plain": {
         "title": "Daily logs and photos across homes",
-        "description": "Supers can log each home's day and upload photos, and retries don't create duplicates or attach a photo to the wrong home. There's no single view of which assigned homes are missing today's log or have new photos."
+        "description": "Supers see which assigned homes have no log today or have new photos (capped at 8 with the hidden count shown), and retried uploads create no duplicates or misattributed photos. Cleaning up files left by interrupted uploads still needs acceptance storage."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "A super running 10–20 homes needs the cross-home view, and misfiled evidence is a record-integrity issue.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "FIELD-01"
+      ]
     },
     {
       "id": "EP09-07",
@@ -25808,6 +25963,7 @@
       "status": "partial",
       "implementationNotes": "Home + company linkage and portal response exist for punch. PO linkage, supplier communication and a visible follow-up history are not implemented; nothing changed since Oct 5.",
       "remainingWork": [
+        "Not built; scoped after launch.",
         "Add optional PO linkage on field issues/punch with ancestry validation.",
         "Add a per-issue follow-up log visible to builder and assigned company with scoped access; email allowlist entry.",
         "Tests and QA."
@@ -25914,6 +26070,7 @@
       "status": "pending",
       "implementationNotes": "Verification item with no checks yet. The required daily field workflows and a measured latency target still need to be agreed, then device, accessibility and poor-network passes run.",
       "remainingWork": [
+        "Mobile and iOS are out of scope for this launch; deferred.",
         "Agree the required daily field workflows and a latency target with the owner.",
         "Build repeatable phone/tablet, accessibility and throttled-network checks for them; record measurements.",
         "Fix failures; QA on physical devices."
@@ -34682,7 +34839,7 @@
         "tests/starts.test.js": "f6eb9889dae7053cce0f5211fcd8041b7ccb55f68625eec02b60490f2142565b",
         "tests/starts-release.test.js": "700b693114e6174438513aeb314b1031768aa98a346a32a1da0ffe7a0efbabaf"
       },
-      "notes": "Production migration ledger (read-only Supabase list_migrations) ends at 20261002011734. Every 2026100[3-5]* migration this scope relies on is NOT deployed: 20261003050000_closing_evidence_guards, 20261003221905_purchase_agreement_open_home_unique, 20261003232615_purchase_agreement_signing_ownership, 20261004000030_agreement_catalog_revisions, 20261004000100_purchase_agreement_creation_receipts, 20261004011501_agreement_incentive_capacity, 20261005031540_inspection_obligation_lifecycle, 20261005121409_reservation_conversion_ownership, plus the starts fence migrations. The transactional paths are also behind env flags (ARC_RESERVATION_CONVERSION_ENABLED, ARC_AGREEMENT_ATOMIC_CREATION_ENABLED, ARC_AGREEMENT_DURABLE_SIGNING_ENABLED, INSPECTION_LIFECYCLE_ENABLED). Tests run: 37 files, all with the network guard; 1 file failing (reservation-conversion-db 4/8, fixture missing budget_lines). Logs in scratchpad/audit/ep0506-runs/.",
+      "notes": "Production migration ledger (read-only Supabase list_migrations) ends at 20261002011734. Every 2026100[3-5]* migration this scope relies on is NOT deployed: 20261003050000_closing_evidence_guards, 20261003221905_purchase_agreement_open_home_unique, 20261003232615_purchase_agreement_signing_ownership, 20261004000030_agreement_catalog_revisions, 20261004000100_purchase_agreement_creation_receipts, 20261004011501_agreement_incentive_capacity, 20261005031540_inspection_obligation_lifecycle, 20261005121409_reservation_conversion_ownership, plus the starts fence migrations. The transactional paths are also behind env flags (ARC_RESERVATION_CONVERSION_ENABLED, ARC_AGREEMENT_ATOMIC_CREATION_ENABLED, ARC_AGREEMENT_DURABLE_SIGNING_ENABLED). Tests run: 37 files, all with the network guard; 1 file failing (reservation-conversion-db 4/8, fixture missing budget_lines). Logs in scratchpad/audit/ep0506-runs/.",
       "supersededBy": "AUDIT-20261009"
     },
     {
@@ -37170,7 +37327,7 @@
           "EP05-09",
           "EP05-10"
         ],
-        "proposal": "The EP05 transactional migrations (20261003221905, 20261003232615, 20261004000100, 20261005121409, 20261003050000, 20261003004822, 20261005031540) are still absent from production on 2026-10-09; batch them into one approval request with the three ARC_* flags and INSPECTION_LIFECYCLE_ENABLED, then delete the flag-off legacy branches."
+        "proposal": "The EP05 transactional migrations (20261003221905, 20261003232615, 20261004000100, 20261005121409, 20261003050000, 20261003004822, 20261005031540) are still absent from production on 2026-10-09; batch them into one approval request with the three ARC_* flags, then delete the flag-off legacy branches."
       },
       "status": "proposed_awaiting_user_approval"
     },
@@ -39509,6 +39666,22 @@
         "assessmentNote": "Project workbench tab."
       },
       {
+        "path": "app/(app)/projects/[id]/released/page.tsx",
+        "route": "/projects/[id]/released",
+        "surface": "builder_authenticated",
+        "audience": "home workbench",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Project workbench page (Released for this home); scope and options sections gated on commitment.read and selections.read."
+      },
+      {
         "path": "app/(app)/projects/[id]/drawings/sets/[setId]/page.tsx",
         "route": "/projects/[id]/drawings/sets/[setId]",
         "surface": "builder_authenticated",
@@ -41740,6 +41913,22 @@
         "assessmentNote": "Trade portal; token-gated and not posture-gated."
       },
       {
+        "path": "app/s/[token]/released/page.tsx",
+        "route": "/s/[token]/released",
+        "surface": "external_portal",
+        "audience": "trade portal",
+        "productionExposure": "yes",
+        "candidateWorkstreams": [
+          "EP09"
+        ],
+        "checklistId": "EP01-08",
+        "checklistIds": [
+          "EP09-03"
+        ],
+        "assessment": "exposed",
+        "assessmentNote": "Trade portal; token-gated and not posture-gated."
+      },
+      {
         "path": "app/s/[token]/purchase-orders/page.tsx",
         "route": "/s/[token]/purchase-orders",
         "surface": "external_portal",
@@ -42295,6 +42484,18 @@
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/supply-01-ack.cjs (14 subcases)",
         "result": "passed"
+      },
+      {
+        "id": "FIELD-01",
+        "story": "Field: a superintendent and a trade see exactly the released drawings, options and scope for a home with revisions labelled; a failed inspection item raises owned, linked corrective work that reinspection resolves; the Home band reviews assigned homes; and a retried upload is one record.",
+        "harness": "exists",
+        "covers": [
+          "EP09-03",
+          "EP09-04",
+          "EP09-06"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/field-01.cjs (7 subcases: field-01-documents.cjs, field-01-inspections.cjs; orphan storage reconciliation BLOCKED pending storage)",
+        "result": "incomplete"
       }
     ]
   },

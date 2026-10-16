@@ -23,6 +23,8 @@ export interface MyHouseDTO {
   openPunch: number
   openTasks: number
   lastDailyLogDate: string | null
+  /** Photos uploaded after the day of the last daily log, within PHOTO_LOOKBACK_DAYS. */
+  newPhotoCount: number
 }
 
 export interface MyHouseTaskGroupDTO {
@@ -82,6 +84,8 @@ function assignedHousesQuery(
 
 /** Rows read per fact for one page of houses; hitting it is an error, never a quiet undercount. */
 const ROLLUP_ROW_CAP = 100_000
+/** Photos older than this are history, not news, even on a home that has never logged. */
+export const PHOTO_LOOKBACK_DAYS = 7
 /** PostgREST puts `in()` filters in the URL. */
 const PROJECT_ID_BATCH = 200
 
@@ -117,7 +121,8 @@ export async function listMyHouses(
   const projectIds = (projects ?? []).map((project) => project.id)
   if (!projectIds.length) return { houses: [], total: count ?? 0 }
   const today = new Date().toISOString().slice(0, 10)
-  const [scheduleRows, punchRows, taskRows, logRows] = await Promise.all([
+  const photoSince = new Date(Date.now() - PHOTO_LOOKBACK_DAYS * 86_400_000).toISOString()
+  const [scheduleRows, punchRows, taskRows, logRows, photoRows] = await Promise.all([
     readComplete("schedule items", (from, to) => context.supabase.from("schedule_items").select("id,project_id,status,progress,phase,start_date,end_date")
       .eq("org_id", context.orgId).in("project_id", projectIds).order("id").range(from, to)),
     readComplete("punch items", (from, to) => context.supabase.from("punch_items").select("id,project_id,status")
@@ -126,6 +131,8 @@ export async function listMyHouses(
       .eq("org_id", context.orgId).in("project_id", projectIds).order("id").range(from, to)),
     readComplete("daily logs", (from, to) => context.supabase.from("daily_logs").select("id,project_id,log_date")
       .eq("org_id", context.orgId).in("project_id", projectIds).order("log_date", { ascending: false }).order("id").range(from, to)),
+    readComplete("photos", (from, to) => context.supabase.from("project_photo_entries").select("file_id,project_id,uploaded_at")
+      .eq("org_id", context.orgId).in("project_id", projectIds).gte("uploaded_at", photoSince).order("file_id").range(from, to)),
   ])
   return {
     total: count ?? 0,
@@ -139,6 +146,7 @@ export async function listMyHouses(
       const current = [...open].sort((a, b) => String(a.start_date ?? "9999").localeCompare(String(b.start_date ?? "9999")))[0]
       const endDates = items.flatMap((item) => item.end_date ? [item.end_date] : [])
       const targetEnd = endDates.sort().at(-1)
+      const lastLogDate = logRows.find((log) => log.project_id === project.id)?.log_date ?? null
       return {
         projectId: project.id, lotLabel: lotLabel(lot), communityId: String(lot?.community_id ?? ""),
         communityName: String(community?.name ?? "Community"), planCode: typeof plan?.code === "string" ? plan.code : null,
@@ -150,7 +158,8 @@ export async function listMyHouses(
         lateCount: open.filter((item) => item.end_date && item.end_date < today).length,
         openPunch: punchRows.filter((item) => item.project_id === project.id && !["closed", "completed"].includes(item.status)).length,
         openTasks: taskRows.filter((item) => item.project_id === project.id && item.status !== "completed").length,
-        lastDailyLogDate: logRows.find((log) => log.project_id === project.id)?.log_date ?? null,
+        lastDailyLogDate: lastLogDate,
+        newPhotoCount: photoRows.filter((photo) => photo.project_id === project.id && (!lastLogDate || photo.uploaded_at.slice(0, 10) > lastLogDate)).length,
       }
     }),
   }

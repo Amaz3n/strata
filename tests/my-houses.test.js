@@ -87,3 +87,30 @@ test("a house's rollups count every schedule item even when PostgREST caps each 
   assert.equal(houses[0].percentComplete, 40)
   assert.equal(houses[0].lateCount, 1500)
 })
+
+test("a house's new photos are those uploaded after the day of its last daily log, within the look-back", async () => {
+  const daysAgo = (days) => new Date(Date.now() - days * 86_400_000).toISOString()
+  const day = (days) => daysAgo(days).slice(0, 10)
+  const photo = (project, days, index) => ({ file_id: id(200 + index), org_id: ORG, project_id: project, uploaded_at: daysAgo(days) })
+  const service = createServiceHarness({
+    permissions: ["project.read", "start.read"],
+    divisions: [NORTH],
+    tables: {
+      projects: [house(NORTH_HOUSE, NORTH, "12"), house(SOUTH_HOUSE, NORTH, "40")],
+      schedule_items: [],
+      punch_items: [],
+      tasks: [],
+      daily_logs: [{ id: id(300), org_id: ORG, project_id: NORTH_HOUSE, log_date: day(3) }],
+      // 12 logged three days ago: the photo from two days ago is new, the one from four days ago is not.
+      // 40 never logged: its three photos inside the week are new; a ten-day-old one is outside the look-back.
+      project_photo_entries: [
+        photo(NORTH_HOUSE, 2, 1), photo(NORTH_HOUSE, 4, 2),
+        photo(SOUTH_HOUSE, 1, 3), photo(SOUTH_HOUSE, 3, 4), photo(SOUTH_HOUSE, 5, 5),
+      ],
+    },
+  })
+
+  const { houses } = await service.run(() => listMyHouses())
+
+  assert.deepEqual(houses.map((row) => [row.lotLabel, row.newPhotoCount]), [["12", 1], ["40", 3]])
+})

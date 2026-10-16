@@ -522,4 +522,4 @@ const subcases = {
   "failed-inspection-becomes-owned-corrective-work-and-reinspects": failedInspectionBecomesOwnedCorrectiveWork,
   "punch-traceability-and-close-readiness": punchTraceabilityAndCloseReadiness,
 }
-module.exports = { subcases }
+module.exports = { subcases, helpers: { freshHome, homeFile } }

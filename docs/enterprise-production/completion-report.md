@@ -8,14 +8,14 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 64% — a documented lower bound, not an ETA |
-| Fully verified | 60.6% |
+| Implemented | 64.7% — a documented lower bound, not an ETA |
+| Fully verified | 61.9% |
 | Release ready | 0% |
-| Code implemented | 5 items |
-| Partially implemented | 33 items |
+| Code implemented | 4 items |
+| Partially implemented | 32 items |
 | Known pending tasks | 13 items |
 | Existing capability not yet qualified | 0 items |
-| Isolated automated evidence | 71 items; this does not imply full workflow verification |
+| Isolated automated evidence | 69 items; this does not imply full workflow verification |
 
 Latest result per test file: 554 passed, 0 failed across 56 files. Real network requests were blocked. One drawing test failed during concurrent source edits in the first run; stable reassessment passed, and the original failure remains in the audit history.
 
@@ -176,14 +176,14 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP09-01 | Assigned-home mobile access | partial | Replace per-request listProjects scans with a single-project check (lib/mobile/field.ts and sibling requireProject helpers). |
-| EP09-02 | Offline conflict recovery | partial | Apply migration 20261010170000_mobile_idempotency_receipts (pending approval). |
-| EP09-03 | Released field documents | partial | Approve/apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable). |
-| EP09-04 | Inspection failure lifecycle | implemented | Link corrective punch work to the failed item inside the lifecycle transaction (creation now uses the punch service; the link is still a separate write). |
+| EP09-01 | Assigned-home mobile access | partial | Mobile and iOS are out of scope for this launch; deferred. |
+| EP09-02 | Offline conflict recovery | partial | Mobile and iOS are out of scope for this launch; deferred. |
+| EP09-03 | Released field documents | verified | Apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable) (pending approval). |
+| EP09-04 | Inspection failure lifecycle | verified | Apply the EP09 migrations 20261016100000_inspection_corrective_work_link and 20261016110000_inspection_punch_write_guard (pending approval). |
 | EP09-05 | Punch and close readiness | verified | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
-| EP09-06 | Cross-home daily records | partial | Add a cross-home review band (logs missing today, new photos) for assigned homes on the super's Home/My Work. |
-| EP09-07 | Supplier and trade communication | partial | Add optional PO linkage on field issues/punch with ancestry validation. |
-| EP09-08 | Field device usability | pending | Agree the required daily field workflows and a latency target with the owner. |
+| EP09-06 | Cross-home daily records | partial | Run FIELD-01 orphan-storage-reconciliation on the acceptance stack once acceptance storage exists, and build the sweep it proves. |
+| EP09-07 | Supplier and trade communication | partial | Not built; scoped after launch. |
+| EP09-08 | Field device usability | pending | Mobile and iOS are out of scope for this launch; deferred. |
 
 ### EP10: Finance and planning
 
@@ -258,7 +258,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 ## Scope and acceptance limits
 
-250 pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.
+252 pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.
 
 Sizing and operating assumptions are frozen engineering targets awaiting launch-owner approval under EP14-11. QA access, chosen-system sandbox credentials, migration/activation approval, independent security review and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.
 

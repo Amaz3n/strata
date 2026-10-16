@@ -29,8 +29,17 @@ const punchItem = (overrides = {}) => ({
 })
 
 function harness({ permissions = ["project.read", "punch.read", "punch.write"], projects, divisions, items = [punchItem()], links = [] } = {}) {
-  return createServiceHarness({
+  const service = createServiceHarness({
     permissions,
+    // The punch item, its link on the failed inspection item, the event and the audit are one SQL transaction.
+    rpc: {
+      raise_inspection_corrective_work: async ({ p_org, p_home, p_item, p_punch }) => {
+        const punch = { id: id(50), org_id: p_org, project_id: p_home, status: "open", created_from_inspection: true, verification_required: true, created_by: ACTOR, ...p_punch }
+        service.db.punch_items.push(punch)
+        service.raised.push({ p_item, p_punch })
+        return { data: { punchItemId: punch.id, inspectionItemId: p_item }, error: null }
+      },
+    },
     projects,
     divisions,
     tables: {
@@ -43,6 +52,8 @@ function harness({ permissions = ["project.read", "punch.read", "punch.write"], 
       companies: [{ id: id(20), org_id: ORG, name: "Paint Co" }],
     },
   })
+  service.raised = []
+  return service
 }
 
 const afterPhoto = { id: id(30), org_id: ORG, project_id: PROJECT, file_id: id(31), entity_type: "punch_item", entity_id: ITEM, link_role: "after" }
@@ -74,37 +85,24 @@ describe("who may change a project's punch list", () => {
     assert.equal(service.audits[0].action, "insert")
   })
 
-  test("an inspection's corrective item is validated, flagged, and leaves an event and an audit", async () => {
+  test("an inspection's corrective item is validated, then raised by one database call that carries its owner and due date", async () => {
     const service = harness({ permissions: ["project.read", "inspection.write"], items: [] })
     const context = { supabase: service.client, orgId: ORG, userId: ACTOR }
 
     await assert.rejects(service.run(() => createPunchItemFromInspection(context, PROJECT, { title: "  " }, id(40))))
-    assert.deepEqual(service.writes(), [])
-
-    const item = await service.run(() => createPunchItemFromInspection(context, PROJECT, { title: "Rail loose", assigned_company_id: null }, id(40)))
-
-    assert.equal(item.status, "open")
-    assert.equal(service.db.punch_items[0].created_from_inspection, true)
-    assert.equal(service.db.punch_items[0].verification_required, false)
-    assert.equal(service.events[0].payload.from_inspection, id(40))
-    assert.equal(service.audits[0].action, "insert")
-  })
-
-  test("a corrective item from a failed inspection keeps its owner, due date and dispatch time", async () => {
-    const service = harness({ permissions: ["project.read", "inspection.write"], items: [] })
-    const context = { supabase: service.client, orgId: ORG, userId: ACTOR }
+    assert.deepEqual(service.raised, [])
 
     const item = await service.run(() =>
-      createPunchItemFromInspection(context, PROJECT, { title: "Rail loose", assigned_company_id: id(20), due_date: "2026-10-20", verification_required: true }, id(40)),
+      createPunchItemFromInspection(context, PROJECT, { title: "Rail loose", assigned_company_id: id(20), due_date: "2026-10-20" }, id(40)),
     )
 
+    assert.equal(item.status, "open")
     assert.equal(item.assigned_company_id, id(20))
     assert.equal(item.due_date, "2026-10-20")
-    const row = service.db.punch_items[0]
-    assert.equal(row.created_by, ACTOR)
-    assert.equal(row.created_from_inspection, true)
-    assert.equal(row.verification_required, true)
-    assert.ok(row.dispatched_at)
+    assert.equal(service.raised.length, 1)
+    assert.equal(service.raised[0].p_item, id(40))
+    assert.equal(service.db.punch_items.length, 1)
+    assert.deepEqual(service.events, [], "the event and audit are written by the database function, not twice")
   })
 
   test("an assignee from outside the org's directory is refused", async () => {

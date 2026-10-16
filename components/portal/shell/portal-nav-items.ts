@@ -182,6 +182,7 @@ export function buildSubPortalNav({
   }
 
   if (hasProject && permissions.can_view_documents !== false) {
+    items.push({ segment: "released", label: "Released", icon: "drawings" })
     items.push({ segment: "documents", label: "Documents", shortLabel: "Docs", icon: "documents" })
   }
 
