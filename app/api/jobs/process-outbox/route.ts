@@ -64,6 +64,7 @@ import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import { AUDIT_RETRY_JOB_TYPE, writeDeferredAudit } from "@/lib/services/audit"
 import { LEAD_INTAKE_JOB_TYPE, runLeadIntakeJob } from "@/lib/services/lead-intake"
 import { SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE, settleCommissionUnwindBooks } from "@/lib/services/sales-commissions"
+import { OPEN_WIP_COMMIT_JOB_TYPE, reapStaleOpenWipCommits, resumeOpenWipCommit } from "@/lib/services/imports"
 import { withCorrelation } from "@/lib/observability/correlation"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
@@ -181,6 +182,7 @@ const OUTBOX_JOB_TYPES = [
   SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE,
   DESIGN_STUDIO_NOTICE_JOB_TYPE,
   SELECTION_APPROVAL_OUTCOME_JOB_TYPE,
+  OPEN_WIP_COMMIT_JOB_TYPE,
 ]
 
 // Create a VISIBLE test image for the tiled viewer
@@ -526,6 +528,11 @@ async function processOutboxQueue(request: NextRequest) {
     return NextResponse.json({ error: reapError.message }, { status: 500 })
   }
   const reapRow = (Array.isArray(reaped) ? reaped[0] : reaped) as { requeued?: number; exhausted?: number } | null
+  // An Open-WIP cutover whose claim lapsed (its process died mid-file) gets its resume job queued here.
+  // A failure is reported, never allowed to stop the rest of the queue.
+  const cutovers = await reapStaleOpenWipCommits().catch((cause: unknown) => ({
+    error: cause instanceof Error ? cause.message : "Failed to reap interrupted Open-WIP commits",
+  }))
 
   // Claim atomically. The previous select-then-update spanned two statements, so
   // two overlapping invocations — a manual trigger racing the cron, or a retry
@@ -544,7 +551,7 @@ async function processOutboxQueue(request: NextRequest) {
 
   if (!jobs.length) {
     const drained = await runDrawingsPipeline({ deadlineMs: Date.now() + 120_000 })
-    return NextResponse.json({ processed: 0, requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0, drawings: drained })
+    return NextResponse.json({ processed: 0, requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0, cutovers, drawings: drained })
   }
 
   let processed = 0
@@ -683,6 +690,8 @@ async function processOutboxQueue(request: NextRequest) {
           await sendDesignStudioAppointmentNotice(job.org_id, job.payload)
         } else if (job.job_type === SELECTION_APPROVAL_OUTCOME_JOB_TYPE) {
           await notifySelectionApprovalOutcome(job.org_id, job.payload)
+        } else if (job.job_type === OPEN_WIP_COMMIT_JOB_TYPE) {
+          await resumeOpenWipCommit(job.org_id, job.payload ?? {})
         } else {
           return false
         }
@@ -766,8 +775,8 @@ async function processOutboxQueue(request: NextRequest) {
   const incomplete = failed > 0 || drawings.failed > 0
   return NextResponse.json(
     isDev
-      ? { ok: !incomplete, processed, failed, failures, ...reap, drawings }
-      : { ok: !incomplete, processed, failed, ...reap, drawings },
+      ? { ok: !incomplete, processed, failed, failures, ...reap, cutovers, drawings }
+      : { ok: !incomplete, processed, failed, ...reap, cutovers, drawings },
     { status: incomplete ? 207 : 200 },
   )
 }

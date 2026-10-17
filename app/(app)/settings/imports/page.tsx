@@ -6,6 +6,7 @@ import Link from "next/link"
 import { PageLayout } from "@/components/layout/page-layout"
 import { SettingsGroup } from "@/components/settings/settings-section"
 import { ChevronRight } from "@/components/icons"
+import { CutoverReconciliation, CutoverReconciliationSkeleton } from "@/components/imports/cutover-reconciliation"
 import { IMPORTER_DEFINITIONS, IMPORTER_KEYS } from "@/lib/services/import-definitions"
 import { listImportBatches, type ImportBatchSummary } from "@/lib/services/imports"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
@@ -46,6 +47,9 @@ async function ImportsPageContent() {
     if (key === "communities_lots") return hasAny("community.write", "lot.write")
     if (key === "team") return hasAny("members.manage")
     if (key === "warranty_homes") return hasAny("warranty.manage")
+    if (key === "agreements") return hasAny("closing.manage")
+    if (key === "selections") return hasAny("design_studio.manage")
+    if (key === "inspection_history") return hasAny("inspection.write")
     return true
   })
 
@@ -95,6 +99,7 @@ async function ImportsPageContent() {
           )}
           {result.total > result.batches.length ? <p className="py-3 text-xs text-muted-foreground">Showing the latest {result.batches.length} organization batches. Open an importer to browse its full history.</p> : null}
         </SettingsGroup>
+        <Suspense fallback={<CutoverReconciliationSkeleton />}><CutoverReconciliation /></Suspense>
       </div>
     </PageLayout>
   )

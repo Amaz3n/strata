@@ -30371,14 +30371,14 @@
       ],
       "dependencies": [],
       "status": "verified",
-      "implementationNotes": "Imported open homes keep buyer, agreement total, budget, current stage and remaining POs, and a failed row never publishes the lot. A failed row still leaves behind any buyer contact or vendor company it created. Books openings (MIG-01) now carry the financial side of owned lots and spec homes, which complements this operational import.",
+      "implementationNotes": "Imported open homes keep buyer, agreement total, budget, current stage and remaining POs, and a failed row never publishes the lot. A failed row leaves no buyer contact or vendor company behind: the import creates parties tagged with the batch inside the per-house transaction, and a rollback deletes parties the batch created when nothing else references them. Proved by CUTOVER-01 failed-row-leaves-no-parties. Books openings (MIG-01) now carry the financial side of owned lots and spec homes, which complements this operational import.",
       "remainingWork": [
-        "Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row.",
         "Reconcile imported homes against the first builder's source package in the QA org (CUTOVER-01)."
       ],
       "sources": [
         "lib/services/imports.ts",
-        "lib/services/sample-home-provenance.ts"
+        "lib/services/sample-home-provenance.ts",
+        "scripts/books-acceptance/scenarios/cutover-01-resume.cjs"
       ],
       "testFiles": [
         "tests/sample-home-provenance.test.js",
@@ -30630,7 +30630,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "REVIEW2-20261011"
           ],
@@ -30653,6 +30653,50 @@
             }
           ],
           "scope": "Fresh static review after the fix waves."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUTOVER-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "CUTOVER-01-ep12"
+          ],
+          "head": "EP12 working tree on 673412a7",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUTOVER-01 18 subcases: 17 passed, 1 BLOCKED. Passed: crash-mid-file-resumes-exactly-once, stale-claim-adopts-homes-built-before-receipts, failed-batch-retry-adopts-prior-homes, concurrent-commits-make-one-home, failed-row-leaves-no-parties, finalize-refuses-unreconciled-counts, member-cannot-forge-a-commit, used-home-is-kept-not-rolled-back, rollback-restores-the-lot-as-it-was, executed-copy-hash-is-verified-from-stored-bytes, agreement-without-file-blocks-closing-until-reviewed, agreement-evidence-and-history-stay-in-the-reviewers-divisions, deposits-link-and-reconcile-per-home, selections-cutoffs-and-balances-reconcile, concurrent-balance-imports-amend-once, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path, each-import-takes-its-owners-permission. BLOCKED on acceptance storage: agreement-with-executed-file-is-bound-and-immutable (run once with --storage-env). Subcases mapped to this item: failed-row-leaves-no-parties; the other subcases are tracked on their own items. Regression on the same run: all other golden scenarios at their baseline counts (FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented); 8-role sweep 0 errors; tsc clean; test:financials 2963/0; test:auth 750/0; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP12"
+          ],
+          "date": "2026-10-17",
+          "head": "EP12 working tree on 673412a7",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Open-WIP homes keep buyer, agreement, budget, current stage and remaining POs, and are built in one transaction per house with their receipt. CUTOVER-01 crash-mid-file-resumes-exactly-once PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "A failed row publishes no lot and leaves no buyer contact or vendor company; the batch cannot finalize on a mismatch. CUTOVER-01 failed-row-leaves-no-parties and finalize-refuses-unreconciled-counts PASSED."
+            }
+          ],
+          "scope": "Source review of the EP12 working tree on 673412a7; proves code presence and shape, with runtime behaviour from the CUTOVER-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -30671,10 +30715,12 @@
         "Review 2026-10-11: Imported homes can commit without current-stage schedule (no plan schedule template) or without a buyer (no email) with no error, so provenance is not guaranteed."
       ],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "lib/services/imports.ts: a failed Open-WIP row left a newly inserted buyer contact and any vendor company created by ensureCompany as orphans. - fixed: parties are tagged with the batch inside the per-house transaction and deleted on rollback when unreferenced, re-proved by CUTOVER-01 failed-row-leaves-no-parties"
+      ],
       "plain": {
         "title": "Open homes carry over intact",
-        "description": "Houses already under construction come into Arc with their buyer, agreement amount, budget, current build stage and remaining purchase orders, and a failed house never shows up half-built. A failed house can still leave behind a stray buyer or vendor record."
+        "description": "Houses already under construction come into Arc with their buyer, agreement amount, budget, current build stage and remaining purchase orders, and a failed house never shows up half-built or leaves a stray buyer or vendor record behind."
       },
       "proposedScope": {
         "scope": "first",
@@ -30683,7 +30729,8 @@
       },
       "remainingEffort": "S",
       "scenarioIds": [
-        "LOT-01"
+        "LOT-01",
+        "CUTOVER-01"
       ]
     },
     {
@@ -30710,20 +30757,20 @@
         "EP12-01",
         "EP12-02"
       ],
-      "status": "partial",
-      "implementationNotes": "Retries cannot create a second home for the same lot, but a crash or mid-file failure still strands the homes created so far and leaves the batch stuck. Books built reusable patterns for this (background jobs with kept attempts for archives, CAP-01 interruption/resume proof, RACE-01 independent sessions) that a durable import job should copy.",
+      "status": "verified",
+      "implementationNotes": "Open-WIP commit is a durable claim with a lease on import_batches (outbox job import_open_wip_commit). Each house is built in one transaction with its import_rows receipt (commit_open_wip_house), so a crash resumes from the last receipt: the reaper reap_stale_open_wip_commits in process-outbox hands lapsed claims back, capped at 5 attempts and then failed with the homes kept. An operator retry adopts the batch's homes, and finalize reconciles every row (receipt, home on a started lot, approved budget amount and lines, PO count and value) and refuses 'completed' on a mismatch. Review fixes: members can no longer write import state (guard triggers on import_batches and import_rows), a resume re-checks the actor still has platform onboarding access, rollback only undoes homes from the current attempt and keeps any home with activity, transient errors pause rather than roll back, a rolled-back lot returns to its prior status and delivery date, and the outbox keeps running if the reaper RPC is missing. Migrations 20261019100000_open_wip_resumable_cutover and 20261019110000_open_wip_cutover_review_fixes (pending approval). Proved by CUTOVER-01 crash-mid-file-resumes-exactly-once, stale-claim-adopts-homes-built-before-receipts, failed-batch-retry-adopts-prior-homes, concurrent-commits-make-one-home, failed-row-leaves-no-parties, finalize-refuses-unreconciled-counts, member-cannot-forge-a-commit, used-home-is-kept-not-rolled-back and rollback-restores-the-lot-as-it-was.",
       "remainingWork": [
-        "Move Open-WIP commit to a durable outbox job with a lease and per-row transactional RPC that writes the import_rows receipt with the home (migration needs approval).",
-        "Reaper for stale 'committing' batches and resume from the last committed receipt; allow re-claim of failed batches that adopts wip_cutover-owned homes.",
-        "Reconcile counts at finalize.",
-        "Prove crash/retry/concurrent-lot behavior as a CUTOVER-01 subcase on the acceptance stack (pattern: CAP-01 interrupted subcase, RACE-01)."
+        "Apply 20261019100000_open_wip_resumable_cutover and 20261019110000_open_wip_cutover_review_fixes (pending approval).",
+        "Rewrite the onboarding unit tests in tests/imports-open-wip.test.js for the new commit flow (they belong to another session's uncommitted work and currently fail on the new RPC).",
+        "QA-org rehearsal with real files."
       ],
       "sources": [
         "lib/services/imports.ts",
-        "app/(app)/settings/imports/actions.ts",
-        "app/(app)/admin/customers/[orgId]/onboarding/actions.ts",
-        "supabase/migrations/20260719022535_onboarding_and_import_staging.sql",
-        "scripts/books-acceptance/scenarios/cap-01.cjs"
+        "app/api/jobs/process-outbox/route.ts",
+        "supabase/migrations/20261019100000_open_wip_resumable_cutover.sql",
+        "supabase/migrations/20261019110000_open_wip_cutover_review_fixes.sql",
+        "scripts/books-acceptance/scenarios/cutover-01-resume.cjs",
+        "scripts/books-acceptance/cutover-worker.cjs"
       ],
       "testFiles": [
         "tests/imports-open-wip.test.js"
@@ -30769,7 +30816,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -30789,12 +30836,54 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUTOVER-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "CUTOVER-01-ep12"
+          ],
+          "head": "EP12 working tree on 673412a7",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUTOVER-01 18 subcases: 17 passed, 1 BLOCKED. Passed: crash-mid-file-resumes-exactly-once, stale-claim-adopts-homes-built-before-receipts, failed-batch-retry-adopts-prior-homes, concurrent-commits-make-one-home, failed-row-leaves-no-parties, finalize-refuses-unreconciled-counts, member-cannot-forge-a-commit, used-home-is-kept-not-rolled-back, rollback-restores-the-lot-as-it-was, executed-copy-hash-is-verified-from-stored-bytes, agreement-without-file-blocks-closing-until-reviewed, agreement-evidence-and-history-stay-in-the-reviewers-divisions, deposits-link-and-reconcile-per-home, selections-cutoffs-and-balances-reconcile, concurrent-balance-imports-amend-once, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path, each-import-takes-its-owners-permission. BLOCKED on acceptance storage: agreement-with-executed-file-is-bound-and-immutable (run once with --storage-env). Subcases mapped to this item: crash-mid-file-resumes-exactly-once, stale-claim-adopts-homes-built-before-receipts, failed-batch-retry-adopts-prior-homes, concurrent-commits-make-one-home, failed-row-leaves-no-parties, finalize-refuses-unreconciled-counts, member-cannot-forge-a-commit, used-home-is-kept-not-rolled-back, rollback-restores-the-lot-as-it-was; the other subcases are tracked on their own items. Regression on the same run: all other golden scenarios at their baseline counts (FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented); 8-role sweep 0 errors; tsc clean; test:financials 2963/0; test:auth 750/0; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP12"
+          ],
+          "date": "2026-10-17",
+          "head": "EP12 working tree on 673412a7",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Commit is a leased outbox job; each house commits with its import_rows receipt in one transaction; a crash resumes from the last receipt through the reaper and finalize reconciles counts. CUTOVER-01 crash-mid-file-resumes-exactly-once and stale-claim-adopts-homes-built-before-receipts PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Retries and concurrent commits make one home per lot, a failed batch retry adopts prior homes, rollback keeps homes with activity and restores the lot, and members cannot forge a commit. CUTOVER-01 concurrent-commits-make-one-home, failed-batch-retry-adopts-prior-homes, used-home-is-kept-not-rolled-back, rollback-restores-the-lot-as-it-was and member-cannot-forge-a-commit PASSED."
+            }
+          ],
+          "scope": "Source review of the EP12 working tree on 673412a7; proves code presence and shape, with runtime behaviour from the CUTOVER-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
-      "blockers": [
-        "New transactional RPC/migration needs human approval."
-      ],
+      "blockers": [],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P0",
       "sourceAcceptanceIndices": [
@@ -30805,17 +30894,24 @@
         "Mid-batch failure strands homes created by earlier rows (no import_rows receipts, batch 'failed', not re-claimable) \u2014 still open."
       ],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "lib/services/imports.ts commitImportBatch: a crash left import_batches 'committing' with no lease or reaper, and receipts were written only after all rows. - fixed: durable claim with lease, per-house transaction with receipt, reaper and resume, re-proved by CUTOVER-01 crash-mid-file-resumes-exactly-once and stale-claim-adopts-homes-built-before-receipts",
+        "lib/services/imports.ts: a mid-batch failure stranded earlier homes and the failed batch could not be re-claimed. - fixed: retry adopts the batch's homes and finalize reconciles every row, re-proved by CUTOVER-01 failed-batch-retry-adopts-prior-homes and finalize-refuses-unreconciled-counts",
+        "Oct 17 review: two database-proved highs (member could forge an Open-WIP commit as another user; rollback deleted homes in use) and six mediums (lot left delivered after rollback; outbox stall if the migration is missing; evidence and history visible across divisions; review not authorized per home; browser-supplied checksum; change-order balance could post twice) - all fixed and re-proved by CUTOVER-01."
+      ],
       "plain": {
         "title": "Cutover survives a crash",
-        "description": "Re-running an import never creates a second house on the same lot. But if the import dies halfway, the houses already created are left without a record and the import cannot pick up where it stopped."
+        "description": "The first builder's file of open homes is imported as a background job that keeps a receipt for every house. If the process dies halfway it picks up where it stopped, a retry adopts the houses already built instead of duplicating them, and the import only reports done when every house, budget and purchase order matches the file. Proven on the test setup; the database changes need approval."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "The first builder's cutover (100\u2013250 open homes in one file) runs once under time pressure; a stranded half-import would need manual database repair.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "CUTOVER-01"
+      ]
     },
     {
       "id": "EP12-04",
@@ -30836,13 +30932,12 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Financial cutover for a production builder is now real on the Books side: open invoices, bills, deposits, owned lots and spec homes open with provenance and tie to their controls (MIG-01 passes on the acceptance stack). What is still missing is the sales paper trail: signed purchase agreements with their executed PDFs, and each buyer's deposit history linked to that agreement. Imported agreements look executed even though no document exists.",
+      "status": "implemented",
+      "implementationNotes": "Financial cutover for a production builder is now real on the Books side: open invoices, bills, deposits, owned lots and spec homes open with provenance and tie to their controls (MIG-01 passes on the acceptance stack). What is still missing is the sales paper trail: signed purchase agreements with their executed PDFs, and each buyer's deposit history linked to that agreement. Imported agreements look executed even though no document exists. Built Oct 17: the agreements importer (closing.manage) binds an executed PDF already in Documents, verified by a server-computed SHA-256 of the stored bytes (file_sha256_verified_at), records signers, date and deposit, and is immutable once reviewed. Agreements with no file are evidence_missing (trigger plus backfill on Open-WIP agreements) and block the closing gate agreement_executed and hasExecutedPurchaseAgreement until a person attaches the file or accepts with a reason. Review is authorized per home, deposits reconcile per home, and the new tables have division-scope RLS. Migrations 20261019200000_imported_agreement_evidence and 20261019210000_imported_agreement_evidence_review_fixes (pending approval); applying them marks every existing Open-WIP imported agreement in production evidence_missing until reviewed. Proved by CUTOVER-01 agreement-without-file-blocks-closing-until-reviewed, deposits-link-and-reconcile-per-home, executed-copy-hash-is-verified-from-stored-bytes and agreement-evidence-and-history-stay-in-the-reviewers-divisions. agreement-with-executed-file-is-bound-and-immutable is BLOCKED because the acceptance stack has no object storage.",
       "remainingWork": [
-        "Agreement + executed-document importer (file, hash, signers, immutable) linked to the Open-WIP home, reusing Documents/Signing storage (STORE-01 proved the storage layer).",
-        "Link opening customer-deposit lines to the imported agreement/home and reconcile deposit totals per home.",
-        "Mark imported agreements without an executed file as evidence-missing and route them to a review queue; block actions that require an executed agreement until reviewed.",
-        "Add a CUTOVER-01 subcase on the acceptance stack (extending MIG-01) reconciling agreements, deposits and openings per home."
+        "Run CUTOVER-01 agreement-with-executed-file-is-bound-and-immutable once with --storage-env (binding an executed PDF needs object storage).",
+        "Apply 20261019200000_imported_agreement_evidence and 20261019210000_imported_agreement_evidence_review_fixes (pending approval); this marks every existing Open-WIP imported agreement evidence_missing until reviewed.",
+        "QA-org rehearsal with real agreements and executed files."
       ],
       "sources": [
         "lib/services/books/opening-balances.ts",
@@ -30850,7 +30945,9 @@
         "lib/services/imports.ts",
         "lib/services/books/cutover.ts",
         "scripts/books-acceptance/scenarios/mig-01.cjs",
-        "supabase/migrations/20261008040000_books_opening_inventory.sql"
+        "supabase/migrations/20261008040000_books_opening_inventory.sql",
+        "supabase/migrations/20261019200000_imported_agreement_evidence.sql",
+        "supabase/migrations/20261019210000_imported_agreement_evidence_review_fixes.sql"
       ],
       "testFiles": [
         "tests/qbo-import-reliability.test.js",
@@ -30906,7 +31003,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -30926,12 +31023,56 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUTOVER-01",
+          "result": "incomplete",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "CUTOVER-01-ep12"
+          ],
+          "head": "EP12 working tree on 673412a7",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUTOVER-01 18 subcases: 17 passed, 1 BLOCKED. Passed: crash-mid-file-resumes-exactly-once, stale-claim-adopts-homes-built-before-receipts, failed-batch-retry-adopts-prior-homes, concurrent-commits-make-one-home, failed-row-leaves-no-parties, finalize-refuses-unreconciled-counts, member-cannot-forge-a-commit, used-home-is-kept-not-rolled-back, rollback-restores-the-lot-as-it-was, executed-copy-hash-is-verified-from-stored-bytes, agreement-without-file-blocks-closing-until-reviewed, agreement-evidence-and-history-stay-in-the-reviewers-divisions, deposits-link-and-reconcile-per-home, selections-cutoffs-and-balances-reconcile, concurrent-balance-imports-amend-once, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path, each-import-takes-its-owners-permission. BLOCKED on acceptance storage: agreement-with-executed-file-is-bound-and-immutable (run once with --storage-env). Subcases mapped to this item: agreement-without-file-blocks-closing-until-reviewed, deposits-link-and-reconcile-per-home, executed-copy-hash-is-verified-from-stored-bytes and agreement-evidence-and-history-stay-in-the-reviewers-divisions passed; agreement-with-executed-file-is-bound-and-immutable BLOCKED on acceptance storage; the other subcases are tracked on their own items. Regression on the same run: all other golden scenarios at their baseline counts (FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented); 8-role sweep 0 errors; tsc clean; test:financials 2963/0; test:auth 750/0; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP12"
+          ],
+          "date": "2026-10-17",
+          "head": "EP12 working tree on 673412a7",
+          "confidence": "medium",
+          "criteriaCovered": [
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The agreements importer binds an executed PDF already in Documents, verifies a server-computed SHA-256 of the stored bytes, records signers, date and deposit, and locks the record once reviewed. CUTOVER-01 executed-copy-hash-is-verified-from-stored-bytes and deposits-link-and-reconcile-per-home PASSED; agreement-with-executed-file-is-bound-and-immutable BLOCKED (acceptance storage)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Agreements without a file are evidence_missing and block the closing gate until a person attaches the file or accepts with a reason, authorized per home within the reviewer's divisions. CUTOVER-01 agreement-without-file-blocks-closing-until-reviewed and agreement-evidence-and-history-stay-in-the-reviewers-divisions PASSED."
+            }
+          ],
+          "scope": "Source review of the EP12 working tree on 673412a7; proves code presence and shape, with runtime behaviour from the CUTOVER-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
+        "Acceptance object storage needed to run the executed-file binding subcase (--storage-env).",
         "Customer legacy source package needed for reconciliation evidence.",
-        "Migration 20261008040000_books_opening_inventory.sql pending production approval."
+        "Migrations 20261019200000 and 20261019210000 and 20261008040000_books_opening_inventory.sql pending production approval."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -30943,18 +31084,23 @@
       ],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
-        "Owned lots and spec/completed homes can now open in Books with lot basis and job cost (commit 1508716e, lib/services/books/opening-balances.ts:24-25, :65; MIG-01)."
+        "Owned lots and spec/completed homes can now open in Books with lot basis and job cost (commit 1508716e, lib/services/books/opening-balances.ts:24-25, :65; MIG-01).",
+        "lib/services/imports.ts: Open-WIP import created contracts 'active' with signed_at but no executed document. - fixed: such agreements are evidence_missing and block the closing agreement gate until reviewed, re-proved by CUTOVER-01 agreement-without-file-blocks-closing-until-reviewed",
+        "Oct 17 review: two database-proved highs (member could forge an Open-WIP commit as another user; rollback deleted homes in use) and six mediums (lot left delivered after rollback; outbox stall if the migration is missing; evidence and history visible across divisions; review not authorized per home; browser-supplied checksum; change-order balance could post twice) - all fixed and re-proved by CUTOVER-01."
       ],
       "plain": {
         "title": "Agreements and deposits carry over",
-        "description": "Opening balances now bring in a production builder's land, spec homes, open invoices, bills and customer deposits, and they tie out. Signed purchase agreements and their PDFs, and each buyer's deposit history, still have no import, and imported agreements look signed even without a document."
+        "description": "Opening balances bring in a production builder's land, spec homes, open invoices, bills and customer deposits, and they tie out. Signed purchase agreements now import with their deposits reconciled per home and a checksum of the signed PDF taken from the stored file. An imported agreement with no signed file is flagged and blocks closing until a person attaches it or accepts it with a reason. Attaching a real PDF still has to be tried once where file storage exists, and the database changes need approval."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Every presold open home at cutover has a signed agreement and a deposit; sales and closing desks need them from day one.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "CUTOVER-01"
+      ]
     },
     {
       "id": "EP12-05",
@@ -30975,18 +31121,17 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "pending",
-      "implementationNotes": "Nothing new. Current buyer selections, cutoffs, inspections and the builder's already-closed homes under warranty cannot be imported; only one-at-a-time manual warranty enrollment exists. Books HOME-01 proves the warranty reserve accounting once coverage exists.",
+      "status": "verified",
+      "implementationNotes": "The selections importer (design_studio.manage; sales.manage when a change-order balance is imported) keeps the buyer's price, option revision and price sheet, locks confirmed choices, stores cutoffs as manual overrides with a reason, and posts a change-order balance once per home (unique index, so concurrent imports amend once). Inspection history imports as read-only history records only; by the cutover rule the inspection lifecycle remains the only path for inspections. Installed-home warranty coverage is the EP11 warranty_homes import. One reconciliation report compares agreements, deposits, selections, change-order balance, inspections and the warranty installed base to source, within the viewer's divisions. Migrations 20261019200000_imported_agreement_evidence and 20261019210000_imported_agreement_evidence_review_fixes are shared with EP12-04 (pending approval). Proved by CUTOVER-01 selections-cutoffs-and-balances-reconcile, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path, each-import-takes-its-owners-permission and concurrent-balance-imports-amend-once.",
       "remainingWork": [
-        "Installed-home importer (home identity, close date, program/terms version, structural carrier) creating coverage with an import source and terms snapshot.",
-        "Selections/cutoff importer for open homes with versioned option prices and change balances.",
-        "Inspection history import or an explicit cutover rule.",
-        "Count/balance reconciliation report vs source; prove as a CUTOVER-01/WARR-01 subcase."
+        "Apply 20261019200000_imported_agreement_evidence and 20261019210000_imported_agreement_evidence_review_fixes (pending approval).",
+        "QA-org rehearsal with real selections, inspection and warranty extracts."
       ],
       "sources": [
         "lib/services/import-definitions.ts",
-        "lib/services/warranty-enrollment.ts",
-        "lib/services/warranty-operations.ts"
+        "lib/services/imports.ts",
+        "lib/services/warranty-installed-base.ts",
+        "scripts/books-acceptance/scenarios/cutover-01-resume.cjs"
       ],
       "testFiles": [
         "tests/warranty-enrollment.test.js"
@@ -31022,7 +31167,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -31042,6 +31187,50 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CUTOVER-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "CUTOVER-01-ep12"
+          ],
+          "head": "EP12 working tree on 673412a7",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CUTOVER-01 18 subcases: 17 passed, 1 BLOCKED. Passed: crash-mid-file-resumes-exactly-once, stale-claim-adopts-homes-built-before-receipts, failed-batch-retry-adopts-prior-homes, concurrent-commits-make-one-home, failed-row-leaves-no-parties, finalize-refuses-unreconciled-counts, member-cannot-forge-a-commit, used-home-is-kept-not-rolled-back, rollback-restores-the-lot-as-it-was, executed-copy-hash-is-verified-from-stored-bytes, agreement-without-file-blocks-closing-until-reviewed, agreement-evidence-and-history-stay-in-the-reviewers-divisions, deposits-link-and-reconcile-per-home, selections-cutoffs-and-balances-reconcile, concurrent-balance-imports-amend-once, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path, each-import-takes-its-owners-permission. BLOCKED on acceptance storage: agreement-with-executed-file-is-bound-and-immutable (run once with --storage-env). Subcases mapped to this item: selections-cutoffs-and-balances-reconcile, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path, each-import-takes-its-owners-permission and concurrent-balance-imports-amend-once; the other subcases are tracked on their own items. Regression on the same run: all other golden scenarios at their baseline counts (FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented); 8-role sweep 0 errors; tsc clean; test:financials 2963/0; test:auth 750/0; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP12"
+          ],
+          "date": "2026-10-17",
+          "head": "EP12 working tree on 673412a7",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Selections keep price, option revision and price sheet with cutoffs stored as manual overrides; inspection history is read-only; installed-home coverage comes from the EP11 warranty_homes import with its real dates. CUTOVER-01 selections-cutoffs-and-balances-reconcile, inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path and each-import-takes-its-owners-permission PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "The change-order balance posts once per home and the reconciliation report compares agreements, deposits, selections, balance, inspections and warranty base to source within the viewer's divisions. CUTOVER-01 concurrent-balance-imports-amend-once and selections-cutoffs-and-balances-reconcile PASSED."
+            }
+          ],
+          "scope": "Source review of the EP12 working tree on 673412a7; proves code presence and shape, with runtime behaviour from the CUTOVER-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -31055,17 +31244,23 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Oct 9 'nothing new' - the selections importer, read-only inspection history, installed-home warranty import (EP11 warranty_homes) and the per-home reconciliation report now exist, proved by CUTOVER-01",
+        "Oct 17 review: two database-proved highs (member could forge an Open-WIP commit as another user; rollback deleted homes in use) and six mediums (lot left delivered after rollback; outbox stall if the migration is missing; evidence and history visible across divisions; review not authorized per home; browser-supplied checksum; change-order balance could post twice) - all fixed and re-proved by CUTOVER-01."
+      ],
       "plain": {
         "title": "Selections and warranty homes import",
-        "description": "Arc cannot yet bring in buyers' current selections and cutoffs, past inspections, or the builder's already-closed homes that are still under warranty. Today warranty coverage can only be added one home at a time by hand."
+        "description": "Buyers' current selections keep the price, option version and cutoffs they were sold at, confirmed choices are locked, and a change-order balance posts once per home even if the import runs twice. Past inspections come in as read-only history, never as live inspections, and homes already under warranty come in through the warranty import. One report compares agreements, deposits, selections, balances, inspections and warranty homes to the source file. Proven on the test setup; the database changes need approval."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "A 25\u2013250 closings/yr builder has hundreds to a few thousand homes under warranty and open homes mid-selection on cutover day; entering them by hand is not viable.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "CUTOVER-01"
+      ]
     },
     {
       "id": "EP12-06",
@@ -31087,7 +31282,7 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "No change. Builders can pull reports with a revocable token, and the phone app has a versioned API, but there is no general API for outside systems to read or write builder records.",
+      "implementationNotes": "No change. Builders can pull reports with a revocable token, and the phone app has a versioned API, but there is no general API for outside systems to read or write builder records. Deferred by the user on 2026-10-17 until the first builder names its systems.",
       "remainingWork": [
         "Define required surface from the EP14-11 integration inventory.",
         "Scoped hashed per-integration credentials and versioned /api/integrations/v1 with Idempotency-Key mutations through service-layer actions.",
@@ -31222,7 +31417,7 @@
       ],
       "dependencies": [],
       "status": "pending",
-      "implementationNotes": "No change. Arc cannot notify outside systems when something happens.",
+      "implementationNotes": "No change. Arc cannot notify outside systems when something happens. Deferred by the user on 2026-10-17 until the first builder names its systems.",
       "remainingWork": [
         "Endpoint registration with secret/scopes/version, HMAC-signed payloads, durable per-endpoint delivery with retry/backoff, dead-letter and replay in ops.",
         "Event id + sequence for receiver dedupe/order; documented contract; duplicate/out-of-order tests."
@@ -31330,7 +31525,7 @@
         "EP14-11"
       ],
       "status": "pending",
-      "implementationNotes": "The QuickBooks adapter is the only builder-facing accounting integration besides Arc Books itself. Books has shown how to prove an outside provider against its sandbox inside the acceptance runs (Plaid, TaxBandits); the same approach would apply to whatever CRM, accounting or lender systems the first builder names.",
+      "implementationNotes": "The QuickBooks adapter is the only builder-facing accounting integration besides Arc Books itself. Books has shown how to prove an outside provider against its sandbox inside the acceptance runs (Plaid, TaxBandits); the same approach would apply to whatever CRM, accounting or lender systems the first builder names. Deferred by the user on 2026-10-17 until the first builder names its systems.",
       "remainingWork": [
         "Obtain the first builder's named systems (EP14-11).",
         "Build adapters behind existing abstractions for any unsupported named system.",
@@ -42760,7 +42955,7 @@
       {
         "id": "CUTOVER-01",
         "story": "A production builder comes over: communities, lots, plans, open homes with buyers, agreements, budgets and POs, deposits, installed homes and Books openings; counts reconcile to source and a crash mid-file resumes.",
-        "harness": "partial",
+        "harness": "exists",
         "covers": [
           "EP12-01",
           "EP12-02",
@@ -42768,7 +42963,8 @@
           "EP12-04",
           "EP12-05"
         ],
-        "existingSupport": "MIG-01 (Books openings incl. land and spec homes), tests/imports-open-wip.test.js (fake client)"
+        "existingSupport": "scripts/books-acceptance/scenarios/cutover-01-resume.cjs, scripts/books-acceptance/cutover-worker.cjs (18 subcases; executed-file binding BLOCKED pending storage; MIG-01 for Books openings)",
+        "result": "incomplete"
       },
       {
         "id": "ROLE-01",

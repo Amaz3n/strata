@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 72% — a documented lower bound, not an ETA |
-| Fully verified | 69.2% |
+| Implemented | 74.7% — a documented lower bound, not an ETA |
+| Fully verified | 70.9% |
 | Release ready | 0% |
-| Code implemented | 4 items |
-| Partially implemented | 23 items |
-| Known pending tasks | 12 items |
+| Code implemented | 5 items |
+| Partially implemented | 21 items |
+| Known pending tasks | 11 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 69 items; this does not imply full workflow verification |
 
@@ -214,10 +214,10 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP12-01 | Bounded validated import reads | verified | Add a case to tests/imports.test.js with >1,000 communities / >10,000 lots proving no false unresolved rejections. |
-| EP12-02 | Open-WIP continuity | verified | Clean up or receipt-reuse buyer contacts (imports.ts:793) and vendor companies created by ensureCompany (:770, :489) inside a failed row. |
-| EP12-03 | Atomic resumable cutover | partial | Move Open-WIP commit to a durable outbox job with a lease and per-row transactional RPC that writes the import_rows receipt with the home (migration needs approval). |
-| EP12-04 | Financial and signed-document migration | partial | Agreement + executed-document importer (file, hash, signers, immutable) linked to the Open-WIP home, reusing Documents/Signing storage (STORE-01 proved the storage layer). |
-| EP12-05 | Selections and warranty continuity | pending | Installed-home importer (home identity, close date, program/terms version, structural carrier) creating coverage with an import source and terms snapshot. |
+| EP12-02 | Open-WIP continuity | verified | Reconcile imported homes against the first builder's source package in the QA org (CUTOVER-01). |
+| EP12-03 | Atomic resumable cutover | verified | Apply 20261019100000_open_wip_resumable_cutover and 20261019110000_open_wip_cutover_review_fixes (pending approval). |
+| EP12-04 | Financial and signed-document migration | implemented | Run CUTOVER-01 agreement-with-executed-file-is-bound-and-immutable once with --storage-env (binding an executed PDF needs object storage). |
+| EP12-05 | Selections and warranty continuity | verified | Apply 20261019200000_imported_agreement_evidence and 20261019210000_imported_agreement_evidence_review_fixes (pending approval). |
 | EP12-06 | Integration API contract | partial | Define required surface from the EP14-11 integration inventory. |
 | EP12-07 | Webhook delivery and replay | pending | Endpoint registration with secret/scopes/version, HMAC-signed payloads, durable per-endpoint delivery with retry/backoff, dead-letter and replay in ops. |
 | EP12-08 | Chosen-system sandbox acceptance | pending | Obtain the first builder's named systems (EP14-11). |

@@ -61,6 +61,7 @@ import { buildOrgScopedPath, getFilesStorageProvider, uploadFilesObject } from "
 import { publishOwnedAgreementDocument, reserveAgreementSigningDocument } from "@/lib/services/agreement-signing-ownership"
 import { commissionSigningRefusal } from "@/lib/services/sales-commissions"
 import { ensureWarrantyDefaults } from "@/lib/services/warranty-operations"
+import { importedAgreementEvidenceMissing } from "@/lib/services/cutover/agreements"
 import {
   agreementConfigurationSchema,
   agreementContingencySchema,
@@ -2014,7 +2015,8 @@ export async function hasExecutedPurchaseAgreement(projectId: string, orgId?: st
   const context = await requireOrgContext(orgId)
   const { data, error } = await context.supabase.from("contracts").select("id").eq("org_id", context.orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active").limit(1).maybeSingle()
   if (error) throw new Error(`Failed to check purchase agreement: ${error.message}`)
-  return Boolean(data)
+  // An agreement brought over at cutover counts once its executed copy is on file or a person has accepted it.
+  return Boolean(data) && !(await importedAgreementEvidenceMissing(context.supabase, context.orgId, projectId))
 }
 
 const purchaseAgreementSnapshotSchema = z.object({ purchase_agreement: z.object({ pricing: z.object({

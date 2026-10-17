@@ -40,7 +40,7 @@ test("Open-WIP cutover imports current state without historical financial rows",
 
 test("org imports are permission-gated and team imports never email", () => {
   const service = read("lib/services/imports.ts")
-  assert.match(service, /requirePermission\("import\.manage"/)
+  assert.match(service, /requirePermission\([^\n]*"import\.manage"/)
   assert.match(service, /Open-WIP cutover is restricted to the platform/)
   assert.match(service, /sendEmail: false/)
   assert.match(read("supabase/migrations/20260719022535_onboarding_and_import_staging.sql"), /has_org_permission\(org_id, 'import\.manage'\)/)

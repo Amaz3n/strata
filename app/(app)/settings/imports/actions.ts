@@ -7,6 +7,7 @@ import { actionError, type ActionResult } from "@/lib/action-result"
 import { IMPORTER_KEYS, type ImporterKey } from "@/lib/services/import-definitions"
 import { suggestImportColumnMapping } from "@/lib/services/import-mapping"
 import { parseCsv } from "@/lib/services/import-parsers"
+import { acceptAgreementWithoutExecutedCopy, attachExecutedAgreement } from "@/lib/services/cutover/agreements"
 import { commitImportBatch, discardImportBatch, getImportMappingProfile, patchImportRow, setImportUpdateExisting, stageImportBatch } from "@/lib/services/imports"
 
 const importerSchema = z.enum(IMPORTER_KEYS).refine((value) => value !== "open_wip", "Open-WIP is platform-only")
@@ -52,4 +53,12 @@ export async function commitOrgImportAction(input: { orgId?: string; importer: I
 
 export async function discardOrgImportAction(input: { orgId?: string; importer: ImporterKey; batchId: string }) {
   return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid }).parse(input); await discardImportBatch(parsed.batchId, { expectedImporter: parsed.importer }); revalidatePath(path(parsed.importer)) })
+}
+
+export async function attachExecutedAgreementAction(input: { evidenceId: string; fileId: string; signers: Array<{ name: string; email: string | null }>; signedOn: string }) {
+  return run(async () => { const result = await attachExecutedAgreement(input); revalidatePath(path("agreements")); return result })
+}
+
+export async function acceptAgreementWithoutExecutedCopyAction(input: { evidenceId: string; reason: string }) {
+  return run(async () => { const result = await acceptAgreementWithoutExecutedCopy(input); revalidatePath(path("agreements")); return result })
 }

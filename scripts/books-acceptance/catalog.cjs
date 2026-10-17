@@ -48,6 +48,7 @@ const IMPLEMENTED = {
   "FIELD-01": "./scenarios/field-01.cjs",
   "MONEY-01": "./scenarios/money-01.cjs",
   "WARR-01": "./scenarios/warr-01.cjs",
+  "CUTOVER-01": "./scenarios/cutover-01.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -70,7 +71,7 @@ const NOT_IMPLEMENTED = {
  * as open with its reason, so the scenario is INCOMPLETE rather than FAILED. An
  * incomplete production scenario does not fail an all-scenarios run; a failed one does.
  */
-const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" }, "FLOW-01": { checklist: "EP07-01" }, "CUT-01": { checklist: "EP07-18" }, "RELEASE-01": { checklist: "EP07-04" }, "TRADE-01": { checklist: "EP07-06" }, "BID-01": { checklist: "EP08-03" }, "PO-01": { checklist: "EP08-07" }, "VPO-01": { checklist: "EP08-09" }, "SUPPLY-01": { checklist: "EP08-08" }, "FIELD-01": { checklist: "EP09-04" }, "MONEY-01": { checklist: "EP10-02" }, "WARR-01": { checklist: "EP11-01" } }
+const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" }, "FLOW-01": { checklist: "EP07-01" }, "CUT-01": { checklist: "EP07-18" }, "RELEASE-01": { checklist: "EP07-04" }, "TRADE-01": { checklist: "EP07-06" }, "BID-01": { checklist: "EP08-03" }, "PO-01": { checklist: "EP08-07" }, "VPO-01": { checklist: "EP08-09" }, "SUPPLY-01": { checklist: "EP08-08" }, "FIELD-01": { checklist: "EP09-04" }, "MONEY-01": { checklist: "EP10-02" }, "WARR-01": { checklist: "EP11-01" }, "CUTOVER-01": { checklist: "EP12-03" } }
 
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {

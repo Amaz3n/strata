@@ -1,3 +1,4 @@
+import { normalizeInspectionResult } from "@/lib/cutover/records"
 import {
   mappedValue,
   normalizeCostType,
@@ -19,6 +20,7 @@ import {
 export const IMPORTER_KEYS = [
   "cost_codes", "plan_library", "option_catalog", "price_book",
   "communities_lots", "open_wip", "team", "warranty_homes",
+  "agreements", "selections", "inspection_history",
 ] as const
 export type ImporterKey = (typeof IMPORTER_KEYS)[number]
 
@@ -88,6 +90,22 @@ export const IMPORTER_DEFINITIONS: Record<ImporterKey, ImporterDefinition> = {
     columns: [text("community", "Community", true, "Maple Ridge"), text("lot_number", "Lot number", true, "14"), text("block", "Block"), text("address", "Address"), text("buyer_name", "Buyer name", true), typed("buyer_email", "Buyer email", "email"), typed("closing_date", "Closing date", "date", true, "2025-03-28"), text("program", "Warranty program"), typed("workmanship_months", "Workmanship months", "integer", false, "12"), typed("systems_months", "Systems months", "integer", false, "24"), typed("structural_months", "Structural months", "integer", false, "120")],
     updateFields: [],
   },
+  agreements: {
+    key: "agreements", label: "Signed agreements", description: "The executed copy, signers and deposits behind each agreement Open WIP brought over. An agreement without its executed file waits for review and blocks closing.",
+    columns: [text("community", "Community", true, "Cypress Landing"), text("lot_number", "Lot number", true, "14"), text("block", "Block"), typed("signed_date", "Signed date", "date", false, "2026-08-15"), typed("sale_price_cents", "Agreement total", "cents", false, "412000"), typed("deposit_cents", "Deposits received", "cents", false, "10000"), text("signers", "Signers", false, "Rosa Quintero <rosa@example.com>; Arc Builder <sales@example.com>"), text("executed_file", "Executed file name", false, "lot-14-agreement.pdf"), text("executed_sha256", "Executed file SHA-256")],
+    updateFields: [],
+  },
+  selections: {
+    key: "selections", label: "Selections & cutoffs", description: "Current selections at the price the buyer was given, design cutoffs and change-order balances for open homes, with per-home totals to reconcile against.",
+    fileKinds: [{ key: "selections", label: "Current selections" }, { key: "cutoffs", label: "Cutoff dates" }, { key: "totals", label: "Home totals" }],
+    columns: [text("community", "Community", true, "Cypress Landing"), text("lot_number", "Lot number", true, "14"), text("block", "Block"), text("option_code", "Option code", false, "ST-GAR"), typed("price_cents", "Price at selection", "cents", false, "4500"), text("price_version", "Price sheet version", false, "2026 Q2"), typed("selected_on", "Selected on", "date", false, "2026-08-20"), text("status", "Status", false, "confirmed"), text("group", "Selection group", false, "Design studio"), typed("cutoff_date", "Cutoff date", "date", false, "2026-11-01"), typed("locked", "Locked", "boolean"), typed("selection_count", "Selections", "integer"), typed("selections_total_cents", "Selections total", "cents"), typed("change_order_balance_cents", "Change-order balance", "cents")],
+    updateFields: [],
+  },
+  inspection_history: {
+    key: "inspection_history", label: "Inspection history", description: "Past inspections on open homes, kept as read-only history. They never become inspections in Arc: every new inspection, reinspections included, starts in the inspection workflow.",
+    columns: [text("community", "Community", true, "Cypress Landing"), text("lot_number", "Lot number", true, "14"), text("block", "Block"), text("inspection_type", "Inspection type", true, "Framing"), typed("inspected_on", "Inspected on", "date", true, "2026-09-02"), text("result", "Result", true, "pass"), text("inspector", "Inspector"), text("reference", "Reference")],
+    updateFields: [],
+  },
 }
 
 const LOT_STATUS: Record<string, string> = {
@@ -123,6 +141,11 @@ function conditionalRequired(importer: ImporterKey, fileKind: string | undefined
     if (fileKind === "budgets") return ["community", "lot_number", "cost_code", "budget_cents"].includes(key)
     if (fileKind === "purchase_orders") return ["community", "lot_number", "po_number", "vendor", "cost_code", "description", "remaining_cents"].includes(key)
     return ["community", "lot_number", "plan_code", "elevation_code", "stage_task", "budget_total_cents"].includes(key)
+  }
+  if (importer === "selections") {
+    if (fileKind === "cutoffs") return ["community", "lot_number", "group", "cutoff_date"].includes(key)
+    if (fileKind === "totals") return ["community", "lot_number", "selection_count", "selections_total_cents", "change_order_balance_cents"].includes(key)
+    return ["community", "lot_number", "option_code", "price_cents", "selected_on"].includes(key)
   }
   return IMPORTER_DEFINITIONS[importer].columns.find((column) => column.key === key)?.required ?? false
 }
@@ -195,7 +218,9 @@ export function parseImporterRow(input: {
   else if (input.importer === "price_book") naturalKey = stableNaturalKey([parsed.vendor, parsed.cost_code, parsed.plan_code, parsed.community || parsed.division, parsed.effective_start])
   else if (input.importer === "communities_lots") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
   else if (input.importer === "team") naturalKey = normalizeKey(parsed.email)
-  else if (input.importer === "warranty_homes") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
+  else if (input.importer === "warranty_homes" || input.importer === "agreements") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
+  else if (input.importer === "selections") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number, fileKind === "cutoffs" ? parsed.group : fileKind === "totals" ? "totals" : parsed.option_code])
+  else if (input.importer === "inspection_history") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number, parsed.inspection_type, parsed.inspected_on, normalizeInspectionResult(parsed.result) ?? parsed.result])
   else naturalKey = fileKind === "budgets" ? stableNaturalKey([parsed.community, parsed.block, parsed.lot_number, parsed.cost_code]) : fileKind === "purchase_orders" ? stableNaturalKey([parsed.community, parsed.block, parsed.lot_number, parsed.po_number]) : stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
 
   return { parsed, issues, naturalKey }
