@@ -65,10 +65,12 @@ const QUEUE_FILTERS = [
   { value: "breached", label: "Resolution overdue" },
   { value: "due_soon", label: "Resolution due soon" },
   { value: "first_response_due_soon", label: "First response due soon" },
+  { value: "sent_back", label: "Sent back for rework" },
 ] as const
 
 const RESOLUTIONS = [
   { value: "recovered", label: "Recovered in full", destructive: false },
+  { value: "settled", label: "Settle for less", destructive: true },
   { value: "written_off", label: "Write off", destructive: true },
   { value: "waived", label: "Waive", destructive: true },
 ] as const
@@ -143,6 +145,7 @@ export function WarrantyDeskClient({
   const [disputeNote, setDisputeNote] = useState<Record<string, string>>({})
   const [resolving, setResolving] = useState<{ charge: WarrantyBackchargeDTO; resolution: (typeof RESOLUTIONS)[number] } | null>(null)
   const [resolveNote, setResolveNote] = useState("")
+  const [settleAmount, setSettleAmount] = useState("")
 
   const now = useMemo(() => new Date(), [])
 
@@ -219,6 +222,7 @@ export function WarrantyDeskClient({
             <TabsTrigger disabled={pending} value="analytics">Analytics</TabsTrigger>
           </TabsList>
           <div className="flex items-center gap-2">
+            <Button asChild size="sm" variant="outline"><Link href="/settings/imports/warranty_homes">Import homes under warranty</Link></Button>
             <Button
               size="sm"
               variant="outline"
@@ -293,7 +297,10 @@ export function WarrantyDeskClient({
                         {countdown(request.resolution_due_at)}
                         {request.cost_dump_flag ? <AlertTriangle className="ml-2 inline size-3 text-warning" aria-label="Possible cost dump" /> : null}
                       </td>
-                      <td className="px-3 py-2">{request.status.replaceAll("_", " ")}</td>
+                      <td className="px-3 py-2">
+                        {request.status.replaceAll("_", " ")}
+                        {request.metadata?.sent_back === true ? <Badge variant="destructive" className="ml-2" title={typeof request.metadata.rejection_reason === "string" ? request.metadata.rejection_reason : undefined}>Sent back</Badge> : null}
+                      </td>
                     </tr>
                   )
                 })}
@@ -467,7 +474,7 @@ export function WarrantyDeskClient({
                             size="sm"
                             variant={resolution.destructive ? "outline" : "default"}
                             disabled={pending}
-                            onClick={() => { setResolving({ charge, resolution }); setResolveNote("") }}
+                            onClick={() => { setResolving({ charge, resolution }); setResolveNote(""); setSettleAmount("") }}
                           >
                             {resolution.label}
                           </Button>
@@ -810,11 +817,19 @@ export function WarrantyDeskClient({
               {resolving ? `${resolving.resolution.label} WB-${resolving.charge.backcharge_number}?` : "Resolve backcharge"}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {resolving?.resolution.value === "recovered"
+              {resolving?.resolution.value === "settled"
+                ? `The trade pays the amount below; Arc posts a reversing bill for the rest of ${moneyExact.format((resolving?.charge.amount_cents ?? 0) / 100)}. Settlements are final.`
+                : resolving?.resolution.value === "recovered"
                 ? `Records ${moneyExact.format((resolving?.charge.amount_cents ?? 0) / 100)} as fully recovered. Backcharge resolutions are final.`
                 : `Arc posts a reversing bill for ${moneyExact.format((resolving?.charge.amount_cents ?? 0) / 100)} against the original vendor credit. This cannot be undone.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {resolving?.resolution.value === "settled" ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="settle-amount">Settled amount (USD)</Label>
+              <Input id="settle-amount" inputMode="decimal" className="tabular-nums" value={settleAmount} onChange={(event) => setSettleAmount(event.target.value)} placeholder={`Less than ${moneyExact.format((resolving.charge.amount_cents ?? 0) / 100)}`} />
+            </div>
+          ) : null}
           {resolving?.resolution.value !== "recovered" ? (
             <div className="space-y-1.5">
               <Label htmlFor="resolve-note">Resolution note</Label>
@@ -824,14 +839,14 @@ export function WarrantyDeskClient({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending || (resolving?.resolution.value !== "recovered" && !resolveNote.trim())}
+              disabled={pending || (resolving?.resolution.value !== "recovered" && !resolveNote.trim()) || (resolving?.resolution.value === "settled" && !(Number(settleAmount) > 0))}
               onClick={() => {
                 if (!resolving) return
                 const { charge, resolution } = resolving
                 startTransition(async () => {
                   const result = await resolveWarrantyBackchargeAction({
                     backcharge_id: charge.id, resolution: resolution.value,
-                    recovered_cents: resolution.value === "recovered" ? charge.amount_cents : undefined,
+                    recovered_cents: resolution.value === "recovered" ? charge.amount_cents : resolution.value === "settled" ? Math.round(Number(settleAmount) * 100) : undefined,
                     note: resolution.value === "recovered" ? undefined : resolveNote.trim(),
                   })
                   if (!result.success) { toast.error(result.error); return }

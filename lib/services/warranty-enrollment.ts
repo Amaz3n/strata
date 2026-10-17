@@ -25,7 +25,12 @@ export async function readWarrantyEnrollmentTerms(supabase: SupabaseClient, orgI
   return parsed
 }
 
-export async function enrollSystemWarrantyCoverage(supabase: SupabaseClient, raw: unknown, ensureDefaults: () => Promise<void>) {
+/**
+ * `sold` names the program and terms a home was sold with when the sale is not
+ * an Arc purchase agreement — a home that closed before Arc. Without it the
+ * program is the one bound to the executed agreement, else the org's default.
+ */
+export async function enrollSystemWarrantyCoverage(supabase: SupabaseClient, raw: unknown, ensureDefaults: () => Promise<void>, sold?: { programId: string; terms: z.infer<typeof termSchema>[] | null }) {
   const input = inputSchema.parse(raw)
   const project = await supabase.from("projects").select("id").eq("org_id", input.orgId).eq("id", input.projectId).maybeSingle()
   if (project.error || !project.data) throw new Error("Warranty enrollment home is unavailable")
@@ -55,7 +60,7 @@ export async function enrollSystemWarrantyCoverage(supabase: SupabaseClient, raw
   }
   let coverage = await readExisting(), enrolled = false
   if (!coverage) {
-    const { programId, soldTerms } = await readHandoffProgram(supabase, input, ensureDefaults)
+    const { programId, soldTerms } = sold ? { programId: z.string().uuid().parse(sold.programId), soldTerms: sold.terms } : await readHandoffProgram(supabase, input, ensureDefaults)
     const parsedTerms = soldTerms ?? await readWarrantyEnrollmentTerms(supabase, input.orgId, programId)
     const inserted = await supabase.from("project_warranty_coverage").insert({ id: randomUUID(), org_id: input.orgId, project_id: input.projectId, program_id: programId,
       effective_date: input.effectiveDate, effective_source: input.source, terms_snapshot: buildCoverageSnapshot(input.effectiveDate, parsedTerms) }).select("id").single()

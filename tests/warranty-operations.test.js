@@ -290,18 +290,18 @@ describe("visit times at the house", () => {
 // Service: dispatch, completion and backcharges.
 // ---------------------------------------------------------------------------
 
-const { createServiceHarness, replies, id, ORG } = require("./support/service")
+const { createServiceHarness, replies, id, ORG, ACTOR } = require("./support/service")
 const { freshRequire, stubModule } = require("./support/modules")
 
 const vendorBills = []
 stubModule("@/lib/services/vendor-bills", {
   createProjectVendorCredit: async (input) => {
-    const bill = { id: id(800 + vendorBills.length), org_id: ORG, company_id: input.companyId, bill_number: input.billNumber }
+    const bill = { id: id(800 + vendorBills.length), org_id: ORG, company_id: input.companyId, bill_number: input.billNumber, approvalAuthority: input.approvalAuthority }
     vendorBills.push(bill)
     return bill
   },
   createProjectVendorBill: async ({ input }) => {
-    const bill = { id: id(800 + vendorBills.length), org_id: ORG, company_id: input.company_id, bill_number: input.bill_number }
+    const bill = { id: id(800 + vendorBills.length), org_id: ORG, company_id: input.company_id, bill_number: input.bill_number, total_cents: input.total_cents, lines: input.actual_lines }
     vendorBills.push(bill)
     return bill
   },
@@ -328,7 +328,10 @@ const {
   confirmWarrantyVisitByBuyer,
   createWarrantyRequest,
   issueWarrantyBackcharge,
+  reassignWarrantyVisit,
   rejectWarrantyVisitCompletion,
+  verifyWarrantyVisit,
+  disputeWarrantyBackcharge,
   requestWarrantyVisitRescheduleByBuyer,
   rescheduleWarrantyVisit,
   resolveWarrantyBackcharge,
@@ -353,7 +356,7 @@ function warrantyHarness(tables = {}, { rpc } = {}) {
   sentNotifications.length = 0
   const service = createServiceHarness({
     rpc,
-    permissions: ["warranty.read", "warranty.write", "warranty.backcharge", "bill.write"],
+    permissions: ["warranty.read", "warranty.write", "warranty.manage", "warranty.backcharge", "bill.write"],
     projects: [HOME],
     tables: {
       projects: [{ id: HOME, org_id: ORG, name: "Lot 12" }],
@@ -472,6 +475,12 @@ describe("backcharges", () => {
     assert.equal(vendorBills.length, 1)
     assert.equal(service.db.warranty_backcharges[0].status, "issued")
     assert.equal(service.db.warranty_backcharges[0].metadata.transition_claimed_at, undefined)
+  })
+
+  test("the issued credit is authorized by warranty.backcharge, not bill.approve", async () => {
+    const service = warrantyHarness({ warranty_backcharges: [backcharge()] })
+    await service.run(() => issueWarrantyBackcharge({ backchargeId: BACKCHARGE }))
+    assert.deepEqual(vendorBills.map((bill) => bill.approvalAuthority), ["warranty.backcharge"])
   })
 
   test("waiving twice at once reverses the credit once", async () => {
@@ -646,5 +655,136 @@ describe("routing a request to its owner", () => {
     const service = warrantyHarness()
     await service.run(() => updateWarrantyRequest({ requestId: REQUEST, input: { assigned_user_id: id(50) } }))
     assert.ok(service.events.some((entry) => entry.eventType === "warranty_request_reassigned"))
+  })
+})
+
+describe("EP11 visit hand-off and settlement inputs", () => {
+  const { warrantyVisitReassignSchema } = require("../lib/services/warranty/validation")
+  const { warrantyBackchargeResolveSchema } = require("../lib/validation/warranty")
+  const id = (n) => `00000000-0000-4000-8000-00000000000${n}`
+
+  test("a hand-off names one new owner of the matching kind and a reason", () => {
+    const ok = { visit_id: id(1), assignee_kind: "tech", assigned_user_id: id(2), reason: "Out sick" }
+    assert.equal(warrantyVisitReassignSchema.safeParse(ok).success, true)
+    assert.equal(warrantyVisitReassignSchema.safeParse({ ...ok, reason: "" }).success, false)
+    assert.equal(warrantyVisitReassignSchema.safeParse({ ...ok, assigned_company_id: id(3) }).success, false)
+    assert.equal(warrantyVisitReassignSchema.safeParse({ ...ok, assignee_kind: "trade" }).success, false)
+  })
+
+  test("a double-booked hand-off needs its own reason", () => {
+    const base = { visit_id: id(1), assignee_kind: "trade", assigned_company_id: id(3), reason: "Trade has the parts" }
+    assert.equal(warrantyVisitReassignSchema.safeParse({ ...base, allow_conflict: true }).success, false)
+    assert.equal(warrantyVisitReassignSchema.safeParse({ ...base, allow_conflict: true, conflict_reason: "Same street, back to back" }).success, true)
+  })
+
+  test("a settlement states the agreed amount and why", () => {
+    const base = { backcharge_id: id(1), resolution: "settled", note: "Negotiated with the trade" }
+    assert.equal(warrantyBackchargeResolveSchema.safeParse(base).success, false)
+    assert.equal(warrantyBackchargeResolveSchema.safeParse({ ...base, recovered_cents: 0 }).success, false)
+    assert.equal(warrantyBackchargeResolveSchema.safeParse({ ...base, recovered_cents: 12.5 }).success, false)
+    assert.equal(warrantyBackchargeResolveSchema.safeParse({ ...base, recovered_cents: 60000 }).success, true)
+    assert.equal(warrantyBackchargeResolveSchema.safeParse({ ...base, recovered_cents: 60000, note: undefined }).success, false)
+  })
+})
+
+describe("EP11 operations", () => {
+  const OTHER_TECH = id(51)
+  const rule = (overrides = {}) => ({ id: id(41), org_id: ORG, name: "Plumbing to trade", priority: 10, severity: null, category: null, community_id: null, cost_code_id: id(60), assignee_kind: "trade", assigned_user_id: null, assigned_company_id: TRADE, is_active: true, ...overrides })
+  const coordinator = rule({ id: id(42), name: "Community coordinator", priority: 100, cost_code_id: null, community_id: COMMUNITY_ID, assignee_kind: "tech", assigned_user_id: TECH, assigned_company_id: null })
+  const bare = { warranty_sla_targets: [], punch_items: [], warranty_request_photos: [], warranty_programs: [], warranty_coverage_terms: [], project_warranty_coverage: [] }
+
+  test("a request goes to its community's coordinator and the trade its cost code maps to", async () => {
+    const service = warrantyHarness({ ...bare, warranty_routing_rules: [coordinator, rule()] }, { rpc: { next_warranty_request_number: () => 2 } })
+    const created = await service.run(() => createWarrantyRequest({ input: { project_id: HOME, title: "Slow drain", cost_code_id: id(60) } }))
+    assert.equal(created.assigned_user_id, TECH)
+    assert.equal(created.assigned_company_id, TRADE)
+    assert.deepEqual(created.metadata.routing.rules.map((entry) => entry.kind).sort(), ["tech", "trade"])
+  })
+
+  test("reclassifying a rule-routed request routes it again; a person's own assignment is left alone", async () => {
+    const routed = { id: REQUEST, org_id: ORG, project_id: HOME, title: "Drain", status: "open", severity: "routine_30", assigned_user_id: TECH, created_at: SEEN, updated_at: SEEN, metadata: { routing: { source: "rule", rule_id: id(42), rule_name: "Community coordinator" } } }
+    const service = warrantyHarness({ warranty_requests: [routed], warranty_routing_rules: [coordinator, rule()] })
+    const updated = await service.run(() => updateWarrantyRequest({ requestId: REQUEST, input: { cost_code_id: id(60) } }))
+    assert.equal(updated.assigned_company_id, TRADE)
+    assert.equal(service.events.filter((event) => event.eventType === "warranty_request_routed").at(-1).payload.trigger, "reclassified")
+
+    const manual = warrantyHarness({ warranty_requests: [{ ...routed, metadata: { routing: { source: "manual" } } }], warranty_routing_rules: [coordinator, rule()] })
+    const kept = await manual.run(() => updateWarrantyRequest({ requestId: REQUEST, input: { cost_code_id: id(60) } }))
+    assert.equal(kept.assigned_company_id, null)
+  })
+
+  test("a visit handed to another technician keeps the old owner in its history and tells both", async () => {
+    const service = warrantyHarness({ warranty_service_visits: [visitRow({ status: "confirmed", confirmed_at: SEEN })] })
+    const visit = await service.run(() => reassignWarrantyVisit({ visit_id: VISIT, assignee_kind: "tech", assigned_user_id: OTHER_TECH, reason: "Out sick" }))
+    assert.equal(visit.assigned_user_id, OTHER_TECH)
+    const row = service.db.warranty_service_visits[0]
+    assert.equal(row.status, "scheduled")
+    assert.equal(row.metadata.assignment_history[0].assigned_user_id, TECH)
+    assert.equal(row.metadata.assignment_history[0].reason, "Out sick")
+    assert.deepEqual(sentNotifications.map((note) => [note.userId, note.type]).sort(), [[TECH, "warranty_visit_canceled"], [OTHER_TECH, "warranty_visit_assigned"]])
+    assert.equal(sentEmails.some((email) => email.to.includes("buyer@home.test")), false)
+    assert.ok(service.events.some((event) => event.eventType === "warranty_visit_reassigned"))
+  })
+
+  test("a hand-off onto a booked assignee is refused unless the override carries a reason and authority", async () => {
+    const booked = visitRow({ id: id(34), visit_number: 2, assigned_user_id: OTHER_TECH })
+    const service = warrantyHarness({ warranty_service_visits: [visitRow(), booked] })
+    const handOff = { visit_id: VISIT, assignee_kind: "tech", assigned_user_id: OTHER_TECH, reason: "Closest to the home" }
+    await assert.rejects(service.run(() => reassignWarrantyVisit(handOff)), /already booked/)
+    await service.run(() => reassignWarrantyVisit({ ...handOff, allow_conflict: true, conflict_reason: "Same street, back to back" }))
+    assert.equal(service.db.warranty_service_visits[0].overlap_allowed, true)
+  })
+
+  test("a double-booking override needs warranty.manage", async () => {
+    const service = createServiceHarness({ permissions: ["warranty.read", "warranty.write"], projects: [HOME], tables: { warranty_requests: [{ id: REQUEST, org_id: ORG, project_id: HOME, title: "Leak", status: "open", created_at: SEEN, updated_at: SEEN, metadata: {} }], warranty_service_visits: [visitRow()], projects: [{ id: HOME, org_id: ORG, name: "Lot 12" }], orgs: [], lots: [] } })
+    const input = { request_id: REQUEST, assignee_kind: "tech", assigned_user_id: TECH, window_start: "2026-10-12T15:00:00.000Z", window_end: "2026-10-12T17:00:00.000Z", allow_conflict: true, conflict_reason: "Two-person lift" }
+    await assert.rejects(service.run(() => scheduleWarrantyVisit(input)), /warranty\.manage/)
+  })
+
+  test("whoever recorded the work cannot verify it, and the refused attempt is on the record", async () => {
+    const pending = { id: REQUEST, org_id: ORG, project_id: HOME, title: "Leak", status: "in_progress", created_at: SEEN, updated_at: SEEN, metadata: { pending_verification: true, completed_visit_id: VISIT } }
+    const own = warrantyHarness({ warranty_service_visits: [visitRow({ status: "completed", outcome: "resolved", completed_by: ACTOR })], warranty_requests: [pending] })
+    await assert.rejects(own.run(() => verifyWarrantyVisit(VISIT)), /second person/)
+    assert.equal(own.db.warranty_requests[0].metadata.pending_verification, true)
+    assert.ok(own.events.some((event) => event.eventType === "warranty_visit_verification_refused" && event.payload.reason === "same_person"))
+    assert.equal(own.audits.at(-1).source, "warranty_verification_refused")
+
+    const other = warrantyHarness({ warranty_service_visits: [visitRow({ status: "completed", outcome: "resolved", completed_by: TECH })], warranty_requests: [pending] })
+    await other.run(() => verifyWarrantyVisit(VISIT))
+    assert.equal(other.db.warranty_requests[0].status, "resolved")
+  })
+
+  test("sent-back work is flagged until a new completion comes in", async () => {
+    const pending = { id: REQUEST, org_id: ORG, project_id: HOME, title: "Leak", status: "in_progress", created_at: SEEN, updated_at: SEEN, metadata: { pending_verification: true, completed_visit_id: VISIT } }
+    const service = warrantyHarness({ warranty_service_visits: [visitRow({ status: "completed", outcome: "resolved", completed_by: TECH })], warranty_requests: [pending] })
+    await service.run(() => rejectWarrantyVisitCompletion(VISIT, "Still dripping at the trap"))
+    assert.equal(service.db.warranty_requests[0].metadata.sent_back, true)
+  })
+
+  test("a dispute settled for less collects the agreed amount and reverses only the remainder", async () => {
+    const charge = { id: BACKCHARGE, org_id: ORG, project_id: HOME, warranty_request_id: REQUEST, company_id: TRADE, commitment_id: null, cost_code_id: null, backcharge_number: 7, status: "disputed", amount_cents: 450_00, recovered_cents: 0, reason: "Failed trap seal", cost_basis: [{ label: "Plumber callback", amount_cents: 450_00 }], vendor_credit_bill_id: id(799), metadata: {}, created_at: SEEN, updated_at: SEEN }
+    const service = warrantyHarness({ warranty_backcharges: [charge] })
+    await assert.rejects(service.run(() => resolveWarrantyBackcharge({ backchargeId: BACKCHARGE, resolution: "settled", recoveredCents: 450_00, note: "Agreed" })), /less than the issued amount/)
+    await assert.rejects(service.run(() => resolveWarrantyBackcharge({ backchargeId: BACKCHARGE, resolution: "settled", recoveredCents: 500_00, note: "Agreed" })), /invalid/)
+    const settled = await service.run(() => resolveWarrantyBackcharge({ backchargeId: BACKCHARGE, resolution: "settled", recoveredCents: 300_00, note: "Agreed at the job meeting" }))
+    assert.equal(settled.status, "recovered")
+    assert.equal(settled.recovered_cents, 300_00)
+    assert.deepEqual([settled.settlement.settled_cents, settled.settlement.written_off_cents], [300_00, 150_00])
+    assert.deepEqual(vendorBills.map((bill) => bill.bill_number), ["WB-7-R"])
+    // The bill service refuses explicit lines that are not on the bill's own project.
+    assert.deepEqual([vendorBills[0].total_cents, vendorBills[0].lines.map((line) => [line.amount_cents, line.project_id])], [150_00, [[150_00, HOME]]])
+  })
+
+  test("settling for less needs warranty.manage, and re-issuing after a dispute reuses the original credit", async () => {
+    const limited = warrantyHarness({ warranty_backcharges: [{ id: BACKCHARGE, org_id: ORG, project_id: HOME, warranty_request_id: REQUEST, company_id: TRADE, backcharge_number: 7, status: "disputed", amount_cents: 450_00, recovered_cents: 0, reason: "x", cost_basis: [], vendor_credit_bill_id: id(799), metadata: {} }] })
+    limited.grant(["warranty.read", "warranty.backcharge", "bill.write"], { projects: [HOME] })
+    await assert.rejects(limited.run(() => resolveWarrantyBackcharge({ backchargeId: BACKCHARGE, resolution: "settled", recoveredCents: 100_00, note: "Agreed" })), /warranty\.manage/)
+
+    const service = warrantyHarness({ warranty_backcharges: [{ id: BACKCHARGE, org_id: ORG, project_id: HOME, warranty_request_id: REQUEST, company_id: TRADE, commitment_id: null, cost_code_id: null, backcharge_number: 7, status: "draft", amount_cents: 450_00, recovered_cents: 0, reason: "Failed trap seal", cost_basis: [{ label: "Plumber callback", amount_cents: 450_00 }], vendor_credit_bill_id: null, metadata: { no_ap_history_confirmed: true }, created_at: SEEN, updated_at: SEEN }] })
+    const issued = await service.run(() => issueWarrantyBackcharge({ backchargeId: BACKCHARGE }))
+    await service.run(() => disputeWarrantyBackcharge({ backchargeId: BACKCHARGE, note: "Trade says the seal was fine" }))
+    const reissued = await service.run(() => issueWarrantyBackcharge({ backchargeId: BACKCHARGE }))
+    assert.equal(vendorBills.length, 1)
+    assert.equal(reissued.vendor_credit_bill_id, issued.vendor_credit_bill_id)
   })
 })

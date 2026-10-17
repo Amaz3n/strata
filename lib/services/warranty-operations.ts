@@ -7,7 +7,7 @@ import { enrollSystemWarrantyCoverage, readWarrantyEnrollmentTerms, warrantyEffe
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { readAllRows } from "@/lib/land/paging"
 import { createServiceSupabaseClient as createBaseServiceSupabaseClient } from "@/lib/supabase/server"
-import { requireOrgContext as requireBaseOrgContext } from "@/lib/services/context"
+import { requireOrgContext as requireBaseOrgContext, runWithServiceOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { requireAuthorization, authorizeMany, getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
@@ -73,10 +73,12 @@ import {
   warrantyRoutingOverrideReasonSchema,
   warrantyRoutingRuleSchema,
   warrantyScheduleOverrideSchema,
+  warrantyVisitReassignSchema,
   warrantyVisitCompleteWithCostSchema,
   warrantyVisitPortalOutcomeSchema,
   type WarrantyRoutingRuleInput,
   type WarrantyVisitCompleteWithCostInput,
+  type WarrantyVisitReassignInput,
 } from "@/lib/services/warranty/validation"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
@@ -94,7 +96,7 @@ async function requireOrgContext(orgId?: string) {
 }
 
 async function authorizeWarrantyHome(
-  context: { supabase: SupabaseClient; orgId: string; userId: string },
+  context: { supabase: SupabaseClient; authClient?: SupabaseClient; orgId: string; userId: string },
   projectId: string,
   permission: "warranty.read" | "warranty.write" | "warranty.backcharge" | "bill.write",
 ) {
@@ -266,6 +268,8 @@ export interface WarrantyBackchargeDTO {
   cost_basis: WarrantyCostBasisItem[]; vendor_credit_bill_id: string | null
   issued_at: string | null; disputed_at: string | null; dispute_note: string | null
   resolved_at: string | null; notes: string | null; company_name?: string | null; project_name?: string | null
+  /** Set when the trade settled for less than the issued amount: what was collected, what was given up, and who decided. */
+  settlement: { settled_cents: number; written_off_cents: number; reason: string | null; settled_by: string | null; settled_at: string | null } | null
 }
 
 function mapVisit(row: Record<string, unknown>): WarrantyServiceVisitDTO {
@@ -316,6 +320,19 @@ function mapBackcharge(row: Record<string, unknown>): WarrantyBackchargeDTO {
     notes: typeof row.notes === "string" ? row.notes : null,
     company_name: typeof company?.name === "string" ? company.name : null,
     project_name: typeof project?.name === "string" ? project.name : null,
+    settlement: mapSettlement(row.metadata),
+  }
+}
+
+function mapSettlement(metadata: unknown): WarrantyBackchargeDTO["settlement"] {
+  const value = metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>).settlement : null
+  if (!value || typeof value !== "object") return null
+  const record = value as Record<string, unknown>
+  if (!Number.isSafeInteger(record.settled_cents) || !Number.isSafeInteger(record.written_off_cents)) return null
+  return {
+    settled_cents: Number(record.settled_cents), written_off_cents: Number(record.written_off_cents),
+    reason: typeof record.reason === "string" ? record.reason : null, settled_by: typeof record.settled_by === "string" ? record.settled_by : null,
+    settled_at: typeof record.settled_at === "string" ? record.settled_at : null,
   }
 }
 
@@ -626,46 +643,71 @@ export async function deleteWarrantyRoutingRule(ruleId: string, orgId?: string) 
 }
 
 /**
- * Gives a new request its owner. Runs after the request exists, so a routing
- * failure leaves an unrouted request for manual triage instead of losing the
- * homeowner's report, and the failure is on the record. The write only lands
- * while nobody has assigned the request, so a coordinator who got there first
- * is never overwritten.
+ * Gives a request its owners: one technician and one trade at most, each from
+ * the best matching rule of its own kind, so a community's default coordinator
+ * and the trade responsible for the work can both own the same request. Runs
+ * after the request exists, so a routing failure leaves an unrouted request for
+ * manual triage instead of losing the homeowner's report, and the failure is on
+ * the record. A new request is only routed into owners nobody has set. A
+ * reclassified one (severity, category or cost code changed) is routed again
+ * only while a rule, not a person, chose its owners; a coordinator's own
+ * assignment is never overwritten.
  */
-async function routeNewWarrantyRequest(supabase: SupabaseClient, orgId: string, request: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function routeWarrantyRequest(supabase: SupabaseClient, orgId: string, request: Record<string, unknown>, mode: "created" | "reclassified"): Promise<Record<string, unknown>> {
   const requestId = String(request.id), projectId = String(request.project_id)
   try {
+    const priorRouting = routingRecordFrom(request.metadata)
+    if (mode === "reclassified" && priorRouting?.source === "manual") return request
     const [rulesResult, lotResult] = await Promise.all([
       supabase.from("warranty_routing_rules").select(ROUTING_RULE_SELECT).eq("org_id", orgId).eq("is_active", true).limit(500),
       supabase.from("lots").select("community_id").eq("org_id", orgId).eq("project_id", projectId).maybeSingle(),
     ])
     if (rulesResult.error) throw new Error(rulesResult.error.message)
     if (lotResult.error) throw new Error(lotResult.error.message)
-    const rule = selectWarrantyRoutingRule((rulesResult.data ?? []).map((row) => mapRoutingRule(row as unknown as Record<string, unknown>)), {
+    const rules = (rulesResult.data ?? []).map((row) => mapRoutingRule(row as unknown as Record<string, unknown>))
+    const context = {
       severity: (request.severity as WarrantySeverity) ?? "routine_30",
       category: typeof request.category === "string" ? request.category : null,
       community_id: typeof lotResult.data?.community_id === "string" ? lotResult.data.community_id : null,
       cost_code_id: typeof request.cost_code_id === "string" ? request.cost_code_id : null,
-    })
-    if (!rule) return request
+    }
+    const ruleOwned = priorRouting?.source === "rule"
+    const tech = selectWarrantyRoutingRule(rules.filter((rule) => rule.assignee_kind === "tech"), context)
+    const trade = selectWarrantyRoutingRule(rules.filter((rule) => rule.assignee_kind === "trade"), context)
+    const currentUser = typeof request.assigned_user_id === "string" ? request.assigned_user_id : null
+    const currentCompany = typeof request.assigned_company_id === "string" ? request.assigned_company_id : null
+    const techWrite = tech && tech.assigned_user_id !== currentUser && (!currentUser || (mode === "reclassified" && ruleOwned)) ? tech : null
+    const tradeWrite = trade && trade.assigned_company_id !== currentCompany && (!currentCompany || (mode === "reclassified" && ruleOwned)) ? trade : null
+    if (!techWrite && !tradeWrite) return request
     const routedAt = new Date().toISOString()
-    const { data, error } = await supabase.from("warranty_requests").update({
-      ...(rule.assignee_kind === "tech" ? { assigned_user_id: rule.assigned_user_id } : { assigned_company_id: rule.assigned_company_id }),
-      metadata: mergeMetadata(request.metadata, { routing: { source: "rule", rule_id: rule.id, rule_name: rule.name, routed_at: routedAt, routed_by: null } }),
-    }).eq("org_id", orgId).eq("id", requestId).eq("project_id", projectId).is("assigned_user_id", null).is("assigned_company_id", null).select(WARRANTY_SELECT).maybeSingle()
+    const matched = [tech, trade].filter((rule): rule is WarrantyRoutingRule => rule !== null)
+    const primary = matched[0] ?? null
+    let write = supabase.from("warranty_requests").update({
+      ...(techWrite ? { assigned_user_id: techWrite.assigned_user_id } : {}),
+      ...(tradeWrite ? { assigned_company_id: tradeWrite.assigned_company_id } : {}),
+      metadata: mergeMetadata(request.metadata, { routing: {
+        source: "rule", rule_id: primary?.id ?? null, rule_name: primary?.name ?? null, routed_at: routedAt, routed_by: null, trigger: mode,
+        rules: matched.map((rule) => ({ kind: rule.assignee_kind, rule_id: rule.id, rule_name: rule.name })),
+      } }),
+    }).eq("org_id", orgId).eq("id", requestId).eq("project_id", projectId)
+    if (mode === "created") {
+      if (techWrite) write = write.is("assigned_user_id", null)
+      if (tradeWrite) write = write.is("assigned_company_id", null)
+    } else if (typeof request.updated_at === "string") write = write.eq("updated_at", request.updated_at)
+    const { data, error } = await write.select(WARRANTY_SELECT).maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return request
-    await recordEvent({ orgId, eventType: "warranty_request_routed", entityType: "warranty_request", entityId: requestId, payload: { project_id: projectId, rule_id: rule.id, assignee_kind: rule.assignee_kind, assigned_user_id: rule.assigned_user_id, assigned_company_id: rule.assigned_company_id } })
+    await recordEvent({ orgId, eventType: "warranty_request_routed", entityType: "warranty_request", entityId: requestId, payload: { project_id: projectId, trigger: mode, rule_ids: [techWrite?.id, tradeWrite?.id].filter(Boolean), assigned_user_id: techWrite?.assigned_user_id ?? null, assigned_company_id: tradeWrite?.assigned_company_id ?? null, from_user_id: currentUser, from_company_id: currentCompany } })
     await recordAudit({ orgId, action: "update", entityType: "warranty_request", entityId: requestId, before: request, after: data as unknown as Record<string, unknown>, source: "warranty_routing" })
-    if (rule.assigned_user_id) {
+    if (techWrite?.assigned_user_id) {
       await new NotificationService().createAndQueue({
-        orgId, userId: rule.assigned_user_id, type: "warranty_request_routed", title: "Warranty request routed to you",
-        message: `${String(request.title)} was routed to you by "${rule.name}".`, projectId, entityType: "warranty_request", entityId: requestId, metadata: { href: "/warranty" },
+        orgId, userId: techWrite.assigned_user_id, type: "warranty_request_routed", title: "Warranty request routed to you",
+        message: `${String(request.title)} was routed to you by "${techWrite.name}".`, projectId, entityType: "warranty_request", entityId: requestId, metadata: { href: "/warranty" },
       }).catch(() => undefined)
     }
     return data as unknown as Record<string, unknown>
   } catch (error) {
-    await recordEvent({ orgId, eventType: "warranty_request_routing_failed", entityType: "warranty_request", entityId: requestId, payload: { project_id: projectId, error: error instanceof Error ? error.message : "Routing failed" } })
+    await recordEvent({ orgId, eventType: "warranty_request_routing_failed", entityType: "warranty_request", entityId: requestId, payload: { project_id: projectId, trigger: mode, error: error instanceof Error ? error.message : "Routing failed" } })
     return request
   }
 }
@@ -682,7 +724,7 @@ async function createRequestWithClient(input: WarrantyRequestInput, context: { s
   await attachRequestPhotos(context.supabase, context.orgId, String(result.data.id), parsed.photo_file_ids ?? [], context.userId)
   await recordEvent({ orgId: context.orgId, eventType: "warranty_request_created", entityType: "warranty_request", entityId: String(result.data.id), payload: { project_id: parsed.project_id, title: parsed.title, source: context.source } })
   await recordAudit({ orgId: context.orgId, actorId: context.userId ?? undefined, action: "insert", entityType: "warranty_request", entityId: String(result.data.id), after: result.data })
-  return mapWarranty(await routeNewWarrantyRequest(context.supabase, context.orgId, result.data))
+  return mapWarranty(await routeWarrantyRequest(context.supabase, context.orgId, result.data, "created"))
 }
 
 export async function listWarrantyRequests(projectId: string, orgId?: string) {
@@ -775,7 +817,10 @@ export async function updateWarrantyRequest({ requestId, input, orgId }: { reque
   const updatedRow = data as unknown as Record<string, unknown>
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_request_updated", entityType: "warranty_request", entityId: requestId, payload: { project_id: current.project_id, status: updatedRow.status } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_request", entityId: requestId, before: existing as unknown as Record<string, unknown>, after: updatedRow })
-  const updated = mapWarranty(updatedRow)
+  const reclassified = (parsed.severity !== undefined && parsed.severity !== current.severity)
+    || (parsed.category !== undefined && parsed.category !== current.category)
+    || (parsed.cost_code_id !== undefined && parsed.cost_code_id !== current.cost_code_id)
+  const updated = mapWarranty(reclassified && !reassigned ? await routeWarrantyRequest(supabase, resolvedOrgId, updatedRow, "reclassified") : updatedRow)
   if (reassigned) {
     await recordEvent({ orgId: resolvedOrgId, eventType: overridesRule ? "warranty_request_routing_overridden" : "warranty_request_reassigned", entityType: "warranty_request", entityId: requestId, payload: { project_id: current.project_id, from_user_id: current.assigned_user_id, to_user_id: updated.assigned_user_id, from_company_id: current.assigned_company_id, to_company_id: updated.assigned_company_id, overridden_rule_id: overridesRule ? priorRouting?.rule_id ?? null : null, reason: overrideReason } })
     if (updated.assigned_user_id && updated.assigned_user_id !== current.assigned_user_id && updated.assigned_user_id !== userId) {
@@ -830,6 +875,7 @@ export type WarrantySlaFilter =
   | "first_response_breached"
   | "first_response_due_soon"
   | "awaiting_first_response"
+  | "sent_back"
 
 export async function listWarrantyRequestsForOrg(params: { orgId?: string; status?: string[]; severity?: string[]; communityId?: string; divisionId?: string; assignedUserId?: string; companyId?: string; coverageStatus?: string[]; slaState?: WarrantySlaFilter; search?: string; page?: number; pageSize?: number } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
@@ -862,6 +908,8 @@ export async function listWarrantyRequestsForOrg(params: { orgId?: string; statu
   if (params.slaState === "first_response_breached") query = query.is("first_responded_at", null).lt("first_response_due_at", nowIso).in("status", openStatuses)
   if (params.slaState === "first_response_due_soon") query = query.is("first_responded_at", null).gte("first_response_due_at", nowIso).lte("first_response_due_at", new Date(Date.now() + 12 * 3_600_000).toISOString()).in("status", openStatuses)
   if (params.slaState === "awaiting_first_response") query = query.is("first_responded_at", null).in("status", openStatuses)
+  // Work the office refused to accept: owed a corrective visit until a new completion comes in.
+  if (params.slaState === "sent_back") query = query.eq("metadata->>sent_back", "true").in("status", openStatuses)
   if (search) {
     // Filter-only aliases keep display relationships intact when another field matches.
     query = query.filter("search_home.name", "imatch", search)
@@ -909,7 +957,8 @@ async function loadVisit(supabase: SupabaseClient, orgId: string, visitId: strin
   if (error || !data) throw new Error("Warranty visit not found")
   const revision = warrantyRecordRevisionSchema.safeParse(data)
   if (!revision.success) throw new Error("Warranty visit revision is unavailable; refresh before making changes")
-  return { ...mapVisit(data as unknown as Record<string, unknown>), updated_at: revision.data.updated_at }
+  const raw = data as unknown as Record<string, unknown>
+  return { ...mapVisit(raw), completed_by: typeof raw.completed_by === "string" ? raw.completed_by : null, updated_at: revision.data.updated_at }
 }
 
 async function loadWarrantyRequest(supabase: SupabaseClient, orgId: string, requestId: string, projectId: string) {
@@ -1033,19 +1082,23 @@ const DOUBLE_BOOKING_VIOLATION = "23P01"
 export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & { allow_conflict?: boolean; conflict_reason?: string | null }, orgId?: string) {
   const parsed = warrantyVisitScheduleSchema.parse(input)
   const { allow_conflict: allowConflict, conflict_reason: conflictReason } = warrantyScheduleOverrideSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const { data: requestRow, error: requestError } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).maybeSingle()
   if (requestError) throw new Error(`Unable to read warranty request: ${requestError.message}`)
   if (!requestRow) throw new Error("Warranty request not found")
   const request = mapWarranty(requestRow as unknown as Record<string, unknown>)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, request.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, request.project_id, "warranty.write")
   const assigneeId = parsed.assignee_kind === "tech" ? parsed.assigned_user_id : parsed.assigned_company_id
   const candidates = assigneeId
     ? await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end }, { firstOnly: true })
     : []
   const [conflict] = findOverlappingVisits(candidates, { window_start: parsed.window_start, window_end: parsed.window_end })
   if (conflict && !allowConflict) throw new Error(VISIT_DOUBLE_BOOKED)
+  // Double-booking is a dispatch exception: the reason is required by the schema, the authority here.
+  if (conflict) await requirePermission("warranty.manage", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const timeZone = await loadWarrantyHomeTimeZone(supabase, resolvedOrgId, request.project_id)
   const { data: last } = await supabase.from("warranty_service_visits").select("visit_number").eq("org_id", resolvedOrgId).eq("request_id", parsed.request_id).order("visit_number", { ascending: false }).limit(1).maybeSingle()
   const { data, error } = await supabase.from("warranty_service_visits").insert({
@@ -1087,12 +1140,67 @@ export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & 
   return visit
 }
 
+/**
+ * Hands a scheduled visit to another technician or trade. The window stays; the
+ * new owner is conflict-checked like any booking, an override needs the same
+ * authority and a reason, and the visit keeps every earlier owner in its
+ * assignment history with who moved it and why. Both owners are told.
+ */
+export async function reassignWarrantyVisit(input: WarrantyVisitReassignInput, orgId?: string) {
+  const parsed = warrantyVisitReassignSchema.parse(input)
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
+  const existing = await loadVisit(supabase, resolvedOrgId, parsed.visit_id)
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.request_id, existing.project_id)
+  if (!["scheduled", "confirmed"].includes(existing.status)) throw new Error("Only scheduled or confirmed visits can be handed off")
+  const assigneeId = parsed.assignee_kind === "tech" ? parsed.assigned_user_id : parsed.assigned_company_id
+  if (!assigneeId) throw new Error("Choose who takes the visit")
+  if (existing.assignee_kind === parsed.assignee_kind && (parsed.assignee_kind === "tech" ? existing.assigned_user_id : existing.assigned_company_id) === assigneeId) throw new Error("The visit already belongs to this assignee")
+  const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: existing.window_start, end: existing.window_end }, { firstOnly: true, excludeVisitId: existing.id })
+  const [conflict] = findOverlappingVisits(candidates, { window_start: existing.window_start, window_end: existing.window_end, exclude_visit_id: existing.id })
+  if (conflict && !parsed.allow_conflict) throw new Error(VISIT_DOUBLE_BOOKED)
+  if (conflict) await requirePermission("warranty.manage", { supabase: callerClient, orgId: resolvedOrgId, userId })
+  const request = await loadWarrantyRequest(supabase, resolvedOrgId, existing.request_id, existing.project_id)
+  const now = new Date().toISOString()
+  const history = Array.isArray(existing.metadata.assignment_history) ? existing.metadata.assignment_history : []
+  const entry = { assignee_kind: existing.assignee_kind, assigned_user_id: existing.assigned_user_id, assigned_company_id: existing.assigned_company_id, handed_off_to_kind: parsed.assignee_kind, handed_off_to_id: assigneeId, handed_off_by: userId, handed_off_at: now, reason: parsed.reason }
+  const { data, error } = await supabase.from("warranty_service_visits").update({
+    assignee_kind: parsed.assignee_kind,
+    assigned_user_id: parsed.assignee_kind === "tech" ? assigneeId : null,
+    assigned_company_id: parsed.assignee_kind === "trade" ? assigneeId : null,
+    status: "scheduled", confirmed_at: null, overlap_allowed: Boolean(conflict),
+    metadata: mergeMetadata(existing.metadata, {
+      assignment_history: [...history, entry],
+      ...(conflict ? { overlap_reason: parsed.conflict_reason ?? null, overlap_with_visit_id: conflict.visit_id, overlap_allowed_by: userId, overlap_allowed_at: now } : { overlap_reason: null, overlap_with_visit_id: null, overlap_allowed_by: null, overlap_allowed_at: null }),
+    }),
+  }).eq("org_id", resolvedOrgId).eq("id", parsed.visit_id).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  if (error?.code === DOUBLE_BOOKING_VIOLATION) throw new Error(VISIT_DOUBLE_BOOKED)
+  if (error || !data) throw new Error(`Warranty visit changed concurrently or could not be handed off: ${error?.message ?? "Refresh before retrying"}`)
+  const visit = mapVisit(data as unknown as Record<string, unknown>)
+  const owner = await supabase.from("warranty_requests").update(parsed.assignee_kind === "tech" ? { assigned_user_id: assigneeId } : { assigned_company_id: assigneeId, dispatched_at: now })
+    .eq("org_id", resolvedOrgId).eq("id", existing.request_id).eq("project_id", existing.project_id).select("id").single()
+  if (owner.error || !owner.data) throw new Error(`Warranty visit was handed off but the request owner could not be saved: ${owner.error?.message ?? "Request changed"}`)
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_service_visit", entityId: parsed.visit_id, before: existing as unknown as Record<string, unknown>, after: data as unknown as Record<string, unknown> })
+  // The new owner is told it is theirs and the old one that it is not; the homeowner's time did not move.
+  const [incoming, outgoing] = await Promise.all([
+    sendWarrantyVisitNotices({ supabase, orgId: resolvedOrgId, request, visit, kind: "scheduled", note: parsed.reason, actorId: userId, audiences: ["trade", "tech"] }).catch(() => null),
+    sendWarrantyVisitNotices({ supabase, orgId: resolvedOrgId, request, visit: existing, kind: "canceled", note: parsed.reason, actorId: userId, audiences: ["trade", "tech"] }).catch(() => null),
+  ])
+  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_visit_reassigned", entityType: "warranty_service_visit", entityId: parsed.visit_id, payload: { request_id: existing.request_id, project_id: existing.project_id, from_kind: existing.assignee_kind, from_user_id: existing.assigned_user_id, from_company_id: existing.assigned_company_id, to_kind: visit.assignee_kind, to_user_id: visit.assigned_user_id, to_company_id: visit.assigned_company_id, reason: parsed.reason, overlap_allowed: Boolean(conflict), notices: { incoming, outgoing } } })
+  return visit
+}
+
 export async function rescheduleWarrantyVisit(input: unknown, orgId?: string) {
   const parsed = warrantyVisitRescheduleSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const existing = await loadVisit(supabase, resolvedOrgId, parsed.visit_id)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.request_id, existing.project_id)
   if (["completed","canceled"].includes(existing.status)) throw new Error("Completed or canceled visits cannot be rescheduled")
   const assigneeId = existing.assignee_kind === "tech" ? existing.assigned_user_id : existing.assigned_company_id
@@ -1118,10 +1226,12 @@ export async function rescheduleWarrantyVisit(input: unknown, orgId?: string) {
 }
 
 export async function cancelWarrantyVisit(visitId: string, note?: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const existing = await loadVisit(supabase, resolvedOrgId, visitId)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.request_id, existing.project_id)
   if (existing.status === "completed") throw new Error("Completed visits cannot be canceled")
   const request = await loadWarrantyRequest(supabase, resolvedOrgId, existing.request_id, existing.project_id)
@@ -1141,10 +1251,10 @@ async function loadWarrantyRequestState(supabase: SupabaseClient, orgId: string,
   return { status: String(data.status), metadata: mergeMetadata(data.metadata, {}), updated_at: data.updated_at }
 }
 
-async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput, context: { supabase: SupabaseClient; orgId: string; userId: string | null; portalCompanyId?: string; portalTokenId?: string; requireTransaction?: boolean; expectedVisitAt?: string }) {
+async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput, context: { supabase: SupabaseClient; authClient?: SupabaseClient; orgId: string; userId: string | null; portalCompanyId?: string; portalTokenId?: string; requireTransaction?: boolean; expectedVisitAt?: string }) {
   const parsed = warrantyVisitCompleteWithCostSchema.parse(input)
   const existing = await loadVisit(context.supabase, context.orgId, parsed.visit_id)
-  if (context.userId) await authorizeWarrantyHome({ ...context, userId: context.userId }, existing.project_id, "warranty.write")
+  if (context.userId) await authorizeWarrantyHome({ supabase: context.authClient ?? context.supabase, orgId: context.orgId, userId: context.userId }, existing.project_id, "warranty.write")
   await assertWarrantyRequestHome(context.supabase, context.orgId, existing.request_id, existing.project_id)
   if (context.portalCompanyId && (existing.assignee_kind !== "trade" || existing.assigned_company_id !== context.portalCompanyId)) throw new Error("Warranty visit not found")
   if (context.userId && !context.portalCompanyId) {
@@ -1154,6 +1264,12 @@ async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput
       await commitOfficeWarrantyCompletion({ supabase: transactionClient, orgId: context.orgId, actorId: context.userId,
         visitId: existing.id, requestId: existing.request_id, expectedVisitAt: context.expectedVisitAt ?? existing.updated_at,
         expectedRequestAt: requestState.updated_at, completion: parsed })
+      // The sealed completion is a new completion: the request is no longer waiting on a corrective visit.
+      const after = await loadWarrantyRequestState(context.supabase, context.orgId, existing.request_id, existing.project_id)
+      if (after.metadata.sent_back === true) {
+        const cleared = await context.supabase.from("warranty_requests").update({ metadata: mergeMetadata(after.metadata, { sent_back: null }) }).eq("org_id", context.orgId).eq("id", existing.request_id).eq("project_id", existing.project_id).eq("updated_at", after.updated_at)
+        if (cleared.error) throw new Error(`Warranty visit was completed but the sent-back flag could not be cleared: ${cleared.error.message}`)
+      }
       return loadVisit(context.supabase, context.orgId, existing.id)
     }
   }
@@ -1185,10 +1301,10 @@ async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput
   }
   const requestMetadata = requestState.metadata
   const requestUpdate = pendingVerification
-    ? { status: "in_progress", metadata: mergeMetadata(requestMetadata, { pending_verification: true, completed_visit_id: parsed.visit_id }) }
+    ? { status: "in_progress", metadata: mergeMetadata(requestMetadata, { pending_verification: true, completed_visit_id: parsed.visit_id, sent_back: null }) }
     : parsed.outcome === "resolved"
-      ? { status: "resolved", closed_at: now, metadata: mergeMetadata(requestMetadata, { pending_verification: false, completed_visit_id: parsed.visit_id }) }
-      : { status: "in_progress", metadata: mergeMetadata(requestMetadata, { completed_visit_id: parsed.visit_id }) }
+      ? { status: "resolved", closed_at: now, metadata: mergeMetadata(requestMetadata, { pending_verification: false, completed_visit_id: parsed.visit_id, sent_back: null }) }
+      : { status: "in_progress", metadata: mergeMetadata(requestMetadata, { completed_visit_id: parsed.visit_id, sent_back: null }) }
   const requestResult = await context.supabase.from("warranty_requests").update(requestUpdate).eq("org_id", context.orgId).eq("id", existing.request_id).eq("project_id", existing.project_id).eq("updated_at", requestState.updated_at).eq("status", requestState.status).select("id").single()
   if (requestResult.error || !requestResult.data) throw new Error(`Warranty visit was completed but request status could not be saved: ${requestResult.error?.message ?? "Request changed"}`)
   await recordEvent({ orgId: context.orgId, eventType: "warranty_visit_completed", entityType: "warranty_service_visit", entityId: parsed.visit_id, payload: { request_id: existing.request_id, outcome: parsed.outcome, pending_verification: pendingVerification, internal_cost_cents: cost.internal_total_cents } })
@@ -1199,7 +1315,8 @@ async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput
 export async function completeWarrantyVisit(input: WarrantyVisitCompleteWithCostInput, orgId?: string, options: { requireTransaction?: boolean; expectedVisitAt?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
-  return completeVisitWithClient(input, { supabase, orgId: resolvedOrgId, userId, requireTransaction: options.requireTransaction, expectedVisitAt: options.expectedVisitAt })
+  // Members cannot write the warranty tables directly; the home check inside is the gate.
+  return completeVisitWithClient(input, { supabase: createServiceSupabaseClient(), authClient: supabase, orgId: resolvedOrgId, userId, requireTransaction: options.requireTransaction, expectedVisitAt: options.expectedVisitAt })
 }
 
 /**
@@ -1242,12 +1359,20 @@ export async function listWarrantyVisitsPendingVerification(params: { divisionId
 }
 
 export async function verifyWarrantyVisit(visitId: string, resolutionNote?: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const visit = await loadVisit(supabase, resolvedOrgId, visitId)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, visit.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, visit.project_id, "warranty.write")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, visit.request_id, visit.project_id)
   if (visit.status !== "completed") throw new Error("Only completed visits can be verified")
+  // Verification is a second pair of eyes: whoever recorded the work done cannot also accept it.
+  if (visit.completed_by === userId) {
+    await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_visit_verification_refused", entityType: "warranty_service_visit", entityId: visitId, payload: { request_id: visit.request_id, project_id: visit.project_id, reason: "same_person", attempted_by: userId } })
+    await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_service_visit", entityId: visitId, before: { completed_by: visit.completed_by }, after: { verification_refused: "same_person" }, source: "warranty_verification_refused" })
+    throw new Error("A second person must verify this work: you recorded it as completed")
+  }
   const now = new Date().toISOString(), resolved = visit.outcome === "resolved"
   const requestState = await loadWarrantyRequestState(supabase, resolvedOrgId, visit.request_id, visit.project_id)
   const requestMetadata = requestState.metadata
@@ -1275,10 +1400,12 @@ export async function verifyWarrantyVisit(visitId: string, resolutionNote?: stri
  */
 export async function rejectWarrantyVisitCompletion(visitId: string, reason: string, orgId?: string) {
   const note = warrantyRejectionReasonSchema.parse(reason)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.write", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const visit = await loadVisit(supabase, resolvedOrgId, visitId)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, visit.project_id, "warranty.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, visit.project_id, "warranty.write")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, visit.request_id, visit.project_id)
   if (visit.status !== "completed") throw new Error("Only completed visits can be sent back")
   const requestState = await loadWarrantyRequestState(supabase, resolvedOrgId, visit.request_id, visit.project_id)
@@ -1288,7 +1415,7 @@ export async function rejectWarrantyVisitCompletion(visitId: string, reason: str
   const { data: updatedRequest, error } = await supabase.from("warranty_requests").update({
     status: "in_progress",
     closed_at: null,
-    metadata: mergeMetadata(requestMetadata, { pending_verification: false, rejected_visit_id: visitId, rejected_by: userId, rejected_at: now, rejection_reason: note }),
+    metadata: mergeMetadata(requestMetadata, { pending_verification: false, sent_back: true, rejected_visit_id: visitId, rejected_by: userId, rejected_at: now, rejection_reason: note }),
   }).eq("org_id", resolvedOrgId).eq("id", visit.request_id).eq("project_id", visit.project_id).eq("updated_at", requestState.updated_at).eq("status", requestState.status).select("id").maybeSingle()
   if (error) throw new Error(`Failed to send the visit back: ${error.message}`)
   if (!updatedRequest) throw new Error("The warranty request changed while you were reviewing it; refresh before sending the visit back")
@@ -1452,9 +1579,11 @@ export async function listWarrantyBackcharges(params: { status?: string[]; proje
 export async function createWarrantyBackcharge(input: WarrantyBackchargeInput, orgId?: string) {
   const parsed = warrantyBackchargeInputSchema.parse(input)
   validateWarrantyCostBasis(parsed.amount_cents, parsed.cost_basis)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId })
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, parsed.project_id, "warranty.backcharge")
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.backcharge", { supabase: callerClient, orgId: resolvedOrgId, userId })
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, parsed.project_id, "warranty.backcharge")
   const [requestResult, companyResult, commitmentResult] = await Promise.all([
     supabase.from("warranty_requests").select("id,project_id").eq("org_id", resolvedOrgId).eq("id", parsed.warranty_request_id).maybeSingle(),
     supabase.from("companies").select("id").eq("org_id", resolvedOrgId).eq("id", parsed.company_id).maybeSingle(),
@@ -1482,6 +1611,7 @@ export async function createWarrantyBackcharge(input: WarrantyBackchargeInput, o
     attempt += 1
   }
   if (!created) throw new Error("Failed to allocate a warranty backcharge number")
+  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_created", entityType: "warranty_backcharge", entityId: String(created.id), payload: { project_id: parsed.project_id, warranty_request_id: parsed.warranty_request_id, company_id: parsed.company_id, amount_cents: parsed.amount_cents } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "warranty_backcharge", entityId: String(created.id), after: created })
   return mapBackcharge(created)
 }
@@ -1540,15 +1670,17 @@ async function findBackchargeBill(supabase: SupabaseClient, orgId: string, backc
 }
 
 export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: string }, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
   await Promise.all([
-    requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId }),
-    requirePermission("bill.write", { supabase, orgId: resolvedOrgId, userId }),
+    requirePermission("warranty.backcharge", { supabase: callerClient, orgId: resolvedOrgId, userId }),
+    requirePermission("bill.write", { supabase: callerClient, orgId: resolvedOrgId, userId }),
   ])
   const { dto: existing, row } = await loadBackcharge(supabase, resolvedOrgId, backchargeId)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
   assertBackchargeTransition(existing.status, "issued")
   const { count: payableCount, error: payableError } = await supabase.from("vendor_bills").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("company_id", existing.company_id)
   if (payableError) throw new Error(`Unable to check the trade's AP history: ${payableError.message}`)
@@ -1562,7 +1694,7 @@ export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: 
     creditId = await findBackchargeBill(supabase, resolvedOrgId, existing, billNumber) ?? (await createProjectVendorCredit({
       projectId: existing.project_id, companyId: existing.company_id, commitmentId: existing.commitment_id,
       billNumber, billDate: new Date().toISOString().slice(0, 10),
-      description: existing.reason, lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: -item.amount_cents, cost_code_id: existing.cost_code_id })),
+      description: existing.reason, approvalAuthority: "warranty.backcharge", lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: -item.amount_cents, cost_code_id: existing.cost_code_id })),
       metadata: { origin: "warranty_backcharge", warranty_backcharge_id: existing.id, warranty_request_id: existing.warranty_request_id, commitment_id: existing.commitment_id },
     }, resolvedOrgId)).id
   } catch (creditError) {
@@ -1583,10 +1715,12 @@ export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: 
 }
 
 export async function disputeWarrantyBackcharge({ backchargeId, note }: { backchargeId: string; note: string }, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase: callerClient, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.backcharge", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const { dto: existing, row } = await loadBackcharge(supabase, resolvedOrgId, backchargeId)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
   assertBackchargeTransition(existing.status, "disputed")
   const { data, error } = await supabase.from("warranty_backcharges").update({ status: "disputed", disputed_at: new Date().toISOString(), dispute_note: note.trim() }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id).select(BACKCHARGE_SELECT).single()
@@ -1596,20 +1730,30 @@ export async function disputeWarrantyBackcharge({ backchargeId, note }: { backch
   return mapBackcharge(data as unknown as Record<string, unknown>)
 }
 
-export async function resolveWarrantyBackcharge({ backchargeId, resolution, recoveredCents, note }: { backchargeId: string; resolution: "recovered" | "written_off" | "waived"; recoveredCents?: number; note?: string }, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId })
+export async function resolveWarrantyBackcharge({ backchargeId, resolution, recoveredCents, note }: { backchargeId: string; resolution: "recovered" | "settled" | "written_off" | "waived"; recoveredCents?: number; note?: string }, orgId?: string) {
+  const { supabase: callerClient, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
+  // Members cannot write the warranty tables directly (migration 20261018150000); every write below runs after the permission and home checks.
+  const supabase = createServiceSupabaseClient()
+  await requirePermission("warranty.backcharge", { supabase: callerClient, orgId: resolvedOrgId, userId })
   const { dto: existing, row } = await loadBackcharge(supabase, resolvedOrgId, backchargeId)
-  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
+  await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
   await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
-  assertBackchargeTransition(existing.status, resolution)
+  // A settlement is a recovery: the book status is `recovered`, the amount actually collected is
+  // `recovered_cents`, and the part given up is the reversing bill and the settlement record.
+  const settled = resolution === "settled"
+  const targetStatus: BackchargeStatus = settled ? "recovered" : resolution
+  assertBackchargeTransition(existing.status, targetStatus)
   if (resolution !== "recovered" && !note?.trim()) throw new Error("A resolution note is required")
   const recovered = recoveredCents ?? (resolution === "recovered" ? existing.amount_cents : existing.recovered_cents)
   if (!Number.isInteger(recovered) || recovered < existing.recovered_cents || recovered > existing.amount_cents) throw new Error("Recovered amount is invalid")
-  if (resolution === "recovered" && recovered !== existing.amount_cents) throw new Error("A recovered backcharge must be fully recovered")
-  const reversing = resolution !== "recovered" && Boolean(existing.vendor_credit_bill_id)
-  if (reversing) await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
-  const claim = await claimBackchargeTransition(supabase, resolvedOrgId, existing, mergeMetadata(row.metadata, {}), resolution)
+  if (resolution === "recovered" && recovered !== existing.amount_cents) throw new Error("A recovered backcharge must be fully recovered; settle for less instead")
+  if (settled && (recovered <= 0 || recovered >= existing.amount_cents)) throw new Error("A settlement must be more than zero and less than the issued amount")
+  // Giving up part of a claim is a decision above whoever issued it.
+  if (settled) await requirePermission("warranty.manage", { supabase: callerClient, orgId: resolvedOrgId, userId })
+  const writtenOffCents = settled ? existing.amount_cents - recovered : existing.amount_cents
+  const reversing = (settled || resolution !== "recovered") && Boolean(existing.vendor_credit_bill_id)
+  if (reversing) await authorizeWarrantyHome({ supabase: callerClient, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
+  const claim = await claimBackchargeTransition(supabase, resolvedOrgId, existing, mergeMetadata(row.metadata, {}), targetStatus)
   const metadata = claim.metadata
   // Writing off or waiving does not un-happen the credit. Deleting the Arc row
   // stranded a live VendorCredit in the accounting provider with nothing
@@ -1619,34 +1763,41 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
   if (reversing && !reversalBillId) {
     try {
       const reversalNumber = `WB-${existing.backcharge_number}-R`
-      reversalBillId = await findBackchargeBill(supabase, resolvedOrgId, existing, reversalNumber) ?? (await createProjectVendorBill({
+      reversalBillId = await findBackchargeBill(supabase, resolvedOrgId, existing, reversalNumber) ?? (await runWithServiceOrgContext({ supabase, orgId: resolvedOrgId, userId, productTier }, () => createProjectVendorBill({
         projectId: existing.project_id,
         input: {
           company_id: existing.company_id,
           commitment_id: existing.commitment_id,
           bill_number: reversalNumber,
           bill_date: new Date().toISOString().slice(0, 10),
-          total_cents: existing.amount_cents,
-          description: `Reversal of warranty backcharge WB-${existing.backcharge_number} (${resolution.replace("_", " ")})`,
-          actual_lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: item.amount_cents, cost_code_id: existing.cost_code_id })),
+          total_cents: writtenOffCents,
+          description: settled
+            ? `Reversal of the unrecovered part of warranty backcharge WB-${existing.backcharge_number} (settled for less)`
+            : `Reversal of warranty backcharge WB-${existing.backcharge_number} (${resolution.replace("_", " ")})`,
+          actual_lines: settled
+            ? [{ description: `Settlement remainder of WB-${existing.backcharge_number}`, amount_cents: writtenOffCents, cost_code_id: existing.cost_code_id, project_id: existing.project_id }]
+            : existing.cost_basis.map((item) => ({ description: item.label, amount_cents: item.amount_cents, cost_code_id: existing.cost_code_id, project_id: existing.project_id })),
         },
         orgId: resolvedOrgId,
-      })).id
+      }))).id
     } catch (reversalError) {
       await claim.release()
       throw reversalError
     }
   }
   const { data, error } = await supabase.from("warranty_backcharges").update({
-    status: resolution, recovered_cents: recovered, resolved_at: new Date().toISOString(),
+    status: targetStatus, recovered_cents: recovered, resolved_at: new Date().toISOString(),
     notes: note?.trim() ?? existing.notes,
     vendor_credit_bill_id: existing.vendor_credit_bill_id,
-    metadata: mergeMetadata(metadata, { reversal_bill_id: reversalBillId, transition_claimed_at: null, transition_target: null }),
+    metadata: mergeMetadata(metadata, {
+      reversal_bill_id: reversalBillId, transition_claimed_at: null, transition_target: null,
+      ...(settled ? { settlement: { settled_cents: recovered, written_off_cents: writtenOffCents, reason: note?.trim() ?? null, settled_by: userId, settled_at: new Date().toISOString() } } : {}),
+    }),
   }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id)
     .eq("status", existing.status).eq("metadata->>transition_claimed_at", claim.claimedAt).select(BACKCHARGE_SELECT).maybeSingle()
   if (error) throw new Error(`Failed to resolve warranty backcharge: ${error.message}`)
   if (!data) throw new Error("The backcharge changed while it was being resolved; refresh and reconcile its reversing bill")
-  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_resolved", entityType: "warranty_backcharge", entityId: backchargeId, payload: { resolution, recovered_cents: recovered, reversal_bill_id: reversalBillId } })
+  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_resolved", entityType: "warranty_backcharge", entityId: backchargeId, payload: { resolution, recovered_cents: recovered, written_off_cents: settled ? writtenOffCents : undefined, reversal_bill_id: reversalBillId } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_backcharge", entityId: backchargeId, before: row, after: data })
   return mapBackcharge(data as unknown as Record<string, unknown>)
 }

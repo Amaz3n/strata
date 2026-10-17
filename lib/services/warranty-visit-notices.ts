@@ -60,8 +60,11 @@ export async function sendWarrantyVisitNotices(input: {
   previousWindow?: { window_start: string; window_end: string } | null
   note?: string | null
   actorId: string | null
+  /** Who to tell; a hand-off tells the two assignees and leaves the homeowner alone. Everyone by default. */
+  audiences?: Array<"buyer" | "trade" | "tech">
 }): Promise<WarrantyVisitNoticeResult> {
   const { supabase, orgId, request, visit, kind } = input
+  const audiences = input.audiences ?? ["buyer", "trade", "tech"]
   const timeZone = await loadWarrantyHomeTimeZone(supabase, orgId, visit.project_id)
   const windowText = formatWarrantyVisitWindow(visit.window_start, visit.window_end, timeZone)
   const previousWindowText = input.previousWindow ? formatWarrantyVisitWindow(input.previousWindow.window_start, input.previousWindow.window_end, timeZone) : null
@@ -71,7 +74,7 @@ export async function sendWarrantyVisitNotices(input: {
   const subject = kind === "canceled" ? `Warranty appointment canceled — ${request.title}` : kind === "rescheduled" ? `Warranty appointment moved — ${request.title}` : `Warranty appointment — ${request.title}`
 
   const emailBuyer = async () => {
-    if (!request.requested_by) return false
+    if (!audiences.includes("buyer") || !request.requested_by) return false
     const contact = await fetchContactEmail(supabase, request.requested_by)
     if (!contact?.email) return false
     const portal = await ensurePortalLink({ supabase, orgId, projectId: visit.project_id, portalType: "client", contactId: request.requested_by, createdBy: input.actorId, capabilities: { can_view_warranty: true }, fallbackPath: "/" })
@@ -84,7 +87,7 @@ export async function sendWarrantyVisitNotices(input: {
   }
 
   const emailTrade = async () => {
-    if (visit.assignee_kind !== "trade" || !visit.assigned_company_id) return 0
+    if (!audiences.includes("trade") || visit.assignee_kind !== "trade" || !visit.assigned_company_id) return 0
     const [contacts, portal] = await Promise.all([
       fetchCompanyContacts(supabase, orgId, visit.assigned_company_id),
       ensurePortalLink({ supabase, orgId, projectId: visit.project_id, portalType: "sub", companyId: visit.assigned_company_id, createdBy: input.actorId, capabilities: { can_view_punch_items: true }, fallbackPath: "/s" }),
@@ -99,7 +102,7 @@ export async function sendWarrantyVisitNotices(input: {
   }
 
   const notifyTech = async () => {
-    if (!visit.assigned_user_id) return false
+    if (!audiences.includes("tech") || !visit.assigned_user_id) return false
     const copy = STAFF_COPY[kind]
     await new NotificationService().createAndQueue({
       orgId, userId: visit.assigned_user_id, type: copy.type, title: copy.title,

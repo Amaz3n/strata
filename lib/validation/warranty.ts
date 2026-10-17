@@ -161,12 +161,15 @@ export const warrantyBackchargeDisputeSchema = z.object({
 
 export const warrantyBackchargeResolveSchema = z.object({
   backcharge_id: z.string().uuid(),
-  resolution: z.enum(["recovered", "written_off", "waived"]),
+  resolution: z.enum(["recovered", "settled", "written_off", "waived"]),
   recovered_cents: z.number().int().nonnegative().optional(),
   note: z.string().trim().min(1).max(4000).optional(),
 }).superRefine((value, ctx) => {
   if (value.resolution !== "recovered" && !value.note) {
     ctx.addIssue({ code: "custom", path: ["note"], message: "A resolution note is required" })
+  }
+  if (value.resolution === "settled" && !(value.recovered_cents && value.recovered_cents > 0)) {
+    ctx.addIssue({ code: "custom", path: ["recovered_cents"], message: "State the amount the trade agreed to pay" })
   }
 })
 

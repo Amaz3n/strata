@@ -40,7 +40,7 @@ const COMPANY_B = "00000000-0000-4000-8000-0000000000b2"
 const emptyInventory = {
   land: { ledgerCents: 0, subledgerCents: 0, exceptions: [], holdings: [] },
   completedHomes: { ledgerCents: 0, heldCents: 0, homes: [], exceptions: [], holdings: [] },
-  warrantyReserve: { ledgerCents: 0, subledgerCents: 0 },
+  warrantyReserve: { ledgerCents: 0, subledgerCents: 0, recoveryLedgerCents: 0, recoverySubledgerCents: 0 },
 }
 
 function tieOuts({ inventory = emptyInventory, impairment = { ledgerCents: 0, subledgerCents: 0 }, positions = [], tables = {}, balances = [] } = {}) {
@@ -66,11 +66,12 @@ test("land, completed homes, warranty reserve, impairment and intercompany each 
   const failing = {
     land_inventory_control: { inventory: { ...emptyInventory, land: { ledgerCents: 900, subledgerCents: 1000, exceptions: [{ lotId: "lot", lotNumber: "7", ledgerCents: 900, basisCents: 1000 }], holdings: [] } } },
     completed_homes_control: { inventory: { ...emptyInventory, completedHomes: { ledgerCents: 500, heldCents: 0, homes: [], exceptions: [{ projectId: "home", cents: 500 }], holdings: [] } } },
-    warranty_reserve_control: { inventory: { ...emptyInventory, warrantyReserve: { ledgerCents: 100, subledgerCents: 90 } } },
+    warranty_reserve_control: { inventory: { ...emptyInventory, warrantyReserve: { ledgerCents: 100, subledgerCents: 90, recoveryLedgerCents: 0, recoverySubledgerCents: 0 } } },
+    warranty_reserve_control_recovery: { code: "warranty_reserve_control", inventory: { ...emptyInventory, warrantyReserve: { ledgerCents: 0, subledgerCents: 0, recoveryLedgerCents: 250, recoverySubledgerCents: 0 } } },
     impairment_control: { impairment: { ledgerCents: 700, subledgerCents: 0 } },
     intercompany_control: { positions: [{ entityId: COMPANY_A, counterpartyId: COMPANY_B, dueFromCents: 1000, dueToCents: 0 }, { entityId: COMPANY_B, counterpartyId: COMPANY_A, dueFromCents: 0, dueToCents: 900 }] },
   }
-  for (const [code, scenario] of Object.entries(failing)) {
+  for (const [name, { code = name, ...scenario }] of Object.entries(failing)) {
     const rows = await tieOuts(scenario)
     assert.deepEqual(
       Object.entries(statuses(rows)).filter(([, status]) => status === "failed").map(([name]) => name),

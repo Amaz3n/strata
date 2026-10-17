@@ -5,6 +5,7 @@ import { notFound } from "next/navigation"
 
 import { importNavigationSchema } from "@/lib/validation/import-navigation"
 import { ImportWorkspace } from "@/components/admin/import-workspace"
+import { InstalledBaseReconciliation, InstalledBaseReconciliationSkeleton } from "@/components/warranty/installed-base-reconciliation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireOrgContext } from "@/lib/services/context"
 import { IMPORTER_DEFINITIONS, IMPORTER_KEYS, type ImporterKey } from "@/lib/services/import-definitions"
@@ -20,10 +21,10 @@ async function OrgImporterPageContent({ params, searchParams }: { params: Promis
   const definition = IMPORTER_DEFINITIONS[importer]
   const navigation = importNavigationSchema.parse(query)
   const [batchesResult, detail] = await Promise.all([
-    listImportBatches({ importer, limit: 25, page: navigation.batchPage }),
+    listImportBatches({ importer, limit: 25, page: navigation.batchPage }, { expectedImporter: importer }),
     query.batch ? getImportBatch(query.batch, { limit: 500, page: navigation.rowPage, status: navigation.rowStatus }, { expectedImporter: importer }) : null,
   ])
-  return <PageLayout title={definition.label} breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Data imports", href: "/settings/imports" }, { label: definition.label }]}><ImportWorkspace orgId={orgId} importer={importer} label={definition.label} description={definition.description} columns={definition.columns} fileKinds={definition.fileKinds} batches={batchesResult.batches} batchPagination={batchesResult} workspaceHref={`/settings/imports/${importer}`} detail={detail} backHref="/settings/imports" previewAction={previewOrgImportAction} stageAction={stageOrgImportAction} patchAction={patchOrgImportRowAction} updateExistingAction={setOrgImportUpdateExistingAction} commitAction={commitOrgImportAction} discardAction={discardOrgImportAction} /></PageLayout>
+  return <PageLayout title={definition.label} breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Data imports", href: "/settings/imports" }, { label: definition.label }]}><ImportWorkspace orgId={orgId} importer={importer} label={definition.label} description={definition.description} columns={definition.columns} fileKinds={definition.fileKinds} batches={batchesResult.batches} batchPagination={batchesResult} workspaceHref={`/settings/imports/${importer}`} detail={detail} backHref="/settings/imports" previewAction={previewOrgImportAction} stageAction={stageOrgImportAction} patchAction={patchOrgImportRowAction} updateExistingAction={setOrgImportUpdateExistingAction} commitAction={commitOrgImportAction} discardAction={discardOrgImportAction} />{importer === "warranty_homes" ? <Suspense fallback={<InstalledBaseReconciliationSkeleton />}><InstalledBaseReconciliation /></Suspense> : null}</PageLayout>
 }
 
 export default function OrgImporterPage(props: Parameters<typeof OrgImporterPageContent>[0]) {

@@ -16,6 +16,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { agreementWriteAllowed } from "@/lib/services/price-book"
+import { commitInstalledHomes, reconcileInstalledWarrantyHomes, validateInstalledHomeRows } from "@/lib/services/warranty-installed-base"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import { recordAudit } from "@/lib/services/audit"
@@ -103,7 +104,8 @@ async function resolveImportContext(access: ImportAccess = {}, intent: "read" | 
   }
 
   const context = await requireOrgContext(access.orgId)
-  await requirePermission("import.manage", context)
+  // Warranty managers run the installed-base import without the broad import.manage grant.
+  await requirePermission(access.expectedImporter === "warranty_homes" ? "warranty.manage" : "import.manage", context)
   return { ...context, supabase: createServiceSupabaseClient(), platform: false, expectedImporter: access.expectedImporter }
 }
 
@@ -119,6 +121,7 @@ async function requireImporterPermission(importer: ImporterKey, context: Resolve
   if (importer === "option_catalog") await requirePermission("selections.catalog.manage", context)
   if (importer === "communities_lots") await requireAnyPermission(["community.write", "lot.write"], context)
   if (importer === "team") await requirePermission("members.manage", context)
+  if (importer === "warranty_homes") await requirePermission("warranty.manage", context)
 }
 
 function mapBatch(row: Record<string, unknown>): ImportBatchSummary {
@@ -580,6 +583,7 @@ export async function stageImportBatch(input: { importer: ImporterKey; csvText: 
     staged = await validateRows(input.importer, staged, resolved)
     if (input.importer === "open_wip") staged = await validateOpenWipCompanions(staged, resolved, contextPayload, input.onboardingRunId ?? null)
     if (input.importer === "communities_lots") staged = await validateLotPlanPins(staged, resolved)
+    if (input.importer === "warranty_homes") staged = await validateInstalledHomeRows(staged, resolved)
     await persistValidatedRows(resolved, batch.id, staged)
     const counts = rowCounts(staged)
     const report = { source_headers: headers, file_kind: contextPayload.file_kind ?? null, duplicate_rows: staged.filter((row) => row.issues.some((issue) => issue.code === "duplicate_natural_key")).length, unmatched_vendors: staged.filter((row) => row.issues.some((issue) => issue.code === "vendor_unmatched")).length }
@@ -607,6 +611,7 @@ export async function patchImportRow(input: { batchId: string; rowId: string; pa
   rows = input.skip ? rows : await validateRows(batch.importer as ImporterKey, rows, context)
   if (!input.skip && batch.importer === "open_wip") rows = await validateOpenWipCompanions(rows, context, batch.context ?? {}, batch.onboarding_run_id ?? null)
   if (!input.skip && batch.importer === "communities_lots") rows = await validateLotPlanPins(rows, context)
+  if (!input.skip && batch.importer === "warranty_homes") rows = await validateInstalledHomeRows(rows, context)
   await persistValidatedRows(context, input.batchId, rows)
   await refreshBatchCounts(context, input.batchId)
   return rows[0]
@@ -1107,6 +1112,7 @@ export async function commitImportBatch(batchId: string, access: ImportAccess = 
     else if (importer === "price_book") results = await commitPriceBook(rows, context)
     else if (importer === "communities_lots") results = await commitCommunitiesLots(rows, context, claimed.update_existing)
     else if (importer === "team") results = await commitTeam(rows, context)
+    else if (importer === "warranty_homes") results = await commitInstalledHomes(rows, context, batchId)
     else results = await commitOpenWip(rows, context, batchId, claimed.context ?? {}, fileKind, claimed.onboarding_run_id ?? null)
     for (let index = 0; index < rows.length; index += INSERT_CHUNK) {
       const chunk = rows.slice(index, index + INSERT_CHUNK)
@@ -1122,7 +1128,8 @@ export async function commitImportBatch(batchId: string, access: ImportAccess = 
     const committedCount = (actions.created ?? 0) + (actions.updated ?? 0)
     const skippedCount = (actions.skipped_existing ?? 0) + Number(claimed.skipped_count ?? 0)
     const committedAt = new Date().toISOString()
-    const { data: saved, error: saveError } = await context.supabase.from("import_batches").update({ status: "committed", committed_count: committedCount, skipped_count: skippedCount, committed_at: committedAt, report: { ...(claimed.report ?? {}), actions } }).eq("org_id", context.orgId).eq("id", batchId).select("*").single()
+    const reconciliation = importer === "warranty_homes" ? await reconcileInstalledWarrantyHomes(context, batchId) : null
+    const { data: saved, error: saveError } = await context.supabase.from("import_batches").update({ status: "committed", committed_count: committedCount, skipped_count: skippedCount, committed_at: committedAt, report: { ...(claimed.report ?? {}), actions, ...(reconciliation ? { reconciliation: { homes: reconciliation.homes, covered: reconciliation.covered, active: reconciliation.active, expired: reconciliation.expired, exception_count: reconciliation.exceptionCount, clean: reconciliation.clean } } : {}) } }).eq("org_id", context.orgId).eq("id", batchId).select("*").single()
     if (saveError || !saved) throw new Error(`Failed to finalize committed batch: ${saveError?.message}`)
     await Promise.all([
       recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "import_batch_committed", entityType: "import_batch", entityId: batchId, payload: { importer, committed_count: committedCount, skipped_count: skippedCount, actions } }),

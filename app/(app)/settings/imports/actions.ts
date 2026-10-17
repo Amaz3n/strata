@@ -19,7 +19,7 @@ export async function previewOrgImportAction(input: { orgId?: string; importer: 
   return run(async () => {
     const parsedInput = z.object({ importer: importerSchema, csvText: z.string().min(1).max(10 * 1024 * 1024) }).parse(input)
     const parsed = parseCsv(parsedInput.csvText)
-    const profile = await getImportMappingProfile(parsedInput.importer, parsed.headers)
+    const profile = await getImportMappingProfile(parsedInput.importer, parsed.headers, { expectedImporter: parsedInput.importer })
     const suggestion = profile ? { mappings: Object.entries(profile).map(([target, source]) => ({ target, source, confidence: "high" as const, note: "Saved mapping profile" })), unmapped_sources: [], unmatched_targets: Object.entries(profile).filter(([, source]) => !source).map(([target]) => target) } : await suggestImportColumnMapping({ importer: parsedInput.importer, sourceHeaders: parsed.headers, sampleRows: parsed.rows.slice(0, 5) })
     return { headers: parsed.headers, rowCount: parsed.rows.length, suggestion, profileApplied: Boolean(profile) }
   })
@@ -28,7 +28,7 @@ export async function previewOrgImportAction(input: { orgId?: string; importer: 
 export async function stageOrgImportAction(input: { orgId?: string; importer: ImporterKey; csvText: string; sourceFilename?: string; mapping: Record<string, string | null>; context?: Record<string, unknown>; onboardingRunId?: string | null }) {
   return run(async () => {
     const parsed = z.object({ importer: importerSchema, csvText: z.string().min(1).max(10 * 1024 * 1024), sourceFilename: z.string().max(255).optional(), mapping: z.record(z.string().nullable()), context: z.record(z.unknown()).optional() }).parse(input)
-    const result = await stageImportBatch(parsed)
+    const result = await stageImportBatch(parsed, { expectedImporter: parsed.importer })
     revalidatePath(path(parsed.importer))
     return result
   })

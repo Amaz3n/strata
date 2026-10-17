@@ -6,6 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { collectBooksRows } from "@/lib/services/books/paging"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { loadWarrantyOrgTimeZone } from "@/lib/services/warranty-time-zone"
 
 async function warrantyContext() {
   const context = await requireOrgContext()
@@ -71,8 +72,10 @@ export async function reconcileWarrantyRecoveriesForService(orgId: string, proje
   const backcharges = await collectBooksRows((from,to) => service.from("warranty_backcharges").select("warranty_request_id,project_id").eq("org_id",orgId).not("vendor_credit_bill_id","is",null).order("id").range(from,to))
   const requests = new Map(backcharges.filter(row => !projectIds || projectIds.has(row.project_id)).map(row => [row.warranty_request_id,row.project_id]))
   const failures: Array<{ sourceType: string; sourceId: string; error: string }> = []
+  // Entries are dated in the org's day, not the server's.
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: await loadWarrantyOrgTimeZone(service, orgId), year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
   for (const [requestId,projectId] of requests) {
-    const { error } = await service.rpc("reconcile_books_warranty_recovery", { p_org_id: orgId, p_request_id: requestId, p_date: new Date().toISOString().slice(0,10) })
+    const { error } = await service.rpc("reconcile_books_warranty_recovery", { p_org_id: orgId, p_request_id: requestId, p_date: today })
     if (error) failures.push({ sourceType: "warranty_reserve_recovery", sourceId: projectId, error: error.message })
   }
   return failures

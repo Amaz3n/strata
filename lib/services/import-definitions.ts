@@ -18,7 +18,7 @@ import {
 
 export const IMPORTER_KEYS = [
   "cost_codes", "plan_library", "option_catalog", "price_book",
-  "communities_lots", "open_wip", "team",
+  "communities_lots", "open_wip", "team", "warranty_homes",
 ] as const
 export type ImporterKey = (typeof IMPORTER_KEYS)[number]
 
@@ -81,6 +81,11 @@ export const IMPORTER_DEFINITIONS: Record<ImporterKey, ImporterDefinition> = {
   team: {
     key: "team", label: "Team & RBAC", description: "Roster and catalog role mapping. Invite delivery stays off until review is complete.",
     columns: [typed("email", "Email", "email", true), text("full_name", "Full name", true), text("role", "Role", true), text("division", "Division"), typed("send_invite", "Send invite", "boolean")],
+    updateFields: [],
+  },
+  warranty_homes: {
+    key: "warranty_homes", label: "Homes under warranty", description: "Closed homes you already warrant: one row per home with its actual closing date and the warranty terms it was sold with.",
+    columns: [text("community", "Community", true, "Maple Ridge"), text("lot_number", "Lot number", true, "14"), text("block", "Block"), text("address", "Address"), text("buyer_name", "Buyer name", true), typed("buyer_email", "Buyer email", "email"), typed("closing_date", "Closing date", "date", true, "2025-03-28"), text("program", "Warranty program"), typed("workmanship_months", "Workmanship months", "integer", false, "12"), typed("systems_months", "Systems months", "integer", false, "24"), typed("structural_months", "Structural months", "integer", false, "120")],
     updateFields: [],
   },
 }
@@ -169,6 +174,15 @@ export function parseImporterRow(input: {
     if (!role.startsWith("org_")) issues.push({ level: "error", code: "unmapped_role", message: "Role must map to an assignable organization role", column: "role" })
     parsed.send_invite = parsed.send_invite ?? false
   }
+  if (input.importer === "warranty_homes") {
+    for (const key of ["workmanship_months", "systems_months", "structural_months"]) {
+      const months = parsed[key]
+      if (typeof months === "number" && (months < 1 || months > 1200)) issues.push({ level: "error", code: "invalid_term_months", message: "A warranty term is 1 to 1200 months", column: key })
+    }
+    if (!parsed.program && parsed.workmanship_months == null && parsed.systems_months == null && parsed.structural_months == null) {
+      issues.push({ level: "error", code: "terms_required", message: "Name the warranty program or give the term months the home was sold with", column: "program" })
+    }
+  }
   if (input.importer === "price_book" && parsed.unit_price_cents === 0) issues.push({ level: "warning", code: "zero_price", message: "Unit price is zero", column: "unit_price_cents" })
   if (input.importer === "open_wip" && fileKind === "purchase_orders" && typeof parsed.original_cents === "number" && typeof parsed.remaining_cents === "number" && parsed.remaining_cents > parsed.original_cents) {
     issues.push({ level: "error", code: "remaining_gt_original", message: "Remaining PO value cannot exceed original value", column: "remaining_cents" })
@@ -181,6 +195,7 @@ export function parseImporterRow(input: {
   else if (input.importer === "price_book") naturalKey = stableNaturalKey([parsed.vendor, parsed.cost_code, parsed.plan_code, parsed.community || parsed.division, parsed.effective_start])
   else if (input.importer === "communities_lots") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
   else if (input.importer === "team") naturalKey = normalizeKey(parsed.email)
+  else if (input.importer === "warranty_homes") naturalKey = stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
   else naturalKey = fileKind === "budgets" ? stableNaturalKey([parsed.community, parsed.block, parsed.lot_number, parsed.cost_code]) : fileKind === "purchase_orders" ? stableNaturalKey([parsed.community, parsed.block, parsed.lot_number, parsed.po_number]) : stableNaturalKey([parsed.community, parsed.block, parsed.lot_number])
 
   return { parsed, issues, naturalKey }

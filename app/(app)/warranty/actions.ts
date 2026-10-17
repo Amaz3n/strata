@@ -37,10 +37,11 @@ import {
   type WarrantyProgramDTO,
   type WarrantyServiceVisitDTO,
   type WarrantyVisitConflict,
+  reassignWarrantyVisit,
 } from "@/lib/services/warranty"
 import type { RankedOriginatingCommitment, WarrantyCostBasisItem } from "@/lib/services/warranty/domain"
 import type { WarrantyRoutingRule } from "@/lib/services/warranty/domain"
-import { warrantyRoutingRuleSchema, warrantyVisitCompleteWithCostSchema } from "@/lib/services/warranty/validation"
+import { warrantyRoutingRuleSchema, warrantyVisitCompleteWithCostSchema, warrantyVisitReassignSchema } from "@/lib/services/warranty/validation"
 import {
   warrantyBackchargeDisputeSchema,
   warrantyBackchargeInputSchema,
@@ -179,6 +180,14 @@ export async function generateWarrantyCourtesyInspectionsAction(): Promise<Actio
 export async function rescheduleWarrantyVisitAction(input: unknown): Promise<ActionResult<WarrantyServiceVisitDTO>> {
   try {
     const visit = await rescheduleWarrantyVisit(warrantyVisitRescheduleSchema.parse(input))
+    revalidateWarranty(visit.project_id)
+    return { success: true, data: visit }
+  } catch (error) { return actionError(error) }
+}
+
+export async function reassignWarrantyVisitAction(input: unknown): Promise<ActionResult<WarrantyServiceVisitDTO>> {
+  try {
+    const visit = await reassignWarrantyVisit(warrantyVisitReassignSchema.parse(input))
     revalidateWarranty(visit.project_id)
     return { success: true, data: visit }
   } catch (error) { return actionError(error) }

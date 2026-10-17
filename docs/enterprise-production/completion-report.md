@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 67.5% — a documented lower bound, not an ETA |
-| Fully verified | 64.7% |
+| Implemented | 72% — a documented lower bound, not an ETA |
+| Fully verified | 69.2% |
 | Release ready | 0% |
 | Code implemented | 4 items |
-| Partially implemented | 28 items |
-| Known pending tasks | 13 items |
+| Partially implemented | 23 items |
+| Known pending tasks | 12 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 69 items; this does not imply full workflow verification |
 
@@ -200,13 +200,13 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP11-01 | Installed-home and coverage migration | pending | Add an installed-base importer (closed homes: lot/address, buyer, actual close date, program and terms as sold) that creates closed homes and enrolls coverage with the original terms snapshot. |
+| EP11-01 | Installed-home and coverage migration | verified | Apply 20261018100000_installed_home_import, 20261018140000_installed_home_import_home_first and 20261018141000_import_lot_key_and_recovery_state (pending approval); QA-org rehearsal with real customer data. |
 | EP11-02 | Warranty coverage classification | verified | Apply migration 20261010120100_warranty_coverage_write_scope (pending approval). |
-| EP11-03 | SLA routing and escalation | partial | Report historical breaches on the desk/analytics from the persisted facts. |
-| EP11-04 | Dispatch capacity and rescheduling | partial | Apply migration 20261010120300_warranty_visit_double_book_guard (pending approval). |
-| EP11-05 | Visit completion and verification | partial | Policy then enforcement: verification by a different authorized user for every completion. |
-| EP11-06 | Backcharge dispute lifecycle | partial | Settled-for-less outcome with partial reversal and explicit authority; test re-issue after dispute when the credit was already reversed. |
-| EP11-07 | Warranty accounting reconciliation | partial | Apply (edited) migration 20261007235500_books_homes_inventory_and_allocations (pending approval). |
+| EP11-03 | SLA routing and escalation | verified | Apply 20261018150000_warranty_member_write_fence (pending approval). |
+| EP11-04 | Dispatch capacity and rescheduling | verified | Apply 20261010120300_warranty_visit_double_book_guard and 20261018150000_warranty_member_write_fence (pending approval). |
+| EP11-05 | Visit completion and verification | verified | Approve and deploy the staged completion receipt and evidence guard migrations 20261003051000 and 20261003052000, and apply 20261018150000_warranty_member_write_fence (pending approval). |
+| EP11-06 | Backcharge dispute lifecycle | verified | Apply 20261018150000_warranty_member_write_fence (pending approval). |
+| EP11-07 | Warranty accounting reconciliation | verified | Apply 20261018110000_warranty_books_recoveries, 20261018120000_warranty_recovery_restored_any_date, 20261018130000_warranty_control_reversal_match and 20261018141000_import_lot_key_and_recovery_state, and the edited 20261007235500_books_homes_inventory_and_allocations (pending approval). |
 | EP11-08 | Complete defect feedback | partial | Deploy 20261003053000_warranty_actor_analytics.sql, enable the flag, expose plan/version/trade groupings with drill-down. |
 
 ### EP12: Migration and integration platform

@@ -2772,6 +2772,11 @@ export interface ProjectVendorCreditInput {
   description: string
   lines: Array<{ description: string; amount_cents: number; cost_code_id?: string | null }>
   metadata?: Record<string, unknown>
+  /**
+   * Narrow alternative to bill.approve: the warranty backcharge flow authorizes
+   * the credit with warranty.backcharge on the project. bill.write is still required.
+   */
+  approvalAuthority?: "warranty.backcharge"
 }
 
 /**
@@ -2780,7 +2785,8 @@ export interface ProjectVendorCreditInput {
  * negative accounting amounts here; no warranty-specific AP tables are used.
  */
 export async function createProjectVendorCredit(input: ProjectVendorCreditInput, orgId?: string): Promise<VendorBillSummary> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requireAuthorization({
     permission: "bill.write",
     userId,
@@ -2794,8 +2800,9 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
   // A credit extinguishes a real vendor obligation just like cash. Until there
   // is a separate routed credit-approval UI, creating an immediately usable
   // credit is an approval decision and requires the corresponding permission.
+  const approvalPermission = input.approvalAuthority ?? "bill.approve"
   await requireAuthorization({
-    permission: "bill.approve",
+    permission: approvalPermission,
     userId,
     orgId: resolvedOrgId,
     projectId: input.projectId,
@@ -2804,6 +2811,16 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
     resourceType: "project",
     resourceId: input.projectId,
   })
+  // The named authority was checked on this project above. The warranty manager is not a member of the
+  // home, so the posting below runs on the service client, still attributed to them, as other warranty writes do.
+  if (input.approvalAuthority) {
+    return runWithServiceOrgContext({ ...context, supabase: createServiceSupabaseClient() }, () => postVendorCredit(input, resolvedOrgId))
+  }
+  return postVendorCredit(input, resolvedOrgId)
+}
+
+async function postVendorCredit(input: ProjectVendorCreditInput, orgId: string): Promise<VendorBillSummary> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   if (!input.lines.length || input.lines.some((line) => !Number.isInteger(line.amount_cents) || line.amount_cents >= 0)) {
     throw new Error("Vendor credit lines must be negative")
   }
@@ -2830,7 +2847,7 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
       currency: "usd",
       status: "approved",
       bill_date: input.billDate,
-      metadata: { source: "vendor_credit", description: input.description, ...input.metadata },
+      metadata: { source: "vendor_credit", description: input.description, ...(input.approvalAuthority ? { approval_authority: input.approvalAuthority } : {}), ...input.metadata },
       approved_at: new Date().toISOString(),
       approved_by: userId,
     })
@@ -2863,7 +2880,7 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
     eventType: "vendor_credit_created",
     entityType: "vendor_bill",
     entityId: data.id,
-    payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents },
+    payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents, approval_authority: input.approvalAuthority ?? "bill.approve" },
   })
   await propagateApprovalToLedger({ source: "vendor_bill", sourceId: data.id, orgId: resolvedOrgId })
   const syncResult = await enqueueVendorBillSync(data.id, resolvedOrgId)

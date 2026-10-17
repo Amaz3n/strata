@@ -87,7 +87,7 @@ const homeInventoryControlsSchema = z.object({
     ledgerCents: z.number(), heldCents: z.number(), homes: z.array(z.unknown()), exceptions: z.array(z.unknown()),
     holdings: z.array(z.object({ projectId: z.string().uuid().nullable(), held: z.boolean(), ledger: companyBalancesSchema })),
   }),
-  warrantyReserve: z.object({ ledgerCents: z.number(), subledgerCents: z.number() }),
+  warrantyReserve: z.object({ ledgerCents: z.number(), subledgerCents: z.number(), recoveryLedgerCents: z.number(), recoverySubledgerCents: z.number() }),
 });
 
 /** Land by lot, completed homes held for sale, and warranty reserve consumption (`books_home_inventory_controls`). */
@@ -650,9 +650,9 @@ export async function runLedgerTieOuts(
     },
     {
       code: "warranty_reserve_control",
-      label: "Warranty reserve use ties to approved warranty costs",
-      status: homeInventory.warrantyReserve.ledgerCents === homeInventory.warrantyReserve.subledgerCents ? "passed" : "failed",
-      differenceCents: homeInventory.warrantyReserve.ledgerCents - homeInventory.warrantyReserve.subledgerCents,
+      label: "Warranty reserve use and recoveries tie to approved warranty costs and posted vendor credits",
+      status: homeInventory.warrantyReserve.ledgerCents === homeInventory.warrantyReserve.subledgerCents && homeInventory.warrantyReserve.recoveryLedgerCents === homeInventory.warrantyReserve.recoverySubledgerCents ? "passed" : "failed",
+      differenceCents: (homeInventory.warrantyReserve.ledgerCents - homeInventory.warrantyReserve.subledgerCents) + (homeInventory.warrantyReserve.recoveryLedgerCents - homeInventory.warrantyReserve.recoverySubledgerCents),
       ledgerCents: homeInventory.warrantyReserve.ledgerCents,
       subledgerCents: homeInventory.warrantyReserve.subledgerCents,
     },

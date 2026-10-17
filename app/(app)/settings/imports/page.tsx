@@ -45,6 +45,7 @@ async function ImportsPageContent() {
     if (key === "option_catalog") return hasAny("selections.catalog.manage")
     if (key === "communities_lots") return hasAny("community.write", "lot.write")
     if (key === "team") return hasAny("members.manage")
+    if (key === "warranty_homes") return hasAny("warranty.manage")
     return true
   })
 

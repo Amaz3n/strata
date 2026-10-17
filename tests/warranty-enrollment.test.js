@@ -118,3 +118,37 @@ test('a home whose closing was reversed enrolls again on its new closing date',a
  assert.equal(result.enrolled,true)
  assert.deepEqual(h.db.store.project_warranty_coverage.filter(row=>!row.voided_at).map(row=>row.effective_date),['2026-10-03'])
 })
+test('a home that closed before Arc enrolls on the terms it was sold with and the closing date it had',async()=>{
+ const h=harness(),SOLD='00000000-0000-4000-8000-0000000000bb'
+ h.db.store.warranty_programs.push({id:SOLD,org_id:ORG,is_default:false,is_active:true})
+ const sold=[{...h.term,duration_months:18},{key:'structural',label:'Structural',duration_months:60,is_structural:true,description:null}]
+ const {enrollSystemWarrantyCoverage}=require('../lib/services/warranty-enrollment')
+ const first=await enrollSystemWarrantyCoverage(h.db,h.input,async()=>{},{programId:SOLD,terms:sold})
+ assert.equal(first.enrolled,true)
+ assert.deepEqual(h.db.store.project_warranty_coverage[0].terms_snapshot.map(t=>[t.key,t.expires_on]),[['workmanship','2028-04-03'],['structural','2031-10-03']])
+ const again=await enrollSystemWarrantyCoverage(h.db,h.input,async()=>{},{programId:SOLD,terms:sold})
+ assert.equal(again.enrolled,false);assert.equal(h.db.store.project_warranty_coverage.length,1)
+})
+test('installed-home terms: a program supplies terms, stated months override them, and nothing is invented',()=>{
+ const {resolveInstalledHomeTerms}=require('../lib/services/warranty/installed-base')
+ const program=[{key:'workmanship',label:'W',duration_months:12,is_structural:false,description:null},{key:'structural',label:'S',duration_months:120,is_structural:true,description:null}]
+ assert.deepEqual(resolveInstalledHomeTerms({programTerms:program,explicit:{structural_months:60}}).terms.map(t=>[t.key,t.duration_months]),[['workmanship',12],['structural',60]])
+ assert.deepEqual(resolveInstalledHomeTerms({programTerms:null,explicit:{systems_months:24}}).terms.map(t=>[t.key,t.duration_months]),[['systems',24]])
+ assert.match(resolveInstalledHomeTerms({programTerms:null,explicit:{}}).error,/program/i)
+ assert.match(resolveInstalledHomeTerms({programTerms:null,explicit:{workmanship_months:0}}).error,/months/)
+})
+test('coverage reconciliation names uncovered homes, double coverage and dates that disagree with closing plus term',()=>{
+ const {classifyCoverage}=require('../lib/services/warranty/installed-base')
+ const cover=(projectId,effectiveDate,terms)=>({projectId,effectiveDate,terms})
+ const good=cover('good','2025-01-31',[{key:'workmanship',duration_months:13,expires_on:'2026-02-28'}])
+ const report=classifyCoverage([
+  {projectId:'good',lotId:'l1',closedOn:'2025-01-31',coverage:[good]},
+  {projectId:'gap',lotId:'l2',closedOn:'2025-02-01',coverage:[]},
+  {projectId:'late',lotId:'l3',closedOn:'2025-03-01',coverage:[cover('late','2025-03-15',[{key:'workmanship',duration_months:12,expires_on:'2026-03-15'}])]},
+  {projectId:'term',lotId:'l4',closedOn:'2025-04-01',coverage:[cover('term','2025-04-01',[{key:'systems',duration_months:24,expires_on:'2026-04-01'}])]},
+  {projectId:'twice-a',lotId:'l5',closedOn:'2025-05-01',coverage:[cover('twice-a','2025-05-01',[{key:'workmanship',duration_months:12,expires_on:'2026-05-01'}])]},
+  {projectId:'twice-b',lotId:'l5',closedOn:'2025-05-01',coverage:[cover('twice-b','2025-05-01',[{key:'workmanship',duration_months:12,expires_on:'2026-05-01'}])]},
+ ],'2026-03-01')
+ assert.deepEqual(report.exceptions.map(e=>[e.projectId,e.kind]),[['gap','uncovered'],['late','date_mismatch'],['late','term_mismatch'],['term','term_mismatch'],['twice-a','covered_twice'],['twice-b','covered_twice']])
+ assert.deepEqual([report.homes,report.covered,report.active,report.expired],[6,5,4,1])
+})

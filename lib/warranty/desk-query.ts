@@ -40,7 +40,7 @@ export function warrantyDispatchWeek(value?: string, now = new Date(), timeZone?
   }
 }
 
-export const WARRANTY_QUEUE_SLA_FILTERS = ["all", "awaiting_first_response", "first_response_breached", "breached", "due_soon", "first_response_due_soon"] as const
+export const WARRANTY_QUEUE_SLA_FILTERS = ["all", "awaiting_first_response", "first_response_breached", "breached", "due_soon", "first_response_due_soon", "sent_back"] as const
 export function warrantyQueueSlaFilter(value?: string) {
   return WARRANTY_QUEUE_SLA_FILTERS.find((filter) => filter === value) ?? "all"
 }

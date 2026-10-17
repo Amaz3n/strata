@@ -46,8 +46,8 @@ function identity(m) {
   };
 }
 test("release catalog preserves every golden scenario and rejects unknown, duplicate or incomplete configuration", () => {
-  assert.equal(GOLDEN_SCENARIOS.length, 44);
-  assert.equal(new Set(GOLDEN_SCENARIOS).size, 44);
+  assert.equal(GOLDEN_SCENARIOS.length, 45);
+  assert.equal(new Set(GOLDEN_SCENARIOS).size, 45);
   const plan = fs.readFileSync(
     path.join(root, "advisor-plans/013-arc-books-completion-to-100.md"),
     "utf8",

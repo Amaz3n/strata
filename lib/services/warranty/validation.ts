@@ -50,6 +50,27 @@ export const warrantyScheduleOverrideSchema = z.object({
   path: ["conflict_reason"],
 })
 
+/** Handing a scheduled visit to another technician or trade: the reason is on the record. */
+export const warrantyVisitReassignSchema = z.object({
+  visit_id: z.string().uuid(),
+  assignee_kind: z.enum(["tech", "trade"]),
+  assigned_user_id: z.string().uuid().nullable().optional(),
+  assigned_company_id: z.string().uuid().nullable().optional(),
+  reason: z.string().trim().min(3, "Say why the visit is being handed off").max(500),
+  allow_conflict: z.boolean().optional(),
+  conflict_reason: nullableText(500),
+}).superRefine((value, ctx) => {
+  if (value.assignee_kind === "tech" && (!value.assigned_user_id || value.assigned_company_id)) {
+    ctx.addIssue({ code: "custom", path: ["assigned_user_id"], message: "Choose the technician taking the visit" })
+  }
+  if (value.assignee_kind === "trade" && (!value.assigned_company_id || value.assigned_user_id)) {
+    ctx.addIssue({ code: "custom", path: ["assigned_company_id"], message: "Choose the trade taking the visit" })
+  }
+  if (value.allow_conflict && (value.conflict_reason?.length ?? 0) < 3) {
+    ctx.addIssue({ code: "custom", path: ["conflict_reason"], message: "Say why this assignee is being double-booked" })
+  }
+})
+
 const routingId = z.string().uuid().nullable().optional()
 
 /** A routing rule: the conditions are optional (unset matches anything), the owner is not. */
@@ -91,6 +112,7 @@ export const warrantyVisitVerifySchema = z.object({
 export type WarrantyVisitCompleteWithCostInput = z.infer<typeof warrantyVisitCompleteWithCostSchema>
 export type WarrantyVisitPortalOutcomeInput = z.infer<typeof warrantyVisitPortalOutcomeSchema>
 export type WarrantyRoutingRuleInput = z.input<typeof warrantyRoutingRuleSchema>
+export type WarrantyVisitReassignInput = z.infer<typeof warrantyVisitReassignSchema>
 export type WarrantyAcknowledgeInput = z.infer<typeof warrantyAcknowledgeSchema>
 
 /** Why the office will not accept a reported completion — recorded on the request. */

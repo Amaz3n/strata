@@ -1,0 +1,822 @@
+{
+  "scenario": "WARR-01",
+  "reviewedFrom": "EP11 warranty readiness (docs/enterprise-production/completion-checklist.json).",
+  "subcases": {
+    "import-keeps-close-dates-and-terms": {
+      "derivation": "Three closed homes in Maple Ridge, as a builder's installed base file states them. Lot 1 closed 2025-03-28 with stated terms of 12, 24 and 120 months, no program: the coverage carries exactly those three terms, ending 2026-03-28, 2027-03-28 and 2035-03-28. Lot 2 closed 2024-01-31 under the Premier program (24, 36 and 180 months) with the structural term stated as 120: 2026-01-31, 2027-01-31, 2034-01-31. Lot 3 closed 2023-08-31 with only a 6-month workmanship term and no program, so it carries that one term, ending 2024-02-29 (31 August plus six months lands on the 29th of leap-year February). Coverage starts on each actual closing date and is enrolled as a closing enrollment. No sale is booked: no invoice, no journal entry for warranty or inventory, no outbox job and no reserve. All terms of lot 3 have ended while lots 1 and 2 still have a structural term, so 2 homes are active and 1 expired; nothing is uncovered.",
+      "inputs": {
+        "community": "Maple Ridge",
+        "lots": [
+          {
+            "lot": "1",
+            "buyer": "Rosa Quintero",
+            "closed": "2025-03-28",
+            "workmanship": 12,
+            "systems": 24,
+            "structural": 120
+          },
+          {
+            "lot": "2",
+            "buyer": "Dev Patel",
+            "closed": "2024-01-31",
+            "program": "Premier",
+            "structural": 120
+          },
+          {
+            "lot": "3",
+            "buyer": "Mia Chen",
+            "closed": "2023-08-31",
+            "workmanship": 6
+          }
+        ]
+      },
+      "expected": {
+        "stagedRows": [
+          [
+            "1",
+            "valid",
+            []
+          ],
+          [
+            "2",
+            "valid",
+            []
+          ],
+          [
+            "3",
+            "valid",
+            []
+          ]
+        ],
+        "stagingByASalesAgent": "refused",
+        "homes": [
+          {
+            "lot": "1",
+            "closed": "2025-03-28",
+            "project": "completed",
+            "lotStatus": "closed",
+            "effective": "2025-03-28",
+            "source": "closing",
+            "program": "Standard 1-2-10",
+            "terms": [
+              [
+                "workmanship",
+                12,
+                "2026-03-28"
+              ],
+              [
+                "systems",
+                24,
+                "2027-03-28"
+              ],
+              [
+                "structural",
+                120,
+                "2035-03-28"
+              ]
+            ]
+          },
+          {
+            "lot": "2",
+            "closed": "2024-01-31",
+            "project": "completed",
+            "lotStatus": "closed",
+            "effective": "2024-01-31",
+            "source": "closing",
+            "program": "Premier",
+            "terms": [
+              [
+                "workmanship",
+                24,
+                "2026-01-31"
+              ],
+              [
+                "systems",
+                36,
+                "2027-01-31"
+              ],
+              [
+                "structural",
+                120,
+                "2034-01-31"
+              ]
+            ]
+          },
+          {
+            "lot": "3",
+            "closed": "2023-08-31",
+            "project": "completed",
+            "lotStatus": "closed",
+            "effective": "2023-08-31",
+            "source": "closing",
+            "program": "Standard 1-2-10",
+            "terms": [
+              [
+                "workmanship",
+                6,
+                "2024-02-29"
+              ]
+            ]
+          }
+        ],
+        "sideEffects": {
+          "invoices": 0,
+          "journalEntries": 0,
+          "outboxJobs": 0,
+          "reserves": 0
+        },
+        "committed": {
+          "actions": {
+            "created": 3
+          },
+          "reconciliation": {
+            "homes": 3,
+            "covered": 3,
+            "active": 2,
+            "expired": 1,
+            "exceptions": 0
+          }
+        },
+        "buyers": 3
+      }
+    },
+    "reimport-never-double-enrolls": {
+      "derivation": "The same three homes are imported, then imported again. The first import records 3 homes, 3 closings, 3 lots, 3 coverages, 3 buyers and 3 enrollment events. The second file matches every home by its lot: each row stages as an already-enrolled warning and commits as skipped, so every count stays at 3. A file that states lot 1 as closed 2025-04-04 conflicts with the 2025-03-28 closing Arc recorded: the row is an error and the batch cannot commit. Then lot 3's coverage and enrollment event are removed (an enrollment that died after the home was recorded): coverages fall to 2, a further import stages lot 3 as valid and the two others as already enrolled, commits 1 created and 2 skipped, and returns every count to 3 with no extra home, closing or buyer. Then a fourth home on lot A-4 is imported (4 of everything), and a file naming the same lot as ' a-4 ' (other case, extra spaces) matches it: the row is an already-enrolled warning, commits as skipped, and every count stays 4 \u2014 a lot is the same lot once case and spacing are ignored, as staging and the database both read it. (The fourth home exists before the repair step, so the repair returns every count to 4.)",
+      "inputs": {
+        "community": "Maple Ridge",
+        "lots": [
+          {
+            "lot": "1",
+            "buyer": "Rosa Quintero",
+            "closed": "2025-03-28",
+            "workmanship": 12,
+            "systems": 24,
+            "structural": 120
+          },
+          {
+            "lot": "2",
+            "buyer": "Dev Patel",
+            "closed": "2024-01-31",
+            "program": "Premier",
+            "structural": 120
+          },
+          {
+            "lot": "3",
+            "buyer": "Mia Chen",
+            "closed": "2023-08-31",
+            "workmanship": 6
+          }
+        ],
+        "conflictingClosing": "2025-04-04",
+        "caseLot": {
+          "lot": "A-4",
+          "buyer": "Ana Ruiz",
+          "closed": "2022-11-15",
+          "workmanship": 12
+        },
+        "caseVariant": "  a-4 "
+      },
+      "expected": {
+        "afterCaseLot": {
+          "projects": 4,
+          "closings": 4,
+          "lots": 4,
+          "coverages": 4,
+          "buyers": 4,
+          "enrollmentEvents": 4
+        },
+        "caseVariantRows": [
+          [
+            "a-4",
+            "warning",
+            [
+              "already_enrolled"
+            ]
+          ]
+        ],
+        "caseVariantActions": {
+          "skipped_existing": 1
+        },
+        "afterCaseVariant": {
+          "projects": 4,
+          "closings": 4,
+          "lots": 4,
+          "coverages": 4,
+          "buyers": 4,
+          "enrollmentEvents": 4
+        },
+        "afterFirstImport": {
+          "projects": 3,
+          "closings": 3,
+          "lots": 3,
+          "coverages": 3,
+          "buyers": 3,
+          "enrollmentEvents": 3
+        },
+        "secondImportRows": [
+          [
+            "1",
+            "warning",
+            [
+              "already_enrolled"
+            ]
+          ],
+          [
+            "2",
+            "warning",
+            [
+              "already_enrolled"
+            ]
+          ],
+          [
+            "3",
+            "warning",
+            [
+              "already_enrolled"
+            ]
+          ]
+        ],
+        "secondImportActions": {
+          "skipped_existing": 3
+        },
+        "afterSecondImport": {
+          "projects": 3,
+          "closings": 3,
+          "lots": 3,
+          "coverages": 3,
+          "buyers": 3,
+          "enrollmentEvents": 3
+        },
+        "conflictRows": [
+          [
+            "1",
+            "error",
+            [
+              "closing_date_conflict"
+            ]
+          ]
+        ],
+        "conflictCommit": "refused",
+        "coveragesAfterCrash": 2,
+        "repairStagedRows": [
+          [
+            "1",
+            "warning",
+            [
+              "already_enrolled"
+            ]
+          ],
+          [
+            "2",
+            "warning",
+            [
+              "already_enrolled"
+            ]
+          ],
+          [
+            "3",
+            "valid",
+            []
+          ]
+        ],
+        "repairActions": {
+          "created": 1,
+          "skipped_existing": 2
+        },
+        "afterRepair": {
+          "projects": 4,
+          "closings": 4,
+          "lots": 4,
+          "coverages": 4,
+          "buyers": 4,
+          "enrollmentEvents": 4
+        }
+      }
+    },
+    "reconciliation-finds-gaps-and-duplicates": {
+      "derivation": "The clean three-home import reconciles with no exceptions (3 closed, 3 covered, 2 active, 1 expired). A faulty migration then leaves three more closed homes: lot 20 closed 2025-06-10 with no coverage (uncovered); lot 21 closed 2025-07-01 whose coverage starts 2025-07-15 and ends 2026-07-15 (the start disagrees with the closing, and the end is not 2025-07-01 plus 12 months = 2026-07-01); and a second home pointed at lot 1, with correct coverage of its own (closed 2025-08-01, ending 2026-08-01), so lot 1 is covered through two homes and both are named. That is 6 closed homes of which 5 have coverage; only lots 1 and 2 still have an unexpired term, so 2 active and 3 expired. The exceptions are lot 1 and lot 9999 covered twice, lot 20 uncovered, and lot 21 with both a date and a term disagreement. Scoped to the import batch, the report is clean again because the faulty homes belong to another batch. A seventh closed home, lot 7 closed 2025-09-01 with correct coverage ending 2026-09-01, has its lot number rewritten to '1 ' (a second record of lot 1 once spacing is ignored): lots 1 and 7 are both named as a lot recorded twice. That makes 7 closed homes, 6 covered, 2 active and 4 expired. The twin on lot 1 (lot 9999) sits on that same duplicated lot, so it is named as well.",
+      "inputs": {
+        "community": "Maple Ridge",
+        "lots": [
+          {
+            "lot": "1",
+            "buyer": "Rosa Quintero",
+            "closed": "2025-03-28",
+            "workmanship": 12,
+            "systems": 24,
+            "structural": 120
+          },
+          {
+            "lot": "2",
+            "buyer": "Dev Patel",
+            "closed": "2024-01-31",
+            "program": "Premier",
+            "structural": 120
+          },
+          {
+            "lot": "3",
+            "buyer": "Mia Chen",
+            "closed": "2023-08-31",
+            "workmanship": 6
+          }
+        ],
+        "gap": {
+          "lot": "20",
+          "closed": "2025-06-10"
+        },
+        "mismatch": {
+          "lot": "21",
+          "closed": "2025-07-01",
+          "coverageStart": "2025-07-15",
+          "coverageEnd": "2026-07-15"
+        },
+        "twin": {
+          "closed": "2025-08-01",
+          "terms": [
+            {
+              "key": "workmanship",
+              "label": "Workmanship",
+              "duration_months": 12,
+              "is_structural": false,
+              "description": null,
+              "expires_on": "2026-08-01"
+            }
+          ]
+        },
+        "duplicateLot": {
+          "closed": "2025-09-01",
+          "terms": [
+            {
+              "key": "workmanship",
+              "label": "Workmanship",
+              "duration_months": 12,
+              "is_structural": false,
+              "description": null,
+              "expires_on": "2026-09-01"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "clean": {
+          "homes": 3,
+          "covered": 3,
+          "active": 2,
+          "expired": 1,
+          "exceptions": []
+        },
+        "faulty": {
+          "homes": 7,
+          "covered": 6,
+          "active": 2,
+          "expired": 4,
+          "exceptions": [
+            [
+              "1",
+              "covered_twice"
+            ],
+            [
+              "1",
+              "duplicate_lot"
+            ],
+            [
+              "20",
+              "uncovered"
+            ],
+            [
+              "21",
+              "date_mismatch"
+            ],
+            [
+              "21",
+              "term_mismatch"
+            ],
+            [
+              "7",
+              "duplicate_lot"
+            ],
+            [
+              "9999",
+              "covered_twice"
+            ],
+            [
+              "9999",
+              "duplicate_lot"
+            ]
+          ]
+        },
+        "importBatchScope": {
+          "homes": 3,
+          "covered": 3,
+          "active": 2,
+          "expired": 1,
+          "exceptions": []
+        }
+      }
+    },
+    "warranty-money-reconciles-and-reversal-is-idempotent": {
+      "derivation": "A $5,000 approved reserve is provided (Dr warranty costs 5,000, Cr warranty reserve 5,000). A $1,800 repair bill posts to job cost (job cost 1,800, reserve 5,000, expense 5,000); approving the completed visit against that bill consumes $1,800 of the reserve and takes it back out of job cost, leaving reserve 3,200, warranty expense 5,000 and job cost 0. The trade is backcharged $1,200: the vendor credit reduces job cost to -1,200, and the books restore the reserve once for it (Dr warranty costs 1,200, Cr reserve 1,200): reserve 4,400, expense 6,200, one recovery entry. Sweeping again twice posts nothing. Reversing the approval puts the $1,800 back into job cost (+600 net of the credit) and the reserve (6,200) and takes the recovery back in the same step (Dr reserve 1,200, Cr warranty costs 1,200): reserve 5,000, expense 5,000, two recovery entries; reversing again posts nothing. Approving again consumes 1,800 and a sweep restores 1,200 again: reserve 4,400, expense 6,200, job cost -1,200, three recovery entries in all. An identical retry of the approval is a no-op and a changed one is refused. The reserve control (consumption and recoveries) passes at every stage.",
+      "inputs": {
+        "priceCents": 40000000,
+        "reserveCents": 500000,
+        "repairCents": 180000,
+        "creditCents": 120000
+      },
+      "expected": {
+        "stages": {
+          "provisioned": {
+            "reserve": 500000,
+            "warrantyExpense": 500000,
+            "jobCost": 180000,
+            "recoveryEntries": 0,
+            "control": "passed"
+          },
+          "approved": {
+            "reserve": 320000,
+            "warrantyExpense": 500000,
+            "jobCost": 0,
+            "recoveryEntries": 0,
+            "control": "passed"
+          },
+          "recovered": {
+            "reserve": 440000,
+            "warrantyExpense": 620000,
+            "jobCost": -120000,
+            "recoveryEntries": 1,
+            "control": "passed"
+          },
+          "sweptAgain": {
+            "reserve": 440000,
+            "warrantyExpense": 620000,
+            "jobCost": -120000,
+            "recoveryEntries": 1,
+            "control": "passed"
+          },
+          "approvalReversed": {
+            "reserve": 500000,
+            "warrantyExpense": 500000,
+            "jobCost": 60000,
+            "recoveryEntries": 2,
+            "control": "passed"
+          },
+          "reversalRepeated": {
+            "reserve": 500000,
+            "warrantyExpense": 500000,
+            "jobCost": 60000,
+            "recoveryEntries": 2,
+            "control": "passed"
+          },
+          "approvedAgain": {
+            "reserve": 440000,
+            "warrantyExpense": 620000,
+            "jobCost": -120000,
+            "recoveryEntries": 3,
+            "control": "passed"
+          }
+        },
+        "secondReversalChangedNothing": true,
+        "identicalApprovalRetry": true,
+        "changedApprovalRefused": "refused",
+        "finalPosition": {
+          "reserve": 440000,
+          "warrantyExpense": 620000,
+          "jobCost": -120000,
+          "recoveryEntries": 3,
+          "control": "passed"
+        }
+      }
+    },
+    "request-routes-by-community-and-trade": {
+      "derivation": "Two routing rules in the org: Cypress coordinator (priority 100, community Cypress Landing, tech A) and Plumbing trade (priority 10, cost code 22-000, trade Coastal Plumbing). The kitchen drain request (routine, plumbing cost code) matches both, one per kind, so it goes to tech A and the trade; routine severity stamps first response at 72 hours and resolution at 30 days (720 hours) from creation. The door request has no cost code so only the community rule matches: tech A, no trade. Coding the door as plumbing routes it again while a rule still owns it: the trade is added, tech A stays, and two routing events are on record (created, reclassified). Moving the door request to tech B without a reason is refused because a rule chose its owner; with a reason it records source manual, names the rule it went against (the first matched rule, Cypress coordinator), the reason, and one override event. Raising it to emergency re-grades the clocks to 24 hours and 3 days (72 hours) from creation; because a person now owns it, tech B stays, the trade stays, and there are still only two routing events.",
+      "expected": {
+        "communityAndTrade": {
+          "user": "techA",
+          "company": true,
+          "rules": [
+            "tech:Cypress coordinator",
+            "trade:Plumbing trade"
+          ],
+          "firstResponseHours": 72,
+          "resolutionHours": 720
+        },
+        "communityOnly": {
+          "user": "techA",
+          "company": null,
+          "rule": "Cypress coordinator"
+        },
+        "reclassified": {
+          "user": "techA",
+          "company": true,
+          "triggers": [
+            "created",
+            "reclassified"
+          ]
+        },
+        "override": {
+          "withoutReason": "refused",
+          "source": "manual",
+          "user": "techB",
+          "overriddenRule": "Cypress coordinator",
+          "reason": "Tech A is on leave this week",
+          "overrideEvents": 1
+        },
+        "afterManual": {
+          "user": "techB",
+          "severity": "emergency",
+          "firstResponseHours": 24,
+          "resolutionHours": 72,
+          "routedEvents": 2
+        }
+      }
+    },
+    "breach-survives-visit-and-severity-change": {
+      "derivation": "A routine request opened 40 days ago has its first response due 37 days ago and its resolution due 10 days ago and nobody has swept it. Re-grading it to the 60-day target moves the new resolution due date to 20 days from now, but both promises are already broken: the resolution breach is stamped at the original due date (10 days ago), the due date is in the future, first response and resolution both report breached, and the request is still in the resolution-overdue queue. A visit completed by the dispatcher and verified by the manager resolves it, and the stamp and both breached states remain. A second request opened 31 days ago, due 1 day ago, never swept and never re-graded, is resolved today: no stamp was ever written, yet resolving after its due time reports breached for resolution, and first response (never recorded, due 28 days ago) is breached.",
+      "expected": {
+        "regraded": {
+          "stampAtOriginalDue": true,
+          "dueMovedOut": true,
+          "firstResponse": "breached",
+          "resolution": "breached",
+          "inBreachedQueue": true
+        },
+        "afterVisit": {
+          "status": "resolved",
+          "stampKept": true,
+          "firstResponse": "breached",
+          "resolution": "breached"
+        },
+        "lateClose": {
+          "status": "resolved",
+          "stamped": false,
+          "firstResponse": "breached",
+          "resolution": "breached"
+        }
+      }
+    },
+    "visit-conflict-needs-reason-and-handoff-keeps-owner": {
+      "derivation": "Visit 1 books tech A 03:30-05:30 UTC on 3 Nov 2026, which is 9:30-11:30 pm on 2 Nov in Cypress Landing's Central zone (daylight time ended 1 Nov), so the request date is 2 Nov, not the UTC day 3 Nov. Visit 2 asks for tech A 04:30-06:30 UTC, which overlaps visit 1: the pre-flight lists visit number 1; booking it plainly is refused as already booked; overriding without a reason is refused; the dispatcher (write, not manage) is refused the override for lack of warranty.manage; the warranty manager overrides with a reason and the visit records the overlap, the reason, the visit it overlaps and who allowed it. Visit and request times read in America/Chicago on the office list and the buyer list. The dispatcher hands visit 1 to tech B: a hand-off without a reason is refused; with one the owner is tech B, status scheduled, the window is unchanged, the history holds one entry (from tech A, to tech B, by the dispatcher, with the reason), the request's owner is tech B, one reassignment event is recorded, and the notices are tech A assigned (at booking), tech A canceled and tech B assigned (the hand-off). Handing visit 2 to tech B is refused because visit 1 now fills that window; visit 2 stays with tech A. The dispatcher moves visit 1 to 4 Nov 15:00-17:00 UTC and cancels visit 2: one rescheduled event, one canceled event, three audit rows on visit 1 (booking, hand-off, move), tech B also notified of the move, and tech A notified of the cancel of visit 2.",
+      "expected": {
+        "conflict": {
+          "preflight": [
+            1
+          ],
+          "noOverride": "refused",
+          "noReason": "refused",
+          "noAuthority": "refused",
+          "overlapAllowed": true,
+          "reason": "Two-person lift, same address",
+          "overBooked": true,
+          "allowedBy": "manager"
+        },
+        "scheduledDate": {
+          "scheduledDate": "2026-11-02",
+          "zones": [
+            "America/Chicago"
+          ],
+          "buyerZones": [
+            "America/Chicago"
+          ]
+        },
+        "handoff": {
+          "reasonMissing": "refused",
+          "owner": "techB",
+          "status": "scheduled",
+          "windowKept": true,
+          "history": [
+            {
+              "from": "techA",
+              "to": "techB",
+              "by": "dispatcher",
+              "reason": "Tech A is out sick"
+            }
+          ],
+          "requestOwner": "techB",
+          "notices": [
+            "techA:warranty_visit_assigned",
+            "techA:warranty_visit_canceled",
+            "techB:warranty_visit_assigned"
+          ],
+          "events": 1
+        },
+        "handoffRefused": {
+          "handoffConflict": "refused",
+          "owner": "techA"
+        },
+        "moveAndCancel": {
+          "rescheduleEvents": 1,
+          "cancelEvents": 1,
+          "v1Audits": 3,
+          "notices": [
+            "techA:warranty_visit_assigned",
+            "techA:warranty_visit_canceled",
+            "techB:warranty_visit_assigned",
+            "techB:warranty_visit_rescheduled"
+          ],
+          "cancelNotices": [
+            "techA:warranty_visit_assigned",
+            "techA:warranty_visit_canceled"
+          ]
+        }
+      }
+    },
+    "homeowner-confirms-and-reschedule-is-traced": {
+      "derivation": "The homeowner's contact opens a request from the buyer portal and the manager books tech A. A confirmation presented for a different home is refused as not found. The homeowner's own confirmation sets the confirmed time, writes one event naming the contact and one audit row from the buyer portal, and tells tech A and the managers. An empty request for another time is refused; a real one clears the confirmation, records when and the note, writes an event naming the contact, and tells tech A. The dispatcher then moves the visit: status scheduled again and the buyer's confirmation, request and note are cleared. The visit's events read in order: scheduled, buyer confirmed, buyer reschedule requested, rescheduled. Audit rows on the visit are four: booking, confirmation, request, move.",
+      "expected": {
+        "confirmed": {
+          "otherHomeRefused": "refused",
+          "confirmed": true,
+          "contact": true,
+          "audits": 1,
+          "told": true
+        },
+        "asked": {
+          "noteMissing": "refused",
+          "confirmedCleared": true,
+          "requestedAt": true,
+          "note": "Thursdays after 1 pm work better",
+          "contact": true,
+          "told": true
+        },
+        "moved": {
+          "status": "scheduled",
+          "buyerAnswerCleared": [
+            null,
+            null,
+            null
+          ],
+          "trace": [
+            "warranty_visit_scheduled",
+            "warranty_visit_buyer_confirmed",
+            "warranty_visit_buyer_reschedule_requested",
+            "warranty_visit_rescheduled"
+          ],
+          "totalAudits": 4
+        }
+      }
+    },
+    "verifier-must-differ-and-rejects-to-queue": {
+      "derivation": "The dispatcher records visit work as resolved with no photo and no buyer sign-off: the request waits in verification. The same dispatcher trying to verify it is refused as needing a second person, one refusal event with reason same_person and one refusal audit row are written, and the request still waits. The manager verifies: the request is resolved, verified by the manager, no longer pending, and evidence (zero photos) and buyer sign-off (none) are separate from verification. A second request is completed the same way and waits in verification (not in the sent-back queue). Sending it back with a blank reason is refused; with a reason it returns to in progress with the reason on record, appears in the sent-back queue and leaves the verification list. When a corrective visit is booked and completed it leaves the sent-back queue and waits for verification again.",
+      "expected": {
+        "selfVerify": {
+          "completedBy": "dispatcher",
+          "waiting": true,
+          "selfVerify": "refused",
+          "refusedEvents": [
+            "same_person"
+          ],
+          "refusedAudits": 1,
+          "stillWaiting": true
+        },
+        "verified": {
+          "status": "resolved",
+          "verifiedBy": "manager",
+          "pending": false,
+          "photos": 0,
+          "buyerSignoff": null
+        },
+        "sentBack": {
+          "beforeSendBack": {
+            "sentBack": false,
+            "awaitingVerification": true
+          },
+          "noReason": "refused",
+          "afterSendBack": {
+            "sentBack": true,
+            "awaitingVerification": false,
+            "status": "in_progress",
+            "reason": "Crack is back along the seam"
+          },
+          "afterCorrective": {
+            "sentBack": false,
+            "awaitingVerification": true
+          }
+        }
+      }
+    },
+    "backcharge-partial-settlement": {
+      "derivation": "A $450.00 backcharge (callback $300.00 plus drywall patch $150.00) is issued, creating a $450.00 vendor credit, and the trade disputes it. Settling is refused for the dispatcher (no backcharge authority), above the issued amount ($500.00), at the issued amount ($450.00, which is a full recovery not a settlement), without a reason, and as 'recovered in full' for $300.00; the backcharge stays disputed. The manager settles for $300.00: it is recorded as recovered with $300.00 collected, $150.00 given up with the reason and the manager as decider, the original credit is kept, a reversing bill WB-n-R is created for only the $150.00 remainder, and the credit stays at -$450.00. A settled backcharge cannot move again. A second backcharge is issued, disputed and re-issued: the same one vendor credit is reused, and waiving it records nothing collected and reverses the whole $450.00 once. Its events read created, issued, disputed, issued, resolved.",
+      "expected": {
+        "refusals": {
+          "dispatcherSettles": "refused",
+          "aboveIssued": "refused",
+          "atIssued": "refused",
+          "noReason": "refused",
+          "fullRecoveryForLess": "refused",
+          "stillDisputed": "disputed"
+        },
+        "settled": {
+          "status": "recovered",
+          "recovered": 30000,
+          "settlement": {
+            "settled": 30000,
+            "writtenOff": 15000,
+            "reason": "Agreed at the job meeting",
+            "by": "manager"
+          },
+          "creditCents": [
+            -45000
+          ],
+          "reversalCents": [
+            15000
+          ],
+          "creditKept": true,
+          "terminal": "refused"
+        },
+        "reissue": {
+          "sameCredit": true,
+          "creditBills": 1,
+          "status": "waived",
+          "recovered": 0,
+          "reversalCents": [
+            45000
+          ],
+          "events": [
+            "warranty_backcharge_created",
+            "warranty_backcharge_issued",
+            "warranty_backcharge_disputed",
+            "warranty_backcharge_issued",
+            "warranty_backcharge_resolved"
+          ]
+        }
+      }
+    },
+    "reversal-keeps-later-visits-recovery": {
+      "derivation": "A $5,000 reserve. Two completed visits on one request: visit 1 cost $1,000 (bill 2026-08-10, approved 08-12), visit 2 cost $800 (bill 08-18, approved 08-20). Together they consume 1,800 of the reserve. The trade is credited $600 on 08-22, and the reserve is restored once for it: reserve 5,000 - 1,800 + 600 = 3,800, warranty expense 5,000 + 600 = 5,600, job cost 1,000 + 800 - 1,800 - 600 = -600, one recovery entry. Reversing visit 1 on 08-15 (a date before visit 2 was approved) puts its 1,000 back into the reserve and job cost: reserve 4,800, job cost +400. Visit 2 still consumed 800 and the credit is 600, so its recovery of 600 stands: expense stays 5,600 and there is still one recovery entry. The reserve control passes.",
+      "inputs": {
+        "priceCents": 40000000,
+        "reserveCents": 500000,
+        "creditCents": 60000,
+        "creditDate": "2026-08-22",
+        "reverseOn": "2026-08-15",
+        "visits": [
+          {
+            "billDate": "2026-08-10",
+            "cents": 100000,
+            "approvedOn": "2026-08-12"
+          },
+          {
+            "billDate": "2026-08-18",
+            "cents": 80000,
+            "approvedOn": "2026-08-20"
+          }
+        ]
+      },
+      "expected": {
+        "before": {
+          "reserve": 380000,
+          "warrantyExpense": 560000,
+          "jobCost": -60000,
+          "recoveryEntries": 1,
+          "control": "passed"
+        },
+        "afterReversingEarlier": {
+          "reserve": 480000,
+          "warrantyExpense": 560000,
+          "jobCost": 40000,
+          "recoveryEntries": 1,
+          "control": "passed"
+        }
+      }
+    },
+    "member-writes-are-fenced-and-managers-see-their-homes": {
+      "derivation": "A home has one request, one scheduled visit and one draft $450.00 backcharge, all created by the warranty manager through the services; the manager is not added to the home. The read policy admits a holder of warranty.manage or warranty.write, so the manager sees all three records (1,1,1) and the dispatcher, who holds write but not manage or backcharge authority, sees the request and visit but not the backcharge (1,1,0); the land manager holds neither and is not on the home, so sees none (0,0,0). Every direct write a member attempts in a rolled-back session changes zero rows because members hold no write policy on these tables: resolving the request, stamping verified_by and sent_back, moving the due date, completing the visit as the dispatcher, switching on overlap_allowed, setting the backcharge to recovered with $450.00, and lowering its amount. Afterwards the request is still in progress (the booking set it), the visit still scheduled with no completer, and the backcharge still draft at 45000 cents.",
+      "expected": {
+        "reads": {
+          "land": [
+            0,
+            0,
+            0
+          ],
+          "manager": [
+            1,
+            1,
+            1
+          ],
+          "dispatcher": [
+            1,
+            1,
+            0
+          ]
+        },
+        "writes": {
+          "writes": {
+            "requestResolved": 0,
+            "requestVerified": 0,
+            "requestDueMoved": 0,
+            "visitCompletedBy": 0,
+            "visitOverlap": 0,
+            "backchargeStatus": 0,
+            "backchargeAmount": 0
+          },
+          "unchanged": {
+            "requestStatus": "in_progress",
+            "visitStatus": "scheduled",
+            "completedBy": null,
+            "backchargeStatus": "draft",
+            "amount": 45000
+          }
+        }
+      }
+    }
+  }
+}
