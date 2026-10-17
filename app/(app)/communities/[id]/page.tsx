@@ -97,6 +97,9 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
   const canReadMoney = permissions.permissions.some((permission) =>
     ["report.read", "org.admin", "*"].includes(permission),
   )
+  const canReadMargin = permissions.permissions.some((permission) =>
+    ["financials.margin.read", "org.admin", "*"].includes(permission),
+  )
 
   const [canPinPlan, canInstantiatePlan, canReleasePlan, canOverrideDelivery, canOverrideFit] = await Promise.all([
     hasPermission("lot.write"),
@@ -112,7 +115,7 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
     canOverrideFit,
   }
 
-  const byMargin = query.sort === "margin" && canReadMoney
+  const byMargin = query.sort === "margin" && canReadMargin
 
   const [inventory, pnl, projects, statusCounts] = await Promise.all([
     listCommunityInventory(id, {
@@ -126,7 +129,7 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
       page: view === "map" || byMargin ? 1 : page,
       pageSize: view === "map" || byMargin ? INVENTORY_MAP_PAGE_SIZE : INVENTORY_TABLE_PAGE_SIZE,
     }),
-    canReadMoney ? getCommunityPnl(id).catch(optional("community P&L", null)) : Promise.resolve(null),
+    canReadMargin ? getCommunityPnl(id).catch(optional("community P&L", null)) : Promise.resolve(null),
     canWrite
       ? listAttachableProjects(id).catch(optional("attachable homes", { projects: [], truncated: false }))
       : Promise.resolve({ projects: [], truncated: false }),

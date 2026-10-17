@@ -24730,9 +24730,10 @@
       ],
       "dependencies": [],
       "status": "verified",
-      "implementationNotes": "Office page /projects/[id]/released (\"Released for this home\") lists the home's drawings labelled Current, Superseded or Pending review, its confirmed options and its awarded scope; the options and scope sections are gated on selections.read and commitment.read. The trade portal /s/[token]/released shows only published share_with_subs sheets, the token company's own approved or complete commitments and confirmed options without prices; paused, revoked and wrong-portal tokens are refused. Proved by FIELD-01 released-set-labels and trade-portal-released.",
+      "implementationNotes": "Office page /projects/[id]/released (\"Released for this home\") lists the home's drawings labelled Current, Superseded or Pending review, its confirmed options and its awarded scope; the options and scope sections are gated on selections.read and commitment.read. The trade portal /s/[token]/released shows only published share_with_subs sheets, the token company's own approved or complete commitments and confirmed options without prices; paused, revoked and wrong-portal tokens are refused. Proved by FIELD-01 released-set-labels and trade-portal-released. Superintendents read released scope and options through the price-free keys commitment.scope.read and selections.released.read (20261017110000), never commitment.read or selections.read; proved by MONEY-01 superintendent-reads-scope-and-options.",
       "remainingWork": [
-        "Apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable) (pending approval)."
+        "Apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable) (pending approval).",
+        "Apply 20261017110000_superintendent_reads_scope_and_options (pending approval)."
       ],
       "sources": [
         "lib/services/plan-instantiation.ts",
@@ -24742,7 +24743,8 @@
         "supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql",
         "app/(app)/projects/[id]/released/page.tsx",
         "app/s/[token]/released/page.tsx",
-        "scripts/books-acceptance/scenarios/field-01-documents.cjs"
+        "scripts/books-acceptance/scenarios/field-01-documents.cjs",
+        "supabase/migrations/20261017110000_superintendent_reads_scope_and_options.sql"
       ],
       "testFiles": [
         "tests/plan-instantiation-ledger.test.js",
@@ -24908,7 +24910,7 @@
             {
               "index": 0,
               "verdict": "met",
-              "evidence": "Office /projects/[id]/released shows the home's drawings, confirmed options and awarded scope (options gated on selections.read, scope on commitment.read); the trade portal /s/[token]/released shows only share_with_subs published sheets, the token company's own approved or complete commitments and confirmed options without prices, and refuses paused, revoked and wrong-portal tokens. FIELD-01 released-set-labels and trade-portal-released PASSED."
+              "evidence": "Office /projects/[id]/released shows the home's drawings, confirmed options and awarded scope (options gated on selections.read, scope on commitment.read); the trade portal /s/[token]/released shows only share_with_subs published sheets, the token company's own approved or complete commitments and confirmed options without prices, and refuses paused, revoked and wrong-portal tokens. FIELD-01 released-set-labels and trade-portal-released PASSED. Superintendents read scope and options through the price-free commitment.scope.read and selections.released.read keys (20261017110000), never commitment.read or selections.read; MONEY-01 superintendent-reads-scope-and-options PASSED."
             },
             {
               "index": 1,
@@ -24917,6 +24919,21 @@
             }
           ],
           "scope": "Source review of the EP09 working tree on 95f7d37a; proves code presence and shape, with runtime behaviour from the FIELD-01 acceptance run."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "MONEY-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "MONEY-01-ep10"
+          ],
+          "head": "EP10 working tree on 681dd2c6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "MONEY-01 11 subcases passed (tags m10-a2b, m10-b3): reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once, spec-home-adopted-by-books, superintendent-reads-scope-and-options, forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles, forecast-scenario-shifts-closings, house-margin-original-vs-revised, margin-rollup-uses-locked-baseline, margin-rollup-counts-every-home. Subcases mapped to this item (superintendent-reads-scope-and-options) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
         }
       ],
       "releaseState": "unverified",
@@ -24940,7 +24957,8 @@
       },
       "remainingEffort": "none",
       "scenarioIds": [
-        "FIELD-01"
+        "FIELD-01",
+        "MONEY-01"
       ]
     },
     {
@@ -26744,14 +26762,11 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Inventory capitalization now covers acquisition, reviewed development allocation, interest, start transfer, completion, component sale relief, late post-sale cost, impairment and closing reversal, all verified in HOME-01/LOSS-01. The gap from Oct 5 narrowed to correcting an acquisition or a start transfer after it posted. All related migrations are on the production pending list. Found by LOT-01: a placeholder contract beside the purchase agreement blocked Books adoption; agreement-driven production homes no longer get one (4158415c), but spec homes, the reviewed reservation conversion and already-created homes still do.",
+      "status": "verified",
+      "implementationNotes": "Inventory capitalization covers acquisition, reviewed development allocation, interest, start transfer, completion, component sale relief, late post-sale cost, impairment and closing reversal (HOME-01/LOSS-01). reverse_books_land_acquisition clears the lot's acquisition link back to controlled and offsets any debt draw; correct_books_land_start_transfer reverses a start transfer and optionally reposts it. Both are service-role only, idempotent, checked for books.adjust, and write an event and audit; the \"Correct a land entry\" dialog sits beside Record land acquisition. Spec homes and reservation conversions create no placeholder contract (4158415c); repair_placeholder_home_contracts() removes untouched placeholders beside an active agreement. Proved by MONEY-01 reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once and spec-home-adopted-by-books.",
       "remainingWork": [
-        "Add a governed correction for a land acquisition (reverse, clear the lot's acquisition pointer, re-acquire) and for a start transfer (reverse and re-transfer when the start is undone or redated), preserving receipts.",
-        "Tests (database tier) for those corrections.",
-        "Approve and deploy 20261003033000_starts_land_posting_fences.sql and the 20261007180000-20261008040000 Books inventory migrations.",
-        "QA-org run from land takedown through closing cost of sales.",
-        "Stop spec homes and the reviewed reservation conversion from creating the placeholder contract (starts.ts prepareStartHome, reservation-conversion.ts, SQL 20261010140000 and 20261005121409 billingContract) and repair existing homes that hold a placeholder beside an agreement."
+        "Apply 20261017100000_books_land_inventory_corrections and 20261017120000_repair_placeholder_home_contracts (pending approval).",
+        "Approve and deploy 20261003033000_starts_land_posting_fences.sql and the 20261007180000-20261008040000 Books inventory migrations (pending approval)."
       ],
       "sources": [
         "supabase/migrations/20261003033000_starts_land_posting_fences.sql",
@@ -26766,7 +26781,10 @@
         "supabase/migrations/20261007210000_books_development_allocation_review.sql",
         "supabase/migrations/20261007220000_books_home_closing_reversal.sql",
         "supabase/migrations/20261008040000_books_opening_inventory.sql",
-        "scripts/books-acceptance/scenarios/home-01.cjs"
+        "scripts/books-acceptance/scenarios/home-01.cjs",
+        "supabase/migrations/20261017100000_books_land_inventory_corrections.sql",
+        "supabase/migrations/20261017120000_repair_placeholder_home_contracts.sql",
+        "scripts/books-acceptance/scenarios/money-01-ledger.cjs"
       ],
       "testFiles": [
         "tests/starts-land-posting-fences-db.test.js",
@@ -26851,7 +26869,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -26876,7 +26894,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -26891,6 +26909,50 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "MONEY-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "MONEY-01-ep10"
+          ],
+          "head": "EP10 working tree on 681dd2c6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "MONEY-01 11 subcases passed (tags m10-a2b, m10-b3): reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once, spec-home-adopted-by-books, superintendent-reads-scope-and-options, forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles, forecast-scenario-shifts-closings, house-margin-original-vs-revised, margin-rollup-uses-locked-baseline, margin-rollup-counts-every-home. Subcases mapped to this item (reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once, spec-home-adopted-by-books) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP10"
+          ],
+          "date": "2026-10-16",
+          "head": "EP10 working tree on 681dd2c6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Acquisition, development allocation, interest, start transfer, sale relief and closing reversal post to the lot, home and inventory accounts (HOME-01/LOSS-01); corrected entries land on the same accounts. MONEY-01 reversed-land-acquisition-corrects-and-balances and reversed-start-transfer-reposts-once PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "reverse_books_land_acquisition and correct_books_land_start_transfer are idempotent, service-role only and books.adjust-checked with event and audit; the reversal returns the lot to controlled and offsets any debt draw, and the journal stays balanced with receipts preserved. MONEY-01 reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once and spec-home-adopted-by-books PASSED."
+            }
+          ],
+          "scope": "Source review of the EP10 working tree on 681dd2c6; proves code presence and shape, with runtime behaviour from the MONEY-01 acceptance run."
         }
       ],
       "releaseState": "migration_pending",
@@ -26900,26 +26962,29 @@
       "sourceAcceptanceIndices": [
         0
       ],
-      "auditDefects": [
-        "supabase/migrations/20260908021851_books_land_inventory.sql:30,37 — a reversed land acquisition cannot be corrected: the lot keeps books_acquisition_entry_id/status 'owned' and re-acquisition is refused; there is no re-transfer path for a reversed start transfer.",
-        "Spec homes (lib/services/starts.ts prepareStartHome) and the reviewed reservation conversion path (lib/services/reservation-conversion.ts; unapplied SQL 20261010140000 and 20261005121409 require billingContract) still create the placeholder contract, so Books cannot adopt those homes — still open.",
-        "Existing production homes that already have a placeholder contract beside an agreement are not repaired — still open."
-      ],
+      "auditDefects": [],
       "auditConfidence": "medium",
       "fixedSinceAudit": [
         "Oct 5 'owned-inventory transitions (completion/sale_relief) have no automated test' — now proven by Books B11.3 HOME-01 (sale relief by component, closing reversal) on supabase/migrations/20261007180000_books_home_sale_relief.sql and 20261007220000_books_home_closing_reversal.sql",
-        "A production home got a placeholder fixed contract beside its purchase agreement, which blocked Books adoption and left the inventory and warranty tabs unloadable; no placeholder is created unless billing terms are given (D4) (found by LOT-01/sweep) — fixed in 4158415c"
+        "A production home got a placeholder fixed contract beside its purchase agreement, which blocked Books adoption and left the inventory and warranty tabs unloadable; no placeholder is created unless billing terms are given (D4) (found by LOT-01/sweep) — fixed in 4158415c",
+        "Oct 9 'a reversed land acquisition cannot be corrected (lot keeps its acquisition link)' - fixed by reverse_books_land_acquisition (20261017100000), proved by MONEY-01",
+        "Oct 9 'no re-transfer path for a reversed start transfer' - fixed by correct_books_land_start_transfer (20261017100000), proved by MONEY-01",
+        "Oct 9 'spec homes and the reviewed reservation conversion still create the placeholder contract' - no placeholder is created (4158415c), proved by MONEY-01 spec-home-adopted-by-books",
+        "Oct 9 'existing homes with a placeholder beside an agreement are not repaired' - fixed by repair_placeholder_home_contracts() (20261017120000)"
       ],
       "plain": {
         "title": "Land and house costs in inventory",
-        "description": "Lot purchases, shared development cost, capitalized interest and construction cost all land on the right lot and house, and a sale moves exactly that house's cost to cost of sales; a closing can be reversed and everything goes back. What's missing is a clean way to fix a land purchase or a house start that was booked wrong."
+        "description": "Inventory and land capitalization posts to the right lot and home, and a land purchase or a start transfer entered wrongly can now be reversed and re-entered from a \"Correct a land entry\" dialog without losing the receipts. Spec homes no longer get a placeholder contract, and existing placeholders beside a real agreement are cleaned up. Proven on the test setup; the database changes need approval."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Mis-keyed land purchases and redated starts happen in the first months, and without a correction path the books get stuck.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "MONEY-01"
+      ]
     },
     {
       "id": "EP10-03",
@@ -26940,16 +27005,16 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "The forecast now respects each reader's division and project scope and pages every set to the end instead of silently capping (1c30a736). It remains a receivables/payables/commitments bucketer without construction drivers, scenarios or a Books cash tie.",
+      "status": "verified",
+      "implementationNotes": "The forecast respects each reader's division and project scope and pages every set (1c30a736). It now adds planned starts (approved budget less committed, in the start month), scheduled closings (agreement price less billed), lot takedowns and land obligations, and every active home regardless of phase, counted once. What-if scenarios take closingShiftWeeks and startPacePercent (validated). Division/project scope applies; drivers a reader cannot see are excluded and flagged, and the page says financing is not included (EP10-06 deferred). Proved by MONEY-01 forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles and forecast-scenario-shifts-closings.",
       "remainingWork": [
-        "Feed starts (budgets by schedule), closings (settlement proceeds), takedowns, loan draws and payoffs, with editable scenario assumptions.",
-        "Open from Books cash and reconcile inputs to their subledgers; tests.",
-        "QA at customer scale."
+        "Open from Books cash and reconcile inputs to their subledgers (QA at customer scale).",
+        "Loan draws and payoffs wait on EP10-06, deferred to the first customer."
       ],
       "sources": [
         "lib/services/reports/cash-flow-forecast.ts",
-        "lib/services/community-portfolio.ts"
+        "lib/services/community-portfolio.ts",
+        "scripts/books-acceptance/scenarios/money-01-reports.cjs"
       ],
       "testFiles": [
         "tests/cash-flow-forecast.test.js"
@@ -26985,7 +27050,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11",
             "FIX-20261010-W1"
@@ -27006,6 +27071,50 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "MONEY-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "MONEY-01-ep10"
+          ],
+          "head": "EP10 working tree on 681dd2c6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "MONEY-01 11 subcases passed (tags m10-a2b, m10-b3): reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once, spec-home-adopted-by-books, superintendent-reads-scope-and-options, forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles, forecast-scenario-shifts-closings, house-margin-original-vs-revised, margin-rollup-uses-locked-baseline, margin-rollup-counts-every-home. Subcases mapped to this item (forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles, forecast-scenario-shifts-closings) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP10"
+          ],
+          "date": "2026-10-16",
+          "head": "EP10 working tree on 681dd2c6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Planned starts, scheduled closings, lot takedowns and every active home feed the forecast once; commitments are counted at project end; scenarios shift closings and start pace. MONEY-01 forecast-includes-starts-closings-takedowns and forecast-scenario-shifts-closings PASSED with exact monthly net."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Division and project scope hold, drivers a reader cannot see are excluded and flagged, and the scoped total reconciles to the sum of its parts. Financing is stated as not included (EP10-06 deferred to the first customer). MONEY-01 forecast-respects-division-scope-and-reconciles PASSED."
+            }
+          ],
+          "scope": "Source review of the EP10 working tree on 681dd2c6; proves code presence and shape, with runtime behaviour from the MONEY-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -27018,18 +27127,22 @@
       "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
-        "lib/services/reports/cash-flow-forecast.ts:12-27 ignores division/project read scope (report.read only) and silently truncates projects at 1000 and child rows at the 1000-row API cap. — fixed in 1c30a736"
+        "lib/services/reports/cash-flow-forecast.ts:12-27 ignores division/project read scope (report.read only) and silently truncates projects at 1000 and child rows at the 1000-row API cap. — fixed in 1c30a736",
+        "Oct 9 'forecast lacks starts, closings, takedowns and what-if scenarios' - fixed in the EP10 working tree, proved by MONEY-01"
       ],
       "plain": {
         "title": "Cash forecast from starts and closings",
-        "description": "Today's cash forecast spreads open invoices, open bills and unbilled purchase orders by month, only for the jobs each person may see, and counts every record. It doesn't know about planned starts, closings, lot takedowns or construction loans, and can't run what-if scenarios."
+        "description": "The cash forecast now includes planned starts, scheduled closings, lot takedowns and every active house, each counted once, for the jobs each person may see, and can run what-if scenarios that shift closings or the pace of starts. Anything a reader cannot see is left out and flagged. Construction-loan financing is not included. Proven on the test setup."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "A production builder's cash is driven by starts, closings and takedowns, and the current report both leaks other divisions' numbers and undercounts silently.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "MONEY-01"
+      ]
     },
     {
       "id": "EP10-04",
@@ -27050,17 +27163,18 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Margin consumers now skip draft budgets for the baseline and read every job-cost row, failing loudly past 50,000 per home (1c30a736). The arithmetic is unchanged and correct; original vs revised budgets are not yet shown separately.",
+      "status": "verified",
+      "implementationNotes": "Margin consumers skip draft budgets for the baseline and read every job-cost row (1c30a736). The house overview now shows the original locked baseline beside the revised budget with the change, and the margin is exact; aggregates do not double count. Proved by MONEY-01 house-margin-original-vs-revised.",
       "remainingWork": [
-        "Expose original vs revised budget separately from the approved/locked baseline.",
-        "Test binding the consumer query semantics to the pure function.",
         "QA: compare a representative home's margin to its Books cost of sales."
       ],
       "sources": [
         "lib/financials/production-margin.ts",
         "lib/services/production-house-overview.ts",
-        "lib/services/production-reporting.ts"
+        "lib/services/production-reporting.ts",
+        "lib/financials/home-margin-baseline.ts",
+        "components/projects/production-house-overview.tsx",
+        "scripts/books-acceptance/scenarios/money-01-reports.cjs"
       ],
       "testFiles": [
         "tests/production-margin.test.js",
@@ -27135,7 +27249,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11",
             "FIX-20261010-W1"
@@ -27161,7 +27275,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -27175,6 +27289,50 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "MONEY-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "MONEY-01-ep10"
+          ],
+          "head": "EP10 working tree on 681dd2c6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "MONEY-01 11 subcases passed (tags m10-a2b, m10-b3): reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once, spec-home-adopted-by-books, superintendent-reads-scope-and-options, forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles, forecast-scenario-shifts-closings, house-margin-original-vs-revised, margin-rollup-uses-locked-baseline, margin-rollup-counts-every-home. Subcases mapped to this item (house-margin-original-vs-revised) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP10"
+          ],
+          "date": "2026-10-16",
+          "head": "EP10 working tree on 681dd2c6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "The house overview shows the original locked baseline beside the revised budget with the change; original, revised, actuals and approved variance give an exact margin. MONEY-01 house-margin-original-vs-revised PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Aggregate margin sums homes without double-counting costs; MONEY-01 house-margin-original-vs-revised and margin-rollup-counts-every-home PASSED."
+            }
+          ],
+          "scope": "Source review of the EP10 working tree on 681dd2c6; proves code presence and shape, with runtime behaviour from the MONEY-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -27188,18 +27346,22 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [
         "lib/services/production-house-overview.ts:87 and lib/services/production-reporting.ts:160-166 pick the latest budget version regardless of status (a draft can override the baseline). — fixed in 1c30a736",
-        "lib/services/production-house-overview.ts:88 job_cost_entries .limit(5_000) is silently capped at 1000 rows. — fixed in 1c30a736"
+        "lib/services/production-house-overview.ts:88 job_cost_entries .limit(5_000) is silently capped at 1000 rows. — fixed in 1c30a736",
+        "Oct 9 'original vs revised budgets are not shown separately' - fixed in the EP10 working tree, proved by MONEY-01"
       ],
       "plain": {
         "title": "Exact margin per house",
-        "description": "The margin formula per house is correct, adding houses together doesn't double count, a draft budget can no longer replace the approved baseline, and every cost entry is now counted. The original and revised budgets aren't yet shown side by side."
+        "description": "Each house shows its original locked budget beside the revised one with the change, and the margin is exact. Adding houses together doesn't double count, a draft budget can't replace the baseline, and every cost entry is counted. Proven on the test setup."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "House margin is a headline number for a production builder and a wrong one undermines trust immediately.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "MONEY-01"
+      ]
     },
     {
       "id": "EP10-05",
@@ -27220,17 +27382,18 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "The portfolio report now reads every community, lot, agreement, closing, budget, cost and VPO row (failing loudly past a cap) instead of silently dropping records (1c30a736). Baselines are still the live latest non-draft budget; no immutable baseline, cohorts, or division/plan-version rollups.",
+      "status": "verified",
+      "implementationNotes": "One pure rollup (lib/financials/margin-rollup.ts) serves division, community, plan, plan version (the version is recorded on the home's revision) and portfolio. Cohorts are explicit (all, closed in period, started in period) and stated on screen; archived communities are included; baselines are locked; there are no silent caps. Readers without financials.margin.read get counts and variance with margin restricted, not mislabelled. Proved by MONEY-01 margin-rollup-uses-locked-baseline and margin-rollup-counts-every-home.",
       "remainingWork": [
-        "Define and persist immutable baselines (budget snapshot at start/sale) and cohorts (start/sale/close period).",
-        "Add division and plan-version rollups that reconcile to the home sum.",
         "Reconciliation test at agreed scale; QA."
       ],
       "sources": [
         "lib/services/production-reporting.ts",
         "lib/services/forecast-snapshots.ts",
-        "lib/financials/production-margin.ts"
+        "lib/financials/production-margin.ts",
+        "lib/financials/margin-rollup.ts",
+        "lib/services/community-portfolio.ts",
+        "scripts/books-acceptance/scenarios/money-01-reports.cjs"
       ],
       "testFiles": [
         "tests/production-margin.test.js",
@@ -27314,7 +27477,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11",
             "FIX-20261010-W1"
@@ -27340,7 +27503,7 @@
           "kind": "isolated_automated",
           "tier": "automated",
           "result": "passed",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP10-EP11"
           ],
@@ -27354,6 +27517,50 @@
           "unrunMappedTests": [],
           "changedEvidenceSources": [],
           "criteriaCovered": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "MONEY-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-16",
+          "runIds": [
+            "MONEY-01-ep10"
+          ],
+          "head": "EP10 working tree on 681dd2c6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "MONEY-01 11 subcases passed (tags m10-a2b, m10-b3): reversed-land-acquisition-corrects-and-balances, reversed-debt-funded-acquisition-nets-the-loan, reversed-start-transfer-reposts-once, spec-home-adopted-by-books, superintendent-reads-scope-and-options, forecast-includes-starts-closings-takedowns, forecast-respects-division-scope-and-reconciles, forecast-scenario-shifts-closings, house-margin-original-vs-revised, margin-rollup-uses-locked-baseline, margin-rollup-counts-every-home. Subcases mapped to this item (margin-rollup-uses-locked-baseline, margin-rollup-counts-every-home) passed; the other subcases are tracked on their own items.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP10"
+          ],
+          "date": "2026-10-16",
+          "head": "EP10 working tree on 681dd2c6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Division, community, plan, plan-version and portfolio rollups use the home's locked baseline and a stated cohort (all, closed in period, started in period). MONEY-01 margin-rollup-uses-locked-baseline PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Every relevant home contributes with no silent cap, archived communities included, and readers without financials.margin.read see counts and variance with margin restricted. MONEY-01 margin-rollup-counts-every-home PASSED."
+            }
+          ],
+          "scope": "Source review of the EP10 working tree on 681dd2c6; proves code presence and shape, with runtime behaviour from the MONEY-01 acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -27366,18 +27573,22 @@
       "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
-        "lib/services/production-reporting.ts:173 job_cost_entries .limit(10_000) is effectively 1000 rows org-wide, understating actuals and overstating margin beyond a few homes. — fixed in 1c30a736"
+        "lib/services/production-reporting.ts:173 job_cost_entries .limit(10_000) is effectively 1000 rows org-wide, understating actuals and overstating margin beyond a few homes. — fixed in 1c30a736",
+        "Oct 9 'no immutable baseline, cohorts or division/plan-version rollups' - fixed in the EP10 working tree, proved by MONEY-01"
       ],
       "plain": {
         "title": "Margin by community, plan and division",
-        "description": "There is a profit report by community, plan and house that now counts every home and every cost entry, and says so loudly instead of dropping records. It still reads today's budgets rather than a locked baseline and has no division or plan-version view."
+        "description": "Margin by division, community, plan, plan version and the whole portfolio comes from one calculation on each house's locked baseline, for a cohort the screen states (all, closed in period or started in period). Every house counts, archived communities included, and people without margin access see counts and variance instead. Proven on the test setup."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "At 25-250 closings a year the 1,000-row cut-off is hit almost immediately, so the report is wrong for the first customer.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "none",
+      "scenarioIds": [
+        "MONEY-01"
+      ]
     },
     {
       "id": "EP10-06",
@@ -27401,6 +27612,7 @@
       "status": "partial",
       "implementationNotes": "No construction-loan model was added. The Books debt register reconciles to the ledger and blocks close; openings can now bring loans over, but per-home limits, draws with lender evidence and payoff at closing are absent.",
       "remainingWork": [
+        "Not built; deferred to the first customer (construction loans).",
         "Model construction loans per home/community (limit, availability, lender, draw requests with evidence) on top of the debt register.",
         "Post loan payoff from the closing settlement and link it to the home.",
         "Per-loan/per-home outstanding balance reconciliation; tests.",
@@ -27513,6 +27725,7 @@
       "status": "partial",
       "implementationNotes": "Unchanged since Oct 5. The provider abstraction and QBO adapter are mature for AR/AP and mirror native journals generically; there is no production transaction parity matrix or sandbox reconciliation, and per-company mirroring is undefined.",
       "remainingWork": [
+        "Not built; deferred to the first customer (accounting-system sync).",
         "Get the first customer's adapter choice and list the required production transactions.",
         "Parity matrix + automated tests that each posts, retries and reverses through that adapter with receipts; decide how multiple companies map to provider files.",
         "Reconcile in the provider sandbox and record evidence; CPA sign-off before leaving parallel mode."
@@ -42496,6 +42709,20 @@
         ],
         "existingSupport": "scripts/books-acceptance/scenarios/field-01.cjs (7 subcases: field-01-documents.cjs, field-01-inspections.cjs; orphan storage reconciliation BLOCKED pending storage)",
         "result": "incomplete"
+      },
+      {
+        "id": "MONEY-01",
+        "story": "Money: a wrongly entered land acquisition or start transfer is reversed and re-entered with balanced journals and receipts, spec homes carry no placeholder contract, the cash forecast adds planned starts, closings and takedowns within each reader's scope with what-if scenarios, and house and portfolio margin come from locked baselines with stated cohorts and no silent caps.",
+        "harness": "exists",
+        "covers": [
+          "EP10-02",
+          "EP10-03",
+          "EP10-04",
+          "EP10-05",
+          "EP09-03"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/money-01.cjs (11 subcases: money-01-ledger.cjs, money-01-reports.cjs)",
+        "result": "passed"
       }
     ]
   },

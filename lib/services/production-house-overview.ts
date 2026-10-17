@@ -57,6 +57,12 @@ export type ProductionHouseOverviewData = {
     originalMarginCents: number | null
     originalMarginPercent: number | null
     originalMarginStage: HomeMarginBaselineStage | null
+    /** What the original margin was locked on, beside the same figures today. */
+    originalSalePriceCents: number | null
+    originalCostCents: number | null
+    revisedSalePriceCents: number
+    /** Approved budget plus approved variance, or posted cost once higher. */
+    revisedCostCents: number
   }
   /** What the home was released (else sold) against, and how much of it has been revised since. */
   productRevisions: {
@@ -257,6 +263,10 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       originalMarginCents: original?.marginCents ?? null,
       originalMarginPercent: original?.marginBps == null ? null : original.marginBps / 100,
       originalMarginStage: original?.stage ?? null,
+      originalSalePriceCents: original?.salePriceCents ?? null,
+      originalCostCents: original?.costCents ?? null,
+      revisedSalePriceCents: salePrice,
+      revisedCostCents: margin.projectedCostCents,
     },
     productRevisions: revisionStatus ? {
       stage: revisionStatus.stage,

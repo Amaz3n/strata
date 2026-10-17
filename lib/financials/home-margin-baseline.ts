@@ -199,21 +199,3 @@ export function originalMargin(baselines: CapturedBaseline[]): OriginalMargin | 
     .reduce<OriginalMargin | null>((newest, row) => (!newest || row.capturedAt > newest.capturedAt ? row : newest), null)
   return known("release") ?? known("agreement") ?? null
 }
-
-/**
- * Original margin over several homes, from the homes that have one. The
- * percentage is of the original sale price of those same homes, so a home
- * without a baseline neither inflates nor dilutes it.
- */
-export function rollUpOriginalMargin(rows: Array<OriginalMargin | null>) {
-  const known = rows.filter((row): row is OriginalMargin => row !== null)
-  if (known.length === 0) return { homes: 0, salePriceCents: 0, marginCents: null, marginPercent: null }
-  const salePriceCents = known.reduce((total, row) => total + row.salePriceCents, 0)
-  const marginCents = known.reduce((total, row) => total + row.marginCents, 0)
-  return {
-    homes: known.length,
-    salePriceCents,
-    marginCents,
-    marginPercent: salePriceCents > 0 ? (marginCents / salePriceCents) * 100 : null,
-  }
-}

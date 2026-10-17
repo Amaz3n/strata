@@ -185,7 +185,7 @@ export async function getCommunityPortfolio(
 
   // Margin is an executive fact; a land manager without report.read still gets a
   // full lane, just without the money column.
-  const canReadMargin = await hasPermission("report.read", context)
+  const canReadMargin = await hasPermission("financials.margin.read", context)
   // Unmet entitlements and conditions, read alongside the facts below. Its
   // failure surfaces at the await; the no-op catch only keeps it from being
   // reported as unhandled if a read below fails first.

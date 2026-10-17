@@ -125,9 +125,11 @@ async function releasedHome(kit, org, name) {
 async function releasedSetLabels(kit, expected, check) {
   const org = await documentsOrg(kit)
   const projectId = await releasedHome(kit, org, "FIELD-01 released set")
-  // A superintendent reads drawings but holds neither commitment.read nor selections.read: those sections are withheld, not listed.
+  // A superintendent reads drawings, scope (commitment.scope.read) and confirmed options (selections.released.read), never amounts.
   const field = await kit.as(org.team.superintendent, () => app("released-field-documents").getReleasedForHome(projectId))
-  equal(check, "a role without commitment.read and selections.read gets drawings only, sections withheld", expected.superintendent, { sheets: field.sheets.length, options: field.options, scope: field.scope })
+  equal(check, "the superintendent reads the same sheets, options and scope as the owner", expected.superintendent, { sheets: field.sheets.length, options: field.options?.map((option) => [option.categoryName, option.optionName]) ?? null, scope: field.scope ? scopeRows(field) : null })
+  const amounts = await attempt(() => kit.as(org.team.superintendent, () => app("po-positions").getProjectPoPositions(projectId)))
+  equal(check, "the superintendent still cannot read commitment amounts", "refused", amounts === "allowed" ? "allowed" : "refused")
   const released = await kit.as(org.owner, () => app("released-field-documents").getReleasedForHome(projectId))
   equal(check, "sheets carry current, superseded and pending-review labels", expected.sheets, sheetRows(released))
   equal(check, "options are the confirmed ones only", expected.options, released.options.map((option) => [option.categoryName, option.optionName]))
@@ -268,6 +270,7 @@ async function orphanStorageReconciliation() {
 const withExpected = (run) => (kit, spec, check) => run(kit, spec.expected, check)
 
 module.exports = {
+  helpers: { documentsOrg, releasedHome, scopeRows },
   subcases: {
     "released-set-labels": withExpected(releasedSetLabels),
     "trade-portal-released": withExpected(tradePortalReleased),

@@ -1,6 +1,7 @@
 import { formatMoneyCents, formatPercent } from "@/lib/reports/format"
 import { periodRange, todayIso } from "@/lib/reports/params"
-import type { ReportDefinition } from "@/lib/reports/types"
+import type { ReportColumn, ReportDefinition, ReportParamSpec, ReportParams } from "@/lib/reports/types"
+import { describeMarginCohort, type MarginCohort, type MarginRollup } from "@/lib/financials/margin-rollup"
 import { getBacklogReport } from "@/lib/services/closings"
 import { getLandSupplyReport } from "@/lib/services/community-portfolio"
 import { getCycleTimeReport, getEvenFlowAdherence } from "@/lib/services/even-flow"
@@ -14,20 +15,74 @@ import { getVarianceAnalysis, type VarianceDimension } from "@/lib/services/repo
  */
 const needsCommunities = (ctx: { hasCommunities: boolean }) => ctx.hasCommunities
 
+/** Which homes a margin report counts: every home, or the ones that closed or started in a period. */
+const COHORT_PARAMS: ReportParamSpec[] = [
+  {
+    key: "cohort",
+    kind: "select",
+    label: "Homes counted",
+    options: [
+      { value: "all", label: "Every home in scope" },
+      { value: "closed", label: "Closed in period" },
+      { value: "started", label: "Started in period" },
+    ],
+  },
+  { key: "period", kind: "period", label: "Period" },
+]
+
+function cohortFromParams(params: ReportParams): MarginCohort {
+  if (params.cohort !== "closed" && params.cohort !== "started") return { kind: "all" }
+  const range = periodRange(params.period ?? "ytd")
+  return { kind: params.cohort, from: range.from, to: range.to }
+}
+
+/** Columns every margin rollup carries: revised margin beside the margin locked at release (else sale). */
+const ROLLUP_COLUMNS: ReportColumn[] = [
+  { key: "homes", header: "Homes", type: "number" },
+  { key: "revenue", header: "Revenue", type: "money" },
+  { key: "cost", header: "Revised cost", type: "money" },
+  { key: "margin", header: "Margin", type: "money" },
+  { key: "margin_percent", header: "Margin %", type: "percent" },
+  { key: "original_margin", header: "Original margin", type: "money" },
+  { key: "original_margin_percent", header: "Original %", type: "percent" },
+  { key: "drift", header: "Drift", type: "money" },
+  { key: "unbaselined", header: "No baseline", type: "number" },
+]
+
+function rollupCells(row: MarginRollup) {
+  const baselined = row.baselinedHomes > 0
+  return {
+    homes: row.homes,
+    revenue: row.revenueCents,
+    cost: row.projectedCostCents,
+    margin: row.marginCents,
+    margin_percent: row.marginPercent,
+    original_margin: baselined ? row.originalMarginCents : null,
+    original_margin_percent: row.originalMarginPercent,
+    drift: baselined ? { value: row.driftCents, tone: row.driftCents < 0 ? ("negative" as const) : row.driftCents > 0 ? ("positive" as const) : undefined } : null,
+    unbaselined: row.unbaselinedHomes,
+  }
+}
+
+const BASELINE_NOTE = "Original margin is the baseline locked at release (else at sale) and never moves; revised cost is today's approved budget plus approved variance orders, or posted cost once higher. Drift compares those two over the homes that have a baseline."
+
 const communityPnl: ReportDefinition = {
   slug: "community-pnl",
   title: "Community P&L",
   summary: "Closed revenue, backlog, direct cost, VPO leakage, and projected margin for every community.",
   group: "production",
   scopes: ["org"],
-  permissions: ["report.read"],
+  permissions: ["report.read", "financials.margin.read"],
   available: needsCommunities,
   ambientScope: "full",
+  params: COHORT_PARAMS,
   run: async (ctx) => {
-    const report = await getProductionPortfolioReport({ divisionId: ctx.divisionId, communityId: ctx.communityId })
+    const report = await getProductionPortfolioReport({ divisionId: ctx.divisionId, communityId: ctx.communityId, cohort: cohortFromParams(ctx.params) })
     const totals = report.totals
 
     return {
+      subtitle: describeMarginCohort(report.cohort),
+      notice: report.marginRestricted ? { tone: "warning", message: "Margin requires the margin permission." } : { tone: "info", message: BASELINE_NOTE },
       stats: [
         { key: "revenue", label: "Revenue", value: formatMoneyCents(totals.revenueCents) },
         { key: "closed", label: "Closed", value: formatMoneyCents(totals.closedRevenueCents) },
@@ -56,6 +111,8 @@ const communityPnl: ReportDefinition = {
             { key: "margin", header: "Margin", type: "money" },
             { key: "margin_percent", header: "Margin %", type: "percent" },
             { key: "original_margin_percent", header: "Original %", type: "percent" },
+            { key: "drift", header: "Drift", type: "money" },
+            { key: "unbaselined", header: "No baseline", type: "number" },
             { key: "target_margin_percent", header: "target_margin_percent", exportOnly: true },
           ],
           rows: report.communities.map((row) => {
@@ -81,6 +138,8 @@ const communityPnl: ReportDefinition = {
                 },
                 // Locked at sale and release; the drift from it is the variance.
                 original_margin_percent: row.originalMarginPercent,
+                drift: row.originalMarginHomes > 0 ? row.driftCents : null,
+                unbaselined: row.unbaselinedHomes,
                 target_margin_percent: row.targetMarginPercent,
               },
             }
@@ -94,6 +153,8 @@ const communityPnl: ReportDefinition = {
             vpo: totals.vpoCents,
             margin: totals.marginCents,
             margin_percent: totals.marginPercent,
+            drift: report.rollup.baselinedHomes > 0 ? report.rollup.driftCents : null,
+            unbaselined: report.rollup.unbaselinedHomes,
           },
           emptyMessage: "No active communities in this scope.",
         },
@@ -105,21 +166,24 @@ const communityPnl: ReportDefinition = {
 const marginByPlan: ReportDefinition = {
   slug: "margin-by-plan",
   title: "Margin by Plan",
-  summary: "Projected contribution per house plan across every community — which product is actually carrying the division.",
+  summary: "Margin per house plan and plan version across every community, revised against the margin each home was locked at — which product is actually carrying the division.",
   group: "production",
   scopes: ["org"],
-  permissions: ["report.read"],
+  permissions: ["report.read", "financials.margin.read"],
   available: needsCommunities,
   ambientScope: "full",
+  params: COHORT_PARAMS,
   run: async (ctx) => {
-    const report = await getProductionPortfolioReport({ divisionId: ctx.divisionId, communityId: ctx.communityId })
-    const homes = report.plans.reduce((sum, row) => sum + row.homes, 0)
-    const margin = report.plans.reduce((sum, row) => sum + row.marginCents, 0)
-    const revenue = report.plans.reduce((sum, row) => sum + row.revenueCents, 0)
+    const report = await getProductionPortfolioReport({ divisionId: ctx.divisionId, communityId: ctx.communityId, cohort: cohortFromParams(ctx.params) })
+    const homes = report.rollup.homes
+    const margin = report.totals.marginCents
+    const revenue = report.totals.revenueCents
 
     return {
+      subtitle: describeMarginCohort(report.cohort),
+      notice: report.marginRestricted ? { tone: "warning", message: "Margin requires the margin permission." } : { tone: "info", message: BASELINE_NOTE },
       stats: [
-        { key: "plans", label: "Plans building", value: String(report.plans.length) },
+        { key: "plans", label: "Plans building", value: String(report.plans.filter((row) => row.planId).length) },
         { key: "homes", label: "Homes", value: String(homes) },
         { key: "revenue", label: "Revenue", value: formatMoneyCents(revenue) },
         {
@@ -133,36 +197,69 @@ const marginByPlan: ReportDefinition = {
       tables: [
         {
           key: "plans",
+          title: "By plan",
+          columns: [{ key: "plan", header: "Plan" }, { key: "plan_id", header: "plan_id", exportOnly: true }, ...ROLLUP_COLUMNS],
+          rows: report.plans.map((row) => ({
+            key: row.planId ?? "unassigned",
+            href: row.planId ? `/plans/${row.planId}` : undefined,
+            cells: { plan: row.planName, plan_id: row.planId, ...rollupCells(row) },
+          })),
+          totals: { plan: `${report.plans.length} plan${report.plans.length === 1 ? "" : "s"}`, ...rollupCells(report.rollup) },
+          emptyMessage: "No homes in this cohort.",
+        },
+        {
+          key: "plan_versions",
+          title: "By plan version",
           columns: [
             { key: "plan", header: "Plan" },
-            { key: "plan_id", header: "plan_id", exportOnly: true },
-            { key: "homes", header: "Homes", type: "number" },
-            { key: "revenue", header: "Revenue", type: "money" },
-            { key: "cost", header: "Cost", type: "money" },
-            { key: "margin", header: "Margin", type: "money" },
-            { key: "margin_percent", header: "Margin %", type: "percent" },
+            { key: "version", header: "Version", type: "number" },
+            { key: "plan_version_id", header: "plan_version_id", exportOnly: true },
+            ...ROLLUP_COLUMNS,
           ],
-          rows: report.plans.map((row) => ({
-            key: row.planId,
-            href: `/plans/${row.planId}`,
-            cells: {
-              plan: row.planName,
-              plan_id: row.planId,
-              homes: row.homes,
-              revenue: row.revenueCents,
-              cost: row.costCents,
-              margin: row.marginCents,
-              margin_percent: row.marginPercent,
-            },
+          rows: report.planVersions.map((row) => ({
+            key: row.planVersionId ?? "unassigned",
+            href: row.planId ? `/plans/${row.planId}` : undefined,
+            cells: { plan: row.planName, version: row.versionNumber, plan_version_id: row.planVersionId, ...rollupCells(row) },
           })),
-          totals: {
-            plan: `${report.plans.length} plan${report.plans.length === 1 ? "" : "s"}`,
-            homes,
-            revenue,
-            cost: report.plans.reduce((sum, row) => sum + row.costCents, 0),
-            margin,
-          },
-          emptyMessage: "No homes in progress against a plan.",
+          emptyMessage: "No homes in this cohort.",
+        },
+      ],
+    }
+  },
+}
+
+const marginByDivision: ReportDefinition = {
+  slug: "margin-by-division",
+  title: "Margin by Division",
+  summary: "Margin per division, revised against the margin each home was locked at, over an explicit cohort of homes.",
+  group: "production",
+  scopes: ["org"],
+  permissions: ["report.read", "financials.margin.read"],
+  available: needsCommunities,
+  ambientScope: "full",
+  params: COHORT_PARAMS,
+  run: async (ctx) => {
+    const report = await getProductionPortfolioReport({ divisionId: ctx.divisionId, communityId: ctx.communityId, cohort: cohortFromParams(ctx.params) })
+    const totals = report.totals
+
+    return {
+      subtitle: describeMarginCohort(report.cohort),
+      notice: report.marginRestricted ? { tone: "warning", message: "Margin requires the margin permission." } : { tone: "info", message: BASELINE_NOTE },
+      stats: [
+        { key: "homes", label: "Homes", value: String(report.rollup.homes) },
+        { key: "revenue", label: "Revenue", value: formatMoneyCents(totals.revenueCents) },
+        { key: "margin", label: "Margin", value: formatMoneyCents(totals.marginCents), detail: formatPercent(totals.marginPercent), tone: totals.marginCents < 0 ? "negative" : "positive" },
+      ],
+      tables: [
+        {
+          key: "divisions",
+          columns: [{ key: "division", header: "Division" }, { key: "division_id", header: "division_id", exportOnly: true }, ...ROLLUP_COLUMNS],
+          rows: report.divisions.map((row) => ({
+            key: row.divisionId ?? "none",
+            cells: { division: row.divisionName, division_id: row.divisionId, ...rollupCells(row) },
+          })),
+          totals: { division: `${report.divisions.length} division${report.divisions.length === 1 ? "" : "s"}`, ...rollupCells(report.rollup) },
+          emptyMessage: "No homes in this cohort.",
         },
       ],
     }
@@ -716,6 +813,7 @@ const landSupply: ReportDefinition = {
 
 export const PRODUCTION_REPORTS: ReportDefinition[] = [
   communityPnl,
+  marginByDivision,
   marginByPlan,
   closingBacklog,
   salesPerformance,

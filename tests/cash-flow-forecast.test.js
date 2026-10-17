@@ -161,3 +161,107 @@ test("a terminated contract's obligations leave the plan; a paid fee is not owed
 
   assert.deepEqual(landByMonth(report), [[new Date().toISOString().slice(0, 7), 5_000_00]])
 })
+
+// ---------------------------------------------------------------------------
+// Construction drivers: planned starts, scheduled closings and the what-if.
+// ---------------------------------------------------------------------------
+
+const CONSTRUCTION_PERMISSIONS = ["report.read", "project.read", "budget.read", "commitment.read", "invoice.read", "sales.read"]
+
+function constructionHarness(options = {}) {
+  const startHome = (n, divisionId) => ({ ...project(n, divisionId), phase: "precon", status: "planning" })
+  return createServiceHarness({
+    permissions: CONSTRUCTION_PERMISSIONS,
+    tables: {
+      // Homes 1 and 2 are in the reader's division; home 3 is not.
+      projects: [startHome(1, OWN_DIVISION), startHome(2, OWN_DIVISION), startHome(3, OTHER_DIVISION)],
+      invoices: [
+        // Home 2's earnest deposit is already billed: it is a receivable, not closing proceeds.
+        { ...invoice(1, id(22), 20_000_00), status: "paid", balance_due_cents: 0, due_date: "2099-01-10" },
+      ],
+      vendor_bills: [],
+      commitments: [
+        // Home 1 has 100k of its 300k budget already committed to a trade.
+        { id: id(150), org_id: ORG, project_id: id(21), total_cents: 100_000_00, status: "approved", vendor_bills: [] },
+      ],
+      budgets: [
+        { id: id(160), org_id: ORG, project_id: id(21), version: 1, status: "approved", total_cents: 300_000_00 },
+        { id: id(161), org_id: ORG, project_id: id(22), version: 1, status: "approved", total_cents: 250_000_00 },
+        { id: id(162), org_id: ORG, project_id: id(23), version: 1, status: "approved", total_cents: 999_000_00 },
+      ],
+      start_packages: [
+        { id: id(170), org_id: ORG, project_id: id(21), status: "ready", target_week: "2099-03-02", scheduled_start_date: "2099-03-04" },
+        { id: id(171), org_id: ORG, project_id: id(22), status: "open", target_week: "2099-04-06", scheduled_start_date: null },
+        { id: id(172), org_id: ORG, project_id: id(23), status: "open", target_week: "2099-04-06", scheduled_start_date: null },
+        { id: id(173), org_id: ORG, project_id: id(21), status: "released", target_week: "2099-05-04", scheduled_start_date: "2099-05-04" },
+      ],
+      closings: [
+        { id: id(180), org_id: ORG, project_id: id(21), status: "scheduled", scheduled_date: "2099-06-26" },
+        { id: id(181), org_id: ORG, project_id: id(22), status: "projected", scheduled_date: "2099-07-10" },
+        { id: id(182), org_id: ORG, project_id: id(23), status: "scheduled", scheduled_date: "2099-07-10" },
+        { id: id(183), org_id: ORG, project_id: id(21), status: "closed", scheduled_date: "2099-02-01" },
+      ],
+      contracts: [
+        { id: id(190), org_id: ORG, project_id: id(21), contract_type: "purchase_agreement", status: "active", total_cents: 450_000_00, signed_at: "2099-01-01" },
+        { id: id(191), org_id: ORG, project_id: id(22), contract_type: "purchase_agreement", status: "active", total_cents: 400_000_00, signed_at: "2099-01-01" },
+        { id: id(192), org_id: ORG, project_id: id(23), contract_type: "purchase_agreement", status: "active", total_cents: 900_000_00, signed_at: "2099-01-01" },
+      ],
+    },
+    ...options,
+  })
+}
+
+const column = (report, key) => report.rows.filter((row) => row[key]).map((row) => [row.month, row[key]])
+
+test("planned starts cost their uncommitted budget in the start month, and closings bring the price less what is billed", async () => {
+  const report = await constructionHarness({ divisions: [OWN_DIVISION] }).run(() => getCashFlowForecast({}))
+
+  // Home 1: 300k budget - 100k committed in March; home 2: 250k in April (its target week). Released and other-division starts are not in it.
+  assert.deepEqual(column(report, "starts_cost_cents"), [["2099-03", 200_000_00], ["2099-04", 250_000_00]])
+  // Home 1 closes June for 450k; home 2 closes July for 400k less its 20k paid deposit.
+  assert.deepEqual(column(report, "closing_proceeds_cents"), [["2099-06", 450_000_00], ["2099-07", 380_000_00]])
+  // Home 1's 100k PO is committed cost too, counted once beside its start.
+  assert.equal(report.totals.net_cents, (450_000_00 + 380_000_00) - 200_000_00 - 250_000_00 - 100_000_00)
+  assert.deepEqual(report.drivers.starts, { count: 2, costCents: 450_000_00, undatedCount: 0, unbudgetedCount: 0, restricted: false })
+  assert.deepEqual(report.drivers.closings, { count: 2, proceedsCents: 830_000_00, undatedCount: 0, unsignedCount: 0, restricted: false })
+})
+
+test("a reader without the other division sees none of its starts or closings; an unlimited reader sees them all", async () => {
+  const all = await constructionHarness().run(() => getCashFlowForecast({}))
+
+  assert.equal(all.drivers.starts.costCents, 200_000_00 + 250_000_00 + 999_000_00)
+  assert.equal(all.drivers.closings.proceedsCents, 450_000_00 + 380_000_00 + 900_000_00)
+  assert.equal(all.totals.starts_cost_cents, all.drivers.starts.costCents)
+  assert.equal(all.totals.closing_proceeds_cents, all.drivers.closings.proceedsCents)
+})
+
+test("a scenario slips closings by whole weeks and scales starts, leaving everything already billed alone", async () => {
+  const base = await constructionHarness({ divisions: [OWN_DIVISION] }).run(() => getCashFlowForecast({}))
+  const slipped = await constructionHarness({ divisions: [OWN_DIVISION] }).run(() => getCashFlowForecast({ scenario: { closingShiftWeeks: 8, startPacePercent: 50 } }))
+
+  // 2099-06-26 + 8 weeks is 2099-08-21; 2099-07-10 + 8 weeks is 2099-09-04.
+  assert.deepEqual(column(slipped, "closing_proceeds_cents"), [["2099-08", 450_000_00], ["2099-09", 380_000_00]])
+  assert.deepEqual(column(slipped, "starts_cost_cents"), [["2099-03", 100_000_00], ["2099-04", 125_000_00]])
+  assert.equal(slipped.totals.inflow_cents, base.totals.inflow_cents)
+  assert.equal(slipped.totals.closing_proceeds_cents, base.totals.closing_proceeds_cents)
+  await assert.rejects(constructionHarness().run(() => getCashFlowForecast({ scenario: { closingShiftWeeks: 500 } })))
+})
+
+test("a reader who cannot open budgets or invoices gets no starts or closings rather than overstated ones", async () => {
+  const report = await constructionHarness({ permissions: ["report.read", "project.read"] }).run(() => getCashFlowForecast({}))
+
+  assert.deepEqual(report.rows.filter((row) => row.starts_cost_cents || row.closing_proceeds_cents), [])
+  assert.equal(report.drivers.starts.restricted, true)
+  assert.equal(report.drivers.closings.restricted, true)
+})
+
+test("a home still to start counts its purchase orders and billed deposit once, and a closing invoice is not counted twice", async () => {
+  const report = await constructionHarness({
+    divisions: [OWN_DIVISION],
+  }).run(() => getCashFlowForecast({}))
+
+  // Home 1 (precon, 100k committed against a 300k budget, ends 2099-12-31): the 100k is committed-unbilled once,
+  // and the start costs only the other 200k.
+  assert.equal(report.totals.committed_unbilled_cents, 100_000_00)
+  assert.equal(report.totals.starts_cost_cents, 450_000_00)
+})

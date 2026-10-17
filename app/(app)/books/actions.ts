@@ -1303,6 +1303,29 @@ export async function acquireLandInventoryAction(
   );
 }
 
+export async function reverseLandAcquisitionAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/inventory").reverseLandAcquisition
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).reverseLandAcquisition(
+      input,
+    ),
+  );
+}
+export async function correctLandStartTransferAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/inventory").correctLandStartTransfer
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).correctLandStartTransfer(
+      input,
+    ),
+  );
+}
+
 export async function loadInventoryAllocationWorkspaceAction(projectId: string) {
   return read(async () =>
     (

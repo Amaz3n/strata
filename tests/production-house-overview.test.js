@@ -33,6 +33,9 @@ test("a home's margin reads the approved budget and every posted cost", async ()
       daily_logs: [],
       warranty_requests: [],
       change_orders: [],
+      home_margin_baselines: [
+        { id: id(20), org_id: ORG, project_id: HOME, stage: "release", captured_at: "2026-04-01T00:00:00Z", sale_price_cents: 500_000_00, cost_cents: 390_000_00, margin_cents: 110_000_00, margin_bps: 2200 },
+      ],
     },
     permissions: ["project.read"],
     maxRows: 2,
@@ -40,6 +43,13 @@ test("a home's margin reads the approved budget and every posted cost", async ()
 
   const overview = await service.run(() => getProductionHouseOverview(HOME))
 
+  // Original (locked at release) beside revised (approved budget + approved variance): 110k against 500k - 405k.
+  assert.equal(overview.money.originalSalePriceCents, 500_000_00)
+  assert.equal(overview.money.originalCostCents, 390_000_00)
+  assert.equal(overview.money.originalMarginCents, 110_000_00)
+  assert.equal(overview.money.revisedSalePriceCents, 500_000_00)
+  assert.equal(overview.money.revisedCostCents, 405_000_00)
+  assert.equal(overview.money.projectedMarginCents, 95_000_00)
   assert.equal(overview.money.budgetCents, 400_000_00)
   assert.equal(overview.money.actualCostCents, 30_000_00)
   // An approved purchase-order change counts as a variance order even with no reason on it; a draft does not.

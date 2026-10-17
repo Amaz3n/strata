@@ -224,8 +224,8 @@ export async function getReleasedForHome(projectId: string, orgId?: string): Pro
   if (error) throw new Error(`Failed to load home: ${error.message}`)
   if (!project) throw new Error("Home not found")
   const [canScope, canOptions] = await Promise.all([
-    hasProjectPermission(context.userId, projectId, "commitment.read"),
-    hasProjectPermission(context.userId, projectId, "selections.read"),
+    hasProjectPermission(context.userId, projectId, "commitment.scope.read"),
+    hasProjectPermission(context.userId, projectId, "selections.released.read"),
   ])
   const [sheets, options, scope] = await Promise.all([
     loadSheets(context.orgId, projectId, "field"),

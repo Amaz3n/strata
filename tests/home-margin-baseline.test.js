@@ -9,7 +9,6 @@ const {
   homeMarginBaseline,
   marginBasisPoints,
   originalMargin,
-  rollUpOriginalMargin,
 } = require("../lib/financials/home-margin-baseline")
 
 test("a home released on a base budget adds its options' cost", () => {
@@ -69,15 +68,6 @@ test("the original margin is the release baseline, else the agreement's", () => 
   const resale = { ...agreement, capturedAt: "2026-08-01T00:00:00Z", salePriceCents: 520_000_00, marginCents: 130_000_00, marginBps: 2500 }
   assert.equal(originalMargin([resale, agreement]).salePriceCents, 520_000_00)
   assert.equal(originalMargin([agreement, resale]).salePriceCents, 520_000_00)
-})
-
-test("a community's original margin is over the homes that have one", () => {
-  const home = (sale, margin) => ({ stage: "release", capturedAt: "2026-07-01T00:00:00Z", salePriceCents: sale, costCents: sale - margin, marginCents: margin, marginBps: null })
-
-  assert.deepEqual(rollUpOriginalMargin([home(400_000_00, 80_000_00), home(600_000_00, 120_000_00), null]), {
-    homes: 2, salePriceCents: 1_000_000_00, marginCents: 200_000_00, marginPercent: 20,
-  })
-  assert.deepEqual(rollUpOriginalMargin([null]), { homes: 0, salePriceCents: 0, marginCents: null, marginPercent: null })
 })
 
 test("a takeoff estimate takes a lump-sum agreement as the line's amount and an empty takeoff as no estimate", () => {

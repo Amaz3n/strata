@@ -57,15 +57,40 @@ export async function getInventoryWorkspace() {
   return projects.filter(project => bases.get(project.id) === "closing").map(project => ({ id: project.id, name: project.name, policy: policies.get(project.id) ?? null }))
 }
 
+/** Entries the correction list shows; a longer history says so instead of paging silently. */
+const LAND_CORRECTION_CAP = 50
 export async function getLandAcquisitionWorkspace() {
   const context = await inventoryContext("books.adjust")
   const service = createServiceSupabaseClient()
-  const [lots, accounts, debt] = await Promise.all([
+  const [lots, accounts, debt, owned, starts] = await Promise.all([
     collectBooksRows((from,to) => service.from("lots").select("id,lot_number,community:communities(name)").eq("org_id",context.orgId).eq("status","controlled").order("id").range(from,to)),
     collectBooksRows((from,to) => service.from("gl_accounts").select("id,code,name").eq("org_id",context.orgId).eq("active",true).eq("subtype","cash").order("id").range(from,to)),
     collectBooksRows((from,to) => service.from("books_debt_instruments").select("id,name").eq("org_id",context.orgId).eq("active",true).order("id").range(from,to)),
+    service.from("lots").select("id,lot_number,cost_basis_cents,books_acquisition_entry_id,community:communities(name),entry:journal_entries!lots_books_acquisition_entry_id_fkey(entry_date,memo)")
+      .eq("org_id",context.orgId).eq("status","owned").not("books_acquisition_entry_id","is",null).order("acquired_date",{ ascending: false }).limit(LAND_CORRECTION_CAP + 1),
+    service.from("journal_entries").select("source_id,entry_date,memo").eq("org_id",context.orgId).eq("source_type","inventory_start").eq("status","posted").order("entry_date",{ ascending: false }).limit(LAND_CORRECTION_CAP + 1),
   ])
-  return { lots: lots.map(lot => { const community = Array.isArray(lot.community) ? lot.community[0] : lot.community; return { id: lot.id, name: `${community?.name ?? "Community"} · Lot ${lot.lot_number}` } }), accounts, debt }
+  if (owned.error) throw new Error(`Failed to load acquired lots: ${owned.error.message}`)
+  if (starts.error) throw new Error(`Failed to load start transfers: ${starts.error.message}`)
+  const label = (lot: { lot_number: string | number; community: unknown }) => { const community = Array.isArray(lot.community) ? lot.community[0] : lot.community; return `${community && typeof community === "object" && "name" in community ? String(community.name) : "Community"} · Lot ${lot.lot_number}` }
+  const startRows = starts.data.slice(0, LAND_CORRECTION_CAP)
+  const startLots = startRows.length === 0 ? [] : await collectBooksRows((from,to) => service.from("lots").select("id,lot_number,community:communities(name)").eq("org_id",context.orgId).in("id",startRows.map(row => String(row.source_id))).order("id").range(from,to))
+  const startLotById = new Map(startLots.map(lot => [lot.id, lot]))
+  const acquisitions = new Map<string, { entryId: string; date: string; memo: string; lots: { id: string; name: string; amountCents: number }[] }>()
+  for (const lot of owned.data.slice(0, LAND_CORRECTION_CAP)) {
+    const entry = Array.isArray(lot.entry) ? lot.entry[0] : lot.entry
+    const entryId = String(lot.books_acquisition_entry_id)
+    const group = acquisitions.get(entryId) ?? { entryId, date: String(entry?.entry_date ?? ""), memo: String(entry?.memo ?? "Land acquisition"), lots: [] }
+    group.lots.push({ id: lot.id, name: label(lot), amountCents: Number(lot.cost_basis_cents ?? 0) })
+    acquisitions.set(entryId, group)
+  }
+  return {
+    lots: lots.map(lot => ({ id: lot.id, name: label(lot) })), accounts, debt,
+    acquisitions: [...acquisitions.values()],
+    startTransfers: startRows.flatMap(row => { const lot = startLotById.get(String(row.source_id)); return lot ? [{ lotId: lot.id, name: label(lot), date: String(row.entry_date) }] : [] }),
+    correctionCap: LAND_CORRECTION_CAP,
+    correctionsTruncated: owned.data.length > LAND_CORRECTION_CAP || starts.data.length > LAND_CORRECTION_CAP,
+  }
 }
 const landAcquisitionSchema = z.object({
   date: z.string().date(), allocations: z.array(z.object({ lotId: z.string().uuid(), amountCents: z.number().int().safe().positive() })).min(1).max(250),
@@ -84,6 +109,36 @@ export async function acquireLandInventory(input: z.input<typeof landAcquisition
 export async function transferLandAtStartForService(orgId: string, lotId: string, date: string, actorId: string | null) {
   const { error } = await createServiceSupabaseClient().rpc("transfer_books_land_to_start", { p_org_id: orgId, p_lot_id: lotId, p_date: date, p_actor_id: actorId })
   if (error) throw new Error(`Failed to transfer lot basis to construction: ${error.message}`)
+}
+
+const landReversalSchema = z.object({ entryId: z.string().uuid(), date: z.string().date(), reason: z.string().trim().min(5).max(500) })
+/**
+ * Reverses a posted land acquisition so it can be recorded again with the right
+ * amount, date or lot. The lots return to controlled; the original, its reversal
+ * and the replacement stay in the ledger. Retrying returns the same reversal.
+ */
+export async function reverseLandAcquisition(input: z.input<typeof landReversalSchema>) {
+  const parsed = landReversalSchema.parse(input)
+  const context = await inventoryContext("books.adjust")
+  const { data, error } = await createServiceSupabaseClient().rpc("reverse_books_land_acquisition", { p_org_id: context.orgId, p_entry_id: parsed.entryId, p_date: parsed.date, p_reason: parsed.reason, p_actor_id: context.userId })
+  if (error) throw new Error(`Failed to reverse land acquisition: ${error.message}`)
+  const reversalEntryId = z.string().uuid().parse(data)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "journal_entry", entityId: parsed.entryId, after: { ...parsed, reversal_entry_id: reversalEntryId }, source: "books.land_acquisition_reversal" })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.land_acquisition_reversed", entityType: "journal_entry", entityId: parsed.entryId, payload: { reversal_entry_id: reversalEntryId, reason: parsed.reason } })
+  return { reversalEntryId }
+}
+
+const landStartCorrectionSchema = z.object({ lotId: z.string().uuid(), reversalDate: z.string().date(), reason: z.string().trim().min(5).max(500), repostDate: z.string().date().nullable() })
+/** Reverses a lot's start transfer and, when a date is given, posts it again on that date. */
+export async function correctLandStartTransfer(input: z.input<typeof landStartCorrectionSchema>) {
+  const parsed = landStartCorrectionSchema.parse(input)
+  const context = await inventoryContext("books.adjust")
+  const { data, error } = await createServiceSupabaseClient().rpc("correct_books_land_start_transfer", { p_org_id: context.orgId, p_lot_id: parsed.lotId, p_reversal_date: parsed.reversalDate, p_reason: parsed.reason, p_repost_date: parsed.repostDate, p_actor_id: context.userId })
+  if (error) throw new Error(`Failed to correct the start transfer: ${error.message}`)
+  const result = z.object({ reversal_entry_id: z.string().uuid(), transfer: z.object({ status: z.string(), id: z.string().uuid().optional() }).nullable() }).parse(data)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: parsed.lotId, after: { ...parsed, ...result }, source: "books.land_start_correction" })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.land_start_corrected", entityType: "lot", entityId: parsed.lotId, payload: { reversal_entry_id: result.reversal_entry_id, transfer_entry_id: result.transfer?.id ?? null, reason: parsed.reason } })
+  return { reversalEntryId: result.reversal_entry_id, transferEntryId: result.transfer?.id ?? null }
 }
 
 const ALLOCATION_BASES = ["equal", "front_footage", "square_footage", "sales_value", "custom"] as const

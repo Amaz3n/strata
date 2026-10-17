@@ -8,11 +8,11 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 64.7% — a documented lower bound, not an ETA |
-| Fully verified | 61.9% |
+| Implemented | 67.5% — a documented lower bound, not an ETA |
+| Fully verified | 64.7% |
 | Release ready | 0% |
 | Code implemented | 4 items |
-| Partially implemented | 32 items |
+| Partially implemented | 28 items |
 | Known pending tasks | 13 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 69 items; this does not imply full workflow verification |
@@ -39,8 +39,6 @@ The earlier rough 30% estimate is superseded by this evidence-based reporting. T
 
 ## Concrete audit findings
 
-- Production portfolio report has fixed 250-community and 2000-home/fact caps (EP10-05).
-- Cash forecast has a 1000-project cap and lacks accepted starts/closing/takedown/financing scenarios (EP10-03).
 - Warranty division project helper uses limit(1000), risking incomplete defect scope (EP11-08).
 - Agreement creation and closing use multiple independent side effects; transaction/crash/concurrency acceptance is incomplete (EP05-02, EP05-09).
 - Starts claim-token consumers remain inactive; staged migrations and drawing/configuration flags are not activated (EP07-18, EP14-09).
@@ -178,7 +176,7 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | --- | --- | --- | --- |
 | EP09-01 | Assigned-home mobile access | partial | Mobile and iOS are out of scope for this launch; deferred. |
 | EP09-02 | Offline conflict recovery | partial | Mobile and iOS are out of scope for this launch; deferred. |
-| EP09-03 | Released field documents | verified | Apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable) (pending approval). |
+| EP09-03 | Released field documents | verified | Apply the plan drawing publication migrations (the transactional copy is the only path since EP07; no flag to enable) and 20261017110000_superintendent_reads_scope_and_options (pending approval). |
 | EP09-04 | Inspection failure lifecycle | verified | Apply the EP09 migrations 20261016100000_inspection_corrective_work_link and 20261016110000_inspection_punch_write_guard (pending approval). |
 | EP09-05 | Punch and close readiness | verified | Apply migration 20261010114000_punch_permissions_for_field_leads (pending approval) before relying on punch.write in production. |
 | EP09-06 | Cross-home daily records | partial | Run FIELD-01 orphan-storage-reconciliation on the acceptance stack once acceptance storage exists, and build the sweep it proves. |
@@ -190,12 +188,12 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
 | EP10-01 | Legal-entity financial reconciliation | verified | Decide whether a first production builder needs independent per-company close/reopen; if yes, build it (today companies close together). |
-| EP10-02 | Inventory and land capitalization | partial | Add a governed correction for a land acquisition (reverse, clear the lot's acquisition pointer, re-acquire) and for a start transfer (reverse and re-transfer when the start is undone or redated), preserving receipts. |
-| EP10-03 | Construction-driven cash forecast | partial | Feed starts (budgets by schedule), closings (settlement proceeds), takedowns, loan draws and payoffs, with editable scenario assumptions. |
-| EP10-04 | Margin arithmetic | partial | Expose original vs revised budget separately from the approved/locked baseline. |
-| EP10-05 | Complete portfolio reporting | partial | Define and persist immutable baselines (budget snapshot at start/sale) and cohorts (start/sale/close period). |
-| EP10-06 | Loan draw and payoff lifecycle | partial | Model construction loans per home/community (limit, availability, lender, draw requests with evidence) on top of the debt register. |
-| EP10-07 | Accounting adapter parity | partial | Get the first customer's adapter choice and list the required production transactions. |
+| EP10-02 | Inventory and land capitalization | verified | Apply 20261017100000_books_land_inventory_corrections and 20261017120000_repair_placeholder_home_contracts (pending approval). |
+| EP10-03 | Construction-driven cash forecast | verified | Open from Books cash and reconcile inputs to their subledgers (QA at customer scale). |
+| EP10-04 | Margin arithmetic | verified | QA: compare a representative home's margin to its Books cost of sales. |
+| EP10-05 | Complete portfolio reporting | verified | Reconciliation test at agreed scale; QA. |
+| EP10-06 | Loan draw and payoff lifecycle | partial | Not built; deferred to the first customer (construction loans). |
+| EP10-07 | Accounting adapter parity | partial | Not built; deferred to the first customer (accounting-system sync). |
 | EP10-08 | Period close and financial recovery | verified | Approve and deploy 20261003002108_books_close_control_integrity.sql, 20261006155617_books_period_close_recovery.sql and 20261007200000_books_home_inventory_controls.sql (pending list 2026-10-08). |
 
 ### EP11: Warranty and customer care

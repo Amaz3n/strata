@@ -2,7 +2,7 @@
   "scenario": "FIELD-01",
   "subcases": {
     "released-set-labels": {
-      "derivation": "A home's drawing set has revision Plan v1 and Plan v2 published and Plan v3 a draft copy. Sheet A-101 is current at v2 and also carries v1, so v1 is superseded; A-102 and A-104 are current at v1; A-103 exists only in the draft v3, so it is pending review. Rows sort by sheet number, current before superseded. Of three selections only the confirmed (Flooring, LVP Oak) and the ordered (Cabinets, Shaker White) are released; the merely selected Fixtures choice is not, and the lists are by category. Awarded scope is the approved framing package (two lines in order) and the approved concrete package; a draft and a canceled commitment are not scope. A superintendent limited to another division is refused. The superintendent role holds drawing.read but neither commitment.read nor selections.read, so for them the five sheet rows are returned and options and scope are withheld (null); the owner, who holds all three, sees the full lists above.",
+      "derivation": "A home's drawing set has revision Plan v1 and Plan v2 published and Plan v3 a draft copy. Sheet A-101 is current at v2 and also carries v1, so v1 is superseded; A-102 and A-104 are current at v1; A-103 exists only in the draft v3, so it is pending review. Rows sort by sheet number, current before superseded. Of three selections only the confirmed (Flooring, LVP Oak) and the ordered (Cabinets, Shaker White) are released; the merely selected Fixtures choice is not, and the lists are by category. Awarded scope is the approved framing package (two lines in order) and the approved concrete package; a draft and a canceled commitment are not scope. A superintendent limited to another division is refused. The superintendent role holds drawing.read, the price-free commitment.scope.read and selections.released.read (owner decision, EP10; commitment.read, which opens amounts, stays withheld), so the superintendent sees the same five sheet rows, options and scope as the owner. The superintendent cannot read the home's purchase-order positions (commitment amounts): refused.",
       "expected": {
         "sheets": [
           [
@@ -59,8 +59,31 @@
         "outsideDivision": "refused",
         "superintendent": {
           "sheets": 5,
-          "options": null,
-          "scope": null
+          "options": [
+            [
+              "Cabinets",
+              "Shaker White"
+            ],
+            [
+              "Flooring",
+              "LVP Oak"
+            ]
+          ],
+          "scope": [
+            [
+              "Framing package",
+              [
+                "Frame walls 2400 sf",
+                "Install trusses 24 ea"
+              ]
+            ],
+            [
+              "Concrete package",
+              [
+                "Pour slab 1800 sf"
+              ]
+            ]
+          ]
         }
       }
     },
