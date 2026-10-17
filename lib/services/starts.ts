@@ -29,6 +29,7 @@ import { loadEntitlementBlockersForLot } from "@/lib/services/land-entitlements"
 import { readAgreementMilestoneBlockers, readStartFinancingRecord } from "@/lib/services/agreement-milestones"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import { resolveSuperintendentLimits, superintendentLoad, superintendentRemaining, type SuperintendentLoad } from "@/lib/starts/superintendent-load"
+import { enforceMutationRateLimit } from "@/lib/services/auth-rate-limit"
 import {
   gateAttestSchema,
   gateDefinitionSchema,
@@ -941,7 +942,11 @@ export async function releaseStarts(
   await requirePermission("start.release", context)
   await requireStartsMember(context)
   const result: BatchReleaseResult = { released: [], needsConfirm: [], failed: [] }
-  for (const id of Array.from(new Set(ids))) {
+  const unique = Array.from(new Set(ids))
+  // An empty batch releases nothing and spends nothing.
+  if (unique.length === 0) return result
+  await enforceMutationRateLimit("starts_release", context.orgId)
+  for (const id of unique) {
     try {
       const outcome = await releaseStart(id, input, context.orgId)
       if ("requiresConfirm" in outcome) result.needsConfirm.push({ id, slot: outcome.slot })

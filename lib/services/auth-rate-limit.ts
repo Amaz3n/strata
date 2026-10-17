@@ -85,3 +85,43 @@ export async function enforceAuthRateLimit(action: RateLimitAction, scope?: stri
     throw new RateLimitError()
   }
 }
+
+/**
+ * Bulk and expensive mutations, budgeted per organization: each one fans out
+ * into many rows or a long background job, and every tenant shares the same
+ * workers and database. The budget is the organization's, not the member's, so
+ * fifty members cannot together starve the other tenants. Sized for the
+ * first-builder load (3 divisions, 30 communities, 500 active homes, 50 users)
+ * with room for an onboarding day; a refusal says how long to wait.
+ */
+type MutationRateLimitAction = "import_stage" | "import_commit" | "starts_release" | "books_export" | "document_export"
+
+const MUTATION_RULES: Record<MutationRateLimitAction, RateLimitRule & { noun: string }> = {
+  // An onboarding day stages and commits a few files per community (30 at first-builder size) several times over.
+  import_stage: { limit: 300, windowSeconds: 60 * 60, noun: "import files staged" },
+  import_commit: { limit: 120, windowSeconds: 60 * 60, noun: "import commits" },
+  // Each release batch carries up to 50 houses.
+  starts_release: { limit: 60, windowSeconds: 60 * 60, noun: "start release batches" },
+  books_export: { limit: 12, windowSeconds: 60 * 60, noun: "Books archives requested" },
+  document_export: { limit: 30, windowSeconds: 60 * 60, noun: "document exports requested" },
+}
+
+/** Records one bulk mutation for the organization and throws once it is over its hourly budget. Fails open, like the auth throttle. */
+export async function enforceMutationRateLimit(action: MutationRateLimitAction, orgId: string): Promise<void> {
+  const rule = MUTATION_RULES[action]
+  const windowMs = rule.windowSeconds * 1000
+  const windowStartMs = Math.floor(Date.now() / windowMs) * windowMs
+  const { data, error } = await createServiceSupabaseClient().rpc("increment_auth_rate_limit", {
+    action_input: `mutation:${action}`,
+    identifier_input: `org:${orgId}`,
+    window_start_input: new Date(windowStartMs).toISOString(),
+  })
+  if (error) {
+    console.error("Mutation rate limit check failed", error)
+    return
+  }
+  if (typeof data === "number" && data > rule.limit) {
+    const minutes = Math.max(1, Math.ceil((windowStartMs + windowMs - Date.now()) / 60_000))
+    throw new RateLimitError(`This organization has reached its limit of ${rule.limit} ${rule.noun} per hour. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`)
+  }
+}

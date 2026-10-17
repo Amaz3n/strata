@@ -30,6 +30,8 @@ export interface AppChromeContext {
   businessProfile: BusinessProfile
   ambientContext: AmbientDeskContext
   projects: ProjectNavigationItem[]
+  /** The switcher's list stopped at PROJECT_NAVIGATION_LIMIT. */
+  projectsTruncated: boolean
   hasProductionProjects: boolean
   hasActiveNonProductionProjects: boolean
   hasActiveCommercialProjects: boolean
@@ -95,6 +97,7 @@ const SIGNED_OUT_CHROME: AppChromeContext = {
   businessProfile: BUILDER_PROFILE,
   ambientContext: EMPTY_AMBIENT,
   projects: [],
+  projectsTruncated: false,
   hasProductionProjects: false,
   hasActiveNonProductionProjects: false,
   hasActiveCommercialProjects: false,
@@ -149,9 +152,9 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
   // The switcher's project list used to be a client fetch to /api/projects on
   // mount — a round trip that could not start until hydration finished, and
   // could not be prefetched at all. Loading it here puts it in the App Shell.
-  const projects = context
-    ? await listProjectNavigationItemsWithClient(context.supabase, context.orgId).catch(() => [])
-    : []
+  const { items: projects, truncated: projectsTruncated } = context
+    ? await listProjectNavigationItemsWithClient(context.supabase, context.orgId).catch(() => ({ items: [], truncated: false }))
+    : { items: [], truncated: false }
 
   return {
     orgId: context?.orgId ?? null,
@@ -164,6 +167,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     businessProfile,
     ambientContext,
     projects,
+    projectsTruncated,
     hasProductionProjects,
     hasActiveNonProductionProjects,
     hasActiveCommercialProjects,

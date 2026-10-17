@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import type { AppBreadcrumbItem } from "./app-header"
 import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier, ProjectPosture } from "@/lib/product-tier"
+import type { ProjectNavigationItem } from "@/lib/types"
 
 export interface ProjectShellContext {
   id: string
@@ -13,6 +14,8 @@ export interface ProjectShellContext {
   posture: ProjectPosture
   contextLabel?: string
   contextHref?: string
+  /** The project's navigation facts, from its own layout: the switcher's list is capped. */
+  navigation: ProjectNavigationItem
 }
 
 interface PageTitleContextType {
@@ -104,4 +107,14 @@ export function usePageTitle() {
     throw new Error("usePageTitle must be used within a PageTitleProvider")
   }
   return context
+}
+
+/** The project the shell is on: from the switcher's capped list, or from the project's own layout when it is outside it. */
+export function useShellProject(projects: ProjectNavigationItem[], projectId: string | null | undefined) {
+  const { projectContext } = usePageTitle()
+  return useMemo(
+    () => projects.find((project) => project.id === projectId)
+      ?? (projectContext && projectContext.id === projectId ? projectContext.navigation : undefined),
+    [projects, projectId, projectContext],
+  )
 }

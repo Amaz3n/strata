@@ -26,13 +26,18 @@ function route({ authorized = true, persistFailed = false, work = async () => ({
   })
   return { ...compiled.exports, callbacks, rows: db.store.job_runs }
 }
-test("accepted starts requests do not record success until the worker finishes", async () => {
+test("accepted starts requests are running, not successful, until the worker finishes", async () => {
   let finish
+  const started = new Promise(ready => { finish = null; setImmediate(ready) })
   const h = route({ work: () => new Promise(resolve => { finish = resolve }) })
   assert.equal((await h.POST({})).status, 202)
   assert.equal(h.rows.length, 0)
   const running = h.callbacks[0]()
-  assert.equal(h.rows.length, 0)
+  await started
+  while (!finish) await new Promise(tick => setImmediate(tick))
+  assert.equal(h.rows.length, 1)
+  assert.equal(h.rows[0].status, "running")
+  assert.ok(h.rows[0].deadline_at)
   finish({ processed: 2, failed: 0, remaining: 1 })
   await running
   assert.equal(h.rows.length, 1)
@@ -68,8 +73,9 @@ test("telemetry persistence failures reach runtime logs without discarding compl
   const h = route({ persistFailed: true })
   await h.GET({}); await h.callbacks[0]()
   assert.equal(h.rows.length, 0)
-  assert.equal(errors.length, 1)
-  assert.match(String(errors[0][1]), /Telemetry database unavailable/)
+  // Neither the running row nor the outcome could be written; both are logged.
+  assert.equal(errors.length, 2)
+  for (const error of errors) assert.match(String(error[1]), /Telemetry database unavailable/)
 })
 
 test("an abandoned-copy sweep failure is a partial run even when every job succeeded", async () => {

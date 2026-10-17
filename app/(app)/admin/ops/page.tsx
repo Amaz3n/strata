@@ -8,9 +8,10 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { OpsClient } from "@/components/admin/ops-client"
 import {
   getCronHealth,
+  getOutboxBacklogByOrg,
   getOutboxHealth,
   getQboConnectionHealth,
-  listPaymentOperationsAlerts,
+  listOperationsAlerts,
   listStuckOutboxJobs,
 } from "@/lib/services/ops"
 import {
@@ -23,14 +24,15 @@ async function OpsData() {
   // Reconciliation needs `payment.reconcile`, which an ops viewer may not hold —
   // it settles beside cron and outbox health because it is the same kind of thing
   // (a daily job whose silence is the alarm), not because everyone here can read it.
-  const [cronHealth, outboxHealth, stuckHealth, qboHealth, reconciliations, exceptions, paymentAlerts] = await Promise.all([
+  const [cronHealth, outboxHealth, orgBacklog, stuckHealth, qboHealth, reconciliations, exceptions, operationsAlerts] = await Promise.all([
     getCronHealth(),
     getOutboxHealth(),
+    getOutboxBacklogByOrg(),
     listStuckOutboxJobs(),
     getQboConnectionHealth(),
     listPaymentReconciliations().catch(() => []),
     listOpenPaymentReconciliationExceptions().catch(() => []),
-    listPaymentOperationsAlerts(),
+    listOperationsAlerts(),
   ])
 
   return (
@@ -38,11 +40,12 @@ async function OpsData() {
       referenceTimeMs={Date.now()}
       cronHealth={cronHealth}
       outboxHealth={outboxHealth}
+      orgBacklog={orgBacklog}
       stuckHealth={stuckHealth}
       qboHealth={qboHealth}
       reconciliations={reconciliations}
       reconciliationExceptions={exceptions}
-      paymentAlerts={paymentAlerts}
+      operationsAlerts={operationsAlerts}
     />
   )
 }
@@ -75,8 +78,8 @@ function OpsSkeleton() {
         <Skeleton className="h-5 w-16" />
         <Skeleton className="h-8 w-24" />
       </div>
-      <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-3 lg:grid-cols-6">
-        {Array.from({ length: 6 }).map((_, i) => (
+      <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-4 lg:grid-cols-7">
+        {Array.from({ length: 7 }).map((_, i) => (
           <div key={i} className="bg-card px-4 py-4">
             <Skeleton className="h-3 w-20" />
             <Skeleton className="mt-2 h-7 w-10" />

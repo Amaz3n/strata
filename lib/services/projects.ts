@@ -627,26 +627,53 @@ export async function getProjectIdentity(projectId: string): Promise<Project | n
   return mapProject(data)
 }
 
+const PROJECT_NAVIGATION_SELECT = `
+  id, org_id, name, status, phase, property_type, created_at, updated_at,
+  project_financial_settings(project_id, billing_model),
+  project_module_overrides(module_key, enabled)
+`
+
+/** The switcher lists this many projects, newest first; a production org has thousands of homes. */
+export const PROJECT_NAVIGATION_LIMIT = 200
+
 export async function listProjectNavigationItemsWithClient(
   supabase: SupabaseClient,
   orgId: string,
-): Promise<ProjectNavigationItem[]> {
+): Promise<{ items: ProjectNavigationItem[]; truncated: boolean }> {
   const { data, error } = await supabase
     .from("projects")
-    .select(`
-      id, org_id, name, status, phase, property_type, created_at, updated_at,
-      project_financial_settings(project_id, billing_model),
-      project_module_overrides(module_key, enabled)
-    `)
+    .select(PROJECT_NAVIGATION_SELECT)
     .eq("org_id", orgId)
     .eq("phase", "delivery")
     .order("created_at", { ascending: false })
+    .limit(PROJECT_NAVIGATION_LIMIT + 1)
 
   if (error) {
     throw new Error(`Failed to list project navigation items: ${error.message}`)
   }
 
-  return (data ?? []).map(mapProjectNavigationItem)
+  const rows = data ?? []
+  return { items: rows.slice(0, PROJECT_NAVIGATION_LIMIT).map(mapProjectNavigationItem), truncated: rows.length > PROJECT_NAVIGATION_LIMIT }
+}
+
+/** One project's navigation facts, for the project the shell is on when it is outside the switcher's list. */
+export async function getProjectNavigationItemWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectId: string,
+): Promise<ProjectNavigationItem | null> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select(PROJECT_NAVIGATION_SELECT)
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load project navigation item: ${error.message}`)
+  }
+
+  return data ? mapProjectNavigationItem(data) : null
 }
 
 // Single-project fetch using the full PROJECT_SELECT so financial_settings and billing_contract

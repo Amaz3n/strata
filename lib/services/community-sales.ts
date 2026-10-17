@@ -2064,53 +2064,77 @@ async function lockSelectionsAtSigning(supabase: SupabaseClient, input: { orgId:
 }
 
 
+const executionClaimSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("completed") }),
+  z.object({ state: z.literal("in_progress") }),
+  z.object({
+    state: z.literal("claimed"), project_id: z.string().uuid(), signed_at: z.string(),
+    envelope_id: z.string().uuid().nullable(), packet_hash: z.string().nullable(), snapshot: z.unknown(),
+  }),
+])
+
+/** One execution event per agreement, so a resumed execution cannot record a second. */
+function agreementExecutionEventId(orgId: string, contractId: string) {
+  const hex = createHash("sha256").update(JSON.stringify(["arc.sales.purchase_agreement_executed.v1", orgId, contractId])).digest("hex")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+/** How long a second delivery waits for the one executing before it asks to be retried. */
+const EXECUTION_WAIT_MS = 15_000
+
+async function awaitAgreementExecution(supabase: SupabaseClient, input: { orgId: string; contractId: string }) {
+  for (let waited = 0; waited < EXECUTION_WAIT_MS; waited += 500) {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const { data, error } = await supabase.from("contracts").select("status, signature_data").eq("org_id", input.orgId).eq("id", input.contractId).maybeSingle()
+    if (error) throw new Error(`Purchase agreement execution failed: ${error.message}`)
+    if (data?.status === "void") throw new Error("Purchase agreement was voided")
+    if (data?.status === "active" && data.signature_data?.execution_effects_completed === true) return
+  }
+  throw new Error("Purchase agreement execution is already in progress; retry once it finishes")
+}
+
+/**
+ * A signed agreement's execution. The contract, reservation, prospect and closing
+ * move together under the contract's lock (a void agreement is refused, never
+ * reactivated); the effects that follow run for one delivery at a time under a
+ * leased claim, and a delivery that finds another executing waits for it.
+ */
 export async function executePurchaseAgreementFromEnvelopeExecution(input: { orgId: string; contractId: string; envelopeId: string; executedFileId?: string | null }) {
   const supabase = createServiceSupabaseClient()
-  const checked = <T extends { error: { message: string } | null }>(result: T): T => {
-    if (result.error) throw new Error(`Purchase agreement execution failed: ${result.error.message}`)
-    return result
-  }
-  const { data: contract } = checked(await supabase.from("contracts").select("*, project:projects(end_date)").eq("org_id", input.orgId).eq("id", input.contractId).eq("contract_type", "purchase_agreement").maybeSingle())
-  if (!contract) throw new Error("Purchase agreement not found")
-  if (contract.status === "void") throw new Error("Purchase agreement was voided")
-  if (contract.status === "active" && contract.signature_data?.execution_effects_completed === true) return
-  const now = contract.signed_at ?? new Date().toISOString()
-  // The signature binds the packet the buyer was shown and the exact bytes they signed.
-  const { data: signingDocument } = checked(await supabase.from("documents").select("metadata").eq("org_id", input.orgId)
-    .eq("source_entity_type", "contract").eq("source_entity_id", contract.id).contains("metadata", { purchase_agreement: true }).maybeSingle())
-  const signatureData = { ...(contract.signature_data ?? {}), envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null,
-    packet_hash: contract.snapshot?.purchase_agreement?.packet?.hash ?? null, source_sha256: signingDocument?.metadata?.esign_source?.sha256 ?? null }
   // Execution binds the org's default warranty program, so an org that has never opened the warranty desk has one to bind.
   await ensureWarrantyDefaults(input.orgId)
-  checked(await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: signatureData }).eq("org_id", input.orgId).eq("id", contract.id))
-  const { data: projectLot } = checked(await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle())
-  if (projectLot) {
-    checked(await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved"))
-    // Recovery must also find the reservation converted by an earlier attempt.
-    const { data: reservations } = checked(await supabase.from("lot_reservations").select("prospect_id").eq("org_id", input.orgId).eq("contract_id", contract.id).eq("status", "converted"))
-    for (const reservation of reservations ?? []) {
-      if (reservation.prospect_id) checked(await supabase.from("prospects").update({ status: "won", won_at: now, lost_at: null, lost_reason: null, updated_at: now }).eq("org_id", input.orgId).eq("id", reservation.prospect_id).neq("status", "won"))
-    }
+  const claimToken = randomUUID()
+  const { data, error } = await supabase.rpc("execute_purchase_agreement_atomic", {
+    p_org_id: input.orgId, p_contract_id: input.contractId, p_envelope_id: input.envelopeId,
+    p_executed_file_id: input.executedFileId ?? null, p_claim_token: claimToken,
+  })
+  if (error) throw new Error(error.message === "Purchase agreement was voided" || error.message === "Purchase agreement not found" ? error.message : `Purchase agreement execution failed: ${error.message}`)
+  const claim = executionClaimSchema.parse(data)
+  if (claim.state === "completed") return
+  if (claim.state === "in_progress") return awaitAgreementExecution(supabase, input)
+  const projectId = claim.project_id, now = claim.signed_at
+  try {
+    await instantiateSelectionGroupsForProject(projectId, input.orgId)
+    await recordAgreementStructuralSelections(supabase, { orgId: input.orgId, projectId, contractId: input.contractId, snapshot: claim.snapshot, now })
+    await lockSelectionsAtSigning(supabase, { orgId: input.orgId, projectId, now })
+    // What the home was sold at, from the selections just costed and locked, and
+    // the plan, elevation and option revisions it was priced against. A
+    // recovered execution finds both already captured.
+    await Promise.all([
+      captureHomeMarginBaseline({ orgId: input.orgId, projectId, stage: "agreement" }),
+      captureHomeProductRevisions({ orgId: input.orgId, projectId, stage: "agreement" }),
+    ])
+    await recordEvent({ idempotencyId: agreementExecutionEventId(input.orgId, input.contractId), orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: input.contractId,
+      payload: { project_id: projectId, envelope_id: claim.envelope_id, packet_hash: claim.packet_hash } })
+  } catch (failure) {
+    // Give the claim back so the redelivery resumes now rather than after the lease; if this
+    // release fails too, the lease lets the next delivery resume.
+    await supabase.rpc("finish_purchase_agreement_execution", { p_org_id: input.orgId, p_contract_id: input.contractId, p_claim_token: claimToken, p_completed: false })
+    throw failure
   }
-  await instantiateSelectionGroupsForProject(contract.project_id, input.orgId)
-  await recordAgreementStructuralSelections(supabase, { orgId: input.orgId, projectId: contract.project_id, contractId: contract.id, snapshot: contract.snapshot, now })
-  await lockSelectionsAtSigning(supabase, { orgId: input.orgId, projectId: contract.project_id, now })
-  if (projectLot) {
-    const { data: existingClosing } = checked(await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle())
-    if (!existingClosing) checked(await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null }))
-  }
-  // What the home was sold at, from the selections just costed and locked, and
-  // the plan, elevation and option revisions it was priced against. A
-  // recovered execution finds both already captured.
-  await Promise.all([
-    captureHomeMarginBaseline({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" }),
-    captureHomeProductRevisions({ orgId: input.orgId, projectId: contract.project_id, stage: "agreement" }),
-  ])
-  await Promise.all([
-    recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId, packet_hash: signatureData.packet_hash } }),
-    recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now, packet_hash: signatureData.packet_hash, source_sha256: signatureData.source_sha256 } }),
-  ])
-  checked(await supabase.from("contracts").update({ signature_data: { ...signatureData, execution_effects_completed: true } }).eq("org_id", input.orgId).eq("id", contract.id))
+  // Completion and its audit row are written once, by the delivery holding the claim.
+  const finished = await supabase.rpc("finish_purchase_agreement_execution", { p_org_id: input.orgId, p_contract_id: input.contractId, p_claim_token: claimToken, p_completed: true })
+  if (finished.error) throw new Error(`Purchase agreement execution failed: ${finished.error.message}`)
 }
 
 const cents = z.union([z.number(), z.string().regex(/^-?[0-9]+$/)]).transform(Number).pipe(z.number().int())

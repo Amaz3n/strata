@@ -10,6 +10,7 @@ import { resolvePayableDecisionAudience } from "@/lib/payments/payable-notificat
 import { evaluateRunApprovability } from "@/lib/payments/payment-run-approval-policy"
 import { paymentRunNotificationCopy, readReleaseKind } from "@/lib/payments/payment-run-notification-copy"
 import { paymentOperationsAlertDetails } from "@/lib/payments/operations-monitor"
+import { PIPELINE_KEYS, PIPELINES, type PipelineKey } from "@/lib/ops/pipelines"
 import { loadPaymentApproverRoster } from "@/lib/services/payment-approver-roster"
 import type { NotificationType } from "@/lib/services/notifications"
 
@@ -527,6 +528,15 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     if (roleIds.length === 0) return []
     const { data: memberships } = await supabase.from("memberships").select("user_id").eq("org_id", orgId).eq("status", "active").in("role_id", roleIds)
     return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
+  // A production pipeline stopped doing its work: the people who own that
+  // pipeline hear it, and org admins always do, so an org that never granted
+  // the pipeline's permission to anyone is not silently unalerted.
+  if (event.event_type === "operations_pipeline_alert") {
+    const pipeline = readPipeline(event.payload)
+    if (!pipeline) return []
+    return (await usersWithAnyPermission(supabase, orgId, [...PIPELINES[pipeline].audience, "org.admin", "*"])).filter((id) => id !== actorId)
   }
 
   // Accounting-health events share one audience: whoever owns keeping the
@@ -1728,6 +1738,27 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
     }
 
     /**
+     * Automated monitoring found a production pipeline not doing its work. The
+     * copy names the pipeline and carries each finding's own sentence, which
+     * says what fixes it.
+     */
+    case "operations_pipeline_alert": {
+      const pipeline = readPipeline(safePayload)
+      const details = paymentOperationsAlertDetails(safePayload)
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "operations_pipeline_alert" as NotificationType,
+        title: `${pipeline ? PIPELINES[pipeline].label : "Background"} work needs attention`,
+        message: details.length > 0 ? details.join(" ") : "Automated monitoring found background work that stopped.",
+        metadata: { href: pipeline === "starts" ? "/starts" : pipeline === "warranty" ? "/warranty" : "/settings/imports" },
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
      * Unknown money state. The provider call did not return a trustworthy answer,
      * so Arc cannot say whether the debit happened. The copy must not imply
      * either outcome — it names the disbursement and asks a human to confirm it
@@ -2310,6 +2341,11 @@ function extractProjectIdFromEvent(event: EventRecord): string | null {
   return null
 }
 
+function readPipeline(payload: unknown): PipelineKey | null {
+  const value = payload && typeof payload === "object" ? Reflect.get(payload, "pipeline") : null
+  return PIPELINE_KEYS.find((key) => key === value) ?? null
+}
+
 function uniqUserIds(userIds: Array<string | null | undefined>): string[] {
   return Array.from(new Set(userIds.filter(Boolean) as string[]))
 }
@@ -2425,6 +2461,8 @@ function titleForEventType(eventType: string): string {
       return "Accounting sync gave up on a transaction"
     case "accounting_sync_needs_review":
       return "Accounting sync needs review"
+    case "operations_pipeline_alert":
+      return "Background work needs attention"
     case "vendor_bill_payment_reversed":
       return "Vendor payment reversed"
     case "vendor_credit_applied":

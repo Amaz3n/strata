@@ -362,18 +362,19 @@ export async function readAgreementMilestoneBlockers(supabase: SupabaseClient, o
 
 /**
  * The financing evidence a home's purchase agreement holds: null `agreement`
- * for a spec home, otherwise the milestones that prove the buyer's funds with
+ * for a home with none in force (`saleCancelled` when one was voided), otherwise the milestones that prove the buyer's funds with
  * whether each one's document is still on the home. Read with the caller's
  * client inside a check that already authorized the home (the start gate);
  * `financingGateClear` is the verdict.
  */
-export async function readStartFinancingRecord(supabase: SupabaseClient, orgId: string, projectId: string): Promise<{ agreement: { milestones: FinancingMilestoneRecord[] } | null }> {
-  const { data: agreements, error: agreementError } = await supabase.from("contracts").select("id")
-    .eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active").limit(2)
+export async function readStartFinancingRecord(supabase: SupabaseClient, orgId: string, projectId: string): Promise<{ agreement: { milestones: FinancingMilestoneRecord[] } | null; saleCancelled: boolean }> {
+  const { data: agreements, error: agreementError } = await supabase.from("contracts").select("id,status")
+    .eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").in("status", ["active", "void"]).limit(100)
   if (agreementError) throw new Error(`Unable to verify the buyer's financing: ${agreementError.message}`)
-  if (!agreements?.length) return { agreement: null }
+  const inForce = (agreements ?? []).filter((row) => row.status === "active")
+  if (!inForce.length) return { agreement: null, saleCancelled: (agreements ?? []).length > 0 }
   const { data, error } = await supabase.from("agreement_milestones").select("template_key,status,evidence_file_id")
-    .eq("org_id", orgId).in("contract_id", agreements.map((row) => row.id))
+    .eq("org_id", orgId).in("contract_id", inForce.map((row) => row.id))
     .in("template_key", [FINANCING_MILESTONE_KEYS.financed, FINANCING_MILESTONE_KEYS.cash])
   if (error) throw new Error(`Unable to verify the buyer's financing: ${error.message}`)
   const rows = z.array(z.object({ template_key: z.string(), status: z.enum(["open", "satisfied", "waived", "failed"]), evidence_file_id: z.string().uuid().nullable() }))
@@ -387,6 +388,7 @@ export async function readStartFinancingRecord(supabase: SupabaseClient, orgId: 
     for (const file of files ?? []) onFile.add(String(file.id))
   }
   return {
+    saleCancelled: false,
     agreement: {
       milestones: rows.map((row) => ({
         templateKey: row.template_key, status: row.status, evidenceFileId: row.evidence_file_id,

@@ -172,6 +172,7 @@ export type NotificationType =
   | "accounting_connection_expired"
   | "accounting_push_dead_lettered"
   | "accounting_sync_needs_review"
+  | "operations_pipeline_alert"
 
 /**
  * The order groups appear in Settings → Notifications, and the header each one
@@ -217,7 +218,7 @@ export const NOTIFICATION_EMAIL_CATEGORIES = [
   {
     key: "starts",
     label: "Starts & production",
-    description: "Lot start packages and release failures.",
+    description: "Lot start packages, release failures, and production work that stopped.",
   },
   {
     key: "land",
@@ -707,6 +708,12 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "starts",
     label: "Start release failed",
     description: "Email me when a start release fails and needs attention.",
+  },
+  {
+    key: "operations_pipeline_alert",
+    category: "starts",
+    label: "Background work stopped",
+    description: "Email me when automated monitoring finds starts, imports or warranty work that failed or stopped running.",
   },
   {
     key: "trade_response_received",

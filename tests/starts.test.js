@@ -155,9 +155,10 @@ test("close impact projects start plus cycle against the promised closing, worst
 
 test("financing is proved by a satisfied approval or proof of funds with its document, never by absence", () => {
   const approved = { templateKey: "lender:loan_approval", status: "satisfied", evidenceFileId: "f", evidenceOnFile: true }
-  const clear = (milestones, isFinanced = false) => financingGateClear({ agreement: { milestones }, isFinanced })
-  assert.equal(financingGateClear({ agreement: null, isFinanced: false }), true, "a spec home has no buyer")
-  assert.equal(financingGateClear({ agreement: null, isFinanced: true }), false, "a package flagged financed with no agreement is absence")
+  const clear = (milestones, isFinanced = false) => financingGateClear({ agreement: { milestones }, saleCancelled: false, isFinanced })
+  assert.equal(financingGateClear({ agreement: null, saleCancelled: false, isFinanced: false }), true, "a spec home has no buyer")
+  assert.equal(financingGateClear({ agreement: null, saleCancelled: false, isFinanced: true }), false, "a package flagged financed with no agreement is absence")
+  assert.equal(financingGateClear({ agreement: null, saleCancelled: true, isFinanced: false }), false, "a home whose sale was cancelled is not a spec home")
   assert.equal(clear([]), false)
   assert.equal(clear([approved]), true)
   assert.equal(clear([{ ...approved, templateKey: "buyer:proof_of_funds" }]), true)

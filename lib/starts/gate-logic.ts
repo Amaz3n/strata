@@ -31,14 +31,15 @@ export interface FinancingMilestoneRecord {
 
 /**
  * Whether a home's financing is proved. A spec home has no buyer and nothing to
- * prove. A sold home needs the lender's loan approval (financed) or proof of
+ * prove, but a home whose sale was cancelled is not a spec home: with no
+ * agreement in force it proves nothing until its gate is waived. A sold home needs the lender's loan approval (financed) or proof of
  * funds (cash) satisfied WITH the document on file: a missing record, an open
  * or failed one, a waiver (no document) and an archived file all hold it.
  * Absence is never a pass; the gate itself can still be waived by a releaser.
  */
-export function financingGateClear(record: { agreement: { milestones: FinancingMilestoneRecord[] } | null; isFinanced: boolean }) {
+export function financingGateClear(record: { agreement: { milestones: FinancingMilestoneRecord[] } | null; saleCancelled: boolean; isFinanced: boolean }) {
   // A package flagged financed with no agreement in force has a buyer nobody has recorded: that is absence.
-  if (!record.agreement) return !record.isFinanced
+  if (!record.agreement) return !record.isFinanced && !record.saleCancelled
   const proofs = record.agreement.milestones.filter((milestone) =>
     milestone.templateKey === FINANCING_MILESTONE_KEYS.financed || milestone.templateKey === FINANCING_MILESTONE_KEYS.cash)
   return proofs.length > 0 && proofs.every((milestone) =>

@@ -5,6 +5,7 @@ import { requirePermission, requireProjectPermission } from "@/lib/services/perm
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createFilesDownloadUrl, deleteFilesObjects, getFilesObjectStream, uploadFilesStream, listFilesObjects } from "@/lib/storage/files-storage"
 import { streamZip, uniqueZipName } from "@/lib/files/streaming-zip"
+import { enforceMutationRateLimit } from "@/lib/services/auth-rate-limit"
 
 export const MAX_DOCUMENT_EXPORT_FILES = 500
 export const MAX_DOCUMENT_EXPORT_BYTES = 3 * 1024 * 1024 * 1024
@@ -48,6 +49,8 @@ export async function createDocumentExport(input: unknown) {
   const fileIds = [...new Set(parsed.fileIds)].sort()
   const { orgId, userId } = await requireOrgContext()
   const files = await authorizeSelection(orgId, userId, fileIds)
+  // A retry of the same export id is idempotent below and costs nothing; only a new export spends the budget.
+  if (!(await readExport(orgId, parsed.exportId))) await enforceMutationRateLimit("document_export", orgId)
   if (files.reduce((sum, file) => sum + (file.size_bytes ?? 0), 0) > MAX_DOCUMENT_EXPORT_BYTES) throw new Error("Select 3 GB or less per export")
   const service = createServiceSupabaseClient()
   // The insert trigger enqueues both work and expiry in the same DB transaction.

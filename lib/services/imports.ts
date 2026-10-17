@@ -22,6 +22,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isPlatformAdminId } from "@/lib/auth/platform"
 import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import { recordAudit } from "@/lib/services/audit"
+import { enforceMutationRateLimit } from "@/lib/services/auth-rate-limit"
 import { recordEvent } from "@/lib/services/events"
 import { completeOutboxJob } from "@/lib/services/outbox"
 import { createOrgMemberInvite, inviteRefusal } from "@/lib/services/team"
@@ -177,11 +178,20 @@ export async function getImportBatch(batchId: string, input: { page?: number; li
   const status = importRowStatusSchema.parse(input.status ?? "all")
   let query = context.supabase.from("import_rows").select("*", { count: "exact" }).eq("org_id", context.orgId).eq("batch_id", batchId).order("row_number").order("id").range((page - 1) * limit, page * limit - 1)
   if (status !== "all") query = query.eq("status", status)
-  const { data: rows, error: rowsError, count } = await query
+  // A running cutover's progress is its receipts: one per home built, counted exactly while it runs.
+  const [{ data: rows, error: rowsError, count }, progress] = await Promise.all([query, openWipProgress(context, batch)])
   if (rowsError) throw new Error(`Failed to list import rows: ${rowsError.message}`)
   if (!rows || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw new Error("Import row review is unavailable")
   if (rows.length !== Math.min(limit, Math.max(0, count - (page - 1) * limit))) throw new Error("Import row page is incomplete; reload before reviewing rows")
-  return { batch: mapBatch(batch), rows: rows.map(mapImportRow), total: count, page, limit, status }
+  return { batch: mapBatch(batch), rows: rows.map(mapImportRow), total: count, page, limit, status, progress }
+}
+
+async function openWipProgress(context: ResolvedImportContext, batch: { id: string; importer: string; status: string; cancel_requested_at: string | null }) {
+  if (batch.importer !== "open_wip" || batch.status !== "committing") return null
+  const rows = () => context.supabase.from("import_rows").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("batch_id", batch.id)
+  const [built, total] = await Promise.all([rows().eq("status", "committed"), rows().neq("status", "skipped")])
+  if (built.error || total.error) throw new Error(`Unable to read the cutover's progress: ${(built.error ?? total.error)?.message}`)
+  return { built: built.count ?? 0, total: total.count ?? 0, cancelRequested: batch.cancel_requested_at !== null }
 }
 
 function exactColumnMapping(importer: ImporterKey, headers: string[]) {
@@ -574,6 +584,8 @@ export async function stageImportBatch(input: { importer: ImporterKey; csvText: 
   const { headers, rows: rawRows } = parseCsv(input.csvText)
   if (rawRows.length === 0) throw new Error("The CSV has no data rows")
   if (rawRows.length > MAX_ROWS) throw new Error("Imports are limited to 10,000 rows per batch")
+  // A file refused for its shape costs nothing; only one that will be staged spends the budget.
+  await enforceMutationRateLimit("import_stage", resolved.orgId)
   let mapping = input.mapping ?? await getImportMappingProfile(input.importer, headers, access) ?? exactColumnMapping(input.importer, headers)
   mapping = Object.fromEntries(IMPORTER_DEFINITIONS[input.importer].columns.map((column) => [column.key, mapping[column.key] ?? null]))
   const contextPayload: Record<string, unknown> = { ...(input.context ?? {}), source_headers: headers }
@@ -1114,6 +1126,60 @@ async function prepareOpenWipHouse(context: ResolvedImportContext, row: ImportRo
   return house
 }
 
+const openWipCancelledSchema = z.object({
+  at: z.string(),
+  requested_at: z.string().nullable(),
+  by: z.string().uuid().nullable(),
+  homes_built: z.number().int(),
+  rows: z.number().int(),
+  attempt: z.number().int().nullable(),
+})
+
+async function recordOpenWipCancelled(context: ResolvedImportContext, batchId: string, cancelled: z.infer<typeof openWipCancelledSchema>) {
+  const actorId = cancelled.by ?? context.userId
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId, eventType: "import_batch_cancelled", entityType: "import_batch", entityId: batchId, payload: { importer: "open_wip", homes_built: cancelled.homes_built, rows: cancelled.rows, attempt: cancelled.attempt } }),
+    recordAudit({ orgId: context.orgId, actorId, action: "update", entityType: "import_batch", entityId: batchId, before: { status: "committing" }, after: { importer: "open_wip", status: "failed", cancelled }, source: context.platform ? "platform_ops" : undefined }),
+  ])
+}
+
+/** Stops the commit here when an operator asked it to; the batch keeps every home it built and resumes from those receipts on "Commit again". */
+async function stopIfOpenWipCancelRequested(context: ResolvedImportContext, batchId: string, claim: OpenWipClaim) {
+  const { data, error } = await context.supabase.rpc("cancel_open_wip_commit_if_requested", { p_org_id: context.orgId, p_batch_id: batchId, p_claim_token: claim.token })
+  if (error) throw new Error(error.message)
+  if (data === null) return null
+  const cancelled = openWipCancelledSchema.parse(data)
+  await completeOutboxJob(claim.jobId)
+  await recordOpenWipCancelled(context, batchId, cancelled)
+  const { data: saved, error: savedError } = await context.supabase.from("import_batches").select("*").eq("org_id", context.orgId).eq("id", batchId).single()
+  if (savedError || !saved) throw new Error(`Unable to reload the cancelled batch: ${savedError?.message}`)
+  return mapBatch(saved)
+}
+
+/**
+ * Asks a running Open-WIP cutover to stop. A live commit stops at its next home
+ * (never inside one); a commit whose process already died is stopped at once.
+ * Either way the batch ends failed with `report.cancelled`, keeps the homes it
+ * built with their receipts, and "Commit again" resumes from them.
+ */
+export async function cancelImportBatch(batchId: string, access: ImportAccess = {}) {
+  const id = z.string().uuid().parse(batchId)
+  const context = await resolveImportContext(access)
+  const { data: batch, error: batchError } = await context.supabase.from("import_batches").select("importer").eq("org_id", context.orgId).eq("id", id).maybeSingle()
+  if (batchError || !batch) throw new Error("Import batch not found")
+  await requireImporterPermission(batch.importer as ImporterKey, context)
+  if (batch.importer !== "open_wip") throw new Error("Only an Open-WIP cutover runs long enough to cancel; other imports commit in one step")
+  const { data, error } = await context.supabase.rpc("request_open_wip_cancel", { p_org_id: context.orgId, p_batch_id: id, p_actor_id: context.userId })
+  if (error) throw new Error(error.code === "55000" ? "Only a running cutover can be cancelled" : `Unable to cancel the cutover: ${error.message}`)
+  const outcome = z.discriminatedUnion("state", [
+    z.object({ state: z.literal("requested") }),
+    z.object({ state: z.literal("cancelled"), cancelled: openWipCancelledSchema }),
+  ]).parse(data)
+  if (outcome.state === "cancelled") await recordOpenWipCancelled(context, id, outcome.cancelled)
+  else await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "import_batch", entityId: id, after: { importer: "open_wip", cancel_requested: true }, source: context.platform ? "platform_ops" : undefined })
+  return { state: outcome.state }
+}
+
 function parseOpenWipClaim(value: unknown): OpenWipClaim | null {
   return value === null ? null : openWipClaimSchema.parse(value)
 }
@@ -1148,6 +1214,9 @@ async function runOpenWipCommit(context: ResolvedImportContext, batchId: string,
       expected = rows.map((row) => openWipExpectation(row, companions))
       for (const row of rows) {
         if (row.status === "committed") continue
+        // An operator's cancellation stops the commit between homes, never inside one.
+        const cancelled = await stopIfOpenWipCancelRequested(context, batchId, claim)
+        if (cancelled) return cancelled
         const house = await prepareOpenWipHouse(context, row, companions, asOfDate)
         const { error } = await context.supabase.rpc("commit_open_wip_house", { p_org_id: context.orgId, p_batch_id: batchId, p_claim_token: claim.token, p_row_id: row.id, p_house: house })
         if (error) throw openWipRpcFailure(error)
@@ -1219,9 +1288,15 @@ export async function reapStaleOpenWipCommits() {
 
 export async function commitImportBatch(batchId: string, access: ImportAccess = {}) {
   const context = await resolveImportContext(access)
-  const { data: candidate, error: candidateError } = await context.supabase.from("import_batches").select("importer").eq("org_id", context.orgId).eq("id", batchId).maybeSingle()
+  const { data: candidate, error: candidateError } = await context.supabase.from("import_batches").select("importer, status, error_count").eq("org_id", context.orgId).eq("id", batchId).maybeSingle()
   if (candidateError || !candidate) throw new Error("Import batch not found")
   await requireImporterPermission(candidate.importer as ImporterKey, context)
+  // A batch that cannot be committed is refused before it spends the budget (the claim below re-checks it atomically).
+  const committable = candidate.importer === "open_wip"
+    ? candidate.status !== "committed" && candidate.status !== "parsing"
+    : candidate.status === "staged" && Number(candidate.error_count ?? 0) === 0
+  if (!committable) throw new Error("Batch must be staged with all errors fixed or explicitly skipped")
+  await enforceMutationRateLimit("import_commit", context.orgId)
   if (candidate.importer === "open_wip") return commitOpenWipBatch(context, batchId)
   const { data: claimed, error: claimError } = await context.supabase.from("import_batches").update({ status: "committing" }).eq("org_id", context.orgId).eq("id", batchId).eq("importer", candidate.importer).eq("status", "staged").eq("error_count", 0).select("*").maybeSingle()
   if (claimError || !claimed) throw new Error("Batch must be staged with all errors fixed or explicitly skipped")

@@ -1,7 +1,10 @@
 # Arc Books: operations runbook
 
 How to run Arc Books for a builder: who owns what, what runs by itself, how to
-deploy, bring a builder on, close a month, repair the ledger and recover. Each
+deploy, bring a builder on, close a month, repair the ledger and recover. Arc
+outside the ledger (scheduled-job health and alerts, failed starts, imports,
+signing, notifications and warranty work, deploy rollback, capacity and the
+proposed service levels) is in `arc-operations.md`. Each
 step names the screen or command; the reference docs hold the rules
 (`books-capabilities.md` is the index). Every procedure here is exercised by a
 golden scenario on the isolated acceptance stack (`books-acceptance-runner.md`).
@@ -25,7 +28,7 @@ golden scenario on the isolated acceptance stack (`books-acceptance-runner.md`).
 | `accounting-reconciliation` | Daily 04:45 UTC | Ties the ledger to subledgers, banks, payments and the connected system | Findings on `/books/close` |
 | `process-outbox` | Every 10 min | Background work: bill-approval postings, archives, notifications, search | Ops watchdog; a stuck job shows its last error |
 | `bank-feed-sync` | Every 15 min | Pulls bank feed transactions | Import the statement by hand (`/books/banking`), then reconnect the feed |
-| `ops-watchdog` | Hourly | Flags jobs that stopped running | Job runs page |
+| `ops-watchdog` | Hourly | Flags jobs that timed out or stopped running, and failed production work (`arc-operations.md`) | `/admin/ops` |
 
 Each is in `CRON_JOBS` (`lib/services/job-runs.ts`), mirrors `vercel.json`, and
 is a public API route.

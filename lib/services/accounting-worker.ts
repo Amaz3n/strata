@@ -1,11 +1,11 @@
-import type { NextRequest } from "next/server"
+import { after, type NextRequest } from "next/server"
 
 import {
   accountingDeliveryDeadline,
   withAccountingDeadline,
 } from "@/lib/services/accounting-delivery"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
-import { withCronRun } from "@/lib/services/job-runs"
+import { failAbandonedJobRun, withCronRun } from "@/lib/services/job-runs"
 import { createAccountingWorkerSupabaseClient } from "@/lib/supabase/server"
 import { runWithServiceSupabaseClient } from "@/lib/supabase/service-client-context"
 import {
@@ -78,7 +78,19 @@ export function withAccountingWorkerCron(
     // Auth may finish SDK-local retry sleeps later. The race observes its late
     // rejection; aborted/expired fetch scopes prevent any later HTTP dispatch.
     try {
-      return await Promise.race([work, cutoff])
+      const outcome = await Promise.race([
+        work.then((response) => ({ response, abandoned: false })),
+        cutoff.then((response) => ({ response, abandoned: true })),
+      ])
+      // The cutoff answers for a run whose handler is still out. Its row is
+      // closed as failed once the response is sent (nothing may hold the
+      // response past the cutoff), outside the aborted worker scope, rather than
+      // waiting a deadline to be reconciled as timed out.
+      if (outcome.abandoned) {
+        const status = outcome.response.status
+        after(() => failAbandonedJobRun(jobName, new Date(started), "Accounting worker final deadline reached", status))
+      }
+      return outcome.response
     } finally {
       if (timer) clearTimeout(timer)
     }

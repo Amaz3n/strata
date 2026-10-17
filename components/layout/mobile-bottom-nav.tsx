@@ -40,6 +40,7 @@ import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { cn } from "@/lib/utils"
 import { useNavigationBadges } from "./navigation-badge-context"
+import { useShellProject } from "./page-title-context"
 import {
   buildProjectNavGroups,
   getProjectIdFromPath,
@@ -135,10 +136,7 @@ export function MobileBottomNav({
   const projectId = getProjectIdFromPath(pathname)
   const isProject = Boolean(projectId)
   const section = getProjectSection(pathname)
-  const currentProject = useMemo(
-    () => projects.find((project) => project.id === projectId),
-    [projects, projectId],
-  )
+  const currentProject = useShellProject(projects, projectId)
 
   useEffect(() => {
     setMenuOpen(false)

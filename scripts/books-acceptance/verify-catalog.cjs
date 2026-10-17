@@ -6,7 +6,7 @@ require("../register-ts-node-test")
 const fs = require("node:fs"),
   path = require("node:path")
 const { GOLDEN_SCENARIOS } = require("./runtime.cjs")
-const { IMPLEMENTED, NOT_IMPLEMENTED, OPEN_SUBCASES, PRODUCTION } = require("./catalog.cjs")
+const { IMPLEMENTED, NOT_IMPLEMENTED, LONG_RUNNING, OPEN_SUBCASES, PRODUCTION } = require("./catalog.cjs")
 
 const root = path.join(__dirname, "../..")
 
@@ -16,6 +16,7 @@ function verifyCatalog({ trackerPath = path.join(root, "advisor-plans/013-arc-bo
   for (const id of GOLDEN_SCENARIOS) if (!catalogued.includes(id)) findings.push(`${id} is in the plan but not in the catalog`)
   for (const id of catalogued) if (!GOLDEN_SCENARIOS.includes(id)) findings.push(`${id} is in the catalog but not in the plan`)
   for (const id of Object.keys(IMPLEMENTED)) if (NOT_IMPLEMENTED[id]) findings.push(`${id} is both built and not built`)
+  for (const id of Object.keys(LONG_RUNNING)) if (!IMPLEMENTED[id]) findings.push(`${id} is long-running but not built`)
 
   for (const [id, modulePath] of Object.entries(IMPLEMENTED)) {
     const expectedPath = path.join(__dirname, "expected", `${id}.json`)
@@ -25,7 +26,7 @@ function verifyCatalog({ trackerPath = path.join(root, "advisor-plans/013-arc-bo
     const expected = JSON.parse(fs.readFileSync(expectedPath, "utf8")).subcases
     const open = OPEN_SUBCASES[id] ?? {}
     for (const [name, spec] of Object.entries(expected)) {
-      const unbuilt = !subcases[name] || spec.status === "NOT_IMPLEMENTED"
+      const unbuilt = !subcases[name] || spec.status === "NOT_IMPLEMENTED" || spec.status === "DEFECT_OPEN" || Boolean(spec.blocked)
       if (unbuilt && !open[name]) findings.push(`${id} ${name} is not implemented and has no owning package`)
       if (!unbuilt && open[name]) findings.push(`${id} ${name} is implemented but still listed as open`)
     }

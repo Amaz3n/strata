@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 74.7% — a documented lower bound, not an ETA |
-| Fully verified | 70.9% |
+| Implemented | 81.3% — a documented lower bound, not an ETA |
+| Fully verified | 74% |
 | Release ready | 0% |
-| Code implemented | 5 items |
-| Partially implemented | 21 items |
-| Known pending tasks | 11 items |
+| Code implemented | 9 items |
+| Partially implemented | 14 items |
+| Known pending tasks | 10 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 69 items; this does not imply full workflow verification |
 
@@ -226,16 +226,16 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP13-01 | Representative load dataset | partial | Parameterize the production seed up to a first-builder size per notes and then toward loadTargets (divisions, communities, lots, installed homes, warranty history). |
-| EP13-02 | Mixed-role performance proof | pending | Load runner (desk reads, mutations, mobile) on the acceptance stack reporting p50/p95/p99, throughput, error rate. |
-| EP13-03 | Tenant fairness and bulk controls | partial | Per-org fair claiming in claim_jobs (migration needs approval). |
+| EP13-01 | Representative load dataset | verified | Owner review of representativeness via EP14-11. |
+| EP13-02 | Mixed-role performance proof | implemented | Run desk-render-at-scale and desk-p95-under-load against a production build and record desk p95 at or under 2 s with 50 concurrent users. |
+| EP13-03 | Tenant fairness and bulk controls | implemented | Apply 20261020200000_fair_job_claims, 20261020202000_open_wip_cancellation, 20261020210000_outbox_member_job_types, 20261020214000_outbox_member_reorder (pending approval). 20261020210000 and 20261020214000 redefine the same function and could be folded into one before production. |
 | EP13-04 | Truthful starts completion telemetry | verified | Verify deployed after() lifetime, partial failure and telemetry-error behavior in the QA org. |
-| EP13-05 | Durable running-job monitoring | partial | Write a 'running' job_runs row with a deadline at start and reconcile overdue rows to timed_out (migration needs approval). |
-| EP13-06 | Cross-pipeline observability | partial | Per-pipeline failed-unit views with documented safe recovery for starts, imports, signing, notifications (mirror Books posting status). |
-| EP13-07 | Failure injection and race acceptance | partial | Add RACE-02 on the acceptance stack: double release of the same lot, concurrent agreement signing on one lot, concurrent VPO/PO approvals, cancellation racing a release. |
-| EP13-08 | Backup restore drill | partial | Confirm Supabase PITR tier/retention and R2 bucket backup/versioning (operator). |
-| EP13-09 | Availability and incident readiness | partial | SLO reference doc (first-builder targets, see notes). |
-| EP13-10 | Runbooks and capacity review | partial | Extend the runbook to Arc as a whole: deploy rollback, stale/timed-out jobs, missing files/previews, integration backlog, starts pipeline, imports, warranty. |
+| EP13-05 | Durable running-job monitoring | verified | Apply 20261020201000_running_job_runs, 20261020203000_operations_pipeline_findings (pending approval). |
+| EP13-06 | Cross-pipeline observability | verified | Apply 20261020200000_fair_job_claims, 20261020203000_operations_pipeline_findings, 20261020211000_open_wip_platform_findings (pending approval). |
+| EP13-07 | Failure injection and race acceptance | verified | Apply 20261020110000_sale_cancellation_holds_the_start (pending approval). |
+| EP13-08 | Backup restore drill | implemented | Confirm the Supabase PITR tier and retention and R2 object versioning against the 15-minute recovery point (operator). |
+| EP13-09 | Availability and incident readiness | partial | User decision on the paging channel and approval of the proposed service levels in docs/arc-operations.md. |
+| EP13-10 | Runbooks and capacity review | implemented | Owner approval of the capacity and cost review in docs/arc-operations.md. |
 
 ### EP14: Release acceptance
 
@@ -294,7 +294,6 @@ This side conversation cannot access the persistent main-thread goal, and expose
 - EP07-17: verified without a current passing LOT-01 run.
 - EP07-17: verified without a current passing RACE-02 run.
 - EP09-04: missing source tests/inspection-completion-handoff.test.js.
-- EP13-07: missing source tests/agreement-quote-concurrency.test.js.
 - EP14-06: missing source tests/agreement-quote-concurrency.test.js.
 - surfaceInventory: app/(app)/design-studio/studios/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.
 - surfaceInventory: app/(app)/projects/[id]/permits/page.tsx has no entry. Run node scripts/qa/production-readiness.mjs --surfaces --write, then assess it.

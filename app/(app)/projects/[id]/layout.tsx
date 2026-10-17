@@ -4,7 +4,7 @@ import { cacheLife } from "next/cache"
 import { Suspense } from "react"
 
 import { ProjectContextSetter } from "@/components/layout/project-context-setter"
-import { getProjectIdentity } from "@/lib/services/projects"
+import { getProjectIdentity, getProjectNavigationItemWithClient } from "@/lib/services/projects"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { getProjectPosture } from "@/lib/product-tier"
@@ -25,11 +25,13 @@ async function loadProjectContext(id: string) {
   "use cache: private"
   cacheLife("session")
 
-  const [project, { productTier }] = await Promise.all([
+  const context = requireOrgContext()
+  const [project, { productTier }, navigation] = await Promise.all([
     getProjectIdentity(id),
-    requireOrgContext(),
+    context,
+    context.then(({ supabase, orgId }) => getProjectNavigationItemWithClient(supabase, orgId, id)),
   ])
-  if (!project) return null
+  if (!project || !navigation) return null
   const posture = getProjectPosture(project.property_type, productTier)
   const lotContext = posture === "production"
     ? await getProjectLotContext(project.id).catch((error) => {
@@ -47,6 +49,7 @@ async function loadProjectContext(id: string) {
     posture,
     contextLabel: lotLabel,
     contextHref: lotContext ? `/communities/${lotContext.communityId}` : undefined,
+    navigation,
   }
 }
 

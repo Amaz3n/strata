@@ -9,7 +9,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { IMPORTER_KEYS, type ImporterKey } from "@/lib/services/import-definitions"
 import { parseCsv } from "@/lib/services/import-parsers"
 import { suggestImportColumnMapping } from "@/lib/services/import-mapping"
-import { commitImportBatch, discardImportBatch, getImportMappingProfile, patchImportRow, setImportUpdateExisting, stageImportBatch } from "@/lib/services/imports"
+import { cancelImportBatch, commitImportBatch, discardImportBatch, getImportMappingProfile, patchImportRow, setImportUpdateExisting, stageImportBatch } from "@/lib/services/imports"
 import { completeOnboardingStage, createOnboardingRun, getOnboardingRun, markRunLive, ONBOARDING_STAGE_KEYS, skipOnboardingStage, updateOnboardingRun } from "@/lib/services/onboarding"
 import { ONBOARDING_READINESS_ITEMS } from "@/lib/data/onboarding-readiness"
 import { deleteSampleCommunity, seedSampleCommunity } from "@/lib/services/demo-community-seed"
@@ -136,6 +136,15 @@ export async function commitImportAction(input: { orgId: string; importer: Impor
     const result = await commitImportBatch(parsed.batchId, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding`)
+    return result
+  })
+}
+
+export async function cancelImportAction(input: { orgId: string; importer: ImporterKey; batchId: string }) {
+  return run(async () => {
+    const parsed = z.object({ orgId: uuid, importer: importerSchema, batchId: uuid }).parse(input)
+    const result = await cancelImportBatch(parsed.batchId, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
+    revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
     return result
   })
 }

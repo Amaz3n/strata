@@ -1,0 +1,17 @@
+{
+  "scenario": "RESTORE-02",
+  "reviewedFrom": "EP13-08 (docs/enterprise-production/completion-checklist.json): restore into an isolated environment meets the frozen RPO and RTO (loadTargets recoveryTimeMinutes 60, recoveryPointMinutes 15), and reconciliation proves operational records, files and financial receipts survived. Run on the acceptance stack only; production PITR tier and retention and object-store versioning are operator-confirmed.",
+  "subcases": {
+    "whole-database-restore-drill": {
+      "inputs": {
+        "targets": {
+          "recoveryTimeMinutes": 60,
+          "restoreJobs": 4,
+          "minimumTables": 500
+        }
+      },
+      "derivation": "The whole acceptance database (every tenant on the stack, including any scaled production builder) is dumped from one exported snapshot with pg_dump inside the stack's container (all but pg_cron, whose extension and schedules live only in the cluster's postgres database and so cannot be created in a second database; its job count is reported beside the drill), and restored with pg_restore into a fresh database (template0) in the same container. pg_restore exits 0 and reports no errors, and the restored database answers. The schema comes back whole: the counts of row security policies (public and storage), public functions and public non-internal triggers match the source. The source side is read in the session that exported the snapshot, so it is exactly what the dump holds even while other work writes to the stack. Every public table (at least 500) has the same row count; the operational records (divisions to outbox), file rows (files, file_links, photos, documents) and financial receipts (invoices to po_receipts) hash identically row for row (md5 of each row's text, ordered by id); auth users, storage objects, the migration ledger and the isolation marker match. The clock runs from the dump's start to the restored database answering, and must be within the frozen 60-minute recovery time. The drill database and dump file are dropped afterwards. The recovery point of this method is the snapshot itself; production's is the PITR window, which the operator confirms.",
+      "expected": {}
+    }
+  }
+}

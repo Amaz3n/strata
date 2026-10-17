@@ -27,6 +27,7 @@ import {
 import type { ProjectNavigationItem } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useHydrated } from "@/hooks/use-hydrated"
+import { useShellProject } from "./page-title-context"
 
 function isArchived(status?: ProjectNavigationItem["status"]) {
   return status === "completed" || status === "cancelled"
@@ -45,6 +46,8 @@ interface SidebarProjectSwitcherProps {
    * showed a skeleton on every fresh page load.
    */
   projects: ProjectNavigationItem[]
+  /** The list stopped at its cap (the newest projects); the menu says so and links to them all. */
+  truncated: boolean
 }
 
 function getProjectIdFromPath(pathname: string): string | null {
@@ -52,7 +55,7 @@ function getProjectIdFromPath(pathname: string): string | null {
   return match?.[1] ?? null
 }
 
-export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSwitcherProps) {
+export function SidebarProjectSwitcher({ projectId, projects, truncated }: SidebarProjectSwitcherProps) {
   const { isMobile, state } = useSidebar()
   const isPending = useIsNavigationPending()
   const pathname = usePathname()
@@ -79,7 +82,7 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
     })
   }, [projects, query])
 
-  const currentProject = projects.find((p) => p.id === resolvedProjectId)
+  const currentProject = useShellProject(projects, resolvedProjectId)
 
   // The destination for a switch keeps the tab you are on: /projects/A/schedule
   // becomes /projects/B/schedule, not /projects/B.
@@ -187,6 +190,15 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
 
             {sortedProjects.length === 0 && (
               <div className="px-2 py-3 text-sm text-muted-foreground">No projects found.</div>
+            )}
+
+            {truncated && (
+              <p className="px-2 pb-2 text-xs text-muted-foreground">
+                Showing the {projects.length} newest projects.{" "}
+                <OptimisticLink href="/projects" className="text-foreground underline-offset-4 hover:underline">
+                  All projects
+                </OptimisticLink>
+              </p>
             )}
 
             <div className="max-h-72 overflow-auto">

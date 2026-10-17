@@ -103,6 +103,7 @@ async function AuthenticatedAppChrome({
     businessProfile,
     ambientContext,
     projects,
+    projectsTruncated,
     hasProductionProjects,
     hasActiveNonProductionProjects,
     hasActiveCommercialProjects,
@@ -150,6 +151,7 @@ async function AuthenticatedAppChrome({
             <AppSidebar
               user={currentUser}
               projects={projects}
+              projectsTruncated={projectsTruncated}
               canAccessPlatform={platformAccess.canAccessPlatform}
               permissions={permissions}
               productTier={productTier}

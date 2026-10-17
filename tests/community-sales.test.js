@@ -635,9 +635,39 @@ describe("executePurchaseAgreementFromEnvelopeExecution", () => {
           { id: id(67), org_id: ORG, project_id: HOME, category_id: KITCHEN, status: "pending", selected_option_id: null, locked_at: null },
           { id: id(68), org_id: ORG, project_id: HOME, category_id: ELECTRICAL, status: "confirmed", selected_option_id: id(69), locked_at: null },
         ],
+        audit_log: [],
       },
+      rpc: { execute_purchase_agreement_atomic: executeAtomically, finish_purchase_agreement_execution: finishExecution },
     })
   }
+  // The two functions' contract (migration 20261020110000), over the fake's rows: the
+  // contract moves under its lock, a void one is refused, a finished one returns at once,
+  // and the effects belong to whoever holds a fresh claim.
+  function executeAtomically(args, db) {
+    const contract = db.contracts.find((row) => row.id === args.p_contract_id)
+    if (contract.status === "void") return { data: null, error: { message: "Purchase agreement was voided" } }
+    if (contract.status === "active" && contract.signature_data?.execution_effects_completed) return { data: { state: "completed" }, error: null }
+    const claim = contract.signature_data?.execution_claim
+    if (claim && claim.token !== args.p_claim_token) return { data: { state: "in_progress" }, error: null }
+    const document = db.documents.find((row) => row.source_entity_id === contract.id)
+    contract.signed_at ??= new Date().toISOString()
+    contract.signature_data = { ...contract.signature_data, envelope_id: args.p_envelope_id, packet_hash: contract.snapshot.purchase_agreement.packet.hash,
+      source_sha256: document?.metadata.esign_source.sha256 ?? null, execution_claim: { token: args.p_claim_token } }
+    contract.status = "active"
+    if (!db.closings.some((row) => row.project_id === contract.project_id && row.status !== "cancelled"))
+      db.closings.push({ id: id(72), org_id: ORG, project_id: contract.project_id, status: "projected" })
+    return { data: { state: "claimed", project_id: contract.project_id, signed_at: contract.signed_at, envelope_id: args.p_envelope_id,
+      packet_hash: contract.signature_data.packet_hash, snapshot: contract.snapshot }, error: null }
+  }
+  function finishExecution(args, db) {
+    const contract = db.contracts.find((row) => row.id === args.p_contract_id)
+    if (contract.signature_data?.execution_claim?.token !== args.p_claim_token) return { data: false, error: null }
+    const { execution_claim: _claim, ...rest } = contract.signature_data
+    contract.signature_data = args.p_completed ? { ...rest, execution_effects_completed: true } : rest
+    if (args.p_completed) db.audit_log.push({ entity_id: contract.id, source: "purchase_agreement_execution" })
+    return { data: true, error: null }
+  }
+  const executions = (service) => service.events.filter((event) => event.eventType === "purchase_agreement_executed").length
   const execute = (service) => service.run(() => executePurchaseAgreementFromEnvelopeExecution({ orgId: ORG, contractId: CONTRACT, envelopeId: id(70) }))
   const selection = (service, categoryId) => service.db.project_selections.find((row) => row.category_id === categoryId)
 
@@ -665,6 +695,45 @@ describe("executePurchaseAgreementFromEnvelopeExecution", () => {
     await execute(service)
     assert.equal(selection(service, KITCHEN).locked_at, null)
     assert.ok(selection(service, ELECTRICAL).locked_at)
+  })
+
+  test("execution completes once: one closing, one execution event, one audit row, and the claim is given back as completion", async () => {
+    const service = harness()
+    await execute(service)
+    assert.equal(service.db.closings.length, 1)
+    assert.equal(executions(service), 1)
+    assert.equal(service.db.audit_log.length, 1)
+    assert.equal(service.db.contracts[0].signature_data.execution_effects_completed, true)
+    assert.equal(service.db.contracts[0].signature_data.execution_claim, undefined)
+  })
+
+  test("a voided agreement is refused and stays void", async () => {
+    const service = harness()
+    service.db.contracts[0].status = "void"
+    await assert.rejects(execute(service), /^Error: Purchase agreement was voided$/)
+    assert.equal(service.db.contracts[0].status, "void")
+    assert.equal(service.db.closings.length, 0)
+    assert.equal(executions(service), 0)
+  })
+
+  test("a finished execution returns at once and writes nothing more", async () => {
+    const service = harness()
+    await execute(service)
+    const before = JSON.stringify(service.db)
+    await execute(service)
+    assert.equal(JSON.stringify(service.db), before)
+    assert.equal(executions(service), 1)
+  })
+
+  test("a second delivery while another executes waits for it and returns quietly, recording nothing itself", async () => {
+    const service = harness()
+    const contract = service.db.contracts[0]
+    Object.assign(contract, { status: "active", signature_data: { execution_claim: { token: id(73) } } })
+    setTimeout(() => { contract.signature_data = { execution_effects_completed: true } }, 600)
+    await execute(service)
+    assert.equal(executions(service), 0)
+    assert.equal(service.db.audit_log.length, 0)
+    assert.equal(service.db.closings.length, 0)
   })
 })
 

@@ -20,8 +20,8 @@ export async function GET() {
   await connection()
   try {
     const { supabase, orgId } = await requireOrgContext()
-    const projects = await listProjectNavigationItemsWithClient(supabase, orgId)
-    return NextResponse.json({ projects })
+    const { items: projects, truncated } = await listProjectNavigationItemsWithClient(supabase, orgId)
+    return NextResponse.json({ projects, truncated })
   } catch (error) {
     unstable_rethrow(error)
     logger.error("api.projects.list_failed", { route: "/api/projects", error })

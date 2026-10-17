@@ -15,6 +15,7 @@ import { booksDigest } from "@/lib/services/books/hash";
 import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context";
 import { normalizeProductTier } from "@/lib/product-tier";
 import { recordEvent } from "@/lib/services/events";
+import { enforceMutationRateLimit } from "@/lib/services/auth-rate-limit";
 import { ensureOrgScopedPath, getFilesObjectStream, uploadFilesStream } from "@/lib/storage/files-storage";
 
 
@@ -148,6 +149,7 @@ export async function requestBooksExport(input: {
   orgId?: string;
 }) {
   const context = await requireExportContext(input.orgId);
+  await enforceMutationRateLimit("books_export", context.orgId);
   const service = createServiceSupabaseClient();
   const exportType = input.exportType ?? "complete";
   const exportId = await insertExport(context, exportType);

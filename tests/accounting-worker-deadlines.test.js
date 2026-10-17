@@ -14,11 +14,13 @@ function load(file, stubs = {}, extra = "") {
   mod.require = (name) => {
     if (Object.hasOwn(stubs, name)) return stubs[name]
     if (name === "server-only") return {}
-    if (name === "@/lib/observability/correlation") return { correlatedFetch: (fetchRequest = globalThis.fetch) => fetchRequest, correlationId: async () => "worker-test" }
+    if (name === "@/lib/ops/pipelines") return load("lib/ops/pipelines.ts")
+    if (name === "@/lib/observability/correlation") return { correlatedFetch: (fetchRequest = globalThis.fetch) => fetchRequest, correlationId: async () => "worker-test", withCorrelation: (_id, work) => work() }
     if (["@/lib/integrations/accounting/qbo/cdc", "@/lib/integrations/accounting/qbo/cdc-recovery", "@/lib/integrations/accounting/qbo/webhook"].includes(name)) return require("./fixtures/qbo-cdc-runtime").load(`${name.slice(2)}.ts`, stubs)
     if (
       [
         "node:async_hooks",
+        "node:crypto",
         "crypto",
         "next/server",
         "@supabase/supabase-js",
@@ -170,16 +172,18 @@ function fixture(cookies = [], missingEnv = false) {
   const common = {
     "@/lib/supabase/server": server,
     "@/lib/supabase/worker-request-context": context,
+    "@/lib/services/cron-auth": {
+      isAuthorizedCronRequest: (request) => request.authorized !== false,
+    },
   }
   const delivery = load("lib/services/accounting-delivery.ts", common)
   common["@/lib/services/accounting-delivery"] = delivery
   const jobs = load("lib/services/job-runs.ts", common)
+  const afterTasks = []
   const wrapper = load("lib/services/accounting-worker.ts", {
     ...common,
+    "next/server": { ...require("next/server"), after: (task) => afterTasks.push(task) },
     "@/lib/services/job-runs": jobs,
-    "@/lib/services/cron-auth": {
-      isAuthorizedCronRequest: (request) => request.authorized !== false,
-    },
     "@/lib/supabase/service-client-context": clients,
   })
   const run = (deadline, work, finalDeadline = deadline + 5_000) =>
@@ -205,6 +209,7 @@ function fixture(cookies = [], missingEnv = false) {
     wrapper,
     run,
     cookieWrites,
+    afterTasks,
   }
 }
 const identity = {
@@ -751,22 +756,26 @@ test("actual withCronRun successful, partial and thrown handlers bound telemetry
         f = fixture(),
         calls = []
       let reached
+      let handlerReturned = false
       const dispatched = new Promise((resolve) => {
         reached = resolve
       })
       try {
         global.fetch = async (url, init) => {
+          // The run's opening row is written before the handler starts.
+          if (!handlerReturned) return init.method === "POST" ? json({ id: "fixture-run" }) : json([])
           calls.push({
             url: String(url),
             method: init.method,
             signal: init.signal,
           })
-          if (mode === "prune" && init.method === "POST") return json(null)
+          if (mode === "prune" && calls.length === 1) return json(null)
           reached()
           return mode === "headers" ? pending(init.signal) : stalledBody()
         }
         const handler = async () => {
           await time.tick(85_000)
+          handlerReturned = true
           if (mode === "throw") throw new Error("Fixture handler error")
           return json({ result: mode }, mode === "partial" ? 207 : 200)
         }
@@ -780,6 +789,8 @@ test("actual withCronRun successful, partial and thrown handlers bound telemetry
         assert.equal(response.status, 503)
         assert.equal(calls.at(-1).signal.aborted, true)
         assert.equal(calls.length, mode === "prune" ? 2 : 1)
+        // The abandoned run is closed after the response, never before it.
+        assert.equal(f.afterTasks.length, 1)
       } finally {
         time.restore()
       }
@@ -834,6 +845,8 @@ test("expired SSR cookie refresh cannot extend the full cron response or delete 
   console.error = (...args) => logs.push(args)
   try {
     global.fetch = async (url, init) => {
+      // The run's opening row is written before the handler starts.
+      if (String(url).includes("/rest/v1/job_runs")) return init.method === "POST" ? json({ id: "fixture-run" }) : json([])
       calls.push({ url: String(url), signal: init.signal, at: time.now })
       assert.match(String(url), /\/auth\/v1\/token\?grant_type=refresh_token/)
       reached()

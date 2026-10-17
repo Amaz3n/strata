@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { QueuePagination } from "@/components/layout/queue-pagination"
 import { useRouter } from "next/navigation"
-import { useMemo, useRef, useState, useTransition } from "react"
+import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { toast } from "sonner"
 
@@ -20,6 +20,7 @@ import type { ImportColumnSpec, ImporterKey } from "@/lib/services/import-defini
 
 type Batch = { id: string; status: string; source_filename: string | null; row_count: number; valid_count: number; warning_count: number; error_count: number; committed_count: number; skipped_count: number; report: Record<string, unknown>; context: Record<string, unknown>; update_existing: boolean; created_at: string }
 type Row = { id: string; row_number: number; parsed: Record<string, string | number | boolean | null>; status: string; issues: Array<{ level: string; code: string; message: string; column?: string }>; action: string | null }
+type CommitProgress = { built: number; total: number; cancelRequested: boolean }
 type Suggestion = { mappings: Array<{ target: string; source: string | null; confidence: "high" | "medium" | "low"; note: string }>; unmatched_targets: string[]; unmapped_sources: string[] }
 
 interface Props {
@@ -34,7 +35,7 @@ interface Props {
   workspaceHref?: string
   batchPagination?: { total: number; page: number; limit: number }
   batches: Batch[]
-  detail?: { batch: Batch; rows: Row[]; total: number; page?: number; limit?: number; status?: string } | null
+  detail?: { batch: Batch; rows: Row[]; total: number; page?: number; limit?: number; status?: string; progress?: CommitProgress | null } | null
   backHref: string
   previewAction: (input: { orgId?: string; importer: ImporterKey; csvText: string }) => Promise<ActionResult<{ headers: string[]; suggestion: Suggestion }>>
   stageAction: (input: { orgId?: string; importer: ImporterKey; csvText: string; sourceFilename?: string; mapping: Record<string, string | null>; context?: Record<string, unknown>; onboardingRunId?: string | null }) => Promise<ActionResult<Batch>>
@@ -42,6 +43,41 @@ interface Props {
   updateExistingAction: (input: { orgId?: string; importer: ImporterKey; batchId: string; updateExisting: boolean }) => Promise<ActionResult<unknown>>
   commitAction: (input: { orgId?: string; importer: ImporterKey; batchId: string }) => Promise<ActionResult<unknown>>
   discardAction: (input: { orgId?: string; importer: ImporterKey; batchId: string }) => Promise<ActionResult<unknown>>
+  /** Stops a running Open-WIP cutover between homes; only the platform onboarding workbench passes it. */
+  cancelAction?: (input: { orgId?: string; importer: ImporterKey; batchId: string }) => Promise<ActionResult<unknown>>
+}
+
+const PROGRESS_REFRESH_MS = 4000
+
+/** A running cutover's receipts, refreshed while it runs, with the operator's way to stop it between homes. */
+function CommitProgressBar({ progress, pending, onCancel }: { progress: CommitProgress; pending: boolean; onCancel?: () => void }) {
+  const router = useRouter()
+  useEffect(() => {
+    const timer = window.setInterval(() => router.refresh(), PROGRESS_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [router])
+  const percent = progress.total ? Math.round((progress.built / progress.total) * 100) : 0
+  return (
+    <div role="status" className="space-y-2 border p-3">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="flex items-center gap-2 font-medium"><Loader2 className="size-4 animate-spin text-muted-foreground" />{progress.cancelRequested ? "Stopping after the current home" : "Building homes"}</span>
+        <span className="tabular-nums text-muted-foreground">{progress.built} of {progress.total} built</span>
+      </div>
+      <div className="h-1.5 bg-muted"><div className="h-full bg-primary transition-[width] duration-200" style={{ width: `${percent}%` }} /></div>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">Each home is built whole with its receipt. Cancelling stops between homes and keeps every home built; Commit again resumes from them.</p>
+        {onCancel ? <Button size="sm" variant="outline" disabled={pending || progress.cancelRequested} onClick={onCancel}>Cancel cutover</Button> : null}
+      </div>
+    </div>
+  )
+}
+
+function cancelledSummary(report: Record<string, unknown> | undefined) {
+  const cancelled = report?.cancelled
+  if (!cancelled || typeof cancelled !== "object") return null
+  const built = "homes_built" in cancelled ? Number(cancelled.homes_built) : 0
+  const rows = "rows" in cancelled ? Number(cancelled.rows) : 0
+  return `Cancelled by an operator after ${built} of ${rows} homes. Those homes are kept with their receipts; Commit again resumes from them.`
 }
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
@@ -113,6 +149,8 @@ function ImportWorkspaceSession(props: Props) {
     })
   }
 
+  // A failed Open-WIP cutover keeps its homes with their receipts; committing again resumes from them.
+  const resumable = props.importer === "open_wip" && props.detail?.batch.status === "failed" && Boolean(props.cancelAction)
   const missingRequired = props.columns.filter((column) => column.required && !mapping[column.key])
 
   const stage = () => {
@@ -169,7 +207,9 @@ function ImportWorkspaceSession(props: Props) {
             <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Row status</span><Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger className="h-8 w-40" aria-label="Filter import rows by status"><SelectValue /></SelectTrigger><SelectContent>{["all", "pending", "valid", "warning", "error", "skipped", "committed"].map(status => <SelectItem key={status} value={status}>{status === "all" ? "All rows" : status.charAt(0).toUpperCase() + status.slice(1)}</SelectItem>)}</SelectContent></Select></div>
             <ImportReviewTable rows={filteredRows} columns={visibleColumns} onEdit={canManage && props.detail.batch.status === "staged" ? setEditing : undefined} />
             <QueuePagination page={props.detail.page ?? 1} pageSize={props.detail.limit ?? 500} total={props.detail.total} href={navigationHref()} pageParam="rowPage" label="Import row pages" />
-            <div className="flex items-center justify-between border-t pt-4"><Button variant="outline" disabled={!canManage || pending || props.detail.batch.status !== "staged"} onClick={() => run(() => props.discardAction({ orgId: props.orgId, importer: props.importer, batchId: props.detail!.batch.id }), "Batch discarded")}>Discard</Button><div className="flex items-center gap-3"><span className="text-xs text-muted-foreground">{props.detail.batch.error_count ? "Fix or skip every error before commit." : "Matches skip unless update mode is on. Review all rows before committing."}</span><Button disabled={!canManage || pending || props.detail.batch.status !== "staged" || props.detail.batch.error_count > 0} onClick={() => run(() => props.commitAction({ orgId: props.orgId, importer: props.importer, batchId: props.detail!.batch.id }), "Import committed")}>{pending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />} Commit</Button></div></div>
+            {props.detail.progress ? <CommitProgressBar progress={props.detail.progress} pending={pending} onCancel={canManage && props.cancelAction ? () => run(() => props.cancelAction!({ orgId: props.orgId, importer: props.importer, batchId: props.detail!.batch.id }), "Cancellation requested") : undefined} /> : null}
+            {cancelledSummary(props.detail.batch.report) ? <p role="status" className="flex items-center gap-2 text-sm text-warning"><AlertTriangle className="size-4" />{cancelledSummary(props.detail.batch.report)}</p> : null}
+            <div className="flex items-center justify-between border-t pt-4"><Button variant="outline" disabled={!canManage || pending || props.detail.batch.status !== "staged"} onClick={() => run(() => props.discardAction({ orgId: props.orgId, importer: props.importer, batchId: props.detail!.batch.id }), "Batch discarded")}>Discard</Button><div className="flex items-center gap-3"><span className="text-xs text-muted-foreground">{props.detail.batch.error_count ? "Fix or skip every error before commit." : "Matches skip unless update mode is on. Review all rows before committing."}</span><Button disabled={!canManage || pending || !(props.detail.batch.status === "staged" || resumable) || props.detail.batch.error_count > 0} onClick={() => run(() => props.commitAction({ orgId: props.orgId, importer: props.importer, batchId: props.detail!.batch.id }), "Import committed")}>{pending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />} {resumable ? "Commit again" : "Commit"}</Button></div></div>
           </> : <div className="border p-8 text-center text-sm text-muted-foreground">Stage a file to open the review grid.</div>}
         </TabsContent>
       </Tabs>

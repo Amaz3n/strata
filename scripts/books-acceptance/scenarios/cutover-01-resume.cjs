@@ -52,10 +52,10 @@ function actAsSignedInUser() {
 const commitAs = (kit, ops, orgId, batchId) => { actAsSignedInUser(); return kit.as(ops, () => app("imports").commitImportBatch(batchId, { platformOrgId: orgId })) }
 
 const ORGS = new WeakMap()
-function cutoverOrg(kit) {
+function cutoverOrg(kit, name = "CUTOVER-01 open-WIP cutover") {
   if (!ORGS.has(kit)) ORGS.set(kit, (async () => {
     actAsSignedInUser()
-    const org = await seed.productionBuilder(kit, { name: "CUTOVER-01 open-WIP cutover", lots: 48 })
+    const org = await seed.productionBuilder(kit, { name, lots: 48 })
     await seed.seedCommunity(kit, org)
     await seed.seedProduct(kit, org)
     // A started house stands on land bought in Books; lots 47 and 48 stay unbought.
@@ -474,5 +474,6 @@ module.exports = {
     "used-home-is-kept-not-rolled-back": usedHomeIsKeptNotRolledBack,
     "rollback-restores-the-lot-as-it-was": rollbackRestoresTheLotAsItWas,
   },
-  helpers: { actAsSignedInUser },
+  // OPS-01 cancels and fails cutovers built the same way.
+  helpers: { actAsSignedInUser, cutoverOrg, stageCutover, holdLot, commitWaitsOnALot, killMidFile, lapseClaim, reap, batchState, receipts, homesOn, records, reconciliation, memberWrite },
 }

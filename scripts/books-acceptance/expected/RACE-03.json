@@ -1,0 +1,418 @@
+{
+  "scenario": "RACE-03",
+  "reviewedFrom": "EP13-07 (docs/enterprise-production/completion-checklist.json): the production races RACE-02 does not cover (agreement signing on one lot, a cancellation racing a signature or a release, the cancellation held open while the signature lands, a cancelled sale's start, concurrent purchase-order and variance-order approvals) and injected storage, notification and runtime failures across the start-to-PO and sale-to-agreement chains, each serial-equivalent or a clean refusal, retried work exactly once, retry limits honoured and no deadlocks. One production builder of its own (production-seed.cjs, its tranche taken down; sales cases on fresh developed lots).",
+  "subcases": {
+    "race-two-agreements-and-two-signatures": {
+      "inputs": {
+        "rounds": 3
+      },
+      "derivation": "Each round: a reserved buyer (1,500,000 deposit received) on a fresh lot, the agreement quoted; the sales agent and the owner send the same creation request in the same tick. create_purchase_agreement_atomic keys the receipt on the reservation, so one request saves the agreement and the other recovers that receipt: both return the one agreement, and there is one agreement and one creation receipt for the home. Then two signature deliveries execute it in the same tick, and a third arrives after both finished. Whatever order they land in, the home ends with one active agreement, one live closing (closings_project_uniq) and one purchase_agreement_executed event; the reservation is converted and the buyer won; the late redelivery returns without changing anything. pg_stat_database deadlocks do not move during the case. How the loser of the two concurrent deliveries reports is duplicate-signature-delivery-is-quiet.",
+      "expected": {
+        "rounds": [
+          {
+            "creations": [
+              "done",
+              "done"
+            ],
+            "oneAgreementReturned": true,
+            "afterCreation": {
+              "agreements": 1,
+              "creationReceipts": 1
+            },
+            "anExecutionCompleted": true,
+            "redelivered": "done",
+            "after": {
+              "active": 1,
+              "liveClosings": 1,
+              "executedEvents": 1,
+              "reservation": "converted",
+              "prospect": "won"
+            }
+          },
+          {
+            "creations": [
+              "done",
+              "done"
+            ],
+            "oneAgreementReturned": true,
+            "afterCreation": {
+              "agreements": 1,
+              "creationReceipts": 1
+            },
+            "anExecutionCompleted": true,
+            "redelivered": "done",
+            "after": {
+              "active": 1,
+              "liveClosings": 1,
+              "executedEvents": 1,
+              "reservation": "converted",
+              "prospect": "won"
+            }
+          },
+          {
+            "creations": [
+              "done",
+              "done"
+            ],
+            "oneAgreementReturned": true,
+            "afterCreation": {
+              "agreements": 1,
+              "creationReceipts": 1
+            },
+            "anExecutionCompleted": true,
+            "redelivered": "done",
+            "after": {
+              "active": 1,
+              "liveClosings": 1,
+              "executedEvents": 1,
+              "reservation": "converted",
+              "prospect": "won"
+            }
+          }
+        ],
+        "deadlocksDuringCase": 0
+      }
+    },
+    "duplicate-signature-delivery-is-quiet": {
+      "inputs": {
+        "rounds": 3
+      },
+      "derivation": "The same rounds, judged on the two concurrent deliveries themselves: both must return. execute_purchase_agreement_atomic moves the contract, reservation, prospect and closing under the contract lock and hands the remaining effects (selection groups, structural selections, the margin baseline and product revisions, the execution event) to the delivery holding a leased claim; the other finds the claim and waits for completion (up to 15 s) and returns, or finds execution completed and returns at once. The closing is opened only when the home has none live, under the lock, so closings_project_uniq is never met. Completion and its audit row are written once by finish_purchase_agreement_execution, and the execution event carries a fixed idempotency id.",
+      "expected": {
+        "rounds": [
+          [
+            "done",
+            "done"
+          ],
+          [
+            "done",
+            "done"
+          ],
+          [
+            "done",
+            "done"
+          ]
+        ]
+      }
+    },
+    "race-cancellation-against-signature": {
+      "inputs": {
+        "rounds": 3
+      },
+      "derivation": "Each round: a saved draft agreement on a reserved buyer with a received deposit; the owner reviews the cancellation (previewAgreementCancellation) and confirms it with a refund while the signature delivery executes the same agreement, in the same tick. Serial-equivalent means exactly one of: the cancellation won (agreement void, no live closing, reservation released, one cancellation receipt, and the execution refused because the agreement was voided), or the signature won (agreement active with one closing and one execution event, reservation converted, no cancellation, and the cancellation refused because the sale changed under its reviewed plan). Every outcome is done or a named refusal. No deadlocks.",
+      "expected": {
+        "rounds": [
+          {
+            "serialEquivalent": true,
+            "outcomesAreClean": true
+          },
+          {
+            "serialEquivalent": true,
+            "outcomesAreClean": true
+          },
+          {
+            "serialEquivalent": true,
+            "outcomesAreClean": true
+          }
+        ],
+        "deadlocksDuringCase": 0
+      }
+    },
+    "void-between-read-and-write-stands": {
+      "inputs": {
+        "pauseSeconds": 4,
+        "deliverAfterMs": 1500
+      },
+      "derivation": "The interleaving the unlocked execution lost to, forced rather than hoped for: a saved draft agreement on a reserved buyer; the owner confirms its cancellation, and a test-only trigger on purchase_agreement_cancellations for this home sleeps 4 s at the receipt insert, which is after the agreement is set void and while the cancellation holds the contract lock. 1.5 s in, pg_stat_activity shows the cancellation active, and the signature's execution is delivered; 0.5 s later it is waiting on a lock (wait_event_type Lock). When the cancellation commits, execute_purchase_agreement_atomic reads the agreement under that lock, finds it void and refuses (Purchase agreement was voided). The void stands: no active agreement, one void, no live closing, no execution event, one cancellation receipt, the reservation released. Before 20261020110000 the execution read the status without a lock and then wrote active unconditionally, so a cancellation between the two was undone.",
+      "expected": {
+        "forced": {
+          "cancellationHeldOpen": true,
+          "executionWaitedOnTheLock": true,
+          "pauseFired": 1
+        },
+        "outcomes": {
+          "cancel": "done",
+          "signature": "refused: the agreement was voided"
+        },
+        "after": {
+          "active": 0,
+          "voided": 1,
+          "liveClosings": 0,
+          "executedEvents": 0,
+          "cancellations": 1,
+          "reservation": "released"
+        }
+      }
+    },
+    "race-cancellation-against-start-release": {
+      "inputs": {
+        "rounds": 2,
+        "firstLot": 1
+      },
+      "derivation": "Each round, on tranche lots 1 and 2: a sold home (reserved with a 2,000,000 deposit, signed, designed, every start gate cleared by its owner, inventory adopted) whose package is ready; the owner confirms the buyer cancellation (reviewed plan: the package returns to open) while the starts coordinator releases the package, in the same tick. Serial-equivalent means exactly one of: the release won (agreement active, package releasing, one release job, cancellation refused because the sale changed under its reviewed plan), or the cancellation won (agreement void, package not releasing or released, no release job, release refused). The defect this case found was not a race but a serial hole (review of 2026-10-17): void_purchase_agreement_atomic reopened the package and unlocked the selections but left the financing and selections_locked gates passed and the selection groups locked, and a home with no agreement in force read as a spec home whose financing needs nothing, so a refresh after the cancellation found no change and queue_start_release (which never looked at the agreement) released a voided sale's house. Fixed in 20261020110000: the cancellation takes the home's package lock before it reads its plan (so a release queued while it waited cannot commit `releasing` under a plan that said the package returns to open), resets the sale-derived gates (passed or waived) to pending, reopens the home's selection groups and audits it on the package; refresh_start_package_gates never passes the financing gate for a home that has had a purchase agreement and has none in force; and queue_start_release refuses such a home under its lock unless its financing gate was waived. cancelled-sale-does-not-start proves the serial order.",
+      "expected": {
+        "rounds": [
+          {
+            "serialEquivalent": true,
+            "outcomesAreClean": true
+          },
+          {
+            "serialEquivalent": true,
+            "outcomesAreClean": true
+          }
+        ],
+        "deadlocksDuringCase": 0
+      }
+    },
+    "cancelled-sale-does-not-start": {
+      "inputs": {
+        "lot": 5
+      },
+      "derivation": "Tranche lot 5: a sold home made ready as in the race (financing proved by its milestone with the document on file, selections locked). The owner cancels the sale, then the starts coordinator releases it. The cancellation reopens the package, resets the financing and selections_locked gates to pending, reopens every locked selection group and writes one starts.sale_cancelled audit row on the package. releaseStart's refresh reads the selections as open and the financing as unproved (a home with a void agreement and none active is not a spec home), so the package stays open and the release is refused as not ready. Then the package is set ready by hand, as stale evidence once did, and queue_start_release is called directly: it refuses under its lock because the home's sale was cancelled and its financing gate is not waived. No release job exists.",
+      "expected": {
+        "before": {
+          "gates": {
+            "financing": "passed",
+            "selections_locked": "passed"
+          },
+          "lockedGroups": true,
+          "openGroups": 0
+        },
+        "afterCancellation": {
+          "package": "open",
+          "gates": {
+            "financing": "pending",
+            "selections_locked": "pending"
+          },
+          "lockedGroups": 0,
+          "audited": 1
+        },
+        "release": "refused: the package is not ready",
+        "afterRelease": {
+          "package": "open",
+          "gates": {
+            "financing": "pending",
+            "selections_locked": "pending"
+          }
+        },
+        "queueOnAStaleReadyPackage": "refused: the home's sale was cancelled",
+        "releaseJobs": 0
+      }
+    },
+    "race-purchase-order-approvals": {
+      "inputs": {
+        "rounds": 3
+      },
+      "derivation": "Each round: a home with a draft purchase order of two lines (600.00 + 400.00 = 1,000.00, 100000 cents). Two purchasing managers approve it in the same tick through updateCommitment (the commitments desk action). The update is guarded on the order updated_at, so the order is approved once: status approved, total 100000 cents, exactly one approval audit row; the other request returns the same approved order or is refused because the order changed. No deadlocks.",
+      "expected": {
+        "rounds": [
+          {
+            "approvals": true,
+            "outcomesAreClean": true,
+            "status": "approved",
+            "cents": 100000,
+            "approvalAudits": 1
+          },
+          {
+            "approvals": true,
+            "outcomesAreClean": true,
+            "status": "approved",
+            "cents": 100000,
+            "approvalAudits": 1
+          },
+          {
+            "approvals": true,
+            "outcomesAreClean": true,
+            "status": "approved",
+            "cents": 100000,
+            "approvalAudits": 1
+          }
+        ],
+        "deadlocksDuringCase": 0
+      }
+    },
+    "race-variance-order-approvals": {
+      "inputs": {
+        "rounds": 3,
+        "reasonCode": "missed_scope",
+        "vpoCents": 50000
+      },
+      "derivation": "Each round: a home with an approved purchase order (100000 cents); purchasing manager A raises a variance order for missed scope of 500.00 (50000 cents, inside the standard approval band, no evidence needed); managers B and C approve it in the same tick. approveCommitmentChangeOrder updates only while status, total and updated_at are what it read, so exactly one approval lands: the variance order is approved at 50000, the order approved variance total is 50000 (moved once), one vpo.approved event, and the other approver is refused (the order changed while reviewing, or it is already approved). No deadlocks.",
+      "expected": {
+        "rounds": [
+          {
+            "approvedOnce": true,
+            "otherRefused": true,
+            "status": "approved",
+            "cents": 50000,
+            "approvedVarianceCents": 50000,
+            "approvalEvents": 1
+          },
+          {
+            "approvedOnce": true,
+            "otherRefused": true,
+            "status": "approved",
+            "cents": 50000,
+            "approvedVarianceCents": 50000,
+            "approvalEvents": 1
+          },
+          {
+            "approvedOnce": true,
+            "otherRefused": true,
+            "status": "approved",
+            "cents": 50000,
+            "approvedVarianceCents": 50000,
+            "approvalEvents": 1
+          }
+        ],
+        "deadlocksDuringCase": 0
+      }
+    },
+    "injected-failures-start-to-purchase-orders": {
+      "inputs": {
+        "lot": 3,
+        "plan": "MG1650",
+        "tradeCostCents": 25160000,
+        "vendors": 5
+      },
+      "derivation": "A spec home on tranche lot 3 (plan MG1650, ready, inventory adopted) is released, and a fault is armed on its purchase-order writes for one attempt. Attempt 1 copies the plan set into the house drawings and the plan version has no plan-set PDF (the acceptance stack has no file storage): the step fails, the job goes back to pending with one retry and the package stays releasing. The copy step is then settled as storage would have (releaseHome does the same). Attempt 2 reaches the purchase orders and the armed write fails once: the step rolls back, the job is pending with two retries. Attempt 3 runs clean: the package is released, the job completed (within the three-attempt limit), every step completed, and the house has exactly one purchase order per trade, 5 orders for the plan 251,600.00 of trade cost (25160000 cents), not a second set. One start.released event, and each member the release notifies (the owner and the starts coordinator, who hold start.release, and the house superintendent: 3) is notified once.",
+      "expected": {
+        "attempts": [
+          {
+            "job": "pending",
+            "retries": 1,
+            "package": "releasing"
+          },
+          {
+            "job": "pending",
+            "retries": 2,
+            "package": "releasing"
+          },
+          {
+            "job": "completed",
+            "retries": 2,
+            "package": "released"
+          }
+        ],
+        "failures": {
+          "firstAttemptMetTheMissingPlanSet": true,
+          "purchaseOrderWriteFired": 1
+        },
+        "steps": {
+          "budget": "completed",
+          "checklists": "completed",
+          "drawings": "completed",
+          "finalize": "completed",
+          "notify_trades": "completed",
+          "pos": "completed",
+          "project": "completed",
+          "schedule": "completed"
+        },
+        "purchaseOrders": {
+          "count": 5,
+          "vendors": 5,
+          "cents": 25160000
+        },
+        "confirmation": {
+          "releasedEvents": 1,
+          "notifiedUsers": 3,
+          "duplicateNotifications": 0
+        }
+      }
+    },
+    "retry-limit-parks-and-recovers": {
+      "inputs": {
+        "lot": 4,
+        "workerPasses": 3,
+        "plan": "MG1650",
+        "tradeCostCents": 25160000,
+        "vendors": 5
+      },
+      "derivation": "A spec home on tranche lot 4 is released with its plan-set copy settled and a fault armed on every purchase-order write. transition_starts_job_lease retries a start release twice and fails it on the third attempt (retry_count + 1 >= 3), parking the package for attention: attempts end pending (1 retry, releasing), pending (2, releasing), failed (3, attention). The purchase-order step rolls back each time, so the house has no orders, and one release_failed start_package_notice is queued. The fault is lifted and the starts coordinator retries (retryRelease resets the same job), with a fault armed on the release notification write for one attempt. The first attempt publishes the release and fails in its confirmation (the notification write): the package is released and the job pending; the next attempt re-runs only the confirmation and completes. The house ends with exactly 5 orders for 25160000 cents (one per trade, none from the failed attempts), one start.released event, and each of the 3 notified members notified once.",
+      "expected": {
+        "parked": {
+          "attempts": [
+            {
+              "job": "pending",
+              "retries": 1,
+              "package": "releasing"
+            },
+            {
+              "job": "pending",
+              "retries": 2,
+              "package": "releasing"
+            },
+            {
+              "job": "failed",
+              "retries": 3,
+              "package": "attention"
+            }
+          ],
+          "purchaseOrders": {
+            "count": 0,
+            "vendors": 0,
+            "cents": 0
+          },
+          "failureNotices": 1
+        },
+        "recovered": {
+          "attempts": [
+            {
+              "job": "pending",
+              "package": "released"
+            },
+            {
+              "job": "completed",
+              "package": "released"
+            }
+          ],
+          "notificationWriteFired": 1,
+          "purchaseOrders": {
+            "count": 5,
+            "vendors": 5,
+            "cents": 25160000
+          },
+          "confirmation": {
+            "releasedEvents": 1,
+            "notifiedUsers": 3,
+            "duplicateNotifications": 0
+          }
+        }
+      }
+    },
+    "injected-failures-sale-to-agreement": {
+      "inputs": {
+        "depositCents": 1500000
+      },
+      "derivation": "A reserved buyer (1,500,000 deposit received) on a fresh lot; the sales agent saves the agreement through a service client whose transport drops the reply to create_purchase_agreement_atomic after the request was sent, so the agreement commits and the seller sees a failure. The seller retries: the receipt keyed on the reservation returns the same agreement, with one agreement and one creation receipt. Signing preparation has no file storage on this stack, so the result says why (no document) instead of failing the sale. The signature delivery then executes it with a fault armed on the home closing write for one attempt: the first delivery fails after the agreement and reservation moved, and the redelivery completes the remaining effects. The home ends with one active agreement, one creation receipt, one live closing and one purchase_agreement_executed event, the reservation converted and the buyer won.",
+      "expected": {
+        "creation": {
+          "firstAttempt": "lost reply",
+          "repliesDropped": 1,
+          "retry": {
+            "sameAgreement": true,
+            "signingWithoutStorage": true
+          },
+          "agreements": 1,
+          "creationReceipts": 1
+        },
+        "execution": {
+          "attempts": [
+            "failed: injected closing write",
+            "done"
+          ],
+          "closingWriteFired": 1
+        },
+        "after": {
+          "active": 1,
+          "agreements": 1,
+          "liveClosings": 1,
+          "executedEvents": 1,
+          "reservation": "converted",
+          "prospect": "won",
+          "creationReceipts": 1
+        }
+      }
+    }
+  }
+}

@@ -275,12 +275,22 @@ function createFakeSupabase(tables = {}, rpcHandlers = {}, options = {}) {
   const store = clone(tables)
   // Opt-in, because a test that pages through `tamper` serves its own ranges.
   if (options.strictRanges) Object.defineProperty(store, "__strictRanges", { value: true, enumerable: false })
+  // The throttle every bulk mutation records itself against (lib/services/auth-rate-limit.ts), counted per fake
+  // database like the real table; a test that exercises the limit passes its own handler.
+  const throttle = new Map()
+  const builtIn = {
+    increment_auth_rate_limit: ({ action_input, identifier_input, window_start_input }) => {
+      const key = `${action_input}|${identifier_input}|${window_start_input}`
+      throttle.set(key, (throttle.get(key) ?? 0) + 1)
+      return { data: throttle.get(key), error: null }
+    },
+  }
   return {
     store,
     from(table) { return new Query(store, table, newId) },
     async rpc(name, args) {
       await Promise.resolve()
-      const handler = rpcHandlers[name]
+      const handler = rpcHandlers[name] ?? builtIn[name]
       if (!handler) throw new Error(`fake-supabase: no handler for rpc "${name}"`)
       return handler(args, store)
     },

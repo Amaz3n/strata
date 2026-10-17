@@ -58,6 +58,7 @@ import type { ProjectNavigationItem, User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { useNavigationBadges } from "./navigation-badge-context"
+import { useShellProject } from "./page-title-context"
 import {
   buildProjectNavGroups,
   getProjectIdFromPath,
@@ -71,6 +72,8 @@ interface AppSidebarProps {
   user?: User | null
   /** Loaded by the layout's cached chrome context, not fetched after hydration. */
   projects: ProjectNavigationItem[]
+  /** The list stopped at its cap; the switcher says so. */
+  projectsTruncated: boolean
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
@@ -333,6 +336,7 @@ function buildWorkspaceGroups(
 export function AppSidebar({
   user,
   projects,
+  projectsTruncated,
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
@@ -359,10 +363,7 @@ export function AppSidebar({
   const isProject = Boolean(projectId)
   const section = getProjectSection(pathname)
   const permissionSet = useMemo(() => new Set(permissions), [permissions])
-  const currentProject = useMemo(
-    () => projects.find((project) => project.id === projectId),
-    [projects, projectId],
-  )
+  const currentProject = useShellProject(projects, projectId)
 
   const activeSettingsTab = pathname.startsWith("/settings/accounting") ? "accounting" : searchParams.get("tab") ?? "profile"
   const settingsReturnTo = searchParams.get("returnTo") || "/"
@@ -457,7 +458,7 @@ export function AppSidebar({
                   <ArrowLeft className="size-4" />
                 </OptimisticLink>
                 <div className="min-w-0 flex-1">
-                  <SidebarProjectSwitcher projectId={projectId ?? undefined} projects={projects} />
+                  <SidebarProjectSwitcher projectId={projectId ?? undefined} projects={projects} truncated={projectsTruncated} />
                 </div>
               </div>
             ) : (

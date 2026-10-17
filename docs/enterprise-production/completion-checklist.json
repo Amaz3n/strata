@@ -31634,12 +31634,11 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "The safe place to generate and run a load dataset now exists: Books' isolated acceptance stack rebuilds Arc from scratch, refuses to touch production, and runs in CI. It does not yet generate production data (divisions, communities, lots, homes, warranty history). Status raised to partial for the reusable isolated stack. The frozen targets (100 divisions, 2,000 communities, 100k active / 1M installed homes) are national scale; a first-builder target is proposed in notes. A production seed on the acceptance stack (scripts/books-acceptance/production-seed.cjs, 1842d2f0) now builds a division, a 20-lot community, a land tranche, two released plans with options and a price book, and homes at every stage from hold to warranty; LOT-01 and the role sweep run on it. It is not parameterized up to the load targets and no mixed-role workload exists.",
+      "status": "verified",
+      "implementationNotes": "scripts/books-acceptance/production-scale-seed.cjs builds the user-approved first-builder profile reproducibly in an isolated org on the acceptance stack, in about two to three minutes, and refuses any non-acceptance target so it cannot write customer data: 3 divisions, 30 communities, 1,500 lots, 3,000 homes (500 active at every stage, 2,500 installed with warranty history), 2,880 agreements and 13,800 approved purchase orders. The census matches scripts/books-acceptance/expected/SCALE-01.json. User decision 2026-10-17: the first-builder target is 3 divisions, 30 communities, 1,500 lots, 500 active and 2,500 installed homes, 50 users, desk p95 2 s, mutation p95 1.5 s; the national loadTargets are unchanged and deferred. Proved by SCALE-01 first-builder-dataset.",
       "remainingWork": [
-        "Parameterize the production seed up to a first-builder size per notes and then toward loadTargets (divisions, communities, lots, installed homes, warranty history).",
-        "Mixed-role workload scripts (starts, purchasing, sales, warranty desks, mobile) with recorded parameters.",
-        "Owner review of representativeness via EP14-11."
+        "Owner review of representativeness via EP14-11.",
+        "Build the national loadTargets dataset later (deferred by user decision)."
       ],
       "sources": [
         "scripts/benchmark-project-directory.mjs",
@@ -31648,7 +31647,10 @@
         "scripts/books-acceptance/runtime.cjs",
         "scripts/books-acceptance/upgrade-seed.cjs",
         "scripts/books-acceptance/baseline.cjs",
-        "scripts/books-acceptance/scenarios/cap-01.cjs"
+        "scripts/books-acceptance/scenarios/cap-01.cjs",
+        "scripts/books-acceptance/production-scale-seed.cjs",
+        "scripts/books-acceptance/scenarios/scale-01.cjs",
+        "scripts/books-acceptance/expected/SCALE-01.json"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -31682,7 +31684,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -31726,6 +31728,50 @@
             }
           ],
           "scope": "Isolated acceptance stack, 2026-10-10: production seed (scripts/books-acceptance/production-seed.cjs) built and used by LOT-01 and the role sweep."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SCALE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "SCALE-01-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SCALE-01 4 subcases: 2 passed, 2 BLOCKED. Passed: first-builder-dataset, mixed-role-load. BLOCKED because the acceptance app is next dev and page targets need a production build: desk-render-at-scale, desk-p95-under-load. Subcases mapped to this item: first-builder-dataset (3 divisions, 30 communities, 3,000 homes with 500 active at every stage and 2,500 installed, 2,880 agreements, 13,800 approved POs, census equal to the expected file, built in an isolated org in about 2-3 minutes; the seed refuses non-acceptance targets); the other subcases are tracked on EP13-02. Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "The seed builds the approved divisions, communities, lots, active homes and installed homes with warranty history, with agreements and purchase orders. SCALE-01 first-builder-dataset PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Generation is reproducible from a fixed PRNG seed and refuses any non-acceptance target, so it cannot write customer data; the workload that runs on it is EP13-02. SCALE-01 first-builder-dataset PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
@@ -31741,19 +31787,20 @@
         "scripts/benchmark-project-directory.mjs still reads production with the service role key (not an isolated workload) \u2014 still open."
       ],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [
-        "Sample community schedule wrote offset_days instead of start_offset_days (D6) (found by LOT-01/sweep) \u2014 fixed in 12c622af"
-      ],
+      "fixedSinceAudit": [],
       "plain": {
         "title": "Realistic test builder dataset",
-        "description": "Arc's isolated copy can now be filled with a realistic production builder: a community of 20 lots, two released plans, a price book and homes at every stage from hold to warranty, and it is used by the end-to-end test and the role sweep. It is demonstration size, not yet scaled up, and no mixed-role speed test runs on it."
+        "description": "Arc's isolated copy can now be filled, in a few minutes and without touching any customer data, with a first-sized production builder: 3 divisions, 30 communities, 1,500 lots and 3,000 homes, of which 500 are being sold or built and 2,500 are closed with warranty history. Proven on the test setup; the owner still has to confirm the size is representative."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Needed to prove a 25\u2013250 closings/yr builder's desks stay fast; a first-builder-sized dataset is cheap on the existing stack. National-scale sizing is later.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved the first-builder target on 2026-10-17 (3 divisions, 30 communities, 1,500 lots, 500 active and 2,500 installed homes, 50 users); national scale stays deferred.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "SCALE-01"
+      ]
     },
     {
       "id": "EP13-02",
@@ -31776,16 +31823,23 @@
       "dependencies": [
         "EP13-01"
       ],
-      "status": "pending",
-      "implementationNotes": "No production performance proof. Books CAP-01 shows the pattern for measuring that work scales with what changed rather than total size, and asserting totals after; a production version needs desk latency under concurrent users.",
+      "status": "implemented",
+      "implementationNotes": "A reproducible mixed-role load runner (scripts/books-acceptance/production-load.cjs) runs on the scaled first-builder org. A 50-session mixed-role load (41 distinct members) passed with 0 write errors, service-call write p95 under 310 ms (in-process service call, not a server-action round trip) and the queue counts and money totals held after the run. The page targets are NOT proven: the acceptance app is next dev, and solo p95 was over target on /starts 3.0 s, /sales 2.5 s and the home desk 4.5 s (purchasing 0.99 s, warranty 0.90 s and the home workbench 1.2 s were within the 2 s target), so desk-render-at-scale and desk-p95-under-load are BLOCKED until they run against a production build. get_sales_deals was sped up from about 1.0 s to about 0.32 s (migrations 20261020212000 and 20261020213000) and a project_financial_settings(project_id) index was added (20261020100000). Mobile is out of scope. The per-row RLS cost (about 60 microseconds a row) is a later set-based policy rewrite. All migrations are pending approval; 20261020212000 and 20261020213000 redefine the same function and could be folded before production.",
       "remainingWork": [
-        "Load runner (desk reads, mutations, mobile) on the acceptance stack reporting p50/p95/p99, throughput, error rate.",
-        "Post-run invariants (starts queue counts, PO/agreement totals).",
-        "Run at the first-builder target first, then loadTargets."
+        "Run desk-render-at-scale and desk-p95-under-load against a production build and record desk p95 at or under 2 s with 50 concurrent users.",
+        "Apply 20261020100000_project_financial_settings_project_index, 20261020212000_sales_deals_anchor_filters, 20261020213000_sales_deals_hashed_anchors (pending approval). 20261020212000 and 20261020213000 redefine the same function and could be folded into one before production.",
+        "Later: a set-based rewrite of the per-row RLS cost (about 60 microseconds a row).",
+        "Owner review of the drill artifacts via EP14-11."
       ],
       "sources": [
         "scripts/benchmark-project-directory.mjs",
-        "scripts/books-acceptance/scenarios/cap-01.cjs"
+        "scripts/books-acceptance/scenarios/cap-01.cjs",
+        "scripts/books-acceptance/production-load.cjs",
+        "scripts/books-acceptance/scenarios/scale-01.cjs",
+        "scripts/books-acceptance/expected/SCALE-01.json",
+        "supabase/migrations/20261020100000_project_financial_settings_project_index.sql",
+        "supabase/migrations/20261020212000_sales_deals_anchor_filters.sql",
+        "supabase/migrations/20261020213000_sales_deals_hashed_anchors.sql"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -31819,7 +31873,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -31839,11 +31893,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SCALE-01",
+          "result": "partial",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "SCALE-01-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SCALE-01 4 subcases: 2 passed, 2 BLOCKED. Passed: first-builder-dataset, mixed-role-load. BLOCKED (acceptance app is next dev; needs a production build): desk-render-at-scale, desk-p95-under-load. Subcases mapped to this item: mixed-role-load (50 sessions, 41 distinct members, 0 write errors, service-call write p95 under 310 ms in-process, invariants held), desk-render-at-scale and desk-p95-under-load (BLOCKED; solo p95 /starts 3.0 s, /sales 2.5 s and home desk 4.5 s over the 2 s target, purchasing 0.99 s, warranty 0.90 s and workbench 1.2 s within). Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Throughput, error rate and write p95 are measured against the approved targets on the first-builder org and meet them; the desk p95 target is not proven because the page subcases are blocked on a production build, and mobile is out of scope. SCALE-01 mixed-role-load PASSED; desk-render-at-scale and desk-p95-under-load BLOCKED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Starts queue counts and money totals were asserted after the load and held. SCALE-01 mixed-role-load PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Depends on EP13-01 dataset."
+        "Page subcases need a production build (the acceptance app is next dev).",
+        "Owner review of results."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -31852,17 +31950,24 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "get_sales_deals threatened the 2 s sales desk at scale (about 1.0 s). - fixed: anchor filters and hashed anchors bring it to about 0.32 s (20261020212000, 20261020213000), re-proved by SCALE-01 mixed-role-load",
+        "Oct 17 review: the SCALE-01 page target had been loosened. - fixed: restored to p95 and the page subcases are BLOCKED rather than passed",
+        "Oct 17 review: the gate verdict hid long-running NOT_RUN and open defects. - fixed: the verdict now fails unless there is fresh long-run evidence (7 days or less, same commit), and an open defect blocks it (verify-catalog 0 findings)"
+      ],
       "plain": {
         "title": "Speed proven under real use",
-        "description": "Nobody has yet measured how fast the production desks and phone app respond with many people working at once, or checked that counts and money stay right under that load."
+        "description": "Fifty people working at once across the production roles ran without a single write error, writes stayed well under the target, and counts and money stayed right afterwards. The page speed targets are not proven yet: the test setup runs in development mode, where three desks were slower than 2 seconds, so they must be measured again on a production build. The phone app is out of scope."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "A first-builder-sized check (tens of concurrent users) is needed before go-live; the 5,000-session national target is later.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved the first-builder target on 2026-10-17 (50 users, desk p95 2 s, mutation p95 1.5 s); the 5,000-session national target is deferred.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "M",
+      "scenarioIds": [
+        "SCALE-01"
+      ]
     },
     {
       "id": "EP13-03",
@@ -31883,19 +31988,31 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Background work is bounded and leased, and Books added streamed, bounded-memory archive jobs. One organization's backlog can still delay everyone else's jobs, there is no cancel for bulk work, and nothing measures it.",
+      "status": "implemented",
+      "implementationNotes": "Claims now take turns by organization: claim_jobs and claim_starts_jobs rotate round-robin per org (20261020200000), so one tenant's backlog cannot hold up the others (starts fairness is built but not measured). An Open-WIP cutover can be cancelled between homes with visible 'N of M built' progress and resumed later (20261020202000). Hourly per-org budgets bound bulk work: staged imports 300, import commits 120, starts release batches 60, Books archives 12 and document exports 30; they fail open like the sign-in throttle and are charged after validation. Members can insert only reindex_search, remove_search_index, send_proposal_email and process_drawing_set outbox jobs and cannot move job state (20261020210000, 20261020214000). Proved by OPS-01 skewed-backlog-is-claimed-fairly, cancelled-cutover-stops-between-homes, members-cannot-forge-job-state and bulk-mutations-are-rate-limited. All migrations are pending approval; 20261020210000 and 20261020214000 redefine the same function and could be folded before production.",
       "remainingWork": [
-        "Per-org fair claiming in claim_jobs (migration needs approval).",
-        "Bulk-job cancellation and visible progress for imports/releases/reports.",
-        "Rate limiting for API/mutation surfaces.",
-        "Measure under skewed-tenant load (EP13-01/02)."
+        "Apply 20261020200000_fair_job_claims, 20261020202000_open_wip_cancellation, 20261020210000_outbox_member_job_types, 20261020214000_outbox_member_reorder (pending approval). 20261020210000 and 20261020214000 redefine the same function and could be folded into one before production.",
+        "Add cancellation for Books archives, document exports and starts releases (only the Open-WIP cutover can be cancelled).",
+        "Measure claim_starts_jobs fairness under a skewed backlog.",
+        "Owner review of the fairness and budget results."
       ],
       "sources": [
         "supabase/migrations/20260729190000_outbox_priority.sql",
         "supabase/migrations/20260804120000_outbox_lease_reaper.sql",
         "app/api/jobs/process-outbox/route.ts",
-        "app/api/jobs/starts-pipeline/route.ts"
+        "app/api/jobs/starts-pipeline/route.ts",
+        "supabase/migrations/20261020200000_fair_job_claims.sql",
+        "supabase/migrations/20261020202000_open_wip_cancellation.sql",
+        "supabase/migrations/20261020210000_outbox_member_job_types.sql",
+        "supabase/migrations/20261020214000_outbox_member_reorder.sql",
+        "scripts/books-acceptance/scenarios/ops-01.cjs",
+        "scripts/books-acceptance/ops-01-cron-worker.cjs",
+        "scripts/books-acceptance/expected/OPS-01.json",
+        "lib/services/auth-rate-limit.ts",
+        "lib/services/imports.ts",
+        "lib/services/starts.ts",
+        "lib/services/document-exports.ts",
+        "lib/services/books/exports.ts"
       ],
       "testFiles": [
         "tests/starts-job-leases-db.test.js"
@@ -31950,7 +32067,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -31970,11 +32087,56 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "OPS-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "OPS-01-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "OPS-01 6 subcases: 6 passed. Passed: skewed-backlog-is-claimed-fairly, cancelled-cutover-stops-between-homes, dead-run-is-timed-out-not-never-started, failed-units-show-with-a-recovery-that-works, members-cannot-forge-job-state, bulk-mutations-are-rate-limited. Subcases mapped to this item: skewed-backlog-is-claimed-fairly, cancelled-cutover-stops-between-homes, members-cannot-forge-job-state and bulk-mutations-are-rate-limited; the other subcases are tracked on their own items. Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Claims rotate by organization, so small tenants drain in the second claim behind a 40-job backlog, and members cannot move job state. OPS-01 skewed-backlog-is-claimed-fairly and members-cannot-forge-job-state PASSED. Starts claim fairness is built the same way but not measured."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "Cancellation with visible progress and per-org hourly budgets are measured for the Open-WIP cutover, imports, starts releases, archives and exports; cancel exists only for the cutover. OPS-01 cancelled-cutover-stops-between-homes and bulk-mutations-are-rate-limited PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "claim_jobs change requires migration approval."
+        "Migrations pending approval.",
+        "Owner review of results."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -31984,18 +32146,21 @@
       "auditDefects": [],
       "auditConfidence": "high",
       "fixedSinceAudit": [
-        "Bill-approval retry no longer fails every attempt at priority 80 ahead of the queue (commit dd4a5ef7, app/api/jobs/process-outbox/route.ts)."
+        "Oct 17 review: members could queue privileged outbox jobs such as payment release. - fixed: members may insert only reindex_search, remove_search_index, send_proposal_email and process_drawing_set and cannot move job state (20261020210000, 20261020214000), re-proved by OPS-01 members-cannot-forge-job-state"
       ],
       "plain": {
         "title": "One builder can't slow others",
-        "description": "Background work runs in small, time-limited batches, but a big backlog from one builder can still delay everyone else's, bulk jobs can't be cancelled, and none of it is measured."
+        "description": "Background work now takes turns between builders, so a big backlog from one cannot hold up the rest. The open-homes import can be cancelled part-way and shows how many homes are built, bulk jobs have hourly limits per builder, and ordinary members can no longer queue privileged jobs. Proven on the test setup; the database changes need approval, and only the import can be cancelled so far."
       },
       "proposedScope": {
         "scope": "later",
         "reason": "Fairness matters with many busy tenants; the first production builder joins a small customer base where a cap and the existing leases suffice.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "OPS-01"
+      ]
     },
     {
       "id": "EP13-04",
@@ -32287,19 +32452,24 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Arc notices when a scheduled job hasn't succeeded for a while, and only pages for payment jobs. It still can't tell a job that started and died from one that never ran.",
+      "status": "verified",
+      "implementationNotes": "A cron run now writes a 'running' job_runs row with a deadline (the job's maximum duration plus 120 seconds), and overdue rows reconcile to timed_out. Health reads the run in flight, the newest finished run and the count of timed-out runs, so a job that dies on every run alerts as cron_timed_out, cron_failing or cron_not_started instead of looking healthy, and accepted work is distinguished from work that never completed. Alerts extend beyond payment jobs to starts, imports and warranty through operations_pipeline_alert (20261020201000, 20261020203000). Proved by OPS-01 dead-run-is-timed-out-not-never-started. Migrations pending approval.",
       "remainingWork": [
-        "Write a 'running' job_runs row with a deadline at start and reconcile overdue rows to timed_out (migration needs approval).",
-        "Alert timed_out vs never-started separately; extend alert routing to starts, imports and warranty jobs.",
-        "Verify alert delivery in QA."
+        "Apply 20261020201000_running_job_runs, 20261020203000_operations_pipeline_findings (pending approval).",
+        "Verify alert delivery to the operator in the QA org.",
+        "A paging channel is pending the user's decision (EP13-09)."
       ],
       "sources": [
         "lib/services/job-runs.ts",
         "lib/services/ops-watchdog.ts",
         "lib/services/ops.ts",
         "supabase/migrations/20260709120001_job_runs_and_platform_aggregates.sql",
-        "docs/books-operations.md"
+        "docs/books-operations.md",
+        "supabase/migrations/20261020201000_running_job_runs.sql",
+        "supabase/migrations/20261020203000_operations_pipeline_findings.sql",
+        "scripts/books-acceptance/scenarios/ops-01.cjs",
+        "scripts/books-acceptance/ops-01-cron-worker.cjs",
+        "scripts/books-acceptance/expected/OPS-01.json"
       ],
       "testFiles": [
         "tests/ops-page-rendering.test.js"
@@ -32364,7 +32534,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -32384,11 +32554,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "OPS-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "OPS-01-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "OPS-01 6 subcases: 6 passed. Passed: skewed-backlog-is-claimed-fairly, cancelled-cutover-stops-between-homes, dead-run-is-timed-out-not-never-started, failed-units-show-with-a-recovery-that-works, members-cannot-forge-job-state, bulk-mutations-are-rate-limited. Subcases mapped to this item: dead-run-is-timed-out-not-never-started; the other subcases are tracked on their own items. Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Running rows carry a deadline and overdue rows reconcile to timed_out durably. OPS-01 dead-run-is-timed-out-not-never-started PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Health reports timed-out, failing and never-started separately and a job that dies every run alerts; alerts cover starts, imports and warranty. OPS-01 dead-run-is-timed-out-not-never-started PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Schema change to job_runs requires migration approval."
+        "Migrations pending approval."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -32397,17 +32611,22 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Oct 17 review: a job that died on every run never alerted. - fixed: health reads the run in flight, the newest finished run and the timed-out count, so cron_timed_out, cron_failing and cron_not_started alert, re-proved by OPS-01 dead-run-is-timed-out-not-never-started"
+      ],
       "plain": {
         "title": "Know when a job silently died",
-        "description": "Arc flags scheduled jobs that haven't succeeded recently, but only alerts someone for payment jobs, and can't tell a job that crashed mid-run from one that never started."
+        "description": "Every scheduled job now records that it started and when it must finish. A job that dies mid-run is marked timed out and alerts, even if it dies on every run, and it is told apart from a job that never started. Starts, imports and warranty jobs alert too, not just payments. Proven on the test setup; the database changes need approval and alert delivery is still to be watched in the QA org."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "The starts pipeline and warranty jobs drive a production builder's day; a silent death must reach the operator.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "S"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "OPS-01"
+      ]
     },
     {
       "id": "EP13-06",
@@ -32428,12 +32647,11 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Books now shows, per document, what failed and how to fix it, and every close blocker links to its cure \u2014 the pattern production pipelines need. Starts, imports, signing and notifications still only have generic retry, and requests can't be traced through to the jobs they created.",
+      "status": "verified",
+      "implementationNotes": "/admin/ops/pipelines (platform.support.read; requeue and recommit need platform.support.write and are audited) lists failed units for starts, imports, signing, notifications and warranty with the error, a correlation id, the documented cure, an exact count and a 25-row cap. The outbox now carries a correlation_id so a request can be traced to the jobs it created (20261020200000, 20261020203000, 20261020211000); Open-WIP findings go to platform ops, not to customers. Proved by OPS-01 failed-units-show-with-a-recovery-that-works. Migrations pending approval.",
       "remainingWork": [
-        "Per-pipeline failed-unit views with documented safe recovery for starts, imports, signing, notifications (mirror Books posting status).",
-        "Correlation id through outbox, job_runs, events and audit (later).",
-        "Route critical non-payment failures to alerting."
+        "Apply 20261020200000_fair_job_claims, 20261020203000_operations_pipeline_findings, 20261020211000_open_wip_platform_findings (pending approval).",
+        "Verify the failed-units view and its recovery actions in the QA org."
       ],
       "sources": [
         "instrumentation.ts",
@@ -32442,7 +32660,14 @@
         "lib/services/ops.ts",
         "lib/services/ops-watchdog.ts",
         "app/(app)/admin/ops/page.tsx",
-        "docs/books-operations.md"
+        "docs/books-operations.md",
+        "app/(app)/admin/ops/pipelines",
+        "lib/services/pipeline-failures.ts",
+        "supabase/migrations/20261020200000_fair_job_claims.sql",
+        "supabase/migrations/20261020203000_operations_pipeline_findings.sql",
+        "supabase/migrations/20261020211000_open_wip_platform_findings.sql",
+        "scripts/books-acceptance/scenarios/ops-01.cjs",
+        "scripts/books-acceptance/expected/OPS-01.json"
       ],
       "testFiles": [
         "tests/ops-page-rendering.test.js"
@@ -32478,7 +32703,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -32498,10 +32723,56 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "OPS-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "OPS-01-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "OPS-01 6 subcases: 6 passed. Passed: skewed-backlog-is-claimed-fairly, cancelled-cutover-stops-between-homes, dead-run-is-timed-out-not-never-started, failed-units-show-with-a-recovery-that-works, members-cannot-forge-job-state, bulk-mutations-are-rate-limited. Subcases mapped to this item: failed-units-show-with-a-recovery-that-works; the other subcases are tracked on their own items. Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Failed units for five pipelines carry the error, a correlation id (outbox correlation_id) and alerting through operations_pipeline_alert. OPS-01 failed-units-show-with-a-recovery-that-works PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Each failed unit lists its documented cure and a recovery that works, gated by platform.support.write and audited, with an exact count and 25-row cap. OPS-01 failed-units-show-with-a-recovery-that-works PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
-      "blockers": [],
+      "blockers": [
+        "Migrations pending approval."
+      ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
       "sourceAcceptanceIndices": [
@@ -32512,14 +32783,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Find and fix failed work",
-        "description": "Books now tells the bookkeeper exactly which document failed and how to fix it. Starts, imports, e-signing and notifications only offer a generic retry in the operator console, and work can't be traced from the click that started it."
+        "description": "Operators now have one page listing the work that failed in starts, imports, e-signing, notifications and warranty. Each row shows the error, a number to trace it, the documented fix and a safe retry button for those allowed to use it, with the exact count and a visible cap of 25 rows. Proven on the test setup; the database changes need approval."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "The failed-unit views for starts/imports/signing are needed to support a first builder; full trace correlation can wait.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "OPS-01"
+      ]
     },
     {
       "id": "EP13-07",
@@ -32540,26 +32814,28 @@
         "qa_workflow"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Books built the harness this item needs \u2014 independent database sessions racing on the same money, plus injected failures and real storage \u2014 and it passes in CI. Production chains (start release, agreement signing, deposits, cancellations, imports) still have only single-session tests.",
+      "status": "verified",
+      "implementationNotes": "RACE-03 runs independent database sessions on the production chains and passed 11 of 11: concurrent agreements and signatures, a cancellation against a signature, a cancellation against a start release, and PO and VPO approvals are each serial-equivalent with no deadlocks; injected storage, PO write, notification, lost-reply and closing failures recover exactly once; the retry limit of 3 is demonstrated; and a forced void-between-read-and-write interleaving proves the void stands. Review fixes in 20261020110000_sale_cancellation_holds_the_start: cancelling a sale resets the financing and selections gates, reopens its selection groups and the release queue refuses a cancelled-sale home; signing is one locked execute_purchase_agreement_atomic plus finish_purchase_agreement_execution, so a late signature cannot reactivate a void agreement and a duplicate delivery is quiet. RACE-02 also passed 16 of 16. Migration pending approval.",
       "remainingWork": [
-        "Add RACE-02 on the acceptance stack: double release of the same lot, concurrent agreement signing on one lot, concurrent VPO/PO approvals, cancellation racing a release.",
-        "Inject storage/email/runtime failures across a full start-to-PO and sale-to-agreement chain and assert invariants.",
-        "Demonstrate lock ordering and retry limits under contention."
+        "Apply 20261020110000_sale_cancellation_holds_the_start (pending approval).",
+        "Re-run RACE-03 in the QA org after the migration is applied."
       ],
       "sources": [
         "scripts/test-area-acceptance-concurrency.mjs",
         "supabase/migrations/20260817120100_po_generation_serialization.sql",
         "scripts/books-acceptance/scenarios/race-01.cjs",
-        "scripts/books-acceptance/scenarios/interco-01.cjs"
+        "scripts/books-acceptance/scenarios/interco-01.cjs",
+        "scripts/books-acceptance/scenarios/race-02.cjs",
+        "scripts/books-acceptance/scenarios/race-03.cjs",
+        "scripts/books-acceptance/expected/RACE-03.json",
+        "supabase/migrations/20261020110000_sale_cancellation_holds_the_start.sql"
       ],
       "testFiles": [
         "tests/starts-release.test.js",
         "tests/starts-release-actor-db.test.js",
         "tests/starts-drawing-fences-db.test.js",
         "tests/starts-core-write-fences-db.test.js",
-        "tests/starts-job-leases-db.test.js",
-        "tests/agreement-quote-concurrency.test.js"
+        "tests/starts-job-leases-db.test.js"
       ],
       "executionLogEntries": [
         35,
@@ -32652,7 +32928,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -32672,11 +32948,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-03",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "RACE-03-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RACE-03 11 subcases: 11 passed. Passed: race-two-agreements-and-two-signatures, duplicate-signature-delivery-is-quiet, race-cancellation-against-signature, void-between-read-and-write-stands, race-cancellation-against-start-release, cancelled-sale-does-not-start, race-purchase-order-approvals, race-variance-order-approvals, injected-failures-start-to-purchase-orders, retry-limit-parks-and-recovers, injected-failures-sale-to-agreement. Subcases mapped to this item: all 11. RACE-02 also passed 16/16. Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Independent sessions and injected storage, PO write, notification, lost-reply and closing failures preserve one agreement, one closing and the money totals. RACE-03 race-two-agreements-and-two-signatures, race-purchase-order-approvals, race-variance-order-approvals, injected-failures-start-to-purchase-orders and injected-failures-sale-to-agreement PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "No deadlocks under contention, the retry limit of 3 parks and recovers, and the void between read and write stands. RACE-03 race-cancellation-against-signature, race-cancellation-against-start-release, void-between-read-and-write-stands and retry-limit-parks-and-recovers PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Production-workflow migrations (~54 of 191 pending, e.g. starts fences 20261003023000\u201320261003048000) are not in production; they are replayed on the acceptance stack."
+        "Migration 20261020110000 pending approval."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -32685,17 +33005,24 @@
       ],
       "auditDefects": [],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Oct 17 review: a voided cash sale's home could be released with no race, because cancelling a sale did not reset the financing and selections gates. - fixed: cancellation resets the gates, reopens selection groups and the release queue refuses the home (20261020110000), re-proved by RACE-03 cancelled-sale-does-not-start and race-cancellation-against-start-release",
+        "Oct 17 review: a late signature could reactivate a void agreement. - fixed: signing is one locked execute_purchase_agreement_atomic plus finish_purchase_agreement_execution, re-proved by RACE-03 void-between-read-and-write-stands and race-cancellation-against-signature",
+        "Oct 17 review: a duplicate signature delivery errored. - fixed: the losing delivery returns quietly, re-proved by RACE-03 duplicate-signature-delivery-is-quiet"
+      ],
       "plain": {
         "title": "Races and failures can't corrupt money",
-        "description": "Books now proves that two people hitting the same money at once, or a crash mid-save, never double-counts. The same proof doesn't exist yet for releasing starts, signing agreements, taking deposits or cancelling a sale."
+        "description": "Two people signing the same agreement, cancelling a sale while it is being signed or released, or approving the same purchase order at once now give the same result as taking turns, with no deadlocks. Failures in file storage, notifications, saves and replies recover exactly once, and a cancelled sale can no longer be started. Proven on the test setup; the database change needs approval."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Double release or double-signing a lot is a real first-builder risk at 25\u2013250 closings/yr; the harness already exists.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "RACE-03"
+      ]
     },
     {
       "id": "EP13-08",
@@ -32718,13 +33045,12 @@
       "dependencies": [
         "EP13-01"
       ],
-      "status": "partial",
-      "implementationNotes": "Books can now archive a company, lose it and restore it exactly, files included, and the drill runs on the acceptance stack. There is still no whole-database restore drill timed against a recovery target, and production records outside Books are not covered.",
+      "status": "implemented",
+      "implementationNotes": "RESTORE-02 dumps the whole acceptance database with pg_dump and restores it into a separate database in the same local container: recovery time 56 seconds against the 60-minute target. 590 tables and 7.29M rows came back with counts matching on every table, 37 operational, file and financial tables matching row for row by hash, pg_restore exiting 0, and the policy, function and trigger counts (1,086, 1,524, 901) compared. pg_cron is excluded. The recovery point is not measured: production's is the Supabase PITR window and R2 versioning, which the operator must confirm.",
       "remainingWork": [
-        "Confirm Supabase PITR tier/retention and R2 bucket backup/versioning (operator).",
-        "Timed full restore into an isolated project; record RPO/RTO against a first-builder target.",
-        "Reconciliation script for operational tables and file objects (reuse RESTORE-01/STORE-01 verifiers).",
-        "Owner review of drill artifacts."
+        "Confirm the Supabase PITR tier and retention and R2 object versioning against the 15-minute recovery point (operator).",
+        "Run a timed restore across hosts (a separate Supabase project) rather than the same local container.",
+        "Owner review of the drill artifacts."
       ],
       "sources": [
         "docs/books-restore-runbook.json",
@@ -32737,7 +33063,9 @@
         "docs/books-operations.md",
         "scripts/books-acceptance/scenarios/restore-01.cjs",
         "scripts/books-acceptance/scenarios/store-01.cjs",
-        "lib/storage/files-storage.ts"
+        "lib/storage/files-storage.ts",
+        "scripts/books-acceptance/scenarios/restore-02.cjs",
+        "scripts/books-acceptance/expected/RESTORE-02.json"
       ],
       "testFiles": [
         "tests/books-restore-preflight.test.js",
@@ -32794,7 +33122,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -32814,11 +33142,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RESTORE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "RESTORE-02-ep13"
+          ],
+          "head": "EP13 working tree on 6ccbc8e0",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RESTORE-02 1 subcase: 1 passed. Passed: whole-database-restore-drill (pg_dump to a separate database in the same local container; RTO 56 s against 60 min; 590 tables and 7.29M rows with counts matching on every table; 37 operational, file and financial tables matching by hash; pg_restore exit status and policy/function/trigger counts 1,086/1,524/901 compared; pg_cron excluded). RPO is not measured by this method. Regression on the same run: all golden scenarios at baseline (CUTOVER-01 17/18, FIELD-01 6/7 and LOT-01 89/97 storage-blocked as before, BID-01 12/13 one not implemented), OPS-01 6/6, RACE-03 11/11; 8-role sweep 0 errors; tsc clean; test:financials 2967/0; test:auth 750/0; test:starts 335/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The recovery time is within the frozen 60 minutes in an isolated database; the recovery point is not measured (PITR tier and R2 versioning are operator-confirmed) and the drill was not run across hosts. RESTORE-02 whole-database-restore-drill PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Row counts match on every table and operational records, files and financial receipts match by hash. RESTORE-02 whole-database-restore-drill PASSED."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Operator access to Supabase backup settings and an isolated restore target."
+        "Operator access to Supabase backup settings and an isolated restore target.",
+        "Owner review of the drill."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -32827,19 +33199,20 @@
       ],
       "auditDefects": [],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [
-        "Stored files are never overwritten (upsert:false now a conditional write) \u2014 commit 0cae93cc, lib/storage/files-storage.ts."
-      ],
+      "fixedSinceAudit": [],
       "plain": {
         "title": "Backup restore drill",
-        "description": "Books can archive a company and restore it exactly, files included, and that drill is proven. Nobody has yet restored the whole database from backup on a clock, or checked that lots, schedules, orders and agreements come back."
+        "description": "The whole test database was backed up and restored into a fresh one in 56 seconds against a one-hour target, and every table, the operational records, files and financial receipts matched afterwards. Not yet proven: how much recent work a real outage could lose, which depends on backup settings the operator must confirm, and a restore on a different machine."
       },
       "proposedScope": {
         "scope": "first",
         "reason": "Before a builder trusts Arc with live homes, the operator must have restored a backup once and confirmed backups are on; the 15-minute/60-minute targets are national scale.",
         "status": "proposed_awaiting_user_approval"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "RESTORE-02"
+      ]
     },
     {
       "id": "EP13-09",
@@ -32861,17 +33234,17 @@
       ],
       "dependencies": [],
       "status": "partial",
-      "implementationNotes": "Books has a written owner for operations and a defined drill. Arc as a whole still has no stated uptime target, no paging, no incident procedure and no availability measurements.",
+      "implementationNotes": "docs/arc-operations.md drafts the proposed service levels and an incident procedure for Arc as a whole, with the operator as on-call. The service levels are not yet approved, paging is not set up (pending the user's decision), and there are no availability measurements.",
       "remainingWork": [
-        "SLO reference doc (first-builder targets, see notes).",
-        "Page a named on-call (the operator) for critical job failures; cut watchdog latency for critical jobs.",
-        "Incident procedure extending docs/books-operations.md; alert-delivery test; 30-day availability observation."
+        "User decision on the paging channel and approval of the proposed service levels in docs/arc-operations.md.",
+        "Alert-delivery test and a 30-day availability observation."
       ],
       "sources": [
         "sentry.server.config.ts",
         "lib/services/ops.ts",
         "lib/services/ops-watchdog.ts",
-        "docs/books-operations.md"
+        "docs/books-operations.md",
+        "docs/arc-operations.md"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -32905,7 +33278,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -32929,6 +33302,7 @@
       ],
       "releaseState": "unverified",
       "blockers": [
+        "Paging channel pending the user's decision.",
         "Observation period and named on-call (operational)."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
@@ -32941,7 +33315,7 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Uptime targets and on-call",
-        "description": "Arc has error tracking and an operator console, and Books now names who owns operations. There is still no stated uptime target, no paging when something critical breaks, and no written incident procedure."
+        "description": "Proposed uptime targets and a written incident procedure now exist, with the operator as the person on call. They still need approval, nothing pages anyone yet, and availability has not been measured."
       },
       "proposedScope": {
         "scope": "first",
@@ -32969,17 +33343,18 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Books now has a full operations runbook, which covers financial reconciliation and most recovery; it is the template for the rest. Production workflows and deploy rollback have no runbook, and there is no capacity and cost review.",
+      "status": "implemented",
+      "implementationNotes": "docs/arc-operations.md holds the runbooks for deploy rollback, stale and timed-out jobs, missing files and previews, integration backlog, the starts pipeline, imports including Open-WIP resume, rollback and cancel, and warranty; Books reconciliation stays in docs/books-operations.md. It also holds a capacity and cost review at first-builder size, marked 'needs owner approval': 37 crons against a believed Vercel Pro limit of 40 (not verified) and an outbox ceiling of about 300 jobs an hour.",
       "remainingWork": [
-        "Extend the runbook to Arc as a whole: deploy rollback, stale/timed-out jobs, missing files/previews, integration backlog, starts pipeline, imports, warranty.",
-        "Capacity review (Vercel limits/cron, Supabase compute/connections/storage, cost) at the first-builder size, then loadTargets; owner approval."
+        "Owner approval of the capacity and cost review in docs/arc-operations.md.",
+        "Verify the Vercel cron limit against the account (37 crons used, believed limit 40)."
       ],
       "sources": [
         "docs/books-restore-runbook.json",
         "lib/services/ops.ts",
         "vercel.json",
-        "docs/books-operations.md"
+        "docs/books-operations.md",
+        "docs/arc-operations.md"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -33013,7 +33388,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -33033,6 +33408,35 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "partial",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP13"
+          ],
+          "date": "2026-10-17",
+          "head": "EP13 working tree on 6ccbc8e0",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "The runbooks cover rollback, stale jobs, missing files, integration backlog, starts, imports, warranty and, through Books operations, financial reconciliation."
+            },
+            {
+              "index": 1,
+              "verdict": "partial",
+              "evidence": "A capacity and cost review exists at first-builder size but is marked 'needs owner approval' and its cron limit is unverified."
+            }
+          ],
+          "scope": "Source review of the EP13 working tree on 6ccbc8e0; proves code presence and shape. No acceptance run applies to this item."
         }
       ],
       "releaseState": "unverified",
@@ -33049,7 +33453,7 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Operations runbooks and capacity",
-        "description": "Books has a complete operations runbook: deploys, scheduled jobs, month-end blockers, ledger repair and recovery. Production work \u2014 starts, imports, warranty \u2014 and rolling back a bad deploy have no runbook, and nobody has reviewed hosting capacity and cost."
+        "description": "Written runbooks now cover rolling back a bad deploy, stopped or timed-out jobs, missing files, integration backlogs, starts, imports (including resuming or cancelling the open-homes import) and warranty, along with a hosting capacity and cost review at the first builder's size. The owner still has to approve the review, and the hosting plan's job limit has not been verified."
       },
       "proposedScope": {
         "scope": "first",
@@ -42979,12 +43383,13 @@
       {
         "id": "RACE-02",
         "story": "Production money under contention: two sessions sign the same lot, double-release a start, approve the same VPO, cancel during release; outcomes are serial-equivalent or refused and cents conserve.",
-        "harness": "partial",
+        "harness": "exists",
         "covers": [
           "EP13-07",
           "EP14-06"
         ],
-        "existingSupport": "RACE-01 independent-session harness"
+        "existingSupport": "scripts/books-acceptance/scenarios/race-02.cjs (16 subcases)",
+        "result": "passed"
       },
       {
         "id": "LOAD-01",
@@ -42995,6 +43400,49 @@
           "EP13-02"
         ],
         "existingSupport": "CAP-01 request/row meter, isolated stack, upgrade-seed"
+      },
+      {
+        "id": "RACE-03",
+        "story": "Production chains under contention and failure: two sessions create and sign the same agreement, a cancellation races a signature or a start release, a cancelled sale cannot start, and PO and VPO approvals race; injected storage, PO write, notification, lost-reply and closing failures recover exactly once, the retry limit of 3 parks and recovers, and the void stands.",
+        "harness": "exists",
+        "covers": [
+          "EP13-07"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/race-03.cjs (11 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "OPS-01",
+        "story": "Operating Arc at scale: a skewed backlog is claimed fairly across organizations, an Open-WIP cutover is cancelled between homes and resumed, a dead cron run is timed out and not mistaken for never started, failed units show with a recovery that works, members cannot forge job state, and bulk mutations are rate limited.",
+        "harness": "exists",
+        "covers": [
+          "EP13-03",
+          "EP13-05",
+          "EP13-06"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/ops-01.cjs, scripts/books-acceptance/ops-01-cron-worker.cjs (6 subcases)",
+        "result": "passed"
+      },
+      {
+        "id": "SCALE-01",
+        "story": "First-builder volume (3 divisions, 30 communities, 1,500 lots, 500 active and 2,500 installed homes, 50 concurrent users; desk p95 2 s, mutation p95 1.5 s): the dataset is built reproducibly in an isolated org and a mixed-role load runs with post-run invariants; the page targets need a production build.",
+        "harness": "exists",
+        "covers": [
+          "EP13-01",
+          "EP13-02"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/scale-01.cjs, scripts/books-acceptance/production-scale-seed.cjs, scripts/books-acceptance/production-load.cjs (4 subcases; desk-render-at-scale and desk-p95-under-load BLOCKED on a production build)",
+        "result": "incomplete"
+      },
+      {
+        "id": "RESTORE-02",
+        "story": "A whole-database backup is restored into an isolated database inside the recovery time and reconciles: every table count, operational, file and financial records by hash, and the policy, function and trigger counts.",
+        "harness": "exists",
+        "covers": [
+          "EP13-08"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/restore-02.cjs (1 subcase; recovery point unmeasured)",
+        "result": "passed"
       },
       {
         "id": "DESK-01",
