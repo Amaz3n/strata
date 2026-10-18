@@ -173,20 +173,20 @@ async function purchasingEnabled(supabase: SupabaseClient, orgId: string, commun
   return (await loadPurchasingEnabledByCommunity(supabase, orgId, [communityId])).get(communityId) ?? false
 }
 
-/** Every active member who holds start.release through a role or a grant. */
-async function startReleaseAudience(supabase: SupabaseClient, orgId: string) {
+/** Every active member who holds one of `permissions` (start.release by default) through a role or a grant. */
+export async function permissionAudience(supabase: SupabaseClient, orgId: string, permissions: readonly string[] = ["start.release"]) {
   const roster = await readAllRows((from, to) => supabase.from("memberships").select("id,user_id,role_id")
     .eq("org_id", orgId).eq("status", "active").order("id").range(from, to),
-  { cap: 100001, label: "Failed to read release notification audience" })
-  if (roster.truncated) throw new Error("Release notification audience exceeds the supported limit")
+  { cap: 100001, label: "Failed to read notification audience" })
+  if (roster.truncated) throw new Error("Notification audience exceeds the supported limit")
   const memberships = roster.rows
   const roleIds = Array.from(new Set(memberships.map((membership) => membership.role_id)))
   const grants: { role_id: string }[] = []
   for (let offset = 0; offset < roleIds.length; offset += 100) {
     const result = await readAllRows((from, to) => supabase.from("role_permissions").select("role_id,permission_key")
-      .in("role_id", roleIds.slice(offset, offset + 100)).in("permission_key", ["start.release", "*"])
-      .order("role_id").order("permission_key").range(from, to), { cap: 1001, label: "Failed to read release notification roles" })
-    if (result.truncated) throw new Error("Release notification roles exceed the supported limit")
+      .in("role_id", roleIds.slice(offset, offset + 100)).in("permission_key", [...permissions, "*"])
+      .order("role_id").order("permission_key").range(from, to), { cap: 1001, label: "Failed to read notification roles" })
+    if (result.truncated) throw new Error("Notification roles exceed the supported limit")
     grants.push(...result.rows)
   }
   const allowedRoles = new Set(grants.map((grant) => grant.role_id))
@@ -195,9 +195,9 @@ async function startReleaseAudience(supabase: SupabaseClient, orgId: string) {
   const membershipIds = Array.from(usersByMembership.keys())
   for (let offset = 0; offset < membershipIds.length; offset += 100) {
     const result = await readAllRows((from, to) => supabase.from("membership_permission_overrides").select("membership_id,permission_key")
-      .in("membership_id", membershipIds.slice(offset, offset + 100)).eq("effect", "grant").in("permission_key", ["start.release", "*"])
-      .order("membership_id").order("permission_key").range(from, to), { cap: 1001, label: "Failed to read release notification overrides" })
-    if (result.truncated) throw new Error("Release notification overrides exceed the supported limit")
+      .in("membership_id", membershipIds.slice(offset, offset + 100)).eq("effect", "grant").in("permission_key", [...permissions, "*"])
+      .order("membership_id").order("permission_key").range(from, to), { cap: 1001, label: "Failed to read notification overrides" })
+    if (result.truncated) throw new Error("Notification overrides exceed the supported limit")
     for (const row of result.rows) {
       const userId = usersByMembership.get(row.membership_id)
       if (userId) recipients.add(userId)
@@ -209,7 +209,7 @@ async function startReleaseAudience(supabase: SupabaseClient, orgId: string) {
 async function notifyAssignedSuper(supabase: SupabaseClient, orgId: string, projectId: string, packageId: string) {
   const [{ data: project, error: projectError }, recipients] = await Promise.all([
     supabase.from("projects").select("superintendent_id").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
-    startReleaseAudience(supabase, orgId),
+    permissionAudience(supabase, orgId),
   ])
   if (projectError || !project) throw new Error(`Failed to read release notification home: ${projectError?.message ?? "Home unavailable"}`)
   if (project.superintendent_id) recipients.add(project.superintendent_id)
@@ -490,7 +490,7 @@ async function sendPackageNotice(service: SupabaseClient, job: ClaimedJob) {
   const notice = packageNoticeSchema.parse(job.payload)
   const [{ data: pkg, error }, recipients] = await Promise.all([
     service.from("start_packages").select("project_id").eq("org_id", job.org_id).eq("id", notice.start_package_id).maybeSingle(),
-    startReleaseAudience(service, job.org_id),
+    permissionAudience(service, job.org_id),
   ])
   if (error || !pkg) throw new Error(`Failed to read the start package notice: ${error?.message ?? "Start package not found"}`)
   const template = PACKAGE_NOTICES[notice.kind]

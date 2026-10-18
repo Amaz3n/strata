@@ -212,7 +212,8 @@ test("a community's permitting authority is set only by a community.write holder
   const admin = await full.seedMember(w.db, { orgId: w.orgId, role: "org_admin" })
   const set = (userId, companyId) => full.rpc(w.db, "set_community_permit_authority", { p_org_id: w.orgId, p_community_id: w.community.id, p_company_id: companyId }, { role: "authenticated", userId })
 
-  await assert.rejects(member(w, w.viewer.userId, "update communities set permit_jurisdiction_company_id = null where id = $1", [w.community.id]), /set from its settings/)
+  // A viewer holds no community key: the member write fence leaves them no row to update.
+  assert.equal((await member(w, w.viewer.userId, "update communities set permit_jurisdiction_company_id = null where id = $1", [w.community.id])).affectedRows, 0)
   await assert.rejects(member(w, admin.userId, "update communities set permit_jurisdiction_company_id = $2 where id = $1", [w.community.id, w.otherAuthority.id]), /set from its settings/)
   await assert.rejects(set(w.viewer.userId, null), /community\.write/)
   await w.approvedApplication()
@@ -437,13 +438,17 @@ test("a lot's plan pin, which the permit gate compares, is a lot.write holder's 
   const w = await permitWorld(t)
   const admin = await full.seedMember(w.db, { orgId: w.orgId, role: "org_admin" })
   const superintendent = await full.seedMember(w.db, { orgId: w.orgId, role: "org_superintendent" })
+  const steward = await full.seedMember(w.db, { orgId: w.orgId, role: await full.seedRole(w.db, { permissions: ["community.write"] }) })
   const free = await full.insert(w.db, "lots", { org_id: w.orgId, community_id: w.community.id, lot_number: "9", status: "developed" })
   const other = await full.insert(w.db, "house_plan_elevations", { org_id: w.orgId, house_plan_id: w.plan.id, code: "B" })
   const pin = (userId, lotId, column, value) => member(w, userId, `update lots set ${column} = $2 where id = $1`, [lotId, value])
 
   for (const [column, value] of [["house_plan_version_id", w.nextVersion.id], ["house_plan_elevation_id", other.id]]) {
-    await assert.rejects(pin(w.viewer.userId, w.lot.id, column, value), /takes lot\.write/)
-    await assert.rejects(pin(superintendent.userId, free.id, column, value), /takes lot\.write/)
+    // Neither holds a lot key: the member write fence leaves them no row to move.
+    assert.equal((await pin(w.viewer.userId, w.lot.id, column, value)).affectedRows, 0)
+    assert.equal((await pin(superintendent.userId, free.id, column, value)).affectedRows, 0)
+    // A community steward passes the fence and meets the pin guard.
+    await assert.rejects(pin(steward.userId, free.id, column, value), /takes lot\.write/)
   }
   await pin(admin.userId, free.id, "house_plan_version_id", w.nextVersion.id)
   await pin(admin.userId, free.id, "house_plan_elevation_id", other.id)

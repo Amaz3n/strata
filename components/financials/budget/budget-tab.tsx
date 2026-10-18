@@ -145,7 +145,7 @@ function KpiCell({
         kpiCellBorders[position],
       )}
     >
-      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
+      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         {hint ? <Hint label={label} hint={hint} /> : label}
       </div>
       <div

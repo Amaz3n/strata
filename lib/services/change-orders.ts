@@ -1386,6 +1386,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
       actorId: null,
     })
     await applyPlanAdoptionFromChangeOrder(existing.id, existing.org_id)
+    await recordChangeOrderScheduleImpact({ orgId: existing.org_id, projectId: existing.project_id, changeOrderId: existing.id })
   }
 
   await recordEvent({
@@ -1549,6 +1550,7 @@ export async function approveChangeOrderFromPortalSignature(input: {
       actorId: null,
     })
     await applyPlanAdoptionFromChangeOrder(existing.id, existing.org_id)
+    await recordChangeOrderScheduleImpact({ orgId: existing.org_id, projectId: existing.project_id, changeOrderId: existing.id })
   }
 
   await recordEvent({
@@ -1807,6 +1809,7 @@ export async function approveChangeOrder({
     actorId: userId,
   })
   await applyPlanAdoptionFromChangeOrder(data.id, resolvedOrgId)
+  await recordChangeOrderScheduleImpact({ orgId: resolvedOrgId, projectId: data.project_id, changeOrderId: data.id })
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -2076,6 +2079,49 @@ async function applyChangeOrderFinancialImpact({
       throw new Error(`Failed to update draw schedule amounts: ${drawUpdateError.message}`)
     }
   }
+}
+
+/**
+ * An approved change order that moves the schedule leaves a pending impact on
+ * the task it anchors to, for the superintendent to apply through
+ * `applyScheduleChangeOrderImpact` — nothing moves here, the same rule a
+ * selection change order follows (its trigger records its own impact, so it is
+ * skipped). The anchor is the earliest open task under one of the change
+ * order's cost codes, else the next open task. Recorded once per change order,
+ * however many approval paths reach it.
+ */
+async function recordChangeOrderScheduleImpact({ orgId, projectId, changeOrderId }: { orgId: string; projectId: string; changeOrderId: string }) {
+  // Impacts are written by the system only (a member write guard fences the table).
+  const service = createServiceSupabaseClient()
+  const { data: changeOrder, error } = await service.from("change_orders").select("id, title, days_impact, metadata")
+    .eq("org_id", orgId).eq("project_id", projectId).eq("id", changeOrderId).maybeSingle()
+  if (error || !changeOrder) throw new Error(`Failed to read the change order's schedule impact: ${error?.message ?? "Change order not found"}`)
+  const days = Number(changeOrder.days_impact ?? 0)
+  if (!Number.isInteger(days) || days === 0) return
+  if (changeOrder.metadata && typeof changeOrder.metadata === "object" && "selection_change" in changeOrder.metadata) return
+  const [{ data: existing, error: existingError }, lines, { data: tasks, error: taskError }] = await Promise.all([
+    service.from("schedule_item_change_orders").select("id").eq("org_id", orgId).eq("change_order_id", changeOrderId).limit(1),
+    loadChangeOrderLines(service, orgId, [changeOrderId]),
+    service.from("schedule_items").select("id, cost_code_id, start_date").eq("org_id", orgId).eq("project_id", projectId)
+      .not("status", "in", "(completed,cancelled)").order("start_date", { ascending: true, nullsFirst: false }).order("id").limit(1000),
+  ])
+  if (existingError) throw new Error(`Failed to read the change order's schedule impact: ${existingError.message}`)
+  if (taskError) throw new Error(`Failed to read the schedule: ${taskError.message}`)
+  if ((existing ?? []).length) return
+  const codes = new Set((lines.get(changeOrderId) ?? []).flatMap((line) => line.cost_code_id ? [line.cost_code_id] : []))
+  const today = new Date().toISOString().slice(0, 10)
+  const open = tasks ?? []
+  const anchor = open.find((task) => task.cost_code_id && codes.has(task.cost_code_id))
+    ?? open.find((task) => task.start_date && task.start_date >= today)
+    ?? open[0]
+  if (!anchor) return
+  const { error: insertError } = await service.from("schedule_item_change_orders").upsert(
+    { org_id: orgId, schedule_item_id: anchor.id, change_order_id: changeOrderId, days_adjusted: days, notes: "Change order: pending the superintendent" },
+    { onConflict: "schedule_item_id,change_order_id", ignoreDuplicates: true },
+  )
+  if (insertError) throw new Error(`Failed to record the change order's schedule impact: ${insertError.message}`)
+  await recordEvent({ orgId, eventType: "schedule_co_impact_pending", entityType: "schedule_item", entityId: anchor.id,
+    payload: { change_order_id: changeOrderId, days_adjusted: days, project_id: projectId, matched_cost_code: Boolean(anchor.cost_code_id && codes.has(anchor.cost_code_id)) } })
 }
 
 async function postApprovedChangeOrderToSovIfNeeded({

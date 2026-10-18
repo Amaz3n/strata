@@ -41,6 +41,7 @@ export function PoIssuanceSection({ commitmentId }: { commitmentId: string }) {
       </div>
       {state.kind === "loading" && <Skeleton className="h-16 w-full" />}
       {state.kind === "error" && <p className="border border-dashed px-3 py-4 text-sm text-destructive">{state.message}</p>}
+      {state.kind === "ready" && state.issuance.picksReview && <PicksReviewNotice review={state.issuance.picksReview} />}
       {state.kind === "ready" && !current && <p className="border border-dashed px-3 py-4 text-sm text-muted-foreground">The order is issued to the vendor when it is approved.</p>}
       {current && (
         <div className="space-y-2 text-sm">
@@ -60,5 +61,22 @@ export function PoIssuanceSection({ commitmentId }: { commitmentId: string }) {
         </div>
       )}
     </div>
+  )
+}
+
+const PICKS_REVIEW_TEXT: Record<NonNullable<PoIssuance["picksReview"]>["status"], string> = {
+  open: "waiting for purchasing to keep or cancel them (Purchasing → Exceptions)",
+  resolving: "being cancelled",
+  kept: "kept for the spec home",
+  cancelled: "cancelled off the order",
+}
+
+/** The sale on this home was cancelled after release; the order still names the previous buyer's picks. */
+function PicksReviewNotice({ review }: { review: NonNullable<PoIssuance["picksReview"]> }) {
+  const waiting = review.status === "open" || review.status === "resolving"
+  return (
+    <p className={waiting ? "border border-warning/40 bg-warning/5 px-3 py-2 text-xs" : "border px-3 py-2 text-xs text-muted-foreground"}>
+      Cancelled sale: {review.lineCount} option line{review.lineCount === 1 ? "" : "s"} (<span className="tabular-nums">{money(review.totalCents)}</span>) from the previous buyer, {PICKS_REVIEW_TEXT[review.status]}.
+    </p>
   )
 }

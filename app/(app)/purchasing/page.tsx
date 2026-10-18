@@ -24,6 +24,8 @@ import { listPoDeliveries } from "@/lib/services/po-receipts"
 import { hasPermission } from "@/lib/services/permissions"
 import { PoAcknowledgmentsTab } from "@/components/purchasing/po-acknowledgments-tab"
 import { listPoAcknowledgmentQueue } from "@/lib/services/po-acknowledgments"
+import { listSaleCancellationReviews } from "@/lib/services/sale-cancellation-picks"
+import { SaleCancellationPicksBand } from "@/components/purchasing/sale-cancellation-picks-band"
 
 
 function relationName(value: unknown, fallback: string) {
@@ -84,6 +86,10 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
   const canAttachEvidenceRequest = tab === "vpos"
     ? Promise.all([hasPermission("vpo.request"), hasPermission("vpo.approve")]).then((granted) => granted.some(Boolean))
     : Promise.resolve(false)
+  // Only someone who can decide them sees the cancelled-sale picks.
+  const picksRequest = tab === "exceptions"
+    ? hasPermission("po_exception.resolve").then((granted) => granted ? listSaleCancellationReviews({ projectId: params.project, divisionId: ambient.divisionId, communityId: ambient.communityId, pageSize: 25 }) : null)
+    : Promise.resolve(null)
   const healthRequest = tab === "price-book" ? getPriceBookHealth({ divisionId: ambient.divisionId }) : Promise.resolve(null)
   const [agreements, health, renewals, bids, exceptions, vpos, completions, variance, costCodes, positions, settings] = await Promise.all([
     tab === "price-book" ? listPriceAgreements({
@@ -104,7 +110,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
 
   const [acknowledgments, canResolveAcknowledgment] = acknowledgmentsRequest ? await acknowledgmentsRequest : [null, false]
   const [deliveries, canReceive, canResolveShortage] = deliveriesRequest ? await deliveriesRequest : [null, false, false]
-  const canAttachEvidence = await canAttachEvidenceRequest
+  const [canAttachEvidence, picks] = await Promise.all([canAttachEvidenceRequest, picksRequest])
   const total = acknowledgments ? acknowledgments.total : deliveries ? deliveries.total : tab === "bids" ? bids.count : tab === "price-book" ? agreements.count : tab === "exceptions" ? exceptions.count : tab === "vpos" ? vpos.count : tab === "completions" ? completions.count : null
   const paginationParams = new URLSearchParams({ tab })
   if (tab === "bids" && search) paginationParams.set("q", search)
@@ -120,6 +126,7 @@ async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{
   if (tab === "acknowledgments") paginationParams.set("state", acknowledgmentState)
   return <PageLayout title="Purchasing" fullBleed>
     {positions && <PoPositionBand rows={positions.rows} total={positions.total} truncated={positions.truncated} />}
+    {picks && <SaleCancellationPicksBand items={picks.items} total={picks.count} />}
     {tab === "bids" && <form action="/purchasing" className="flex flex-wrap items-center gap-2 border-b p-4">
       <input type="hidden" name="tab" value="bids" />
       <label htmlFor="production-bid-search" className="sr-only">Search bid packages</label>

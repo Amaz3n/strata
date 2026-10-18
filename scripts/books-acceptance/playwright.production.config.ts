@@ -11,7 +11,7 @@ if (!/^http:\/\/localhost:\d+$/.test(url)) throw new Error("The production sweep
 
 export default defineConfig({
   testDir: "./journeys",
-  testMatch: "production-sweep.spec.ts",
+  testMatch: ["production-sweep.spec.ts", "production-journeys.spec.ts"],
   fullyParallel: false,
   workers: 1,
   timeout: 180_000,
@@ -19,5 +19,10 @@ export default defineConfig({
   reporter: [["list"], ["json", { outputFile: join(workspace, "production-sweep-run.json") }]],
   use: { baseURL: url, trace: "retain-on-failure", screenshot: "only-on-failure" },
   outputDir: join(workspace, "browser-artifacts"),
-  projects: [{ name: "desktop", use: { ...devices["Desktop Chrome"], colorScheme: "light" } }],
+  projects: [
+    { name: "desktop", testMatch: "production-sweep.spec.ts", use: { ...devices["Desktop Chrome"], colorScheme: "light" } },
+    // The critical workflows, each run light and dark (the stored theme preference, as a person sets it).
+    { name: "journeys-light", testMatch: "production-journeys.spec.ts", use: { ...devices["Desktop Chrome"], colorScheme: "light" } },
+    { name: "journeys-dark", testMatch: "production-journeys.spec.ts", use: { ...devices["Desktop Chrome"], colorScheme: "dark" } },
+  ],
 })

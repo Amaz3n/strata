@@ -126,6 +126,29 @@ async function reversedStartTransferRepostsOnce(kit, spec, check) {
   return { orgId: org.orgId, lotId: home.lotId }
 }
 
+/**
+ * A home whose start was reversed and posted again is sold: the reversal carries no source type of its
+ * own, so the sale relief classifies it by the entry it reverses and the land leaves as one line.
+ */
+async function correctedStartSellsAsOneLandLine(kit, spec, check) {
+  const { inputs, expected } = spec
+  const org = await home01().builder(kit, "MONEY-01 corrected start sale", [{ name: "Lot 1 — Aspen plan", priceCents: inputs.priceCents }])
+  const home = org.homes[0]
+  await home01().landAndStart(kit, org, home, { date: "2026-06-02", startDate: "2026-06-03", cents: inputs.landCents })
+  await kit.as(org.owner, () => app("books/inventory").correctLandStartTransfer({ lotId: home.lotId, reversalDate: "2026-06-10", reason: "The start was redated to June 10", repostDate: "2026-06-10" }))
+  await home01().bill(kit, org, home.projectId, "2026-06-12", inputs.constructionCents)
+  await kit.as(org.owner, () => app("books/inventory").completeProjectInventory({ projectId: home.projectId, date: "2026-07-01", evidenceUrl: `${EVIDENCE}/completion` }))
+  await home01().settle(kit, org, home, inputs.saleDate)
+  const lines = kit.rows(`select coalesce(l.dimensions->>'cost_component','unlabeled') component, (l.debit_cents-l.credit_cents)::bigint n from public.journal_lines l
+    join public.journal_entries e on e.id=l.entry_id and e.org_id=l.org_id join public.gl_accounts a on a.id=l.account_id and a.org_id=l.org_id
+    where l.org_id=${kit.q(org.orgId)} and l.project_id=${kit.q(home.projectId)} and a.code='5000' and e.source_type='inventory_sale_relief' order by 1, 2`).map((row) => [row.component, Number(row.n)])
+  check.equal("the corrected start leaves inventory as one land-and-development line beside construction, and nothing is left behind", expected, {
+    reliefLines: lines,
+    inventoryLeft: home01().balances(kit, org, { projectId: home.projectId, codes: ["1160", "1170"] }),
+  })
+  return { orgId: org.orgId, projectId: home.projectId }
+}
+
 /** A production home with a purchase agreement; `placeholder` adds the fixed contract project setup used to open beside it. */
 function homeWithAgreement(kit, org, name, { placeholder, agreement = "active", allowance = false }) {
   const { q } = kit
@@ -194,6 +217,7 @@ module.exports = {
     "reversed-land-acquisition-corrects-and-balances": reversedLandAcquisitionCorrectsAndBalances,
     "reversed-debt-funded-acquisition-nets-the-loan": reversedDebtFundedAcquisitionNetsTheLoan,
     "reversed-start-transfer-reposts-once": reversedStartTransferRepostsOnce,
+    "corrected-start-sells-as-one-land-line": correctedStartSellsAsOneLandLine,
     "spec-home-adopted-by-books": specHomeAdoptedByBooks,
     "superintendent-reads-scope-and-options": superintendentReadsScopeAndOptions,
   },

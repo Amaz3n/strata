@@ -51,7 +51,6 @@ import {
   Plus,
   Tag,
 } from "@/components/icons";
-import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { initialsFor } from "@/lib/directory/initials";
 import { useToast } from "@/hooks/use-toast";
@@ -235,11 +234,7 @@ export function PartyAccountHeader({
         setArchiveDialogOpen(false);
         toast({
           title: `${noun} archived`,
-          action: (
-            <ToastAction altText="Undo archive" onClick={() => void restoreArchived()}>
-              Undo
-            </ToastAction>
-          ),
+          action: { label: "Undo", onClick: () => void restoreArchived() },
         });
         router.push(isCompany ? "/directory" : "/directory?kind=contact");
       } catch (error) {

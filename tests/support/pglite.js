@@ -257,6 +257,10 @@ const BOOTSTRAP = `
   $$;
   grant all on all tables in schema storage to service_role;
   grant execute on all functions in schema storage to anon, authenticated, service_role;
+
+  -- The migration ledger the Supabase CLI keeps (read by applied_migration_versions()).
+  create schema supabase_migrations;
+  create table supabase_migrations.schema_migrations (version text primary key, statements text[], name text);
 `
 
 // ---------------------------------------------------------------------------
@@ -578,4 +582,13 @@ async function seedMember(db, { orgId = uuid(), userId = uuid(), role = "org_own
   return { orgId, userId }
 }
 
-module.exports = { createDatabase, asRole, rpc, setRequestHeaders, insert, seedMember, uuid }
+/** An org role holding exactly `permissions`, for exercising a guard that one key set reaches. */
+async function seedRole(db, { key = `test_role_${uuid().slice(0, 8)}`, permissions }) {
+  const { rows: [role] } = await db.query("insert into roles (key, label, scope) values ($1, $1, 'org') returning key", [key])
+  for (const permission of permissions) {
+    await db.query("insert into role_permissions (role_id, permission_key) select id, $2 from roles where key = $1", [key, permission])
+  }
+  return role.key
+}
+
+module.exports = { createDatabase, asRole, rpc, setRequestHeaders, insert, seedMember, seedRole, uuid }

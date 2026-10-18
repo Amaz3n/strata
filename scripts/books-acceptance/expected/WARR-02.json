@@ -1,0 +1,281 @@
+{
+  "scenario": "WARR-02",
+  "reviewedFrom": "EP14-05 (docs/enterprise-production/completion-checklist.json): imported and newly closed homes pass request, dispatch, visit, verification, dispute and recovery; coverage and accounting receipts reconcile. Builds on WARR-01 (EP11) and HOME-01 (warranty consumption, home controls). One builder (HOME-01's fixture): a home imported into the legacy Heron Bay community, and the Aspen-plan home on lot 1 of Cedar Ridge, $400,000, built ($72,000 land, $251,600 construction), completed July 1 with a $6,500 reserve and closed July 25 by the closing desk. A home released today cannot close in the past and a claim dated before its closing would book to work in progress, so the closed home is HOME-01's dated one; LOT-01 and SPEC-01 prove the lifecycle up to closing. Visits are recorded through the desktop service; the mobile visit flow (EP09-01) is out of scope.",
+  "subcases": {
+    "imported-home-coverage-classifies-claims": {
+      "checklist": [
+        "EP14-05",
+        "EP11-01",
+        "EP11-02"
+      ],
+      "derivation": "Lot 7 of Heron Bay closed 2025-04-15 before Arc, sold with 12 months of workmanship, 24 of systems and 120 structural. The installed-base import enrolls it from that closing date: workmanship ended 2026-04-15, systems runs to 2027-04-15, structural to 2035-04-15, and the import's reconciliation counts one covered, active home with no exception. A grout claim under workmanship is out of warranty; a water-heater claim under systems is in warranty. No reserve was ever provided for a home that closed before Arc.",
+      "inputs": {
+        "home": {
+          "community": "Heron Bay",
+          "lot": "7",
+          "buyer": "Graham Whitlock",
+          "closed": "2025-04-15",
+          "workmanship": 12,
+          "systems": 24,
+          "structural": 120
+        }
+      },
+      "expected": {
+        "coverage": {
+          "effective": "2025-04-15",
+          "source": "closing",
+          "terms": [
+            [
+              "workmanship",
+              12,
+              "2026-04-15"
+            ],
+            [
+              "systems",
+              24,
+              "2027-04-15"
+            ],
+            [
+              "structural",
+              120,
+              "2035-04-15"
+            ]
+          ]
+        },
+        "reconciliation": {
+          "homes": 1,
+          "covered": 1,
+          "active": 1,
+          "exceptions": 0
+        },
+        "claims": {
+          "workmanship": "out_of_warranty",
+          "systems": "in_warranty"
+        },
+        "reserve": 0
+      }
+    },
+    "imported-home-request-to-recovery": {
+      "checklist": [
+        "EP14-05",
+        "EP11-04",
+        "EP11-05",
+        "EP11-06"
+      ],
+      "derivation": "A systems claim on the imported home: the warranty manager logs it (in warranty) and dispatches the technician; the technician records the visit as resolved and cannot verify their own work; the manager verifies it and the request is resolved. The plumber is backcharged $450 (callback $300, drying $150): issuing it books vendor credit WB-n of -$450; the plumber disputes; the manager settles for $300, so $150 is written off and reversal WB-n-R of +$150 is booked. The settlement is recorded as recovered ($300 collected, $150 given up) and its events read created, issued, disputed, resolved. The reversal waits as a pending payable until the owner approves it, and then posts. On the imported home the credit and its approved reversal net to -$300 of cost of sales (5000); the home has no reserve, so there is nothing to restore: no reserve balance and no recovery entry.",
+      "inputs": {
+        "home": {
+          "community": "Heron Bay",
+          "lot": "7",
+          "buyer": "Graham Whitlock",
+          "closed": "2025-04-15",
+          "workmanship": 12,
+          "systems": 24,
+          "structural": 120
+        },
+        "claim": {
+          "title": "Water heater relief line leaking into the garage",
+          "termKey": "systems",
+          "trade": "Cedar Ridge plumbing",
+          "workDone": "Replaced the failed compression fitting and dried the cabinet",
+          "backchargeCents": 45000,
+          "backchargeReason": "Compression fitting left loose at rough-in",
+          "costBasis": [
+            {
+              "label": "Plumber callback",
+              "amount_cents": 30000
+            },
+            {
+              "label": "Cabinet floor drying",
+              "amount_cents": 15000
+            }
+          ],
+          "dispute": "Trade says the fitting was tight at its pressure test",
+          "recoveredCents": 30000,
+          "settlementNote": "Split at the trade meeting: callback recovered, drying written off",
+          "window": {
+            "start": "2026-11-09T14:00:00Z",
+            "end": "2026-11-09T16:00:00Z"
+          },
+          "costCode": "22-100"
+        }
+      },
+      "expected": {
+        "request": {
+          "status": "resolved",
+          "coverage": "in_warranty",
+          "verifiedByTheManager": true
+        },
+        "visit": {
+          "status": "completed",
+          "completedByTheTechnician": true
+        },
+        "selfVerify": "refused: a second person verifies",
+        "backcharge": {
+          "status": "recovered",
+          "recoveredCents": 30000,
+          "writtenOffCents": 15000,
+          "creditCents": [
+            -45000
+          ],
+          "reversalCents": [
+            15000
+          ],
+          "reversalWaitedForApproval": "pending",
+          "events": [
+            "warranty_backcharge_created",
+            "warranty_backcharge_issued",
+            "warranty_backcharge_disputed",
+            "warranty_backcharge_resolved"
+          ]
+        },
+        "books": {
+          "2260": 0,
+          "5000": -30000,
+          "recoveryEntries": 0
+        }
+      }
+    },
+    "new-home-request-to-recovery": {
+      "checklist": [
+        "EP14-05",
+        "EP05-10",
+        "EP11-04",
+        "EP11-05",
+        "EP11-06"
+      ],
+      "derivation": "The home the closing desk closed on July 25 is enrolled by its closing, from the closing date, with the default program's terms. A systems claim (a supply line behind the sink) goes the same way as the imported home's: in warranty, dispatched to the technician, completed, refused to the technician's own verification, verified by the manager and resolved; the plumber's $450 backcharge is issued as vendor credit -$450, disputed and settled for $300 (recorded as recovered, $150 given up) with the $150 reversal (+$150) waiting as a pending payable until the owner approves it.",
+      "inputs": {
+        "claim": {
+          "title": "Supply line leaked behind the kitchen sink",
+          "termKey": "systems",
+          "trade": "Cedar Ridge plumbing",
+          "workDone": "Replaced the failed compression fitting and dried the cabinet",
+          "backchargeCents": 45000,
+          "backchargeReason": "Compression fitting left loose at rough-in",
+          "costBasis": [
+            {
+              "label": "Plumber callback",
+              "amount_cents": 30000
+            },
+            {
+              "label": "Cabinet floor drying",
+              "amount_cents": 15000
+            }
+          ],
+          "dispute": "Trade says the fitting was tight at its pressure test",
+          "recoveredCents": 30000,
+          "settlementNote": "Split at the trade meeting: callback recovered, drying written off",
+          "windowInDays": 2,
+          "costCode": "22-100"
+        },
+        "repairInDays": 0,
+        "repairVendor": "Cedar Ridge framing",
+        "repairCostCode": "06-100",
+        "repairCents": 60000
+      },
+      "expected": {
+        "coverage": {
+          "startsOnClosing": true,
+          "source": "closing",
+          "terms": [
+            [
+              "workmanship",
+              12
+            ],
+            [
+              "systems",
+              24
+            ],
+            [
+              "structural",
+              120
+            ]
+          ]
+        },
+        "request": {
+          "status": "resolved",
+          "coverage": "in_warranty",
+          "verifiedByTheManager": true
+        },
+        "visit": {
+          "status": "completed",
+          "completedByTheTechnician": true
+        },
+        "selfVerify": "refused: a second person verifies",
+        "backcharge": {
+          "status": "recovered",
+          "recoveredCents": 30000,
+          "writtenOffCents": 15000,
+          "creditCents": [
+            -45000
+          ],
+          "reversalCents": [
+            15000
+          ],
+          "reversalWaitedForApproval": "pending",
+          "events": [
+            "warranty_backcharge_created",
+            "warranty_backcharge_issued",
+            "warranty_backcharge_disputed",
+            "warranty_backcharge_resolved"
+          ]
+        }
+      }
+    },
+    "new-home-reserve-ties": {
+      "checklist": [
+        "EP14-05",
+        "EP11-07",
+        "EP10-02"
+      ],
+      "derivation": "The closing provided the $6,500 reserve. The framing crew's $600 repair bill, dated today, after the closing, posts to cost of sales (5000) and is approved against the verified visit: the reserve absorbs it (2260 debited $600, 5000 credited $600). The plumber's settled backcharge is a $450 credit less its approved $150 reversal, $300 off cost of sales, and the books restore the reserve for the $300 recovered once (Dr warranty costs 5050 $300, Cr reserve $300). From before the claim: 2260 +$600 - $300 = +$300 (reserve left $6,200), 5050 +$300, 5000 +$600 - $600 - $300 = -$300. One recovery entry. The land, completed-home, warranty-reserve and customer-deposit controls pass.",
+      "inputs": {
+        "claim": {
+          "title": "Supply line leaked behind the kitchen sink",
+          "termKey": "systems",
+          "trade": "Cedar Ridge plumbing",
+          "workDone": "Replaced the failed compression fitting and dried the cabinet",
+          "backchargeCents": 45000,
+          "backchargeReason": "Compression fitting left loose at rough-in",
+          "costBasis": [
+            {
+              "label": "Plumber callback",
+              "amount_cents": 30000
+            },
+            {
+              "label": "Cabinet floor drying",
+              "amount_cents": 15000
+            }
+          ],
+          "dispute": "Trade says the fitting was tight at its pressure test",
+          "recoveredCents": 30000,
+          "settlementNote": "Split at the trade meeting: callback recovered, drying written off",
+          "windowInDays": 2,
+          "costCode": "22-100"
+        },
+        "repairInDays": 0,
+        "repairVendor": "Cedar Ridge framing",
+        "repairCostCode": "06-100",
+        "repairCents": 60000
+      },
+      "expected": {
+        "reserveProvidedAtClosing": 650000,
+        "repairSources": 1,
+        "change": {
+          "2260": 30000,
+          "5050": 30000,
+          "5000": -30000
+        },
+        "reserveLeft": 620000,
+        "recoveryEntries": 1,
+        "controls": {
+          "land_inventory_control": "passed",
+          "completed_homes_control": "passed",
+          "warranty_reserve_control": "passed",
+          "customer_deposits_control": "passed"
+        }
+      }
+    }
+  }
+}

@@ -441,7 +441,9 @@ export async function recoverClosingCompletion(projectId: string, closingId: str
   }
   await ensureSalesCommissionPayables({ orgId: context.orgId, userId: context.userId, closingId: closing.id })
   if (closing.lot_id) {
-    const lot = await context.supabase.from("lots").update({ status: "closed" }).eq("org_id", context.orgId).eq("project_id", projectId).eq("id", closing.lot_id).select("id").single()
+    // closing.manage was checked above and members cannot write lots without a lot key, so the
+    // lot is closed as the service; the lot guard still requires this recorded closing.
+    const lot = await createServiceSupabaseClient().from("lots").update({ status: "closed" }).eq("org_id", context.orgId).eq("project_id", projectId).eq("id", closing.lot_id).select("id").single()
     if (lot.error || !lot.data) throw new Error(`Closing is recorded; retry completion after resolving the lot: ${lot.error?.message ?? "Lot is missing or belongs to another home"}`)
   }
   const warranty = await enqueueOutboxJob({ orgId: context.orgId, jobType: "warranty_enroll_coverage", payload: { project_id: projectId, effective_date: closing.actual_date, source: "closing" }, dedupeByPayloadKeys: ["project_id", "effective_date", "source"] })

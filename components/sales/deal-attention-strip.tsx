@@ -9,18 +9,23 @@ import { cn } from "@/lib/utils"
 interface AttentionItem {
   key: Exclude<DealFilter, "all">
   icon: ComponentType<{ className?: string }>
-  /** Token-only tones: colour here means urgency, matching the row spine. */
+  /**
+   * Token-only tones: colour here means urgency, matching the row spine. The tint
+   * and the icon carry it; the count and label stay foreground, because state colour
+   * on its own 10% tint is under 4.5:1 at this size.
+   */
   tone: string
+  iconTone: string
 }
 
 const ITEMS: AttentionItem[] = [
-  { key: "followup_due", icon: Bell, tone: "border-destructive/40 bg-destructive/10 text-destructive" },
-  { key: "hold_expiring", icon: Clock, tone: "border-warning/40 bg-warning/10 text-warning" },
-  { key: "out_for_signature", icon: FileText, tone: "border-chart-1/40 bg-chart-1/10 text-chart-1" },
-  { key: "closing_soon", icon: Home, tone: "border-success/40 bg-success/10 text-success" },
-  { key: "new_inquiries", icon: UserPlus, tone: "border-chart-2/40 bg-chart-2/10 text-chart-2" },
-  { key: "unassigned", icon: User, tone: "border-warning/40 bg-warning/10 text-warning" },
-  { key: "milestones_overdue", icon: AlertTriangle, tone: "border-destructive/40 bg-destructive/10 text-destructive" },
+  { key: "followup_due", icon: Bell, tone: "border-destructive/40 bg-destructive/10", iconTone: "text-destructive" },
+  { key: "hold_expiring", icon: Clock, tone: "border-warning/40 bg-warning/10", iconTone: "text-warning" },
+  { key: "out_for_signature", icon: FileText, tone: "border-chart-1/40 bg-chart-1/10", iconTone: "text-chart-1" },
+  { key: "closing_soon", icon: Home, tone: "border-success/40 bg-success/10", iconTone: "text-success" },
+  { key: "new_inquiries", icon: UserPlus, tone: "border-chart-2/40 bg-chart-2/10", iconTone: "text-chart-2" },
+  { key: "unassigned", icon: User, tone: "border-warning/40 bg-warning/10", iconTone: "text-warning" },
+  { key: "milestones_overdue", icon: AlertTriangle, tone: "border-destructive/40 bg-destructive/10", iconTone: "text-destructive" },
 ]
 
 /**
@@ -54,12 +59,12 @@ export function DealAttentionStrip({
             onClick={() => onSelect(active ? "all" : item.key)}
             aria-pressed={active}
             className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 border px-2 py-1 text-xs transition-all",
+              "inline-flex shrink-0 items-center gap-1.5 border px-2 py-1 text-xs text-foreground transition-all",
               item.tone,
               active ? "ring-1 ring-current/40" : "opacity-85 hover:opacity-100",
             )}
           >
-            <Icon className="size-3.5" />
+            <Icon className={cn("size-3.5", item.iconTone)} />
             <span className="font-semibold tabular-nums">{counts[item.key]}</span>
             <span className="font-normal whitespace-nowrap">{DEAL_FILTER_LABELS[item.key]}</span>
           </button>

@@ -53,6 +53,11 @@ const GOLDEN_SCENARIOS = [
   "SCALE-01",
   "RACE-03",
   "RESTORE-02",
+  "ROLE-01",
+  "SPEC-01",
+  "CANCEL-01",
+  "DELAY-01",
+  "WARR-02",
 ];
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 function parseArgs(args) {

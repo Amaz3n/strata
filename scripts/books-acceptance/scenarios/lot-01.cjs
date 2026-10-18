@@ -393,7 +393,7 @@ const subcases = {
 
 // Production workflow proof (EP03-EP13): one module per area, each adding subcases that act as the
 // owning role through the real services, on top of this chain. They take what they need from `helpers`.
-const AREAS = ["config", "sales", "starts", "release", "purchasing", "completion", "pickers"]
+const AREAS = ["config", "sales", "starts", "release", "purchasing", "completion", "pickers", "envelope"]
 // Each area builds its own organisation, so one area's homes and lots never use up another's:
 // the chain is cached per kit, and an area runs on a derived kit of its own.
 const areaKits = new WeakMap()

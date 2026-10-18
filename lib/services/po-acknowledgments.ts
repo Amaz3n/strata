@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { readSaleCancellationReview } from "@/lib/services/sale-cancellation-picks"
 
 import { derivePoAckState, describeVersionChanges, poAckVendorSentence, poAckWarning, revisedObligationCents } from "@/lib/purchasing/po-acknowledgment-state"
 import { requireOrgContext } from "@/lib/services/context"
@@ -276,6 +277,8 @@ export interface PoIssuance {
   /** Null while the order is a draft or was never versioned. */
   current: (PoIssueView & { warning: string | null }) | null
   history: Array<{ revision: number; reason: string; issuedAt: string }>
+  /** A cancelled sale's picks still on the order: open until purchasing keeps or cancels them. */
+  picksReview: { status: "open" | "resolving" | "kept" | "cancelled"; lineCount: number; totalCents: number } | null
 }
 
 /** What was issued on one purchase order and how the vendor answered, for its workbench. */
@@ -285,7 +288,7 @@ export async function getPoIssuance(commitmentId: string, orgId?: string): Promi
   // A purchasing manager reads orders across houses without being on a team, so the
   // order is read by the service scoped to the org; the authorization below carries
   // the project and division scope.
-  const { data: order, error } = await createServiceSupabaseClient().from("commitments").select("id,project_id")
+  const { data: order, error } = await createServiceSupabaseClient().from("commitments").select("id,project_id,metadata")
     .eq("org_id", context.orgId).eq("id", id).maybeSingle()
   if (error) throw new Error(`Failed to load the purchase order: ${error.message}`)
   if (!order) throw new Error("Purchase order not found")
@@ -300,8 +303,10 @@ export async function getPoIssuance(commitmentId: string, orgId?: string): Promi
   ])
   if (history.error) throw new Error(`Failed to load issued versions: ${history.error.message}`)
   const view = views.get(commitmentId)
+  const review = readSaleCancellationReview(order.metadata)
   return {
     current: view ? { ...view, warning: poAckWarning(view.state) } : null,
     history: (history.data ?? []).map((row) => ({ revision: Number(row.revision), reason: String(row.reason), issuedAt: String(row.created_at) })),
+    picksReview: review ? { status: review.status, lineCount: review.lines.length, totalCents: review.lines.reduce((sum, line) => sum + line.amount_cents, 0) } : null,
   }
 }

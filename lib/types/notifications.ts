@@ -119,6 +119,7 @@ export type NotificationType =
   | "start_released"
   | "start_release_failed"
   | "start_gate_waived"
+  | "released_sale_cancelled"
   | "trade_response_received"
   | "po_acknowledgment_received"
   | "po_shortage_opened"

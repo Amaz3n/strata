@@ -1,0 +1,230 @@
+{
+  "scenario": "DELAY-01",
+  "reviewedFrom": "EP14-04 (docs/enterprise-production/completion-checklist.json): a permit or supply delay updates dependent schedules, capacity and promised-close risk; approved changes propagate without inconsistent obligations. One production builder (production-seed.cjs), a sold Mangrove on lot 2 (no premium) in Cypress Landing, promised to close 150 days out; the community's release slot is one start a week for this week and next; the community has no target cycle configured, so the starts desk uses its 130-day default.",
+  "subcases": {
+    "permit-delay-holds-the-start-and-flags-close-risk": {
+      "checklist": [
+        "EP14-04",
+        "EP06-07",
+        "EP06-08"
+      ],
+      "derivation": "The buyer signs, designs and is promised a closing 150 days out. The start package opens for this week with financing proved, a superintendent assigned and the plot plan attached; the building permit was submitted 45 days ago and the county's 30-day review is 15 days past with no decision. The permit gate is pending and cannot be attested or waived, so final approval is refused and the release is refused (the package is not ready). The starts desk computes the latest start that still makes the close: 150 - 130 = 20 days out, inside the permit's 35-day lead, so the package is at risk with the permit as its blocker. The coordinator's permit queue shows the decision overdue by 15 days on a home whose start is targeted this week.",
+      "inputs": {
+        "closeInDays": 150,
+        "submittedDaysAgo": 45,
+        "reviewDays": 30
+      },
+      "expected": {
+        "permitGate": "pending",
+        "finalApproval": "refused",
+        "release": "The start package is not ready to release.",
+        "package": {
+          "status": "open",
+          "blocker": "permit",
+          "risk": "at_risk",
+          "mustStartInDays": 20,
+          "cycleDays": 130
+        },
+        "permitQueue": {
+          "attention": "overdue",
+          "decisionDaysLate": 15,
+          "startTargetWeekIsThisWeek": true
+        }
+      }
+    },
+    "delayed-start-moves-its-capacity-week": {
+      "checklist": [
+        "EP14-04",
+        "EP07-01",
+        "EP07-04"
+      ],
+      "derivation": "The starts coordinator moves the package to next week and dates the start on next Monday. The permit is approved today; the gates refresh, final approval is attested and the house releases into next week. Capacity is counted by the package's target week: this week planned one start and made none, next week planned one and made one. The release builds the schedule from the start date, so foundation starts next Monday.",
+      "inputs": {},
+      "expected": {
+        "movedTo": {
+          "targetWeekIsNextWeek": true
+        },
+        "package": {
+          "status": "released",
+          "targetWeekIsNextWeek": true,
+          "startsOnNextWeek": true
+        },
+        "capacity": {
+          "thisWeek": {
+            "planned": 1,
+            "started": 0
+          },
+          "nextWeek": {
+            "planned": 1,
+            "started": 1
+          }
+        },
+        "foundationStartsOnTheReleaseDate": true
+      }
+    },
+    "late-delivery-opens-one-shortage": {
+      "checklist": [
+        "EP14-04",
+        "EP08-08"
+      ],
+      "derivation": "Purchasing approves the release's orders and dates the framing order's three lines (the Mangrove's framing and the quartz and plank-floor picks Palmetto Framing supplies) as needed two days ago; nothing arrives. The nightly sweep, run twice, opens one late shortage per line, three in all, and leaves them open; it moves nothing on the schedule.",
+      "inputs": {},
+      "expected": {
+        "framingLines": 3,
+        "shortages": [
+          {
+            "reason": "late",
+            "status": "open"
+          },
+          {
+            "reason": "late",
+            "status": "open"
+          },
+          {
+            "reason": "late",
+            "status": "open"
+          }
+        ],
+        "scheduleUnchanged": true
+      }
+    },
+    "late-delivery-advises-the-released-schedule": {
+      "checklist": [
+        "EP14-04",
+        "EP08-08"
+      ],
+      "derivation": "The community's schedule template names each trade task's cost code (Foundation 03-300, Framing 06-100) and the release copies them onto the home's tasks, so advisories can match an order line to the task it holds up. Advisories warn about work starting within the advisory window (10 days) or a delivery due after its task starts: the framing lines, late two days, wait while Framing starts more than ten days out (no advisory yet); the concrete line, also late two days, advises the Foundation, which starts in two days — one late advisory. (Before EP14's fix the release dropped the cost code, so a late delivery on a released home never reached its schedule.)",
+      "inputs": {
+        "concreteNeededInDays": -2
+      },
+      "expected": {
+        "taskCostCodes": {
+          "Foundation": "03-300",
+          "Framing": "06-100"
+        },
+        "framingStartsPastTheWindow": true,
+        "framingLateLinesAdvised": 0,
+        "advisories": [
+          {
+            "task": "Foundation",
+            "state": "late"
+          }
+        ]
+      }
+    },
+    "slip-pushes-dependents-and-guards-the-close": {
+      "checklist": [
+        "EP14-04",
+        "EP07-06"
+      ],
+      "derivation": "The template carries the build's task logic by key: foundation 35 days behind the permit release, then framing, dry-in, MEP rough, drywall, interior finishes and punch, each the day after the one before finishes. The release writes those seven links onto the home. Framing slipping forty days pushes dry-in, MEP rough, drywall, interior finishes and punch with it (punch forty days later), so the home finishes at start plus 158 days, past its promised close (start plus 150): the preview reports one close impact and the move is refused until a starts coordinator accepts it with a reason. The refused move changes nothing. (Before EP14's fix the release wrote no links and framing moved alone.)",
+      "inputs": {
+        "slipDays": 40
+      },
+      "expected": {
+        "dependencies": 7,
+        "previewMoves": [
+          "Framing",
+          "Dry-in",
+          "MEP rough",
+          "Drywall",
+          "Interior finishes",
+          "Punch and close"
+        ],
+        "passesThePromisedClose": true,
+        "unacknowledgedMove": "refused: accept the close impact",
+        "punchPushedDays": 40,
+        "refusedMoveChangedNothing": true
+      }
+    },
+    "moving-past-the-promised-close-needs-acceptance": {
+      "checklist": [
+        "EP14-04",
+        "EP07-06"
+      ],
+      "derivation": "The home's last task, punch and close, is moved to start 155 days out and end 168 days out, eighteen days past the promised close 150 days out. The preview reports the breach and that the starts coordinator may approve it. The superintendent's move is refused (it needs start.release); the coordinator's move is refused until the close impact is accepted, and then until a reason is given; with both it moves once, with one audit row for the accepted dates. The promised close stays 150 days out and scheduled: a schedule move never rewrites the buyer's date. The move is more than 28 days out, and the move writes one trade-notice job (the trade is told only inside its look-ahead window).",
+      "inputs": {
+        "punchStartsInDays": 155
+      },
+      "expected": {
+        "preview": {
+          "closeImpacts": [
+            {
+              "daysLate": 18
+            }
+          ],
+          "canApprove": true
+        },
+        "superintendent": "refused: start.release",
+        "unacknowledged": "refused: accept the close impact",
+        "unexplained": "refused: a reason",
+        "accepted": "done",
+        "moved": {
+          "startsInDays": 155,
+          "endsInDays": 168
+        },
+        "audited": 1,
+        "tradeNoticeJobs": 1,
+        "promisedClose": {
+          "inDays": 150,
+          "status": "scheduled"
+        }
+      }
+    },
+    "approved-change-order-amends-price-and-budget-once": {
+      "checklist": [
+        "EP14-04",
+        "EP05-07",
+        "EP05-08"
+      ],
+      "derivation": "After the start the buyer adds a $12,000 screened lanai (ten days of work) that costs the builder $8,000 under framing (06-100). Approving it without the buyer's signed copy is refused. With the signed copy it is approved: the agreement gets one amendment of $12,000 and its authorized total is the original plus $12,000; the closing statement prices the approved change orders at $12,000 and the final price is the agreement plus $12,000; the budget is revised once, by the $8,000 cost on its cost code.",
+      "inputs": {
+        "changeOrderCents": 1200000,
+        "costCents": 800000,
+        "costCode": "06-100",
+        "daysImpact": 10
+      },
+      "expected": {
+        "unsignedApproval": "refused: needs the signed copy",
+        "amendments": [
+          {
+            "kind": "amendment",
+            "deltaCents": 1200000,
+            "authorizedAboveOriginalCents": 1200000
+          }
+        ],
+        "settlement": {
+          "approvedChangeOrdersCents": 1200000,
+          "finalAboveAgreementCents": 1200000
+        },
+        "budgetRevisions": [
+          800000
+        ]
+      }
+    },
+    "change-order-delay-reaches-the-schedule": {
+      "checklist": [
+        "EP14-04",
+        "EP06-05"
+      ],
+      "derivation": "The approved change order says it adds ten days. On approval Arc records a pending schedule impact of ten days on the earliest open task under one of the change order's cost codes (its lanai line is coded 06-100, so Framing), as a selection change order records its own (SEL-01); approval itself moves nothing. The superintendent applies it: Framing moves ten days, once; applying it again is refused. Applying an impact moves its anchor task only (apply_schedule_item_change_order); successors follow when the schedule is next rescheduled, under the promised-close guard. (Before EP14's fix an ordinary change order's days never reached the schedule.)",
+      "inputs": {
+        "daysImpact": 10
+      },
+      "expected": {
+        "daysImpact": 10,
+        "pendingScheduleImpacts": [
+          {
+            "task": "Framing",
+            "days": 10,
+            "applied": false
+          }
+        ],
+        "approvalMovedNothing": true,
+        "superintendentApplies": "done",
+        "appliedTwice": "refused: already applied",
+        "taskMovedDays": 10
+      }
+    }
+  }
+}

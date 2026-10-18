@@ -11,7 +11,7 @@ import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
 import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, homePriceAdjustments, type HomePriceAdjustment, type PurchaseAgreementIncentive, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
-import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
+import { authorize, getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { createInvoice } from "@/lib/services/invoices"
 import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog"
@@ -50,6 +50,9 @@ import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { findContactIdByEmail } from "@/lib/services/party-promotion"
 import { chunk } from "@/lib/utils"
 import { recordEvent } from "@/lib/services/events"
+import { NotificationService } from "@/lib/services/notifications"
+import { permissionAudience } from "@/lib/services/starts-pipeline"
+import { flagPreviousBuyerPicks } from "@/lib/services/sale-cancellation-picks"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createFileRecord } from "@/lib/services/files"
@@ -2167,6 +2170,7 @@ const cancellationRowSchema = z.object({
   project_id: z.string().uuid(),
   contract_id: z.string().uuid(),
   reservation_id: z.string().uuid().nullable(),
+  actor_id: z.string().uuid(),
   reason: z.string(),
   deposit_disposition: z.enum(["refund", "forfeit", "split", "none"]),
   forfeit_cents: cents,
@@ -2266,19 +2270,86 @@ export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
   if (error?.details === "AGREEMENT_CANCELLATION_CHANGED") throw new AgreementCancellationChangedError()
   if (error) throw new Error(error.message)
   const cancellation = cancellationRowSchema.parse(z.object({ cancellation: z.unknown() }).parse(data).cancellation)
+  return settleAgreementCancellation(context, cancellation.id)
+}
+
+const cancellationEventId = (orgId: string, cancellationId: string, eventType: string) => {
+  const hex = createHash("sha256").update(JSON.stringify(["arc.sales.agreement_cancellation.v1", orgId, cancellationId, eventType])).digest("hex")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+/**
+ * The void's event and audit, written from the receipt under the person who
+ * cancelled. They are the first settlement step rather than the void's reply,
+ * so a void whose reply was lost is still on the record once the deal settles it.
+ */
+async function recordCancellationVoid(context: OrgServiceContext, row: z.infer<typeof cancellationRowSchema>) {
+  const disposition = { deposit_disposition: row.deposit_disposition, cancellation_id: row.id }
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id,
-      payload: { reason: parsed.reason, cancellation_id: cancellation.id, deposit_disposition: cancellation.deposit_disposition, forfeit_cents: cancellation.forfeit_cents, refund_cents: cancellation.refund_cents } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "contract", entityId: contract.id,
-      before: { status: contract.status }, after: { status: "void", cancellation_id: cancellation.id, reason: parsed.reason, deposit_disposition: cancellation.deposit_disposition }, critical: true }),
-    ...(cancellation.reservation_id ? [
-      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reservation_released", entityType: "lot_reservation", entityId: cancellation.reservation_id,
-        payload: { reason: parsed.reason, deposit_disposition: cancellation.deposit_disposition, cancellation_id: cancellation.id } }),
-      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot_reservation", entityId: cancellation.reservation_id,
-        after: { status: "released", cancellation_id: cancellation.id } }),
+    recordEvent({ idempotencyId: cancellationEventId(context.orgId, row.id, "purchase_agreement_voided"), orgId: context.orgId, actorId: row.actor_id, eventType: "purchase_agreement_voided", entityType: "contract", entityId: row.contract_id,
+      payload: { reason: row.reason, ...disposition, forfeit_cents: row.forfeit_cents, refund_cents: row.refund_cents } }),
+    auditCancellationStepOnce(context.orgId, row.id, "void", { orgId: context.orgId, actorId: row.actor_id, action: "update", entityType: "contract", entityId: row.contract_id,
+      before: { status: row.plan.contract.status }, after: { status: "void", reason: row.reason, ...disposition }, critical: true }),
+    ...(row.reservation_id ? [
+      recordEvent({ idempotencyId: cancellationEventId(context.orgId, row.id, "lot_reservation_released"), orgId: context.orgId, actorId: row.actor_id, eventType: "lot_reservation_released", entityType: "lot_reservation", entityId: row.reservation_id,
+        payload: { reason: row.reason, ...disposition } }),
+      auditCancellationStepOnce(context.orgId, row.id, "reservation_released", { orgId: context.orgId, actorId: row.actor_id, action: "update", entityType: "lot_reservation", entityId: row.reservation_id,
+        after: { status: "released", cancellation_id: row.id } }),
     ] : []),
   ])
-  return settleAgreementCancellation(context, cancellation.id)
+}
+
+/**
+ * An audit row for one step of a cancellation, keyed by the cancellation and the step
+ * (`after.cancellation_step`): a settlement retried after a crash, or taken over from a
+ * stale lease, finds the row already written and does not write a second. The lease
+ * serializes settlements, so the read-then-write cannot race another settler.
+ */
+async function auditCancellationStepOnce(orgId: string, cancellationId: string, step: string, input: Parameters<typeof recordAudit>[0] & { entityId: string }) {
+  const { data, error } = await createServiceSupabaseClient().from("audit_log").select("id")
+    .eq("org_id", orgId).eq("entity_type", input.entityType).eq("entity_id", input.entityId)
+    .eq("after_data->>cancellation_id", cancellationId).eq("after_data->>cancellation_step", step).limit(1)
+  if (error) throw new Error(`Failed to read the cancellation's audit record: ${error.message}`)
+  if ((data ?? []).length) return
+  await recordAudit({ ...input, after: { ...(input.after ?? {}), cancellation_id: cancellationId, cancellation_step: step } })
+}
+
+/** The roles a sold home's start and its orders belong to: told when a released home loses its buyer. */
+const RELEASED_CANCELLATION_AUDIENCE = ["start.release", "po_exception.resolve"] as const
+
+/**
+ * A released home keeps building as a spec home when its sale is cancelled.
+ * Starts and purchasing are told, once per person, through the in-app
+ * notification path (there is no email type for it), each only if they reach
+ * the home. Returns how many were told.
+ */
+async function noticeReleasedCancellation(context: OrgServiceContext, row: z.infer<typeof cancellationRowSchema>, picksFlagged: number) {
+  const service = createServiceSupabaseClient()
+  const eventId = cancellationEventId(context.orgId, row.id, "released_sale_cancelled")
+  await recordEvent({ idempotencyId: eventId, orgId: context.orgId, actorId: row.actor_id, eventType: "released_sale_cancelled", entityType: "project", entityId: row.project_id,
+    payload: { cancellation_id: row.id, contract_id: row.contract_id, start_package_id: row.plan.start_package?.id ?? null, picks_flagged: picksFlagged } })
+  const recipients = Array.from(await permissionAudience(service, context.orgId, RELEASED_CANCELLATION_AUDIENCE))
+  const notifications = new NotificationService()
+  let told = 0
+  for (let offset = 0; offset < recipients.length; offset += 20) {
+    const sent = await Promise.all(recipients.slice(offset, offset + 20).map(async (userId) => {
+      const [starts, purchasing] = await Promise.all([
+        authorize({ orgId: context.orgId, userId, projectId: row.project_id, permission: "start.release" }),
+        authorize({ orgId: context.orgId, userId, projectId: row.project_id, permission: "po_exception.resolve" }),
+      ])
+      if (!starts.allowed && !purchasing.allowed) return 0
+      await notifications.createAndQueue({
+        orgId: context.orgId, userId, type: "released_sale_cancelled", title: "Released home lost its buyer",
+        message: picksFlagged
+          ? `The sale was cancelled after release. The home keeps building as a spec home; ${picksFlagged} purchase order${picksFlagged === 1 ? " carries" : "s carry"} the previous buyer's picks for purchasing to keep or cancel.`
+          : "The sale was cancelled after release. The home keeps building as a spec home.",
+        projectId: row.project_id, entityType: "project", entityId: row.project_id, eventId,
+      }, { idempotencyId: cancellationEventId(context.orgId, row.id, `released_sale_cancelled:${userId}`) })
+      return 1
+    }))
+    told += sent.reduce<number>((sum, value) => sum + value, 0)
+  }
+  return told
 }
 
 /** Retry the money and access steps of a cancellation that did not finish. Settling twice moves nothing twice. */
@@ -2393,6 +2464,12 @@ async function refundDeposit(context: OrgServiceContext, input: { amountCents: n
 
 const SETTLEMENT_LEASE_MS = 5 * 60_000
 
+/** A finished step is written to the receipt at once, so a crash before the next step does not redo it. */
+async function persistOutcomes(service: SupabaseClient, orgId: string, cancellationId: string, outcomes: Record<string, unknown>) {
+  const { error } = await service.from("purchase_agreement_cancellations").update({ outcomes }).eq("org_id", orgId).eq("id", cancellationId)
+  if (error) throw new Error(`Failed to record the cancellation's progress: ${error.message}`)
+}
+
 /**
  * The cancellation's money and access, claimed once (a stale claim can be
  * taken over) and recorded step by step on the receipt. What a step already did
@@ -2414,8 +2491,14 @@ async function settleAgreementCancellation(context: OrgServiceContext, cancellat
   }
   const row = cancellationRowSchema.parse(claimed)
   const outcomes: Record<string, unknown> = { ...row.outcomes }
-  let step = "settling the deposit"
+  let step = "recording the cancellation"
   try {
+    if (outcomes.void_recorded !== true) {
+      await recordCancellationVoid(context, row)
+      outcomes.void_recorded = true
+      await persistOutcomes(service, context.orgId, row.id, outcomes)
+    }
+    step = "settling the deposit"
     const depositInvoiceId = row.plan.reservation?.deposit_invoice_id ?? null
     if (depositInvoiceId && row.deposit_disposition !== "none") {
       const { data: reservation, error } = await context.supabase.from("lot_reservations").select("buyer_contact_id").eq("org_id", context.orgId).eq("id", row.reservation_id ?? "").maybeSingle()
@@ -2444,11 +2527,18 @@ async function settleAgreementCancellation(context: OrgServiceContext, cancellat
     if (tokenError) throw new Error(tokenError.message)
     await Promise.all((tokens ?? []).map((token) => revokePortalToken(token.id, context.orgId)))
     outcomes.portal_tokens_revoked = Number(outcomes.portal_tokens_revoked ?? 0) + (tokens ?? []).length
+    if (row.plan.start_package?.action === "keeps_building") {
+      step = "flagging the previous buyer's picks"
+      outcomes.picks_flagged = await flagPreviousBuyerPicks({ orgId: context.orgId, projectId: row.project_id, cancellationId: row.id, contractId: row.contract_id })
+      step = "telling starts and purchasing"
+      outcomes.released_notice_recipients = await noticeReleasedCancellation(context, row, Number(outcomes.picks_flagged))
+    }
     const { data: done, error: doneError } = await service.from("purchase_agreement_cancellations")
       .update({ settlement_status: "completed", completed_at: new Date().toISOString(), settlement_error: null, outcomes })
       .eq("org_id", context.orgId).eq("id", row.id).select("*").single()
     if (doneError || !done) throw new Error(doneError?.message ?? "The settlement could not be recorded")
-    await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_cancellation_settled", entityType: "contract", entityId: row.contract_id, payload: { cancellation_id: row.id, outcomes } })
+    await recordEvent({ idempotencyId: cancellationEventId(context.orgId, row.id, "purchase_agreement_cancellation_settled"), orgId: context.orgId, actorId: context.userId,
+      eventType: "purchase_agreement_cancellation_settled", entityType: "contract", entityId: row.contract_id, payload: { cancellation_id: row.id, outcomes } })
     return cancellationDto(cancellationRowSchema.parse(done))
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown failure"

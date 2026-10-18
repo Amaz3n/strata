@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useId, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Plus, Trash2 } from "lucide-react"
 
@@ -92,6 +92,7 @@ export function CommitmentCreateDialog({
   const { toast } = useToast()
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const fieldId = useId()
 
   // Vendors load when the dialog opens — the org directory can be large, so it
   // never ships with the page payload.
@@ -213,9 +214,9 @@ export function CommitmentCreateDialog({
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Company</Label>
+              <Label htmlFor={`${fieldId}-company`}>Company</Label>
               <Select value={companyId} onValueChange={setCompanyId}>
-                <SelectTrigger>
+                <SelectTrigger id={`${fieldId}-company`}>
                   <SelectValue placeholder={companiesLoading ? "Loading companies…" : "Select company"} />
                 </SelectTrigger>
                 <SelectContent>
@@ -229,9 +230,9 @@ export function CommitmentCreateDialog({
             </div>
             {costCodesEnabled ? (
               <div className="space-y-1.5">
-                <Label>Cost code</Label>
+                <Label htmlFor={`${fieldId}-cost-code`}>Cost code</Label>
                 <Select value={costCodeId} onValueChange={setCostCodeId}>
-                  <SelectTrigger>
+                  <SelectTrigger id={`${fieldId}-cost-code`}>
                     <SelectValue placeholder="Select cost code" />
                   </SelectTrigger>
                   <SelectContent>
@@ -242,8 +243,8 @@ export function CommitmentCreateDialog({
             ) : null}
           </div>
           <div className="space-y-1.5">
-            <Label>Title</Label>
-            <Input
+            <Label htmlFor={`${fieldId}-title`}>Title</Label>
+            <Input id={`${fieldId}-title`}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="e.g., Plumbing subcontract"
@@ -251,16 +252,16 @@ export function CommitmentCreateDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Commitment #</Label>
-              <Input
+              <Label htmlFor={`${fieldId}-commitment`}>Commitment #</Label>
+              <Input id={`${fieldId}-commitment`}
                 value={contractNumber}
                 onChange={(e) => setContractNumber(e.target.value)}
                 placeholder="e.g., SUB-004"
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Retainage (%)</Label>
-              <Input
+              <Label htmlFor={`${fieldId}-retainage`}>Retainage (%)</Label>
+              <Input id={`${fieldId}-retainage`}
                 value={retainagePercent}
                 onChange={(e) => setRetainagePercent(e.target.value)}
                 inputMode="decimal"
@@ -269,8 +270,8 @@ export function CommitmentCreateDialog({
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>Allocated scope</Label>
-            <Textarea
+            <Label htmlFor={`${fieldId}-allocated-scope`}>Allocated scope</Label>
+            <Textarea id={`${fieldId}-allocated-scope`}
               value={scope}
               onChange={(e) => setScope(e.target.value)}
               placeholder="e.g., Rough plumbing labor and trim"
@@ -278,8 +279,8 @@ export function CommitmentCreateDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label>Terms</Label>
-            <Textarea
+            <Label htmlFor={`${fieldId}-terms`}>Terms</Label>
+            <Textarea id={`${fieldId}-terms`}
               value={terms}
               onChange={(e) => setTerms(e.target.value)}
               placeholder="Billing terms, insurance, lien waivers, schedule"
@@ -288,8 +289,8 @@ export function CommitmentCreateDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Initial commitment amount ($)</Label>
-              <Input
+              <Label htmlFor={`${fieldId}-initial-commitment-amount`}>Initial commitment amount ($)</Label>
+              <Input id={`${fieldId}-initial-commitment-amount`}
                 value={amountDollars}
                 onChange={(e) => setAmountDollars(e.target.value)}
                 inputMode="decimal"
@@ -297,9 +298,9 @@ export function CommitmentCreateDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Status</Label>
+              <Label htmlFor={`${fieldId}-status`}>Status</Label>
               <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
+                <SelectTrigger id={`${fieldId}-status`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -336,6 +337,7 @@ export function CommitmentEditDialog({
   const { toast } = useToast()
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const fieldId = useId()
 
   const [title, setTitle] = useState("")
   const [totalDollars, setTotalDollars] = useState("")
@@ -344,6 +346,9 @@ export function CommitmentEditDialog({
   const [retainagePercent, setRetainagePercent] = useState("")
   const [scope, setScope] = useState("")
   const [terms, setTerms] = useState("")
+  // Shown once approval asks for it: a vendor without a current prequalification is approved
+  // only with a written justification (the same rule as the subcontract workspace).
+  const [overrideNote, setOverrideNote] = useState<string | null>(null)
   // An approved purchase order is issued to its vendor: only its status moves here.
   const locked = commitment !== null && isIssuedPurchaseOrder(commitment.commitment_type, commitment.status)
 
@@ -356,20 +361,32 @@ export function CommitmentEditDialog({
       setRetainagePercent(commitment.retainage_percent != null ? String(commitment.retainage_percent) : "")
       setScope(commitment.scope ?? "")
       setTerms(commitment.terms ?? "")
+      setOverrideNote(null)
     }
   }, [commitment])
+
+  const approving = status === "approved" && commitment?.status !== "approved"
+  const override = approving && overrideNote?.trim() ? { prequal_override_note: overrideNote.trim() } : {}
+  /** A refused approval that only lacks the prequalification justification opens the field for it. */
+  const askedForOverride = (error: unknown) => {
+    if (!approving || !/override justification/i.test((error as Error).message)) return false
+    setOverrideNote((current) => current ?? "")
+    toast({ title: "This trade's prequalification needs an override", description: "Record why you're proceeding, then save again.", variant: "destructive" })
+    return true
+  }
 
   const submit = () => {
     if (!commitment) return
     if (locked) {
       startTransition(async () => {
         try {
-          unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status }))
+          unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status, ...override }))
           toast({ title: "Commitment updated" })
           onClose()
           router.refresh()
         } catch (error) {
-          toast({ title: "Unable to update commitment", description: (error as Error).message })
+          if (askedForOverride(error)) return
+          toast({ title: "Unable to update commitment", description: (error as Error).message, variant: "destructive" })
         }
       })
       return
@@ -399,14 +416,17 @@ export function CommitmentEditDialog({
           retainage_percent: retainage,
           scope: scope.trim() || null,
           terms: terms.trim() || null,
+          ...override,
         }))
         toast({ title: "Commitment updated" })
         onClose()
         router.refresh()
       } catch (error) {
+        if (askedForOverride(error)) return
         toast({
           title: "Unable to update commitment",
           description: (error as Error).message,
+          variant: "destructive",
         })
       }
     })
@@ -425,17 +445,17 @@ export function CommitmentEditDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label>Title</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} disabled={locked} />
+            <Label htmlFor={`${fieldId}-title`}>Title</Label>
+            <Input id={`${fieldId}-title`} value={title} onChange={(e) => setTitle(e.target.value)} disabled={locked} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Commitment #</Label>
-              <Input value={contractNumber} onChange={(e) => setContractNumber(e.target.value)} disabled={locked} />
+              <Label htmlFor={`${fieldId}-commitment`}>Commitment #</Label>
+              <Input id={`${fieldId}-commitment`} value={contractNumber} onChange={(e) => setContractNumber(e.target.value)} disabled={locked} />
             </div>
             <div className="space-y-1.5">
-              <Label>Retainage (%)</Label>
-              <Input
+              <Label htmlFor={`${fieldId}-retainage`}>Retainage (%)</Label>
+              <Input id={`${fieldId}-retainage`}
                 value={retainagePercent}
                 onChange={(e) => setRetainagePercent(e.target.value)}
                 inputMode="decimal"
@@ -445,8 +465,8 @@ export function CommitmentEditDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Total ($)</Label>
-              <Input
+              <Label htmlFor={`${fieldId}-total`}>Total ($)</Label>
+              <Input id={`${fieldId}-total`}
                 value={totalDollars}
                 onChange={(e) => setTotalDollars(e.target.value)}
                 inputMode="decimal"
@@ -457,9 +477,9 @@ export function CommitmentEditDialog({
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label>Status</Label>
+              <Label htmlFor={`${fieldId}-status`}>Status</Label>
               <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
+                <SelectTrigger id={`${fieldId}-status`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -471,13 +491,19 @@ export function CommitmentEditDialog({
               </Select>
             </div>
           </div>
+          {approving && overrideNote !== null ? (
+            <div className="space-y-1.5 border border-warning/40 p-3">
+              <Label htmlFor={`${fieldId}-prequal-override`}>Why you're proceeding despite prequalification</Label>
+              <Textarea id={`${fieldId}-prequal-override`} rows={2} value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)} placeholder="Who approved it and on what conditions" autoFocus />
+            </div>
+          ) : null}
           <div className="space-y-1.5">
-            <Label>Scope</Label>
-            <Textarea value={scope} onChange={(e) => setScope(e.target.value)} rows={3} disabled={locked} />
+            <Label htmlFor={`${fieldId}-scope`}>Scope</Label>
+            <Textarea id={`${fieldId}-scope`} value={scope} onChange={(e) => setScope(e.target.value)} rows={3} disabled={locked} />
           </div>
           <div className="space-y-1.5">
-            <Label>Terms</Label>
-            <Textarea value={terms} onChange={(e) => setTerms(e.target.value)} rows={3} disabled={locked} />
+            <Label htmlFor={`${fieldId}-terms`}>Terms</Label>
+            <Textarea id={`${fieldId}-terms`} value={terms} onChange={(e) => setTerms(e.target.value)} rows={3} disabled={locked} />
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={onClose}>

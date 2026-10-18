@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
@@ -46,6 +47,9 @@ jobs:
         with:
           version: 2.117.0
       - run: supabase db start
+      # Repository half only: no credentials exist in this job, so it checks names
+      # and versions are unique and well-formed (production parity is the job below).
+      - run: node ./scripts/check-migration-ledger.mjs
       - name: Require drawing lifecycle SQL contract
         run: |
           test -s supabase/tests/drawing_lifecycle.test.sql
@@ -53,6 +57,31 @@ jobs:
           supabase test db supabase/tests/drawing_lifecycle.test.sql --local | tee /tmp/drawing-lifecycle-tap.log
           grep -q 'Tests=6' /tmp/drawing-lifecycle-tap.log
       - run: supabase test db --local
+
+  # Exact parity between supabase/migrations and the production ledger. Trusted refs
+  # only: pushes to main and manual runs, never pull requests (same-repo PR code could
+  # read the key). The key lives in the `production-ledger` environment, whose
+  # protection rules (required reviewers, main only) are set in the repository
+  # settings. Until those secrets exist the script runs its repository half and says so.
+  migration-ledger-parity:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ledger
+    permissions:
+      contents: read
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LEDGER_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.LEDGER_SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Pending repository migrations (awaiting approval) are listed, not failed; the ledger
+      # holding a migration the repository lacks, or one version under two names, fails.
+      # Without the secrets the run warns that production was not checked.
+      - run: node ./scripts/check-migration-ledger.mjs --allow-pending --require-production
 
   drawing-lifecycle-browser:
     runs-on: ubuntu-latest

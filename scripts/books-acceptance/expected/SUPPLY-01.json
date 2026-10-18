@@ -3,23 +3,23 @@
   "reviewedFrom": "EP08-08 and EP08-10 (docs/enterprise-production/completion-checklist.json) and the EP08 owner decisions of 2026-10-15: approved purchase orders are locked and change only through a VPO or a return to draft; an issued version is a snapshot with a terms hash the vendor answers in the portal; acknowledgment gates nothing; receipts and shortages are tracked by home and PO line, written only through the service, with over-receipt only with a reason; late lines become shortages and schedule advisories; shortages stay internal. Code: lib/services/{po-acknowledgments,po-issue-notices,portal-purchase-orders,po-receipts}.ts; migrations 20261015130000_po_issue_acknowledgments, 20261015140000_po_receipts_and_shortages. Values are derived from each module's inputs and confirmed by the first run on the acceptance stack.",
   "subcases": {
     "approved-purchase-order-cannot-be-edited-in-place": {
-      "derivation": "A member superintendent edits the draft line (allowed). After approval, the superintendent's data-API writes to quantity, total, scope, a new line and a return to draft are refused, and the owner's service edits of the line and header are refused as locked. The order stands at 600000 cents (approval re-totals the order from its lines: 120 units at 5000), no scope, 120 units (the superintendent's draft edit of 100 to 120 stands). A VPO approved against it is revision 2; the owner's return to draft un-issues it.",
+      "derivation": "A superintendent on a field seat holds no commitment.write on the home, so since 20261021200000 and 20261021210000 (the commitment and commitment_lines member write fences, EP14) every data-API write they try is refused by a RESTRICTIVE policy before any trigger runs, PostgREST reporting no row visible to change (an insert is refused outright): the draft line edit (100 to 120), and after approval the line quantity, the header total, scope, a new line and a return to draft. The owner's service edits of the line and header are refused as locked. The order stands at 500000 cents (approval re-totals the order from its lines: 100 units at 5000), no scope, 100 units. A VPO approved against it is revision 2; the owner's return to draft un-issues it.",
       "expected": {
         "locked": {
-          "draftEdit": "allowed",
+          "draftEdit": "refused: no row visible to change",
           "forged": {
-            "quantity": "refused",
-            "total": "refused",
-            "scope": "refused",
+            "quantity": "refused: no row visible to change",
+            "total": "refused: no row visible to change",
+            "scope": "refused: no row visible to change",
             "addLine": "refused",
-            "back": "refused"
+            "back": "refused: no row visible to change"
           },
           "serviceLineEdit": "refused: locked",
           "serviceHeaderEdit": "refused: locked",
           "unchanged": {
-            "total_cents": 600000,
+            "total_cents": 500000,
             "scope": null,
-            "quantity": 120
+            "quantity": 100
           }
         },
         "paths": {
@@ -35,21 +35,21 @@
       }
     },
     "po-issue-cannot-be-forged-or-erased": {
-      "derivation": "A superintendent on the house team forges through the data API. Inserting an order as approved and moving a draft to approved are refused (issuing is the approval service's act, not a row edit), as is stamping the imported marker on a draft; no forged order exists. Through the service even the owner cannot create an order as complete or move a draft straight to complete: it stays draft and nothing is created. After the owner approves the draft, moving it to complete, stripping the generation provenance from the order or its line, changing a line's needed_by, reordering a line and stamping executed_at are all refused, so the hash is unchanged and the vendor can still answer the version. Returned to draft, the order keeps its issue history, so the member's delete is refused and the one version survives; with a recorded receipt the return to draft is refused for the owner too. A purchasing manager on no team adds a line (4 x $1) and edits the other (100 to 7 at $50) on a draft, so the total follows the lines: 35400 cents; after approval the sheet reads revision 1. An open-WIP imported order approved by the database gets a backfill version, queues no email and reads 'unrequested'.",
+      "derivation": "A superintendent on the house team forges through the data API. Inserting an order as approved and moving a draft to approved are refused (issuing is the approval service's act, not a row edit), as is stamping the imported marker on a draft; no forged order exists. Through the service even the owner cannot create an order as complete or move a draft straight to complete: it stays draft and nothing is created. After the owner approves the draft, moving it to complete, stripping the generation provenance from the order or its line, changing a line's needed_by, reordering a line and stamping executed_at are all refused, so the hash is unchanged and the vendor can still answer the version. Returned to draft, the order keeps its issue history, so the member's delete is refused and the one version survives; with a recorded receipt the return to draft is refused for the owner too. A purchasing manager on no team adds a line (4 x $1) and edits the other (100 to 7 at $50) on a draft, so the total follows the lines: 35400 cents; after approval the sheet reads revision 1. An open-WIP imported order approved by the database gets a backfill version, queues no email and reads 'unrequested'. Since 20261021200000_production_member_write_fences (EP14-06, ROLE-01), a superintendent on a field seat holds no commitment.write on the home, so their header writes to commitments (status, total, scope, metadata, executed_at, delete) are refused by the RESTRICTIVE write policy before the lock triggers run: PostgREST reports no row visible to change. Since 20261021210000 the same holds for line writes (commitment_lines): needed_by, sort_order and stripping a line's provenance are refused by the line fence before the lock triggers run.",
       "expected": {
         "forged": {
           "forgedDraft": {
             "insertAsApproved": "refused",
-            "draftToApproved": "refused",
-            "markImported": "refused"
+            "draftToApproved": "refused: no row visible to change",
+            "markImported": "refused: no row visible to change"
           },
           "forgedIssued": {
-            "toComplete": "refused",
-            "stripOrderSource": "refused",
-            "stripLineSource": "refused",
-            "neededBy": "refused",
-            "sortOrder": "refused",
-            "executedAt": "refused"
+            "toComplete": "refused: no row visible to change",
+            "stripOrderSource": "refused: no row visible to change",
+            "stripLineSource": "refused: no row visible to change",
+            "neededBy": "refused: no row visible to change",
+            "sortOrder": "refused: no row visible to change",
+            "executedAt": "refused: no row visible to change"
           },
           "forgedOrders": 0,
           "vendorStillAnswers": "allowed",
@@ -61,7 +61,7 @@
           }
         },
         "history": {
-          "deleteWithHistory": "refused",
+          "deleteWithHistory": "refused: no row visible to change",
           "versionsAfterDelete": 1,
           "returnWithReceipt": "refused: deliveries"
         },
@@ -153,7 +153,7 @@
       }
     },
     "race-two-vendor-answers-and-a-revision": {
-      "derivation": "Two real sessions: a VPO approval and a vendor acceptance at revision 1. Either may commit first: the VPO always lands as revision 2, every acceptance is on the version it named, and an acceptance exists only if it committed before the revision (it is then stale) \u2014 otherwise the answer is refused as changed.",
+      "derivation": "Two real sessions: a VPO approval and a vendor acceptance at revision 1. Either may commit first: the VPO always lands as revision 2, every acceptance is on the version it named, and an acceptance exists only if it committed before the revision (it is then stale) — otherwise the answer is refused as changed.",
       "expected": {
         "race": {
           "revisions": [

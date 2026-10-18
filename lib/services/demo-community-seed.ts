@@ -72,7 +72,7 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
   }
   await assertSampleNamespaceAvailable(orgId)
 
-  const { data: costCodes } = await supabase.from("cost_codes").select("code").eq("org_id", orgId).eq("is_active", true).order("code").limit(25)
+  const { data: costCodes } = await supabase.from("cost_codes").select("id,code").eq("org_id", orgId).eq("is_active", true).order("code").limit(25)
   if (!costCodes || costCodes.length < 5) throw new Error("Seed cost codes before the sample community")
   const planRows = SAMPLE_COMMUNITY_SPEC.plans.flatMap((plan) => ["A", "B"].map((elevation, index) => ({ plan_code: plan.code, plan_name: plan.name, series: "Cypress Landing Sample", heated_sqft: plan.heatedSqft, total_sqft: plan.heatedSqft + 320, beds: plan.beds, baths: plan.baths, stories: plan.heatedSqft > 2000 ? 2 : 1, garage_bays: 2, elevation_code: elevation, elevation_name: index ? "Coastal" : "Craftsman", elevation_sqft_delta: index * 40, swing_applicable: true })))
   await importCsv({ orgId, importer: "plan_library", name: "sample-plans.csv", headers: Object.keys(planRows[0]), rows: planRows, context: { file_kind: "plans", is_sample: true } })
@@ -97,11 +97,19 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
   )
   await importCsv({ orgId, importer: "plan_library", name: "sample-takeoffs.csv", headers: Object.keys(takeoffRows[0]), rows: takeoffRows, context: { file_kind: "takeoffs", is_sample: true } })
 
+  // The foundation waits 35 days behind the permit release and each later phase starts the day after
+  // the one before it finishes; the trade phases carry the cost codes
+  // the sample takeoffs buy under, so a late delivery advises the task it holds up.
+  const after = (key: string, lag = 1) => ({ depends_on: [{ key, type: "FS", lag_days: lag }] })
   const scheduleItems = [
-    { name: "Permit release", start_offset_days: -35, duration_days: 1 }, { name: "Foundation", start_offset_days: 0, duration_days: 14 },
-    { name: "Framing", start_offset_days: 14, duration_days: 21 }, { name: "Dry-in", start_offset_days: 35, duration_days: 10 },
-    { name: "MEP rough", start_offset_days: 45, duration_days: 18 }, { name: "Drywall", start_offset_days: 63, duration_days: 14 },
-    { name: "Interior finishes", start_offset_days: 77, duration_days: 28 }, { name: "Punch and close", start_offset_days: 105, duration_days: 14 },
+    { key: "permit-release", name: "Permit release", start_offset_days: -35, duration_days: 1 },
+    { key: "foundation", name: "Foundation", start_offset_days: 0, duration_days: 14, cost_code_id: costCodes[0].id, ...after("permit-release", 35) },
+    { key: "framing", name: "Framing", start_offset_days: 14, duration_days: 21, cost_code_id: costCodes[1].id, ...after("foundation") },
+    { key: "dry-in", name: "Dry-in", start_offset_days: 35, duration_days: 10, ...after("framing") },
+    { key: "mep-rough", name: "MEP rough", start_offset_days: 45, duration_days: 18, cost_code_id: costCodes[2].id, ...after("dry-in") },
+    { key: "drywall", name: "Drywall", start_offset_days: 63, duration_days: 14, cost_code_id: costCodes[3].id, ...after("mep-rough") },
+    { key: "interior-finishes", name: "Interior finishes", start_offset_days: 77, duration_days: 28, cost_code_id: costCodes[4].id, ...after("drywall") },
+    { key: "punch-and-close", name: "Punch and close", start_offset_days: 105, duration_days: 14, ...after("interior-finishes") },
   ]
   const { data: schedule, error: scheduleError } = await supabase.from("schedule_templates").insert({ org_id: orgId, name: "Cypress Landing 120-day build", property_type: "production", items: scheduleItems, created_by: actorUserId }).select("id").single()
   if (scheduleError || !schedule) throw new Error(`Failed to create sample schedule: ${scheduleError?.message}`)

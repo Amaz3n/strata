@@ -736,8 +736,11 @@ export interface ScheduleTemplate {
   project_type?: string
   property_type?: string
   items: Array<Partial<ScheduleItem> & {
+    key?: string
     start_offset_days?: number
     duration_days?: number
+    /** Predecessors by template key: `[{ key, type, lag_days }]`, written onto each home the template schedules. */
+    depends_on?: unknown
   }>
   is_public: boolean
   created_by?: string

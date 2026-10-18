@@ -119,13 +119,12 @@ test("a member never picks a move's band: the move functions are the service's, 
       /permission denied/,
     )
   }
-  // Or the lot's asking price itself, whoever the member is.
-  for (const actor of [org.consultant, org.owner]) {
-    await assert.rejects(
-      org.as(actor, (tx) => tx.query("update lots set asking_price_override_cents = 100 where id = $1", [org.lot.id])),
-      /set by a price move/,
-    )
-  }
+  // Or the lot's asking price itself, whoever the member is. A consultant holds no lot key,
+  // so the member write fence leaves them no row to update; the owner reaches the row and
+  // the price-move guard refuses.
+  const writePrice = (actor) => org.as(actor, (tx) => tx.query("update lots set asking_price_override_cents = 100 where id = $1", [org.lot.id]))
+  assert.equal((await writePrice(org.consultant)).affectedRows, 0)
+  await assert.rejects(writePrice(org.owner), /set by a price move/)
   const { rows: [after] } = await org.db.query("select asking_price_override_cents from lots where id = $1", [org.lot.id])
   assert.equal(Number(after.asking_price_override_cents), 410_000_00)
 

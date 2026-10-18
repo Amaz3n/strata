@@ -30,6 +30,8 @@ type ItemDraft = {
   trade: string;
   startOffset: string;
   duration: string;
+  /** The task's key, predecessors and cost code: not edited here, but kept on save so the template's task logic survives. */
+  carried?: { key?: string; depends_on?: unknown; cost_code_id?: string | null };
 };
 const newItem = (): ItemDraft => ({
   name: "",
@@ -46,6 +48,7 @@ function toItems(template: ScheduleTemplate): ItemDraft[] {
     trade: item.trade ?? "",
     startOffset: item.start_offset_days?.toString() ?? "",
     duration: item.duration_days?.toString() ?? "1",
+    carried: { key: item.key, depends_on: item.depends_on, cost_code_id: item.cost_code_id },
   }));
 }
 
@@ -102,6 +105,9 @@ export function ScheduleTemplatesClient({
       name: name.trim(),
       description: description.trim() || null,
       items: populated.map((item, index) => ({
+        ...(item.carried?.key ? { key: item.carried.key } : {}),
+        ...(item.carried?.depends_on ? { depends_on: item.carried.depends_on } : {}),
+        ...(item.carried?.cost_code_id ? { cost_code_id: item.carried.cost_code_id } : {}),
         name: item.name.trim(),
         item_type: "task",
         status: "planned",

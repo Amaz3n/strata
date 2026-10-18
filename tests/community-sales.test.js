@@ -211,7 +211,7 @@ function voidAgreementAtomically(args, store) {
   for (const project of store.projects) if (project.id === contract.project_id) project.client_id = null
   const { hash, ...decided } = plan
   const cancellation = {
-    id: id(600), org_id: ORG, project_id: contract.project_id, contract_id: contract.id, reservation_id: reservation?.id ?? null, reason: args.p_reason,
+    id: id(600), org_id: ORG, project_id: contract.project_id, contract_id: contract.id, reservation_id: reservation?.id ?? null, actor_id: args.p_actor_id, reason: args.p_reason,
     deposit_disposition: available === 0 ? "none" : args.p_deposit_disposition, forfeit_cents: forfeit, refund_cents: available - forfeit,
     plan: decided, plan_hash: hash, outcomes: { voided: true }, settlement_status: "pending", settlement_error: null, settlement_claimed_at: null,
     completed_at: null, created_at: "2026-10-12T00:00:00Z",

@@ -373,6 +373,35 @@
         "entriesAfterFirst": 4
       }
     },
+    "corrected-start-sells-as-one-land-line": {
+      "derivation": "Lot 1's $60,000 of land moves into the house on June 3 and the start is redated: reversed and posted again on June 10. $200,000 of construction is billed, the home is completed July 1 and sold July 25. The reversal entry has no source type of its own; it reverses the June 3 start, so it is land and development, and with the original and the re-post the land nets to $60,000. The sale relief is one land_and_development line of $60,000 and one construction line of $200,000 (5000 debits), and 1160 and 1170 are left at zero. Before the fix the reversal counted as construction: a construction line of $140,000 and a land line of $120,000.",
+      "checklist": [
+        "EP10-02",
+        "EP14-02"
+      ],
+      "inputs": {
+        "priceCents": 40000000,
+        "landCents": 6000000,
+        "constructionCents": 20000000,
+        "saleDate": "2026-07-25"
+      },
+      "expected": {
+        "reliefLines": [
+          [
+            "construction",
+            20000000
+          ],
+          [
+            "land_and_development",
+            6000000
+          ]
+        ],
+        "inventoryLeft": {
+          "1160": 0,
+          "1170": 0
+        }
+      }
+    },
     "spec-home-adopted-by-books": {
       "derivation": "A spec home is opened on a delivered lot by the starts desk: the package opens and the home has no contract at all (no placeholder fixed contract). When the sale later signs its purchase agreement, Books adopts the home as owned inventory with no refusal. Repair of homes created before the fix removes a placeholder (written by project settings, unsigned, no value) only when the home has an active purchase agreement and nothing references the placeholder: of three legacy homes, the untouched placeholder beside an agreement is removed (one removal, one audit row, the home keeps only its purchase agreement); the placeholder an allowance still points at stays with the agreement; the home with a placeholder and no agreement keeps it. Running the repair again removes nothing.",
       "expected": {

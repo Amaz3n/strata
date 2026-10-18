@@ -40,6 +40,9 @@ then the reference docs below.
 | [`accounting-sync.md`](accounting-sync.md) | Provider boundaries, durable delivery/import, and the gated D2 release and acceptance process. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
 | [`reference/starts-cutover.md`](reference/starts-cutover.md) | The ordered window that moves Starts release to production: readiness guard, rollback and re-activation scripts, what only the human does, and retirement of the legacy drain. |
+| [`reference/production-activation.md`](reference/production-activation.md) | The Arc Production release window: the ordered migration set and its lock risk, schema-gated flags, worker drain, monitoring, rollback, and the golden scenarios that rehearse it. |
+| [`reference/security-review-scope.md`](reference/security-review-scope.md) | Scope and threat model for the independent security review (tenant isolation, member authority, portals, storage, payments, imports, job queue), the member write fences, and the internal pre-review checklist. |
+| [`reference/production-approval-package.md`](reference/production-approval-package.md) | First-builder sizing, operating assumptions and the integration inventory form, for the launch owner to approve or amend. |
 | [`reference/pipeline.md`](reference/pipeline.md) | The one-screen pipeline: whose move it is, price firmness, the document that hardens from budget to agreement, client questions, and Start building. |
 | [`reference/drawings-workspace.md`](reference/drawings-workspace.md) | The modeless drawings workspace: item-first measuring, one-click room fill, the takeoff ledger and estimate handoff, and the 3D model as a view of the sheets. |
 | [`reference/audit-trail.md`](reference/audit-trail.md) | Evidence rows and correlation ids, which money mutations are transactional vs critical-audited, and the separation-of-duties rules and their refusal log. |

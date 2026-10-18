@@ -3,7 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 /** Mirrors the board's real shape — action bar, search, attention rail, rows. */
 export function SalesBoardSkeleton() {
   return (
-    <div>
+    <div role="status" aria-busy="true" aria-label="Loading sales">
       <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
         <Skeleton className="h-6 w-40 rounded-none" />
         <div className="flex gap-2">

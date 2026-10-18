@@ -2,7 +2,7 @@ require("../scripts/register-ts-node-test")
 
 const assert = require("node:assert/strict")
 const test = require("node:test")
-const { calculateCriticalPath, planScheduleMove, wouldCreateDependencyCycle } = require("../lib/utils/schedule-calc")
+const { calculateCriticalPath, planScheduleMove, resolveTemplateDependencies, wouldCreateDependencyCycle } = require("../lib/utils/schedule-calc")
 
 function item(id, duration) {
   return { id, org_id: "org", project_id: "project", name: id, item_type: "task", status: "planned", start_date: "2026-01-01", end_date: `2026-01-${String(1 + duration).padStart(2, "0")}`, created_at: "", updated_at: "" }
@@ -115,4 +115,23 @@ test("planning is calendar-day arithmetic across a daylight-saving change", () =
   const items = [plannable("a", "2026-03-06", "2026-03-07"), plannable("b", "2026-03-07", "2026-03-09")]
   const plan = planScheduleMove(items, [edge("a", "b")], [move("a", "2026-03-07", "2026-03-09")])
   assert.deepEqual(byId(plan).b, ["2026-03-09", "2026-03-11", "dependency"])
+})
+
+test("a template's links resolve by key onto the items one home was given, with their type and lag", () => {
+  const placed = [
+    { key: "foundation", itemId: "f", dependsOn: undefined },
+    { key: "framing", itemId: "fr", dependsOn: [{ key: "foundation" }] },
+    { key: "dry-in", itemId: "d", dependsOn: [{ key: "framing", type: "SS", lag_days: 10 }] },
+  ]
+  assert.deepEqual(resolveTemplateDependencies(placed), [
+    { item_id: "fr", depends_on_item_id: "f", dependency_type: "FS", lag_days: 0 },
+    { item_id: "d", depends_on_item_id: "fr", dependency_type: "SS", lag_days: 10 },
+  ])
+})
+
+test("a template link to a missing or shared key, an unknown type or a loop is refused, never dropped", () => {
+  assert.throws(() => resolveTemplateDependencies([{ key: "framing", itemId: "fr", dependsOn: [{ key: "foundation" }] }]), /does not have/)
+  assert.throws(() => resolveTemplateDependencies([{ key: "a", itemId: "1" }, { key: "a", itemId: "2" }, { key: "b", itemId: "3", dependsOn: ["a"] }]), /more than one task/)
+  assert.throws(() => resolveTemplateDependencies([{ key: "a", itemId: "1" }, { key: "b", itemId: "2", dependsOn: [{ key: "a", type: "XX" }] }]), /unknown type/)
+  assert.throws(() => resolveTemplateDependencies([{ key: "a", itemId: "1", dependsOn: ["b"] }, { key: "b", itemId: "2", dependsOn: ["a"] }]), /loop/)
 })

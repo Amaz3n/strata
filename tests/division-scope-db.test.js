@@ -448,8 +448,12 @@ test("a division-restricted member cannot pull another division's home onto thei
     as((tx) => tx.query("update lots set project_id = $2 where id = $1", [emptyLot.id, southSpec.id])),
     /outside the caller's division access/,
   )
+  // The lead holds no community key, so the member write fence leaves no community row to move;
+  // a North community steward reaches it and the division check refuses the move.
+  assert.equal((await as((tx) => tx.query("update communities set division_id = $2 where id = $1", [oak.id, south.id]))).affectedRows, 0)
+  const steward = await member(db, orgId, { role: "org_land_manager", divisionScope: "assigned", divisions: [north.id] })
   await assert.rejects(
-    as((tx) => tx.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])),
+    asRole(db, { role: "authenticated", userId: steward.userId }, (tx) => tx.query("update communities set division_id = $2 where id = $1", [oak.id, south.id])),
     /row-level security/,
   )
   await assert.rejects(
@@ -684,6 +688,9 @@ async function wallOrg(t) {
   return { ...org, sides, tables }
 }
 
+/** Tables whose rows members read but never write directly: the service writes them. */
+const MEMBER_READ_ONLY = new Set(["warranty_requests"])
+
 test("every record under a home, a lead, a lot or a community stays in its division", async (t) => {
   const { db, orgId, ownerId, northLead, seller, sides, tables } = await wallOrg(t)
   // The lead manages the homes; deal records are the seller's to write.
@@ -707,7 +714,10 @@ test("every record under a home, a lead, a lot or a community stays in its divis
       north: (await tx.query(`update ${table} set ${label} = ${label} where org_id = $1 and ${label}::text = $2`, [orgId, north])).affectedRows,
       south: (await tx.query(`update ${table} set ${label} = ${label} where org_id = $1 and ${label}::text = $2`, [orgId, south])).affectedRows,
     }))
-    assert.deepEqual(touched, { north: 1, south: 0 }, `${table}: limited update`)
+    // A table members only read (the warranty fence, 20261018150000) refuses both divisions' writes;
+    // its read wall above is what this case still proves.
+    const readOnly = MEMBER_READ_ONLY.has(table)
+    assert.deepEqual(touched, { north: readOnly ? 0 : 1, south: 0 }, `${table}: limited update`)
 
     const insertAs = (side) => {
       const row = { org_id: orgId, ...tables[table].row(sides[side], 2) }
@@ -719,7 +729,8 @@ test("every record under a home, a lead, a lot or a community stays in its divis
         ),
       )
     }
-    await insertAs("North")
+    if (readOnly) await assert.rejects(insertAs("North"), /row-level security|permission/, `${table}: member insert`)
+    else await insertAs("North")
     // Some tables refuse in a lifecycle trigger before RLS is asked.
     await assert.rejects(insertAs("South"), /row-level security|division access/, `${table}: limited insert`)
   }

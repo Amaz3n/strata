@@ -472,3 +472,32 @@ test("the variance queue's division lens pages in SQL and filters by status, com
   assert.deepEqual(await page(north.id, { p_member_user_id: w.owner }), [])
   await assert.rejects(rpc(w.db, "list_variance_order_page", { p_org_id: w.orgId, p_division_ids: [north.id], p_statuses: null, p_reason_code_id: null, p_origin: null, p_project_id: null, p_community_id: null, p_member_user_id: null, p_limit: 1, p_offset: 0 }, { role: "authenticated", userId: w.owner }), /permission denied/)
 })
+
+test("purchasing reads every home's orders and lines without a seat, and a seated member without commitment.write changes no line", async (t) => {
+  const { db, orgId, reporter, project, company, po, asUser } = await purchasingWorld(t)
+  const { userId: superintendent } = await seedMember(db, { orgId, role: "org_superintendent" })
+  await db.query("insert into project_members (org_id, project_id, user_id, role_id, status) select $1, $2, $3, id, 'active' from roles where scope = 'project' and key = 'field'", [orgId, project.id, superintendent])
+  const draft = await insert(db, "commitments", { org_id: orgId, project_id: project.id, company_id: company.id, title: "Draft PO", status: "draft", commitment_type: "purchase_order", total_cents: 5_000 })
+  const line = await insert(db, "commitment_lines", { org_id: orgId, commitment_id: draft.id, description: "Blocks", quantity: 1, unit_cost_cents: 5_000 })
+
+  // The purchasing manager is on no team for this home: org-level commitment.read reads it.
+  const seen = await asUser(reporter, async (tx) => ({
+    orders: (await tx.query("select id from commitments order by title")).rows.length,
+    lines: (await tx.query("select id from commitment_lines where commitment_id = $1", [po.id])).rows.length,
+  }))
+  assert.deepEqual(seen, { orders: 2, lines: 2 })
+
+  // Approval re-totals an order from its lines, so a line is a price: the field seat edits none.
+  const asSuper = (sql, args) => asUser(superintendent, (tx) => tx.query(sql, args))
+  assert.equal((await asSuper("update commitment_lines set quantity = 9 where id = $1", [line.id])).affectedRows, 0)
+  assert.equal((await asSuper("delete from commitment_lines where id = $1", [line.id])).affectedRows, 0)
+  await assert.rejects(
+    asSuper("insert into commitment_lines (org_id, commitment_id, description, quantity, unit_cost_cents) values ($1, $2, 'Extra', 1, 1)", [orgId, draft.id]),
+    /row-level security/,
+  )
+  // A project manager seat holds commitment.write and edits the draft line.
+  const { userId: lead } = await seedMember(db, { orgId, role: "org_viewer" })
+  await db.query("insert into project_members (org_id, project_id, user_id, role_id, status) select $1, $2, $3, id, 'active' from roles where scope = 'project' and key = 'pm'", [orgId, project.id, lead])
+  assert.equal((await asUser(lead, (tx) => tx.query("update commitment_lines set quantity = 2 where id = $1", [line.id]))).affectedRows, 1)
+  assert.equal(Number((await db.query("select quantity from commitment_lines where id = $1", [line.id])).rows[0].quantity), 2)
+})

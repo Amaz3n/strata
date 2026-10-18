@@ -1,0 +1,319 @@
+{
+  "scenario": "ROLE-01",
+  "reviewedFrom": "EP14-06 (docs/enterprise-production/completion-checklist.json); role_permissions on the acceptance stack (catalog-as-code); CLAUDE.md (division scope is the enforcement layer); SEC-01 and AUTH-01 for the pattern; migrations 20261021200000_production_member_write_fences and 20261021210000_member_write_fence_narrowing. Concurrent money writers are covered elsewhere and not repeated here: RACE-02 (race-concurrent-settlement, race-two-releases-refund-once, race-intercompany-lot-sale, race-two-conversions-of-one-hold) and RACE-03 (race-purchase-order-approvals, race-variance-order-approvals, race-two-agreements-and-two-signatures, race-cancellation-against-signature); self-approval by SEC-01 (vendor bills), VPO-01 (variance orders), SALE-01 (commission plans) and this scenario (purchase orders).",
+  "subcases": {
+    "desk-mutations-follow-the-role-catalog": {
+      "derivation": "One representative mutation per production desk, each through the service its server action calls, tried by every production role and the owner against Gulf Coast. Allowed exactly where the role catalog (role_permissions, catalog-as-code) grants the key: community.write (owner, land), lot.write (owner, land, starts), land.write (owner, land), sales.manage or pipeline.write (owner, sales), start.write (owner, starts), start.slots (owner, starts), commitment.write (owner; purchasing, who also holds a project-manager seat on the home), selections.catalog.manage (owner, design), daily_log.write and punch.write (owner; the superintendent through the field seat the starts service gives them; purchasing through its project-manager seat), warranty.write (owner, warranty). Every other cell is a clean refusal ('Missing permission: <key>'), never database or runtime text. Each refusal names its reason: a missing permission reads 'refused: missing <key>' (from 'Missing permission: <key>'), so a record that is merely not found cannot pass as a permission refusal.",
+      "expected": {
+        "land: create a community": {
+          "land": "allowed",
+          "sales": "refused: missing community.write",
+          "starts": "refused: missing community.write",
+          "purchasing": "refused: missing community.write",
+          "design": "refused: missing community.write",
+          "superintendent": "refused: missing community.write",
+          "warranty": "refused: missing community.write",
+          "owner": "allowed"
+        },
+        "land: add lots to a community": {
+          "land": "allowed",
+          "sales": "refused: missing lot.write",
+          "starts": "allowed",
+          "purchasing": "refused: missing lot.write",
+          "design": "refused: missing lot.write",
+          "superintendent": "refused: missing lot.write",
+          "warranty": "refused: missing lot.write",
+          "owner": "allowed"
+        },
+        "land: open a land deal": {
+          "land": "allowed",
+          "sales": "refused: missing land.write",
+          "starts": "refused: missing land.write",
+          "purchasing": "refused: missing land.write",
+          "design": "refused: missing land.write",
+          "superintendent": "refused: missing land.write",
+          "warranty": "refused: missing land.write",
+          "owner": "allowed"
+        },
+        "sales: register a walk-in buyer": {
+          "land": "refused: missing sales.manage",
+          "sales": "allowed",
+          "starts": "refused: missing sales.manage",
+          "purchasing": "refused: missing sales.manage",
+          "design": "refused: missing sales.manage",
+          "superintendent": "refused: missing sales.manage",
+          "warranty": "refused: missing sales.manage",
+          "owner": "allowed"
+        },
+        "starts: open a start package": {
+          "land": "refused: missing start.write",
+          "sales": "refused: missing start.write",
+          "starts": "allowed",
+          "purchasing": "refused: missing start.write",
+          "design": "refused: missing start.write",
+          "superintendent": "refused: missing start.write",
+          "warranty": "refused: missing start.write",
+          "owner": "allowed"
+        },
+        "starts: set a release slot": {
+          "land": "refused: missing start.slots",
+          "sales": "refused: missing start.slots",
+          "starts": "allowed",
+          "purchasing": "refused: missing start.slots",
+          "design": "refused: missing start.slots",
+          "superintendent": "refused: missing start.slots",
+          "warranty": "refused: missing start.slots",
+          "owner": "allowed"
+        },
+        "purchasing: write a purchase order": {
+          "land": "refused: missing commitment.write",
+          "sales": "refused: missing commitment.write",
+          "starts": "refused: missing commitment.write",
+          "purchasing": "allowed",
+          "design": "refused: missing commitment.write",
+          "superintendent": "refused: missing commitment.write",
+          "warranty": "refused: missing commitment.write",
+          "owner": "allowed"
+        },
+        "design studio: add a catalog category": {
+          "land": "refused: missing selections.catalog",
+          "sales": "refused: missing selections.catalog",
+          "starts": "refused: missing selections.catalog",
+          "purchasing": "refused: missing selections.catalog",
+          "design": "allowed",
+          "superintendent": "refused: missing selections.catalog",
+          "warranty": "refused: missing selections.catalog",
+          "owner": "allowed"
+        },
+        "field: write a daily log": {
+          "land": "refused: missing daily_log.write",
+          "sales": "refused: missing daily_log.write",
+          "starts": "refused: missing daily_log.write",
+          "purchasing": "allowed",
+          "design": "refused: missing daily_log.write",
+          "superintendent": "allowed",
+          "warranty": "refused: missing daily_log.write",
+          "owner": "allowed"
+        },
+        "field: open a punch item": {
+          "land": "refused: missing punch.write",
+          "sales": "refused: missing punch.write",
+          "starts": "refused: missing punch.write",
+          "purchasing": "allowed",
+          "design": "refused: missing punch.write",
+          "superintendent": "allowed",
+          "warranty": "refused: missing punch.write",
+          "owner": "allowed"
+        },
+        "warranty: open a warranty request": {
+          "land": "refused: missing warranty.write",
+          "sales": "refused: missing warranty.write",
+          "starts": "refused: missing warranty.write",
+          "purchasing": "refused: missing warranty.write",
+          "design": "refused: missing warranty.write",
+          "superintendent": "refused: missing warranty.write",
+          "warranty": "allowed",
+          "owner": "allowed"
+        }
+      }
+    },
+    "division-and-org-walls-hold-for-mutations": {
+      "derivation": "A project lead (lot.write, start.write, commitment.write, daily_log.write, punch.write; not community.write, land.write, sales.manage, start.slots or warranty.write) limited by the owner to Gulf Coast through the team service and seated on both homes. In Gulf Coast the five mutations the role grants succeed and the other five are refused for the missing key; in Treasure Coast all ten are refused (services resolve division scope; the division RESTRICTIVE policies back it). Another builder's owner, acting in their own org, is refused every mutation aimed at this builder (the division, community, lot or home is not found, or the key is missing on a home outside their org) and writes no row in their own org pointing at ours. Reasons are asserted: in Treasure Coast the manager's key checks evaluate at the home or division and read 'missing <key>', while the community and lot they cannot reach read 'Community not found' and 'Lot not found'; the foreign owner meets 'Division not found' or 'Community not found' for land, sales and starts, and 'missing <key>' on a home outside their org.",
+      "expected": {
+        "divisionManager": {
+          "gulf": {
+            "land: create a community": "refused: missing community.write",
+            "land: add lots to a community": "allowed",
+            "land: open a land deal": "refused: missing land.write",
+            "sales: register a walk-in buyer": "refused: missing sales.manage",
+            "starts: open a start package": "allowed",
+            "starts: set a release slot": "refused: missing start.slots",
+            "purchasing: write a purchase order": "allowed",
+            "field: write a daily log": "allowed",
+            "field: open a punch item": "allowed",
+            "warranty: open a warranty request": "refused: missing warranty.write"
+          },
+          "treasure": {
+            "land: create a community": "refused: missing community.write",
+            "land: add lots to a community": "refused: Community not found",
+            "land: open a land deal": "refused: missing land.write",
+            "sales: register a walk-in buyer": "refused: missing sales.manage",
+            "starts: open a start package": "refused: Lot not found",
+            "starts: set a release slot": "refused: missing start.slots",
+            "purchasing: write a purchase order": "refused: missing commitment.write",
+            "field: write a daily log": "refused: missing daily_log.write",
+            "field: open a punch item": "refused: missing punch.write",
+            "warranty: open a warranty request": "refused: missing warranty.write"
+          }
+        },
+        "foreignOwner": {
+          "land: create a community": "refused: Division not found",
+          "land: add lots to a community": "refused: Community not found",
+          "land: open a land deal": "refused: Division not found",
+          "sales: register a walk-in buyer": "refused: Community not found",
+          "starts: open a start package": "refused: Lot not found",
+          "starts: set a release slot": "refused: Community not found",
+          "purchasing: write a purchase order": "refused: missing commitment.write",
+          "field: write a daily log": "refused: missing daily_log.write",
+          "field: open a punch item": "refused: missing punch.write",
+          "warranty: open a warranty request": "refused: missing warranty.write"
+        },
+        "foreignRowsWritten": {}
+      }
+    },
+    "stale-role-is-refused-mid-session": {
+      "derivation": "A second starts coordinator opens a start package and changes a free lot's address straight through PostgREST (lot.write), and a second warranty manager opens a claim and inserts a warranty routing rule straight through PostgREST (warranty.manage): all four allowed. The owner then moves the coordinator to sales agent, and gives the warranty manager warranty.write and warranty.manage deny overrides (stored), through team.updateMemberRole. With the same tokens, the very next request of each is refused, through the service for the named missing key (start.write, warranty.write) and through the data API for the same writes that succeeded a moment earlier: the lot update reaches no row (the lots member write fence) and the routing-rule insert is refused by its policy (42501). Services and policies re-read membership and overrides on every request; nothing is cached.",
+      "expected": {
+        "startsBefore": "allowed",
+        "warrantyBefore": "allowed",
+        "startsDirectBefore": "allowed",
+        "warrantyDirectBefore": "allowed",
+        "overrideStored": [
+          {
+            "permission_key": "warranty.manage",
+            "effect": "deny"
+          },
+          {
+            "permission_key": "warranty.write",
+            "effect": "deny"
+          }
+        ],
+        "startsAfterRoleChange": "refused: missing start.write",
+        "warrantyAfterRevoke": "refused: missing warranty.write",
+        "startsDirectAfter": "refused (no rows)",
+        "warrantyDirectAfter": "refused"
+      }
+    },
+    "data-api-writes-are-fenced": {
+      "derivation": "The same production writes straight through each actor's own PostgREST session. A refusal is either 42501 from a policy or guard ('refused') or a USING clause that leaves no row ('refused (no rows)'); any other database error is reported with its code and fails the cell. After 20261021200000 and 20261021210000 (the member write fences, narrowed in review): communities take writes only from community.write, so land writes them and starts (lot.write only) no longer can; lots take writes only from lot.write or community.write, so land and starts write them and purchasing (plan.release) no longer can, its offering override being written by the service; commitments and their lines take writes only from commitment.write on the org role or the home's project role, so only purchasing (project-manager seat) writes or reprices a draft order or changes or adds its lines, and the superintendent (field seat) cannot; nobody approves an order by a bare status update (approval goes through updateCommitment); daily logs follow the project seat; warranty requests and land deals take only their service paths (land deals: land.write and created_by = the caller). Another builder's owner writes nothing.",
+      "expected": {
+        "communities: rename one": {
+          "land": "allowed",
+          "sales": "refused (no rows)",
+          "starts": "refused (no rows)",
+          "purchasing": "refused (no rows)",
+          "design": "refused (no rows)",
+          "superintendent": "refused (no rows)",
+          "warranty": "refused (no rows)",
+          "foreignOwner": "refused (no rows)"
+        },
+        "lots: add one": {
+          "land": "allowed",
+          "sales": "refused",
+          "starts": "allowed",
+          "purchasing": "refused",
+          "design": "refused",
+          "superintendent": "refused",
+          "warranty": "refused",
+          "foreignOwner": "refused"
+        },
+        "lots: change a lot's status": {
+          "land": "allowed",
+          "sales": "refused (no rows)",
+          "starts": "allowed",
+          "purchasing": "refused (no rows)",
+          "design": "refused (no rows)",
+          "superintendent": "refused (no rows)",
+          "warranty": "refused (no rows)",
+          "foreignOwner": "refused (no rows)"
+        },
+        "commitments: write an order": {
+          "land": "refused",
+          "sales": "refused",
+          "starts": "refused",
+          "purchasing": "allowed",
+          "design": "refused",
+          "superintendent": "refused",
+          "warranty": "refused",
+          "foreignOwner": "refused"
+        },
+        "commitments: approve an order": {
+          "land": "refused (no rows)",
+          "sales": "refused (no rows)",
+          "starts": "refused (no rows)",
+          "purchasing": "refused",
+          "design": "refused (no rows)",
+          "superintendent": "refused (no rows)",
+          "warranty": "refused (no rows)",
+          "foreignOwner": "refused (no rows)"
+        },
+        "commitments: change an order's total": {
+          "land": "refused (no rows)",
+          "sales": "refused (no rows)",
+          "starts": "refused (no rows)",
+          "purchasing": "allowed",
+          "design": "refused (no rows)",
+          "superintendent": "refused (no rows)",
+          "warranty": "refused (no rows)",
+          "foreignOwner": "refused (no rows)"
+        },
+        "commitment_lines: change a draft line": {
+          "land": "refused (no rows)",
+          "sales": "refused (no rows)",
+          "starts": "refused (no rows)",
+          "purchasing": "allowed",
+          "design": "refused (no rows)",
+          "superintendent": "refused (no rows)",
+          "warranty": "refused (no rows)",
+          "foreignOwner": "refused (no rows)"
+        },
+        "commitment_lines: add a line": {
+          "land": "refused",
+          "sales": "refused",
+          "starts": "refused",
+          "purchasing": "allowed",
+          "design": "refused",
+          "superintendent": "refused",
+          "warranty": "refused",
+          "foreignOwner": "refused"
+        },
+        "daily_logs: write one": {
+          "land": "refused",
+          "sales": "refused",
+          "starts": "refused",
+          "purchasing": "allowed",
+          "design": "refused",
+          "superintendent": "allowed",
+          "warranty": "refused",
+          "foreignOwner": "refused"
+        },
+        "warranty_requests: open one": {
+          "land": "refused",
+          "sales": "refused",
+          "starts": "refused",
+          "purchasing": "refused",
+          "design": "refused",
+          "superintendent": "refused",
+          "warranty": "refused",
+          "foreignOwner": "refused"
+        },
+        "land_opportunities: open one": {
+          "land": "allowed",
+          "sales": "refused",
+          "starts": "refused",
+          "purchasing": "refused",
+          "design": "refused",
+          "superintendent": "refused",
+          "warranty": "refused",
+          "foreignOwner": "refused"
+        }
+      }
+    },
+    "creator-cannot-approve-own-purchase-order": {
+      "derivation": "Maker/checker on the purchasing desk (EP02-05): the purchasing manager writes a 4,800.00 order and is refused approving it ('You created this commitment, so someone else has to approve it.'), the superintendent is refused for the missing commitment.write the update needs before approval is considered, and the owner approves it. The total stays 480000 cents throughout.",
+      "expected": {
+        "self": "refused: You created this commitment, so someone else has to approve it.",
+        "afterSelf": {
+          "status": "draft",
+          "total_cents": 480000
+        },
+        "superintendent": "refused: missing commitment.write",
+        "owner": "allowed",
+        "after": {
+          "status": "approved",
+          "total_cents": 480000
+        }
+      }
+    }
+  }
+}

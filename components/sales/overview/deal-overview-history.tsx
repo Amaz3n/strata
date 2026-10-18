@@ -157,10 +157,10 @@ export function DealOverviewHistory({
                       ? "text-foreground"
                       : group.isYesterday
                       ? "text-foreground/85"
-                      : "text-muted-foreground/85"
+                      : "text-muted-foreground"
                   }
                 >
-                  <span className="text-[10px] tabular-nums text-muted-foreground/55">
+                  <span className="text-[10px] tabular-nums text-muted-foreground">
                     {group.secondary}
                   </span>
                   {group.isToday && (
@@ -189,7 +189,7 @@ export function DealOverviewHistory({
                             </span>
                             {note ? <span className="text-muted-foreground"> — {note}</span> : null}
                           </span>
-                          <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground/70">
+                          <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
                             {formatTime(event.created_at)}
                           </span>
                         </OverviewRow>
@@ -201,7 +201,7 @@ export function DealOverviewHistory({
             ))}
 
             {truncated ? (
-              <p className="text-[11px] text-muted-foreground/70">
+              <p className="text-[11px] text-muted-foreground">
                 Showing the 60 most recent events on this buyer.
               </p>
             ) : null}

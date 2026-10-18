@@ -486,7 +486,7 @@ function WarrantyClientContent({
               />
               <div className="flex items-center gap-2">
                 <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="w-full sm:w-36">
+                  <SelectTrigger aria-label="Status" className="w-full sm:w-36">
                     <SelectValue placeholder="Status" />
                   </SelectTrigger>
                   <SelectContent>

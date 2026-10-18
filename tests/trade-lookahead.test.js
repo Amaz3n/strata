@@ -79,6 +79,8 @@ function harness({
     authorizeMany: async ({ permission, projectIds }) => new Map(projectIds.map((id) => [id, permission === "project.read" && !deniedProjects.includes(id)])),
   })
   stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => db })
+  // The flag's schema check has its own suite (schema-flags.test.js); here the schema is in place.
+  stubModule("@/lib/services/schema-flags", { schemaFlagEnabled: async (flag) => process.env[flag] === "true" })
   stubModule("@/lib/services/trade-notices", {
     resolveTradePortalLink: async () => null,
     deliverTradeNotice: async (input) => {

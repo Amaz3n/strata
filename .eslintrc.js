@@ -119,7 +119,6 @@ const GRANDFATHERED = [
   "components/team/member-form-panel.tsx",
   "components/team/team-table.tsx",
   "components/ui/project-avatar.tsx",
-  "components/ui/toast.tsx",
 ]
 
 module.exports = {

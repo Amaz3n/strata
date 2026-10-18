@@ -93,7 +93,7 @@ async function approvedPurchaseOrderCannotBeEditedInPlace(kit, expected, check) 
   const afterVpo = (await h.versions(id)).map((row) => `${row.revision}:${row.reason}`)
   await kit.as(org.owner, () => app("commitments").updateCommitment({ commitmentId: id, input: { status: "draft" } }))
   const returned = kit.rows(`select status, issued_at is null as unissued from public.commitments where id=${kit.q(id)}`)[0]
-  eq(check, "a draft PO is editable by a member; once approved the quantity, total, scope, a new line and a return to draft through the data API are all refused and the order is unchanged", expected.expected.locked, {
+  eq(check, "a member without commitment.write edits no draft line; once approved the quantity, total, scope, a new line and a return to draft through the data API are all refused and the order is unchanged", expected.expected.locked, {
     draftEdit, forged, serviceLineEdit: /locked/.test(serviceEdit) ? "refused: locked" : serviceEdit,
     serviceHeaderEdit: /locked/.test(serviceHeader) ? "refused: locked" : serviceHeader, unchanged: before,
   })

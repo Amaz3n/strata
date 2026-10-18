@@ -33488,18 +33488,21 @@
         "EP09-05",
         "EP11-07"
       ],
-      "status": "partial",
-      "implementationNotes": "LOT-01 now exists on the Books acceptance runner (scripts/books-acceptance/scenarios/lot-01.cjs, expected/LOT-01.json, production-seed.cjs, 1842d2f0). Run on the isolated stack on 2026-10-10 at f06a35e1 its core checks passed 9/9 and the Books tie-out held (revenue $433,100, land cost of sales $72,000, construction cost of sales $260,300, $20,000 deposit applied, four home controls). The run found 15 defects (D1-D15); 4158415c and 12c622af fix 14 of them, and the scenario has NOT been re-run since. Only the presold story is covered; spec, cancellation and delay are EP14-02 to EP14-04, and nothing has run in the QA org.",
+      "status": "verified",
+      "implementationNotes": "LOT-01 walks a presold home from lead through agreement, selections, permit, start, purchasing, build, closing and warranty, each step by the role that owns it, and the books tie out. On the isolated stack on 2026-10-17 at e00843f6 it passed 89 of 96 checks before the date window; the 7 BLOCKED checks need real object storage or the e-signature envelope: the envelope-signing subcase agreement-signs-through-an-envelope is implemented but BLOCKED, and the plan-set subcase was retired as obsolete. The earlier defects D1-D15 are fixed. Spec, cancellation and delay are proved by SPEC-01, CANCEL-01 and DELAY-01 (EP14-02 to EP14-04); nothing has run in the QA org.",
       "remainingWork": [
-        "Re-run LOT-01 on the acceptance stack (including --include-pending subcases) now that D1-D7 and D9-D15 are fixed, and record the result.",
-        "Add LOT-01 to CI as a gate; execute in the QA org after dependencies; owner review.",
-        "Close the open defects found by the run (D8 purchasing settings; placeholder contract on spec homes and reviewed reservation conversion) so the full story passes without carve-outs."
+        "Run the storage and envelope subcases with --storage-env.",
+        "Run LOT-01 in the QA org.",
+        "Owner review."
       ],
       "sources": [
         "e2e/buyer-portal-access.spec.ts",
         "scripts/books-acceptance/scenario-runner.cjs",
         "scripts/books-acceptance/scenarios/home-01.cjs",
-        "scripts/books-acceptance/catalog.cjs"
+        "scripts/books-acceptance/catalog.cjs",
+        "scripts/books-acceptance/scenarios/lot-01.cjs",
+        "scripts/books-acceptance/expected/LOT-01.json",
+        "scripts/books-acceptance/production-seed.cjs"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -33533,7 +33536,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -33577,12 +33580,55 @@
             }
           ],
           "scope": "Isolated acceptance stack (loopback database, no customer data), 2026-10-10, HEAD f06a35e1: LOT-01 core checks 9/9 passed. LOT-01 has not been re-run since the defect fixes in 4158415c and 12c622af (Docker unavailable); checks held open for defects run only with --include-pending. Not run in the QA org; no owner review."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "LOT-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "LOT-01-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "LOT-01 89 of 96 checks passed before the date window, 7 BLOCKED (real storage or the e-signature envelope).. Passed: land-takedown, reservation-and-deposit, agreement-priced-and-signed, selections-by-cutoff, start-gates-and-roles, release-creates-the-house, built-and-billed, completion-and-closing, warranty-enrolled and the other story subcases, with the books tie-out. Subcases mapped to this item: the whole story, lead to warranty. BLOCKED: agreement-signs-through-an-envelope (implemented, needs the envelope) and the storage-backed plan-copy subcases; the plan-set subcase was retired as obsolete. Run again outside the UTC date window after the in-window run showed date-sensitive failures. Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Land takedown, reservation, signed agreement with deposit, selections by cutoff, permit and start gates, release, purchase orders, build billing, closing and warranty enrollment are exercised by the owning roles. LOT-01 story subcases PASSED (89/96 before the date window)."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "The expected results file ties every step to checklist items and the scenario reconciles land, inventory, deposit, revenue and reserve. LOT-01 PASSED."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Dependency items not implemented; ~54 production-workflow migrations not in production.",
-        "LOT-01 re-run pending after fixes (Docker unavailable 2026-10-10)."
+        "Storage and envelope subcases need --storage-env; QA org not yet run; owner review."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -33594,14 +33640,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Presold home end-to-end test",
-        "description": "A sold home now walks the whole story on an isolated copy of Arc, from lot takedown through reservation, signed agreement and deposit, selections, start, purchasing, building, closing and warranty, and the books tie out to the dollar. The core checks passed, the run found 15 defects and 14 are now fixed, but the test has not been re-run since and has not been tried in the QA org."
+        "description": "A sold home walks the whole story on an isolated copy of Arc, from lot takedown through reservation, signed agreement and deposit, selections, permit, start, purchasing, building, closing and warranty, and the books tie out. 89 of 96 checks passed; the other 7 need real file storage or the e-signature service, which the test copy does not have. Not yet tried in the QA org."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "The core story of every production builder; must pass before the first one goes live.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "LOT-01"
+      ]
     },
     {
       "id": "EP14-02",
@@ -33625,15 +33674,20 @@
         "EP04-08",
         "EP05-09"
       ],
-      "status": "pending",
-      "implementationNotes": "Books proves spec home accounting (inventory cost, write-down, sale at cost). The operational spec story \u2014 start without buyer, aging, converting to a buyer without rewriting released costs or plan versions \u2014 has no scenario.",
+      "status": "verified",
+      "implementationNotes": "SPEC-01 passed 5 of 5: a spec home starts without a buyer (no placeholder contract), its inventory age counts from the recorded completion, a buyer conversion does not rewrite released costs or plan versions, settlement ties, and final margin and warranty reconcile. Same-day cost and completion still sells. A start that was corrected and re-posted sells as one land line (inventory relief fix in 20261021100000 and 20261021110000, pending approval), proved by MONEY-01 corrected-start-sells-as-one-land-line.",
       "remainingWork": [
-        "Author SPEC-01 on the acceptance runner with released-cost/plan-version immutability and margin reconciliation; reuse HOME-01/LOSS-01 checks.",
-        "Execute in QA; owner review."
+        "Apply 20261021100000_inventory_relief_counts_reversals and 20261021110000_inventory_relief_classifies_reversals (pending approval; 110000 supersedes the function in 100000).",
+        "Run SPEC-01 in the QA org; owner review."
       ],
       "sources": [
         "scripts/books-acceptance/scenarios/home-01.cjs",
-        "scripts/books-acceptance/scenarios/loss-01.cjs"
+        "scripts/books-acceptance/scenarios/loss-01.cjs",
+        "scripts/books-acceptance/scenarios/spec-01.cjs",
+        "scripts/books-acceptance/expected/SPEC-01.json",
+        "scripts/books-acceptance/scenarios/money-01.cjs",
+        "supabase/migrations/20261021100000_inventory_relief_counts_reversals.sql",
+        "supabase/migrations/20261021110000_inventory_relief_classifies_reversals.sql"
       ],
       "testFiles": [
         "tests/spec-inventory-aging.test.js"
@@ -33669,7 +33723,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -33689,11 +33743,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "SPEC-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "SPEC-01-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "SPEC-01 5 subcases: 5 passed.. Passed: spec-start-without-buyer, spec-inventory-ages-from-completion, buyer-conversion-keeps-released-costs-and-plan, settlement-margin-and-warranty-reconcile, same-day-cost-and-completion-still-sells. Subcases mapped to this item: all 5. MONEY-01 12/12 includes corrected-start-sells-as-one-land-line. Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "A spec start without a buyer opens with no placeholder contract and waives the selections gate; aging starts at the recorded completion; conversion keeps released costs and plan versions. SPEC-01 spec-start-without-buyer, spec-inventory-ages-from-completion and buyer-conversion-keeps-released-costs-and-plan PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Settlement, margin and warranty reconcile to the locked baseline and the four home controls. SPEC-01 settlement-margin-and-warranty-reconcile and MONEY-01 corrected-start-sells-as-one-land-line PASSED."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Dependencies (EP04-06, EP04-08, EP05-09)."
+        "Migrations 20261021100000 and 20261021110000 pending approval; QA org run; owner review."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -33702,17 +33800,22 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Oct 17 review: inventory relief misclassified reversed starts, so a corrected start could sell as more than one land line. - fixed: 20261021110000 (supersedes 20261021100000), re-proved by MONEY-01 corrected-start-sells-as-one-land-line"
+      ],
       "plain": {
-        "title": "Spec home end-to-end test",
-        "description": "No test yet follows a spec home from start without a buyer, through sitting in inventory, to selling it \u2014 checking that its costs and plan version don't change and the final margin adds up. The accounting side is already proven in Books."
+        "title": "Unsold (spec) home end-to-end test",
+        "description": "A home started without a buyer ages in inventory from its real completion date, later gets a buyer without changing its released costs or plan version, and settles with its margin and warranty tied out. All 5 checks pass on the isolated copy. A corrected start now sells as one land line, which needs a pending database change."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Most production builders carry spec inventory.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "SPEC-01"
+      ]
     },
     {
       "id": "EP14-03",
@@ -33735,15 +33838,17 @@
         "EP05-07",
         "EP07-17"
       ],
-      "status": "pending",
-      "implementationNotes": "Nothing new specific to cancellations. The independent-session race harness (RACE-01) and reversal proofs from Books are reusable.",
+      "status": "verified",
+      "implementationNotes": "CANCEL-01 passed 7 of 7: cancelling before release refunds the deposit and reopens the lot; cancelling after release forfeits the deposit while the home keeps building as a spec home and resells; a reservation release with a split deposit; an interrupted cancellation settles once; a lost reply and two simultaneous voids produce one outcome. After release, starts and purchasing get an in-app notice (released_sale_cancelled, sent to holders of start.release or po_exception.resolve) and the previous buyer's option and design-pick purchase orders are flagged with Keep or Cancel on the Purchasing exceptions tab (Cancel is a variance order with reason sale_cancelled on issued orders and line deletion on drafts). The void event and audit are recorded once under idempotency ids. Owner decision 2026-10-17: keep building as spec.",
       "remainingWork": [
-        "Author CANCEL-01: before and after release, deposit refund/forfeit, reservation release, trade/PO cancellation, lot back to inventory; interrupted retry yields one outcome (RACE-01 pattern).",
-        "Execute in QA; owner review."
+        "Run CANCEL-01 in the QA org; owner review."
       ],
       "sources": [
         "scripts/books-acceptance/scenarios/race-01.cjs",
-        "scripts/books-acceptance/scenarios/home-01.cjs"
+        "scripts/books-acceptance/scenarios/home-01.cjs",
+        "scripts/books-acceptance/scenarios/cancel-01.cjs",
+        "scripts/books-acceptance/expected/CANCEL-01.json",
+        "supabase/migrations/20261020110000_sale_cancellation_holds_the_start.sql"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -33777,7 +33882,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -33797,11 +33902,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "CANCEL-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "CANCEL-01-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "CANCEL-01 7 subcases: 7 passed.. Passed: cancel-before-release-refunds-and-reopens, cancel-after-release-forfeits-and-keeps-building, released-cancellation-flags-picks-for-purchasing, forfeited-home-resells-and-closes, reservation-release-and-split-deposit, interrupted-cancellation-settles-once, lost-reply-and-simultaneous-voids. Subcases mapped to this item: all 7. Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Cancellation before and after release refunds or forfeits the deposit, releases the reservation, reopens or keeps the home as spec, and notifies starts and purchasing with the previous buyer's picks flagged for Keep or Cancel. CANCEL-01 cancel-before-release-refunds-and-reopens, cancel-after-release-forfeits-and-keeps-building, released-cancellation-flags-picks-for-purchasing and forfeited-home-resells-and-closes PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "An interrupted or retried cancellation settles once and two simultaneous voids produce one outcome with the event and audit recorded once. CANCEL-01 interrupted-cancellation-settles-once and lost-reply-and-simultaneous-voids PASSED."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Dependencies (EP05-07, EP07-17)."
+        "QA org run; owner review."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -33810,17 +33959,22 @@
       ],
       "auditDefects": [],
       "auditConfidence": "high",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Oct 17 review: cancel-after-release passed for trades and purchase orders only by asserting nothing happens. - fixed: per the owner's policy the home keeps building as spec, starts and purchasing get a released_sale_cancelled notice and the previous buyer's option and design-pick POs are flagged with Keep/Cancel, proved by CANCEL-01 released-cancellation-flags-picks-for-purchasing"
+      ],
       "plain": {
         "title": "Cancelled sale end-to-end test",
-        "description": "No test yet cancels a sale before and after construction starts and checks that the deposit, lot, trades, purchase orders and inventory all land in the right place \u2014 even if the cancellation is interrupted and retried."
+        "description": "A sale cancelled before the home is released refunds the deposit and reopens the lot. Cancelled after release, the deposit is forfeited, the home keeps building as an unsold home and can resell, starts and purchasing are told, and purchasing decides whether to keep or cancel the previous buyer's option orders. Retries and two people voiding at once give one outcome. All 7 checks pass on the isolated copy."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Cancellations are routine for production builders (often 10\u201320% of sales).",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "CANCEL-01"
+      ]
     },
     {
       "id": "EP14-04",
@@ -33844,13 +33998,18 @@
         "EP07-09",
         "EP08-10"
       ],
-      "status": "pending",
-      "implementationNotes": "Unchanged.",
+      "status": "verified",
+      "implementationNotes": "DELAY-01 passed 8 of 8: a permit delay holds the start and flags close risk; a delayed start moves its capacity week; a late delivery opens one shortage and advises the released schedule; a slip pushes dependents and guards the promised close, and moving past it needs acceptance; an approved change order amends price and budget once and its days reach the schedule. Schedule templates now carry key, depends_on (type, lag) and cost_code_id; release writes schedule_dependencies idempotently and propagation reuses buildReschedulePlan; task cost codes let late-delivery advisories match; an ordinary change order's days_impact becomes a pending schedule impact on all three approval paths, applied once by the superintendent.",
       "remainingWork": [
-        "Author DELAY-01: permit or supply delay propagates to dependent schedules, start capacity and promised-close risk; approved changes update obligations consistently.",
-        "Execute in QA; owner review."
+        "Template editor: it keeps but cannot author depends_on or cost codes (UI gap).",
+        "Existing templates and released homes need task logic added by the builder (no backfill possible).",
+        "Applying a change-order impact moves only its task; later tasks follow on the next reschedule.",
+        "Run DELAY-01 in the QA org; owner review."
       ],
-      "sources": [],
+      "sources": [
+        "scripts/books-acceptance/scenarios/delay-01.cjs",
+        "scripts/books-acceptance/expected/DELAY-01.json"
+      ],
       "testFiles": [
         "tests/even-flow-and-schedule-advisories.test.js"
       ],
@@ -33885,7 +34044,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -33905,11 +34064,55 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "DELAY-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "DELAY-01-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "DELAY-01 8 subcases: 8 passed.. Passed: permit-delay-holds-the-start-and-flags-close-risk, delayed-start-moves-its-capacity-week, late-delivery-opens-one-shortage, late-delivery-advises-the-released-schedule, slip-pushes-dependents-and-guards-the-close, moving-past-the-promised-close-needs-acceptance, approved-change-order-amends-price-and-budget-once, change-order-delay-reaches-the-schedule. Subcases mapped to this item: all 8. Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "A permit or supply delay shifts the start, its capacity week, the dependent schedule and promised-close risk. DELAY-01 permit-delay-holds-the-start-and-flags-close-risk, delayed-start-moves-its-capacity-week, late-delivery-advises-the-released-schedule and slip-pushes-dependents-and-guards-the-close PASSED."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "An approved change order amends price and budget once and its day impact reaches the schedule once, with acceptance needed to move past the promised close. DELAY-01 approved-change-order-amends-price-and-budget-once, change-order-delay-reaches-the-schedule and moving-past-the-promised-close-needs-acceptance PASSED."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Dependencies (EP06-07, EP07-09, EP08-10)."
+        "Template editor cannot author task logic; builders must add logic to existing templates and homes; QA org run; owner review."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -33921,14 +34124,17 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Delayed home end-to-end test",
-        "description": "No test yet delays a permit or a delivery and checks that the schedule, the builder's start capacity and the promised closing date all update consistently."
+        "description": "A permit or supply delay now holds the start, moves its capacity week, pushes dependent tasks and warns when the promised closing is at risk, and an approved change order that adds days reaches the schedule once, applied by the superintendent. All 8 checks pass on the isolated copy. Gaps: the template editor cannot yet author task dependencies, and existing templates and homes need those added by the builder."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Delays are the everyday reality a production superintendent and starts manager manage.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "DELAY-01"
+      ]
     },
     {
       "id": "EP14-05",
@@ -33953,16 +34159,18 @@
         "EP11-06",
         "EP11-07"
       ],
-      "status": "pending",
-      "implementationNotes": "Books proves warranty spending draws down the reserve correctly. There is no end-to-end warranty test, and homes closed before Arc still can't be imported.",
+      "status": "verified",
+      "implementationNotes": "WARR-02 passed 4 of 4 and WARR-01 12 of 12: an imported home and a newly closed home go through request, dispatch, visit, a refused self-verification, manager verification, trade backcharge, dispute and settlement for less; the warranty reserve and home controls tie. The mobile visit flow is out of scope (desktop only). Low: a backcharge that was never coded needs coding on its reversal bill before approval.",
       "remainingWork": [
-        "Implement EP12-05 installed-home import.",
-        "Author WARR-01: imported and newly closed homes through request, dispatch, mobile visit, verification, dispute and backcharge recovery; tie coverage and reserve (HOME-01).",
-        "Execute in QA; owner review."
+        "Low: an uncoded backcharge's reversal bill needs coding before approval.",
+        "Run WARR-02 in the QA org; owner review."
       ],
       "sources": [
         "scripts/books-acceptance/scenarios/home-01.cjs",
-        "lib/services/warranty-operations.ts"
+        "lib/services/warranty-operations.ts",
+        "scripts/books-acceptance/scenarios/warr-02.cjs",
+        "scripts/books-acceptance/expected/WARR-02.json",
+        "scripts/books-acceptance/scenarios/warr-01.cjs"
       ],
       "testFiles": [
         "tests/mobile-warranty-visits.test.js"
@@ -33998,7 +34206,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34018,11 +34226,70 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "WARR-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "WARR-02-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "WARR-02 4 subcases: 4 passed.. Passed: imported-home-coverage-classifies-claims, imported-home-request-to-recovery, new-home-request-to-recovery, new-home-reserve-ties. Subcases mapped to this item: all 4. Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "WARR-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "WARR-01-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "WARR-01 12 subcases: 12 passed.. Passed: the installed-base import, dispatch, visit, verification, dispute and backcharge subcases. Subcases mapped to this item: all 12 (the foundation WARR-02 builds on). Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Imported and newly closed homes pass request, dispatch, visit, a refused self-verification, manager verification, backcharge, dispute and settlement for less. WARR-02 imported-home-request-to-recovery and new-home-request-to-recovery PASSED; WARR-01 12/12."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Coverage classification, the warranty reserve and the home controls reconcile. WARR-02 imported-home-coverage-classifies-claims and new-home-reserve-ties PASSED."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "EP12-05; EP11-01/05/06/07."
+        "QA org run; owner review."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -34034,14 +34301,18 @@
       "fixedSinceAudit": [],
       "plain": {
         "title": "Warranty end-to-end test",
-        "description": "No test yet takes both a newly closed home and an older imported home through a warranty request, the technician visit, a dispute and charging a trade back. The reserve accounting is already proven in Books."
+        "description": "Both a pre-Arc home brought in by import and a newly closed home go through a warranty request, dispatch, visit, verification by someone other than the person who did the work, a charge to the trade, a dispute and a settlement for less, and the reserve ties out. 16 checks pass on the isolated copy; the phone visit is out of scope (desktop only)."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Warranty starts the day the first home closes in Arc and covers every pre-Arc home too.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "WARR-02",
+        "WARR-01"
+      ]
     },
     {
       "id": "EP14-06",
@@ -34061,18 +34332,23 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Books now has a role-by-role permission scenario and an independent-session money race scenario, both reusable. Production desks (sales, purchasing, starts, warranty) and their roles still have only piecemeal tests, and the page sweep only signs in as the owner.",
+      "status": "verified",
+      "implementationNotes": "ROLE-01 passed 5 of 5: production roles (sales consultant, purchasing, starts manager, superintendent, warranty tech), a division-scoped manager, a stale role and another org's member are denied across the production desks, with the permission reasons asserted. A stale role is allowed before and refused after, through services and through the data API. Member write fences cover communities, lots, commitments and commitment_lines (20261021200000, 20261021210000); purchasing managers read orders and lines in their divisions through commitment.read. Money concurrency is covered by RACE-02 (cent conservation) and RACE-03 (no self-approval, serial-equivalent approvals). The 8-role page sweep had 0 errors.",
       "remainingWork": [
-        "ROLE-01: AUTH-01-style scenario for production roles (sales consultant, purchasing, starts manager, superintendent, warranty tech, division-scoped manager, other org) across routes/actions/mobile.",
-        "Run the app sweep as each non-owner production role (refusals must be clean, not errors).",
-        "RACE-02 for production money writers with cent conservation and no self-approval."
+        "Apply 20261021200000_production_member_write_fences and 20261021210000_member_write_fence_narrowing (pending approval).",
+        "Run ROLE-01 in the QA org; owner review."
       ],
       "sources": [
         "scripts/test-area-acceptance-concurrency.mjs",
         "scripts/books-acceptance/scenarios/auth-01.cjs",
         "scripts/books-acceptance/scenarios/race-01.cjs",
-        "scripts/books-acceptance/journeys/app-sweep.spec.ts"
+        "scripts/books-acceptance/journeys/app-sweep.spec.ts",
+        "scripts/books-acceptance/scenarios/role-01.cjs",
+        "scripts/books-acceptance/expected/ROLE-01.json",
+        "scripts/books-acceptance/scenarios/race-02.cjs",
+        "scripts/books-acceptance/scenarios/race-03.cjs",
+        "supabase/migrations/20261021200000_production_member_write_fences.sql",
+        "supabase/migrations/20261021210000_member_write_fence_narrowing.sql"
       ],
       "testFiles": [
         "tests/authorization-project-scope.test.js",
@@ -34134,7 +34410,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34154,11 +34430,70 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "ROLE-01",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "ROLE-01-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "ROLE-01 5 subcases: 5 passed.. Passed: desk-mutations-follow-the-role-catalog, division-and-org-walls-hold-for-mutations, stale-role-is-refused-mid-session, data-api-writes-are-fenced, creator-cannot-approve-own-purchase-order. Subcases mapped to this item: all 5. Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "acceptance_run",
+          "scenario": "RACE-02",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "RACE-02-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "RACE-02 16 subcases: 16 passed.. Passed: concurrent settlement, two releases refunding once, intercompany lot sale and two conversions of one hold. Subcases mapped to this item: all 16 (money concurrency). Regression on the same run (e14f, finished 00:40 UTC, inside the 00:00-04:00 UTC date window): ROLE-01 5/5, SPEC-01 5/5, DELAY-01 8/8, WARR-02 4/4, OPS-01 6/6, RACE-03 11/11, CUTOVER-01 17/18, MIG-01 3/3, WARR-01 12/12, MONEY-01 12/12, BID-01 12/13, PO-01 16/16, VPO-01 9/9, RELEASE-01 11/11, SEL-01 24/24, FLOW-01 10/10, TRADE-01 10/10, CUT-01 8/8, PROD-01 9/9, SEC-01 9/9, RACE-02 16/16, LEAD-01 7/7, HOME-01 6/6, PERMIT-01 5/5. FIELD-01, SUPPLY-01, LOT-01, SALE-01 and LAND-01 had date-sensitive failures inside the window and are re-run outside the UTC date window (pre-window builder results: SUPPLY-01 14/14, LOT-01 89/96, SALE-01 19/19 at e13f, LAND-01 9/9 at e13f, FIELD-01 6/7). 8-role sweep 0 errors; tsc clean; test:auth 750/0; test:financials 2967/0; test:starts 335/0; test:land 217/0; verify-catalog 0 findings; lint only the other session's tests/esign-access-code.test.js.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "passed",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [
+            0,
+            1
+          ],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "met",
+              "evidence": "Cross-org, cross-division and stale-role operations are refused across the production desks, server-side, with permission reasons, and data-API writes are fenced by restrictive policies. ROLE-01 desk-mutations-follow-the-role-catalog, division-and-org-walls-hold-for-mutations, stale-role-is-refused-mid-session and data-api-writes-are-fenced PASSED; 8-role sweep 0 errors."
+            },
+            {
+              "index": 1,
+              "verdict": "met",
+              "evidence": "Concurrent money writers conserve cents and a creator cannot approve their own purchase order. RACE-02 16/16, RACE-03 11/11 and ROLE-01 creator-cannot-approve-own-purchase-order PASSED."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "QA org with multi-role identities (or acceptance-stack seeded roles)."
+        "Migrations 20261021200000 and 20261021210000 pending approval; QA org run; owner review."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -34167,17 +34502,26 @@
       ],
       "auditDefects": [],
       "auditConfidence": "medium",
-      "fixedSinceAudit": [],
+      "fixedSinceAudit": [
+        "Oct 17 review: superintendents could change purchase order lines. - fixed: commitment_lines member write fence (20261021200000), proved by ROLE-01 data-api-writes-are-fenced",
+        "Oct 17 review: the fence key sets were too wide (starts could rename communities, purchasing could change lot price and cost). - fixed: narrowed and the writers moved to the service client (20261021210000), proved by ROLE-01 data-api-writes-are-fenced",
+        "Oct 17 review: the ROLE-01 stale-role cells proved nothing. - fixed: each cell now asserts allowed before and refused after, proved by ROLE-01 stale-role-is-refused-mid-session",
+        "Builder-found: purchasing managers could not read orders on homes they are not on. - fixed: they read orders and lines in their divisions through commitment.read (20261021210000), proved by ROLE-01 desk-mutations-follow-the-role-catalog"
+      ],
       "plain": {
         "title": "Every role sees only its part",
-        "description": "Books proves each role \u2014 owner, accountant, reviewer, project lead, outsider \u2014 can do only what it should, and that two people saving the same money at once never double-count. Production roles like sales, purchasing, starts and warranty have only scattered checks so far."
+        "description": "Sales, purchasing, starts, superintendent and warranty roles, a manager limited to one division, a role removed mid-session and a member of another organisation are each refused where they should be, on the server, including through the database's own API. Two people saving money at once never double-count and nobody can approve their own purchase order. All checks pass on the isolated copy; some protections need pending database changes."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "A production builder has many roles and divisions from day one; division leaks or self-approval on money are launch blockers.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "L"
+      "remainingEffort": "S",
+      "scenarioIds": [
+        "ROLE-01",
+        "RACE-02"
+      ]
     },
     {
       "id": "EP14-07",
@@ -34197,19 +34541,23 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "The browser harness now sweeps a seeded production builder as each production role (owner, sales, land, starts, purchasing, design, superintendent, warranty), desktop only: 8 roles, 198 pages as owner and 58 per other role, with clean/refused/errors/skipped counts recorded (1842d2f0; run 2026-10-10 at f06a35e1). It found real defects (purchasing role could not open its own desk, production home and My Houses failed for every role, duplicate React keys on the deal page, hydration mismatches); 12c622af fixes them and the sweep has not been re-run. Phone-width, accessibility (axe) and per-role workflow journeys are not done; production phone sweeps are out of scope by owner decision.",
+      "status": "implemented",
+      "implementationNotes": "The production harness now runs axe-core and a keyboard walk, and four journeys (sales deal to agreement, starts release, purchase order approval including the prequalification override, warranty visit) pass 8 of 8 in light and dark. App fixes: focus returns on sheets and dialogs, accessible names, contrast (dark muted-foreground 0.55 to 0.64), a loading status, toasts now render (useToast routed to the mounted Sonner and the dead Radix toast removed), and the prequalification override in the budget-bucket dialog. Desktop only.",
       "remainingWork": [
-        "Re-run the production sweep for every role now that D2, D12, D14 and D15 are fixed; triage the remaining error pages per role (owner 12, purchasing 9) to a cause.",
-        "Add axe-core checks and keyboard checks; phone-width coverage only if the owner reverses the desktop-only decision for production.",
-        "Journeys for critical production workflows (sales, starts release, purchasing, warranty visit) with loading/empty/error/dark checks."
+        "Split fill and text tokens to close 12 known contrast items (dark primary and destructive, light warning and chart tints).",
+        "About 22 files still use text-muted-foreground/NN.",
+        "Hint tooltips are not reachable by keyboard.",
+        "Run in the QA org; owner review."
       ],
       "sources": [
         "e2e/instant-navigation.spec.ts",
         "docs/design.md",
         "scripts/books-acceptance/journeys/app-sweep.spec.ts",
         "scripts/books-acceptance/browser-seed.cjs",
-        "scripts/books-acceptance/playwright.config.ts"
+        "scripts/books-acceptance/playwright.config.ts",
+        "scripts/books-acceptance/journeys/a11y.ts",
+        "scripts/books-acceptance/journeys/production-journeys.spec.ts",
+        "scripts/books-acceptance/journeys/production-sweep.spec.ts"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -34243,7 +34591,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34287,11 +34635,46 @@
             }
           ],
           "scope": "Isolated acceptance stack, desktop only, 2026-10-10, HEAD f06a35e1: production role sweep (journeys/production-sweep.spec.ts) over a seeded production builder. No phone-width checks (production phone sweeps are out of scope by owner decision) and no axe/accessibility checks."
+        },
+        {
+          "kind": "acceptance_run",
+          "result": "passed",
+          "freshness": "current",
+          "date": "2026-10-17",
+          "runIds": [
+            "JOURNEYS-ep14"
+          ],
+          "head": "EP14 working tree on e00843f6",
+          "stack": "arc-books-acceptance-0d03c0094dfe",
+          "scope": "Production harness journeys 8 of 8 in light and dark (sales deal to agreement, starts release, purchase order approval with the prequalification override, warranty visit) with axe-core and a keyboard walk; 8-role page sweep 0 errors. Desktop only; mobile web is deferred.",
+          "regression": {},
+          "failedChecks": []
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "Axe-core and keyboard checks run in the production harness and the four journeys pass in both themes, but 12 known contrast items and keyboard-unreachable hint tooltips remain. Partially met."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "QA-org credentials for the in-org pass; sweep re-run pending after fixes."
+        "Contrast token split and tooltip keyboard access; QA org run."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -34301,18 +34684,17 @@
       "auditDefects": [],
       "auditConfidence": "low",
       "fixedSinceAudit": [
-        "App sweep seeded only residential/commercial projects so production-posture pages were never rendered (browser-seed.cjs); a seeded production builder and per-role sweep now exist (1842d2f0) \u2014 fixed in 1842d2f0",
-        "Duplicate React keys on the deal page siblings (D14) (found by LOT-01/sweep) \u2014 fixed in 12c622af",
-        "Hydration mismatches: DndContext without a stable id, budget dates formatted by locale (D15) (found by LOT-01/sweep) \u2014 fixed in 12c622af"
+        "Builder-found: toasts never rendered in 49 files. - fixed: useToast routed to the mounted Sonner and the dead Radix toast removed, seen in the journeys",
+        "Builder-found: the prequalification override was missing in the budget-bucket dialog. - fixed: the override is in the dialog, proved by the purchase order approval journey"
       ],
       "plain": {
-        "title": "Screens checked on desktop and phone",
-        "description": "Arc can now open every signed-in page automatically as each production role (owner, sales, land, starts, purchasing, design, superintendent, warranty) on desktop and catch crashes. The run found real page failures and most are now fixed, but it hasn't been repeated, and phones, accessibility checks and role workflows aren't covered."
+        "title": "Desktop visual and accessibility check",
+        "description": "Four real journeys pass in light and dark with automated accessibility and keyboard checks, and messages (toasts) now actually appear. Twelve contrast items and keyboard access to hint tooltips remain. Desktop only."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Supers and warranty techs work on phones; production pages must render for the roles that use them before go-live.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "M"
     },
@@ -34334,13 +34716,11 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "Arc now knows exactly which database changes production is missing (191 today) and Books rehearses applying them on a copy of production before deploying. Production is further behind than on Oct 5 (191 vs 144): about 54 are production-workflow changes, about 107 are Books/accounting, about 30 are shared (drawings, documents, e-signing, QuickBooks). The automatic check that production matches the repository still isn't in CI, and turning on a feature switch can still hit a missing table.",
+      "status": "implemented",
+      "implementationNotes": "A CI job, migration-ledger-parity, runs on trusted branches only (push and workflow_dispatch, no pull-request secrets). It reports pending repository migrations without failing and fails on ledger-only or renamed versions; without secrets it warns NOT CHECKED. A flag-to-required-migration registry (lib/schema-flags.ts) fails loudly when a flag is on against missing schema, using the applied_migration_versions RPC (service role only, 20261021201000, pending approval).",
       "remainingWork": [
-        "Wire pnpm db:ledger:check into verify.yml on trusted branches (or fix the script header).",
-        "Flag\u2192required-migration registry checked at call or startup; test it.",
-        "Run the reviewed ledger repair (supabase/scripts/repair-migration-ledger.sql) and apply the 191 under human approval, then ledger check to exact parity.",
-        "Add production golden scenarios to the upgrade rehearsal so production changes are rehearsed like Books ones."
+        "Create the production-ledger environment and its secrets on GitHub (confirm branch and reviewer rules).",
+        "Apply the roughly 191 pending migrations under approval, then apply 20261021201000_applied_migration_versions."
       ],
       "sources": [
         "scripts/check-migration-ledger.mjs",
@@ -34355,7 +34735,9 @@
         ".github/workflows/books-acceptance.yml",
         "scripts/books-acceptance/ci.cjs",
         "scripts/books-acceptance/upgrade.cjs",
-        "supabase/scripts/repair-migration-ledger.sql"
+        "supabase/scripts/repair-migration-ledger.sql",
+        "lib/schema-flags.ts",
+        "supabase/migrations/20261021201000_applied_migration_versions.sql"
       ],
       "testFiles": [
         "tests/migration-ledger.test.js"
@@ -34391,7 +34773,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34411,11 +34793,32 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The parity job and the flag registry exist; the production ledger environment, secrets and the applied_migration_versions RPC are not yet in place. Partially met."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Applying migrations to production requires explicit human approval (CLAUDE.md)."
+        "Production-ledger environment and secrets; human approval to apply pending migrations."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -34429,19 +34832,18 @@
       ],
       "auditConfidence": "high",
       "fixedSinceAudit": [
-        "Parity report now exists: pnpm db:pending (commit 77a03f77, scripts/list-pending-migrations.mjs).",
-        "Full replay plus all golden scenarios run in CI from nothing (commit 3fee6b25, scripts/books-acceptance/ci.cjs)."
+        "Oct 17 review: the CI parity job would have failed every push. - fixed: it reports pending migrations and fails only on real drift (ledger-only or renamed versions)"
       ],
       "plain": {
-        "title": "Production database matches the code",
-        "description": "`pnpm db:pending` lists exactly what production still needs \u2014 191 changes today, about 54 of them for production builders \u2014 and Books rehearses applying them on a copy first. The automatic match check isn't in CI yet, and feature switches can still be turned on before their database changes exist."
+        "title": "Database and deployment match check",
+        "description": "A check on trusted branches compares the repository's migrations with the production ledger and fails only on real drift, and turned-on features fail loudly if their database changes are missing. It needs its GitHub secrets set up, and about 191 pending migrations still await your approval."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "Nothing built for production builders is live until these changes are applied; this gates the first builder.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
-      "remainingEffort": "M"
+      "remainingEffort": "S"
     },
     {
       "id": "EP14-09",
@@ -34464,17 +34866,17 @@
         "EP14-08",
         "EP07-17"
       ],
-      "status": "partial",
-      "implementationNotes": "Books wrote the deploy procedure this needs and produced the exact migration list. A production release still needs its own record: which feature switches turn on, whether background workers are paused, how to roll back, and the owner's approval after QA.",
+      "status": "implemented",
+      "implementationNotes": "docs/reference/production-activation.md lists the pending migrations EP07 to EP14 in order with lock and index risk, the flags, worker drain, monitoring and rollback. It was rehearsed on the acceptance stack with the golden scenarios. Applying anything to production needs the human's approval.",
       "remainingWork": [
-        "Per-release activation manifest for the production workstreams (ordered migrations from db:pending, lock/index risk, ARC_* flags, worker drain, monitoring, rollback).",
-        "Rehearse on the acceptance stack with production golden scenarios, then the QA org.",
-        "Human approval and production activation."
+        "Human approval of the migrations and activation.",
+        "Rehearse the activation in the QA org."
       ],
       "sources": [
         "docs/books-operations.md",
         "scripts/list-pending-migrations.mjs",
-        "scripts/books-acceptance/upgrade.cjs"
+        "scripts/books-acceptance/upgrade.cjs",
+        "docs/reference/production-activation.md"
       ],
       "testFiles": [],
       "executionLogEntries": [],
@@ -34508,7 +34910,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34528,11 +34930,32 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The ordered activation manifest exists and was rehearsed on the acceptance stack; approval and production activation are the human's. Partially met."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Production migration/activation requires explicit human approval."
+        "Human approval and production activation; QA org rehearsal."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -34543,13 +34966,13 @@
       "auditConfidence": "medium",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Approved rollout plan",
-        "description": "There is now a written deploy procedure and an exact list of database changes. Production releases still need a signed-off plan that names which features switch on, how background work is paused, and how to roll back."
+        "title": "Go-live activation plan",
+        "description": "An ordered plan lists every pending database change from the production work with its lock and index risk, the feature switches, worker drain, monitoring and rollback, rehearsed on the test copy. It waits for your approval and the real activation."
       },
       "proposedScope": {
         "scope": "first",
-        "reason": "The first builder's go-live is itself this activation.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S"
     },
@@ -34571,13 +34994,15 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "pending",
-      "implementationNotes": "Unchanged. Internal evidence (role refusals, private storage, secrets never archived) is growing and would feed a review scope.",
+      "status": "partial",
+      "implementationNotes": "docs/reference/security-review-scope.md holds the review scope, the threat model (tenant isolation, portals and tokens, storage, payments, imports) and an internal pre-review checklist that links SEC-01, ROLE-01 and the member write fences. No independent reviewer has been engaged.",
       "remainingWork": [
-        "Write review scope and threat model (tenant isolation, portals/tokens, storage, payments, imports).",
-        "Internal pre-review; engage independent reviewer; remediate; link report."
+        "Engage an independent reviewer (owner).",
+        "Remediate findings and link the report."
       ],
-      "sources": [],
+      "sources": [
+        "docs/reference/security-review-scope.md"
+      ],
       "testFiles": [],
       "executionLogEntries": [],
       "evidence": [
@@ -34610,7 +35035,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34630,11 +35055,32 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The review scope, threat model and internal pre-review checklist are written; the independent review itself has not happened. Partially met."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "External reviewer engagement."
+        "Independent reviewer engagement (owner)."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P1",
@@ -34645,13 +35091,13 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Outside security review",
-        "description": "No independent security firm has reviewed Arc yet. Internal checks \u2014 who can see what, private file storage, secrets never exported \u2014 are growing and would form the review's starting scope."
+        "title": "Independent security review",
+        "description": "The scope, threat model and an internal checklist for an outside security reviewer are written. The owner still has to engage the reviewer, and any findings then have to be fixed."
       },
       "proposedScope": {
         "scope": "client",
-        "reason": "Requires an outside reviewer; many first builders won't demand one, enterprise buyers will.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S"
     },
@@ -34673,13 +35119,14 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "pending",
-      "implementationNotes": "Unchanged. Proposed first-builder targets are in notes for the owner to adopt or amend through scope control.",
+      "status": "partial",
+      "implementationNotes": "docs/reference/production-approval-package.md holds the first-builder sizing, the operating assumptions and an integration inventory form for the launch owner. The national loadTargets are unchanged.",
       "remainingWork": [
-        "Prepare approval package with first-builder sizing (notes), operating assumptions and integration inventory form.",
-        "Named owner approves or amends via scope control."
+        "The named launch owner approves or amends the package through scope control."
       ],
-      "sources": [],
+      "sources": [
+        "docs/reference/production-approval-package.md"
+      ],
       "testFiles": [],
       "executionLogEntries": [],
       "evidence": [
@@ -34712,7 +35159,7 @@
           "kind": "source_review",
           "tier": "source_review",
           "result": "incomplete",
-          "freshness": "current",
+          "freshness": "superseded",
           "runIds": [
             "AUDIT-20261009-EP12-EP14"
           ],
@@ -34732,11 +35179,32 @@
             }
           ],
           "scope": "Static review of the working tree; proves code presence and shape, not runtime, integration, QA or release behavior."
+        },
+        {
+          "kind": "source_review",
+          "tier": "source_review",
+          "result": "incomplete",
+          "freshness": "current",
+          "runIds": [
+            "REVIEW-EP14"
+          ],
+          "date": "2026-10-17",
+          "head": "EP14 working tree on e00843f6",
+          "confidence": "medium",
+          "criteriaCovered": [],
+          "criteriaVerdicts": [
+            {
+              "index": 0,
+              "verdict": "partial",
+              "evidence": "The approval package with sizing, operating assumptions and the integration inventory form is prepared; the owner's approval is outstanding. Partially met."
+            }
+          ],
+          "scope": "Source review of the EP14 working tree on e00843f6; proves code presence and shape, with runtime behaviour from the named acceptance run."
         }
       ],
       "releaseState": "unverified",
       "blockers": [
-        "Named customer or launch owner."
+        "Named launch owner approval."
       ],
       "owner": "main production thread; reuse shared-domain work rather than duplicate it",
       "priority": "P0",
@@ -34747,13 +35215,13 @@
       "auditConfidence": "high",
       "fixedSinceAudit": [],
       "plain": {
-        "title": "Customer signs off on sizing",
-        "description": "The size targets Arc is tested against are national-builder numbers nobody has agreed to. The first production builder needs to confirm its real size, how it operates and which other systems it uses."
+        "title": "Launch sizing and operating assumptions",
+        "description": "The approval package is ready: first-builder size, operating assumptions and a form to list the systems the builder uses. The launch owner has to approve or change it."
       },
       "proposedScope": {
         "scope": "client",
-        "reason": "Only a real customer or launch owner can approve it.",
-        "status": "proposed_awaiting_user_approval"
+        "reason": "The owner approved on 2026-10-17 that EP14 covers everything code can prove, with the approval and security packages prepared; the release decision is the owner's.",
+        "status": "approved_by_owner"
       },
       "remainingEffort": "S"
     },
@@ -34869,7 +35337,7 @@
       },
       "proposedScope": {
         "scope": "client",
-        "reason": "A release decision recorded with the first customer; no engineering beyond the dependencies.",
+        "reason": "The release decision is the owner's; no engineering beyond the dependencies.",
         "status": "proposed_awaiting_user_approval"
       },
       "remainingEffort": "none"
@@ -43265,8 +43733,8 @@
         "covers": [
           "EP14-01"
         ],
-        "existingSupport": "HOME-01 (land allocation\u2192sale at cost\u2192deposit\u2192warranty reserve\u2192reversed closing), tests/support/starts-harness.js, agreement/esign PGlite suites",
-        "result": "core passing; re-run pending after fixes"
+        "existingSupport": "scripts/books-acceptance/scenarios/lot-01.cjs and the lot-01-* modules (96 checks; 7 BLOCKED on real storage or the e-signature envelope)",
+        "result": "passed"
       },
       {
         "id": "SALE-01",
@@ -43314,30 +43782,33 @@
       {
         "id": "SPEC-01",
         "story": "Spec home: started without a buyer, ages in inventory (and is written down if needed), converts to a buyer without rewriting released costs or plan version, final margin ties.",
-        "harness": "partial",
+        "harness": "exists",
         "covers": [
           "EP14-02"
         ],
-        "existingSupport": "HOME-01, LOSS-01 (home write-down), MIG-01 spec openings, spec-inventory-aging tests"
+        "existingSupport": "scripts/books-acceptance/scenarios/spec-01.cjs (5 subcases)",
+        "result": "passed"
       },
       {
         "id": "CANCEL-01",
-        "story": "Cancellation before and after release: deposit refunded or forfeited, reservation released, trades and POs cancelled, lot back to inventory; an interrupted cancel retried yields one outcome.",
-        "harness": "none",
+        "story": "Cancellation before and after release: deposit refunded or forfeited, reservation released, starts and purchasing told and the previous buyer's picks flagged for Keep or Cancel, lot back to inventory; an interrupted cancel retried yields one outcome.",
+        "harness": "exists",
         "covers": [
           "EP14-03",
           "EP13-07"
         ],
-        "existingSupport": "RACE-01 pattern and HOME-01 reversal only"
+        "existingSupport": "scripts/books-acceptance/scenarios/cancel-01.cjs (7 subcases)",
+        "result": "passed"
       },
       {
         "id": "DELAY-01",
         "story": "A permit or supply delay shifts dependent schedules, start capacity and promised-close risk; an approved schedule change updates obligations consistently.",
-        "harness": "none",
+        "harness": "exists",
         "covers": [
           "EP14-04"
         ],
-        "existingSupport": "pure even-flow/schedule tests only"
+        "existingSupport": "scripts/books-acceptance/scenarios/delay-01.cjs (8 subcases)",
+        "result": "passed"
       },
       {
         "id": "WARR-01",
@@ -43357,6 +43828,16 @@
         "result": "passed"
       },
       {
+        "id": "WARR-02",
+        "story": "Imported and newly closed homes go through warranty request, dispatch, visit, a refused self-verification, manager verification, trade backcharge, dispute and settlement for less; coverage, reserve and home controls tie.",
+        "harness": "exists",
+        "covers": [
+          "EP14-05"
+        ],
+        "existingSupport": "scripts/books-acceptance/scenarios/warr-02.cjs (4 subcases)",
+        "result": "passed"
+      },
+      {
         "id": "CUTOVER-01",
         "story": "A production builder comes over: communities, lots, plans, open homes with buyers, agreements, budgets and POs, deposits, installed homes and Books openings; counts reconcile to source and a crash mid-file resumes.",
         "harness": "exists",
@@ -43373,12 +43854,13 @@
       {
         "id": "ROLE-01",
         "story": "Who can do what across production desks: sales consultant, purchasing, starts manager, superintendent, warranty tech, division-scoped manager and another org's member try every production path; every refusal is server-side.",
-        "harness": "partial",
+        "harness": "exists",
         "covers": [
           "EP14-06",
           "EP14-07"
         ],
-        "existingSupport": "AUTH-01 pattern, app-sweep (owner only), authorization suites"
+        "existingSupport": "scripts/books-acceptance/scenarios/role-01.cjs (5 subcases); app sweep as 8 roles",
+        "result": "passed"
       },
       {
         "id": "RACE-02",

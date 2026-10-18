@@ -8,7 +8,8 @@ import { approveCommitmentChangeOrder, rejectVarianceOrder } from "@/lib/service
 import { approvePoCompletion, rejectPoCompletion, verifyPoCompletion } from "@/lib/services/po-completions"
 import { dismissPoException, generatePurchaseOrders, resolvePoException } from "@/lib/services/po-generation"
 import { createPriceAgreement, getAgreementImpact, repriceAgreement, setAgreementEnd, voidPriceAgreement } from "@/lib/services/price-book"
-import { poExceptionResolutionSchema, poGenerationInputSchema } from "@/lib/validation/po-generation"
+import { poExceptionResolutionSchema, poGenerationInputSchema, saleCancellationPickResolutionSchema } from "@/lib/validation/po-generation"
+import { resolveSaleCancellationPick } from "@/lib/services/sale-cancellation-picks"
 import { agreementEndSchema, agreementVoidSchema, priceAgreementInputSchema, repriceAgreementSchema } from "@/lib/validation/price-book"
 import { getPoExceptionCandidates, searchPurchasingEntities } from "@/lib/services/purchasing-workspace"
 
@@ -106,4 +107,8 @@ export async function rejectPoCompletionAction(completionId: string, reason: str
 
 export async function approvePoCompletionAction(completionId: string, evidence?: { inspectionId?: string | null; inspectionWaiverReason?: string | null }) {
   return await run(() => approvePoCompletion(z.string().uuid().parse(completionId), undefined, evidence))
+}
+
+export async function resolveSaleCancellationPickAction(input: unknown, projectId: string) {
+  return await run(() => resolveSaleCancellationPick(saleCancellationPickResolutionSchema.parse(input)), z.string().uuid().parse(projectId))
 }

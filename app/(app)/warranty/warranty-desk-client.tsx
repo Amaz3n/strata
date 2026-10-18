@@ -244,7 +244,7 @@ export function WarrantyDeskClient({
             <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); applyQueueFilters(filter, slaFilter) }}>
               <Input aria-label="Search warranty requests" maxLength={200} className="w-72" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search home, community, or request" />
               <Select disabled={pending} value={slaFilter} onValueChange={(value) => { setSlaFilter(value); applyQueueFilters(filter, value) }}>
-                <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Response time" className="w-56"><SelectValue /></SelectTrigger>
                 <SelectContent>{QUEUE_FILTERS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
               </Select>
               <Button type="submit" size="sm" variant="outline" disabled={pending}>Search</Button>
@@ -598,7 +598,7 @@ export function WarrantyDeskClient({
                   <div className="space-y-3 border border-border p-3">
                     <p className="text-xs text-muted-foreground">The first-response clock stops when the homeowner is actually contacted — not when a truck is dispatched.</p>
                     <Select value={acknowledgeChannel} onValueChange={setAcknowledgeChannel}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger aria-label="How the homeowner was contacted"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="phone">Phone call</SelectItem>
                         <SelectItem value="email">Email</SelectItem>
@@ -606,7 +606,7 @@ export function WarrantyDeskClient({
                         <SelectItem value="in_person">In person</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Textarea value={acknowledgeNote} onChange={(event) => setAcknowledgeNote(event.target.value)} placeholder="What the homeowner was told" rows={2} />
+                    <Textarea aria-label="What the homeowner was told" value={acknowledgeNote} onChange={(event) => setAcknowledgeNote(event.target.value)} placeholder="What the homeowner was told" rows={2} />
                     <Button disabled={pending} onClick={() => startTransition(async () => {
                       const result = await acknowledgeWarrantyRequestAction({ request_id: selected.id, channel: acknowledgeChannel, note: acknowledgeNote.trim() || null })
                       if (!result.success) { toast.error(result.error); return }
@@ -633,7 +633,7 @@ export function WarrantyDeskClient({
                   </p>
                   <div className="grid grid-cols-2 gap-2">
                     <Select value={reassignUserId} onValueChange={setReassignUserId}>
-                      <SelectTrigger><SelectValue placeholder="Reassign to technician" /></SelectTrigger>
+                      <SelectTrigger aria-label="Reassign to technician"><SelectValue placeholder="Reassign to technician" /></SelectTrigger>
                       <SelectContent>{technicians.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
                     </Select>
                     <Button variant="outline" disabled={pending || !reassignUserId || reassignUserId === selected.assigned_user_id || (selectedRouting?.source === "rule" && reassignReason.trim().length < 3)} onClick={() => startTransition(async () => {
@@ -655,7 +655,7 @@ export function WarrantyDeskClient({
                 <div className="space-y-3 border border-border p-3">
                   <div className="grid grid-cols-2 gap-2">
                     <Select value={assigneeKind} onValueChange={(value) => { setAssigneeKind(value === "trade" ? "trade" : "tech"); setAssigneeId(""); setAssigneeCompany(null) }}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger aria-label="Who makes the visit"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="tech">In-house tech</SelectItem>
                         <SelectItem value="trade">Trade</SelectItem>
@@ -663,7 +663,7 @@ export function WarrantyDeskClient({
                     </Select>
                     {assigneeKind === "tech" ? (
                       <Select value={assigneeId} onValueChange={setAssigneeId}>
-                        <SelectTrigger><SelectValue placeholder="Choose assignee" /></SelectTrigger>
+                        <SelectTrigger aria-label="Technician"><SelectValue placeholder="Choose assignee" /></SelectTrigger>
                         <SelectContent>{technicians.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
                       </Select>
                     ) : (

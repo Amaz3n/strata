@@ -86,8 +86,12 @@ async function productionBuilder(kit, { name = "Production builder", password = 
       ids.vendorIds[trade.vendor] = randomUUID()
       statements.push(`insert into public.companies(id,org_id,name) values(${q(ids.vendorIds[trade.vendor])},${q(org.orgId)},${q(trade.vendor)});`)
     }
-    const items = [["Permit release", -35, 1], ["Foundation", 0, 14], ["Framing", 14, 21], ["Dry-in", 35, 10], ["MEP rough", 45, 18], ["Drywall", 63, 14], ["Interior finishes", 77, 28], ["Punch and close", 105, 14]]
-      .map(([name, start_offset_days, duration_days]) => ({ name, start_offset_days, duration_days }))
+    // The build's task logic: the foundation waits 35 days behind the permit release, each later phase
+    // starts the day after the one before it finishes, and the trade work carries the cost code its purchase orders are bought under.
+    const items = [["Permit release", -35, 1], ["Foundation", 0, 14, "03-300", "permit-release", 35], ["Framing", 14, 21, "06-100", "foundation"], ["Dry-in", 35, 10, null, "framing"],
+      ["MEP rough", 45, 18, "22-000", "dry-in"], ["Drywall", 63, 14, null, "mep-rough"], ["Interior finishes", 77, 28, null, "drywall"], ["Punch and close", 105, 14, null, "interior-finishes"]]
+      .map(([name, start_offset_days, duration_days, code, after, lag = 1]) => ({ key: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, start_offset_days, duration_days,
+        ...(code ? { cost_code_id: ids.costCodeIds[code] } : {}), ...(after ? { depends_on: [{ key: after, type: "FS", lag_days: lag }] } : {}) }))
     statements.push(`insert into public.schedule_templates(id,org_id,name,property_type,items,created_by) values(${q(ids.scheduleTemplateId)},${q(org.orgId)},'120-day production build','production',${q(JSON.stringify(items))}::jsonb,${q(org.owner.userId)});`, "commit;")
     kit.sql(statements.join("\n"))
     Object.assign(org, ids)

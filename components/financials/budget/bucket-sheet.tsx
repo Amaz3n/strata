@@ -540,7 +540,7 @@ export function BudgetBucketSheet({
                     setCommitmentType(value as typeof commitmentType)
                   }
                 >
-                  <SelectTrigger size="sm">
+                  <SelectTrigger size="sm" aria-label="Commitment type">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -553,7 +553,7 @@ export function BudgetBucketSheet({
                 </Select>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="icon" className="h-8 w-8">
+                    <Button variant="outline" size="icon" className="h-8 w-8" aria-label="Commitment actions">
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -644,7 +644,8 @@ export function BudgetBucketSheet({
                                   <Button
                                     variant="ghost"
                                     size="icon"
-                                    className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+                                    className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                                    aria-label={`Actions for ${c.title}`}
                                   >
                                     <MoreHorizontal className="h-3.5 w-3.5" />
                                   </Button>

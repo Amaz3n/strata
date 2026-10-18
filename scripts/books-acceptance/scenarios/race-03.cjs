@@ -607,4 +607,6 @@ module.exports = {
     "retry-limit-parks-and-recovers": retryLimitParksAndRecovers,
     "injected-failures-sale-to-agreement": injectedFailuresSaleToAgreement,
   },
+  // The fault, lost-reply and outcome harness, reused by CANCEL-01's interrupted cancellations.
+  helpers: { armFault, withLostReply, outcome, clean },
 }

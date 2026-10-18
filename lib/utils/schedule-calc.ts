@@ -237,3 +237,49 @@ function getDuration(item?: ScheduleItem): number {
   if (!start || !end) return 1
   return Math.max(1, daysBetween(start, end))
 }
+
+const DEPENDENCY_TYPES = new Set(["FS", "SS", "FF", "SF"])
+
+export interface TemplateDependencyEdge {
+  item_id: string
+  depends_on_item_id: string
+  dependency_type: "FS" | "SS" | "FF" | "SF"
+  lag_days: number
+}
+
+/**
+ * The links a schedule template declares between its tasks, by stable template
+ * key (`depends_on: [{ key, type, lag_days }]`), resolved onto the items one
+ * home was given. `placed` is each template task's key and the item built for
+ * it, in template order. A link to a key the template does not have, to a key
+ * two tasks share, a task depending on itself, or a loop is a template defect:
+ * it is refused rather than half-applied, because a release that silently drops
+ * a link schedules the house as if the work were independent.
+ */
+export function resolveTemplateDependencies(
+  placed: Array<{ key: string; itemId: string; dependsOn: unknown }>,
+): TemplateDependencyEdge[] {
+  const idsByKey = new Map<string, string[]>()
+  for (const entry of placed) idsByKey.set(entry.key, [...(idsByKey.get(entry.key) ?? []), entry.itemId])
+  const edges: TemplateDependencyEdge[] = []
+  for (const entry of placed) {
+    if (entry.dependsOn === undefined || entry.dependsOn === null) continue
+    if (!Array.isArray(entry.dependsOn)) throw new Error(`The schedule template's "${entry.key}" task lists its predecessors in an unreadable form`)
+    for (const link of entry.dependsOn) {
+      const record = typeof link === "object" && link !== null ? link as Record<string, unknown> : {}
+      const key = typeof link === "string" ? link : record.key
+      if (typeof key !== "string" || !key) throw new Error(`The schedule template's "${entry.key}" task has a predecessor without a key`)
+      const targets = idsByKey.get(key) ?? []
+      if (targets.length === 0) throw new Error(`The schedule template's "${entry.key}" task depends on "${key}", which the template does not have`)
+      if (targets.length > 1) throw new Error(`The schedule template's "${entry.key}" task depends on "${key}", which more than one task uses as its key`)
+      const type = record.type ?? "FS"
+      if (typeof type !== "string" || !DEPENDENCY_TYPES.has(type)) throw new Error(`The schedule template's "${entry.key}" link to "${key}" has an unknown type`)
+      const lag = record.lag_days ?? 0
+      if (typeof lag !== "number" || !Number.isInteger(lag) || Math.abs(lag) > 365) throw new Error(`The schedule template's "${entry.key}" link to "${key}" has an invalid lag`)
+      if (targets[0] === entry.itemId) throw new Error(`The schedule template's "${entry.key}" task depends on itself`)
+      if (wouldCreateDependencyCycle(edges, targets[0], entry.itemId)) throw new Error(`The schedule template's links loop through "${entry.key}"`)
+      edges.push({ item_id: entry.itemId, depends_on_item_id: targets[0], dependency_type: type as TemplateDependencyEdge["dependency_type"], lag_days: lag })
+    }
+  }
+  return edges
+}

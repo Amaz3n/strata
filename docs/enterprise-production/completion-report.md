@@ -8,12 +8,12 @@ Deliver and accept every mandatory item in docs/enterprise-production/completion
 
 | Measure | Current result |
 | --- | --- |
-| Implemented | 81.3% — a documented lower bound, not an ETA |
-| Fully verified | 74% |
+| Implemented | 87.9% — a documented lower bound, not an ETA |
+| Fully verified | 78.2% |
 | Release ready | 0% |
-| Code implemented | 9 items |
-| Partially implemented | 14 items |
-| Known pending tasks | 10 items |
+| Code implemented | 12 items |
+| Partially implemented | 11 items |
+| Known pending tasks | 4 items |
 | Existing capability not yet qualified | 0 items |
 | Isolated automated evidence | 69 items; this does not imply full workflow verification |
 
@@ -241,17 +241,17 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 
 | ID | Outcome | Status | Next concrete step |
 | --- | --- | --- | --- |
-| EP14-01 | Presold lifecycle acceptance | partial | Re-run LOT-01 on the acceptance stack (including --include-pending subcases) now that D1-D7 and D9-D15 are fixed, and record the result. |
-| EP14-02 | Spec lifecycle acceptance | pending | Author SPEC-01 on the acceptance runner with released-cost/plan-version immutability and margin reconciliation; reuse HOME-01/LOSS-01 checks. |
-| EP14-03 | Cancellation lifecycle acceptance | pending | Author CANCEL-01: before and after release, deposit refund/forfeit, reservation release, trade/PO cancellation, lot back to inventory; interrupted retry yields one outcome (RACE-01 pattern). |
-| EP14-04 | Delayed-home lifecycle acceptance | pending | Author DELAY-01: permit or supply delay propagates to dependent schedules, start capacity and promised-close risk; approved changes update obligations consistently. |
-| EP14-05 | Warranty lifecycle acceptance | pending | Implement EP12-05 installed-home import. |
-| EP14-06 | Complete role and money concurrency matrix | partial | ROLE-01: AUTH-01-style scenario for production roles (sales consultant, purchasing, starts manager, superintendent, warranty tech, division-scoped manager, other org) across routes/actions/mobile. |
-| EP14-07 | Desktop and mobile visual acceptance | partial | Re-run the production sweep for every role now that D2, D12, D14 and D15 are fixed; triage the remaining error pages per role (owner 12, purchasing 9) to a cause. |
-| EP14-08 | Full schema and deployment parity | partial | Wire pnpm db:ledger:check into verify.yml on trusted branches (or fix the script header). |
-| EP14-09 | Migration and activation approval | partial | Per-release activation manifest for the production workstreams (ordered migrations from db:pending, lock/index risk, ARC_* flags, worker drain, monitoring, rollback). |
-| EP14-10 | Independent security review | pending | Write review scope and threat model (tenant isolation, portals/tokens, storage, payments, imports). |
-| EP14-11 | Operating requirements and integrations | pending | Prepare approval package with first-builder sizing (notes), operating assumptions and integration inventory form. |
+| EP14-01 | Presold lifecycle acceptance | verified | Run the storage and envelope subcases with --storage-env. |
+| EP14-02 | Spec lifecycle acceptance | verified | Apply 20261021100000_inventory_relief_counts_reversals and 20261021110000_inventory_relief_classifies_reversals (pending approval; 110000 supersedes the function in 100000). |
+| EP14-03 | Cancellation lifecycle acceptance | verified | Run CANCEL-01 in the QA org; owner review. |
+| EP14-04 | Delayed-home lifecycle acceptance | verified | Template editor: it keeps but cannot author depends_on or cost codes (UI gap). |
+| EP14-05 | Warranty lifecycle acceptance | verified | Low: an uncoded backcharge's reversal bill needs coding before approval. |
+| EP14-06 | Complete role and money concurrency matrix | verified | Apply 20261021200000_production_member_write_fences and 20261021210000_member_write_fence_narrowing (pending approval). |
+| EP14-07 | Desktop and mobile visual acceptance | implemented | Split fill and text tokens to close 12 known contrast items (dark primary and destructive, light warning and chart tints). |
+| EP14-08 | Full schema and deployment parity | implemented | Create the production-ledger environment and its secrets on GitHub (confirm branch and reviewer rules). |
+| EP14-09 | Migration and activation approval | implemented | Human approval of the migrations and activation. |
+| EP14-10 | Independent security review | partial | Engage an independent reviewer (owner). |
+| EP14-11 | Operating requirements and integrations | partial | The named launch owner approves or amends the package through scope control. |
 | EP14-12 | Operational release sign-off | pending | Complete dependencies; owner records release decision and residual backlog. |
 
 ## Scope and acceptance limits

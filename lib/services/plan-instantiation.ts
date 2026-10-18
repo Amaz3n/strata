@@ -261,7 +261,9 @@ export async function recordPlanOfferingOverride(input: unknown, orgId?: string)
     by: context.userId,
     at: new Date().toISOString(),
   };
-  const { data, error: updateError } = await context.supabase
+  // plan.release was checked above and members cannot write lots without a lot key, so the
+  // override (metadata only) is written as the service.
+  const { data, error: updateError } = await createServiceSupabaseClient()
     .from("lots")
     .update({ metadata: { ...asRecord(lot.metadata), offering_override: override } })
     .eq("org_id", context.orgId)

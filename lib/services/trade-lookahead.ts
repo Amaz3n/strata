@@ -5,6 +5,7 @@ import { z } from "zod"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { schemaFlagEnabled } from "@/lib/services/schema-flags"
 import { authorizeMany, getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { deliverTradeNotice, resolveTradePortalLink, type TradeNoticeDraft } from "@/lib/services/trade-notices"
 import { readAllRowsById } from "@/lib/land/paging"
@@ -210,7 +211,7 @@ export interface TradeLookaheadSummary {
 /** Original read owner; summaries avoid serializing every task into the desk. */
 export async function getTradeLookaheadWorkspace(input: unknown, orgId?: string) {
   const parsed = tradeLookaheadWorkspaceSchema.parse(input)
-  if (process.env.ARC_TRADE_DATABASE_WORKSPACE_ENABLED === "true") {
+  if (await schemaFlagEnabled("ARC_TRADE_DATABASE_WORKSPACE_ENABLED")) {
     const context = await requireOrgContext(orgId)
     await requirePermission("start.read", context)
     const { data, error } = await context.supabase.rpc("read_trade_lookahead_workspace", {

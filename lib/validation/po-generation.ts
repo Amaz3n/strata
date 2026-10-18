@@ -27,3 +27,11 @@ export const poExceptionResolutionSchema = z.discriminatedUnion("kind", [
 })
 
 export type PoExceptionResolution = z.infer<typeof poExceptionResolutionSchema>
+
+/** Purchasing's decision on the previous buyer's picks still on a purchase order after a released sale was cancelled. */
+export const saleCancellationPickResolutionSchema = z.object({
+  commitment_id: z.string().uuid(),
+  decision: z.enum(["keep", "cancel"]),
+  note: z.string().trim().max(1000).optional(),
+})
+export type SaleCancellationPickResolution = z.infer<typeof saleCancellationPickResolutionSchema>

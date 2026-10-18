@@ -73,7 +73,7 @@ export function NavMain({ items }: { items: NavGroup[] }) {
           className={groupIndex > 0 ? "pt-1" : undefined}
         >
           {group.label ? (
-            <SidebarGroupLabel className="px-2 text-[11px] tracking-[0.08em] uppercase text-sidebar-foreground/45">
+            <SidebarGroupLabel className="px-2 text-[11px] tracking-[0.08em] uppercase text-sidebar-foreground/60">
               {group.label}
             </SidebarGroupLabel>
           ) : null}

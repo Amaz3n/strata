@@ -49,7 +49,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { ToastAction } from "@/components/ui/toast";
 import { ComplianceAlert } from "@/components/directory/compliance-alert";
 import { AddToDirectorySheet } from "@/components/directory/add-to-directory-sheet";
 import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog";
@@ -481,14 +480,7 @@ export function DirectoryClient({
         toast({
           title: `${target.kind === "company" ? "Company" : "Contact"} archived`,
           description: target.name,
-          action: (
-            <ToastAction
-              altText={`Restore ${target.name}`}
-              onClick={() => void restoreArchived(target)}
-            >
-              Undo
-            </ToastAction>
-          ),
+          action: { label: "Undo", onClick: () => void restoreArchived(target) },
         });
       } catch (error) {
         toast({ title: "Unable to archive", description: (error as Error).message });

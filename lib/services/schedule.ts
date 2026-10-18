@@ -35,7 +35,7 @@ import {
   requirePermission,
   requireProjectPermission,
 } from "@/lib/services/permissions";
-import { planScheduleMove, wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc";
+import { planScheduleMove, resolveTemplateDependencies, wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc";
 import { readAllRows } from "@/lib/land/paging";
 import { enqueueOutboxJob } from "@/lib/services/outbox";
 import { normalizeScheduleTemplateItems, selectionTaskKey } from "@/lib/selections/cutoff-math";
@@ -1819,6 +1819,17 @@ export async function listTemplates(
   }));
 }
 
+/**
+ * A template's items with their stable keys, refused when a task's predecessors
+ * name a key the template does not have, a key two tasks share, or a loop — at
+ * save, rather than when a release tries to schedule a house from it.
+ */
+function validatedTemplateItems(items: unknown[]) {
+  const normalized = normalizeScheduleTemplateItems(items);
+  resolveTemplateDependencies(normalized.map((item) => ({ key: item.key, itemId: item.key, dependsOn: Reflect.get(item, "depends_on") })));
+  return normalized;
+}
+
 export async function createTemplate(
   input: ScheduleTemplateInput,
   orgId?: string,
@@ -1842,7 +1853,7 @@ export async function createTemplate(
       description: input.description || null,
       project_type: input.project_type || null,
       property_type: input.property_type || null,
-      items: normalizeScheduleTemplateItems(input.items ?? []),
+      items: validatedTemplateItems(input.items ?? []),
       is_public: input.is_public ?? false,
       created_by: userId,
     })
@@ -1893,7 +1904,7 @@ export async function updateTemplate(
       description: parsed.description ?? null,
       project_type: parsed.project_type ?? null,
       property_type: parsed.property_type ?? null,
-      items: normalizeScheduleTemplateItems(parsed.items),
+      items: validatedTemplateItems(parsed.items),
       is_public: parsed.is_public,
     })
     .eq("org_id", resolvedOrgId)
@@ -1956,7 +1967,12 @@ export type ScheduleTemplateSnapshotItem = Partial<ScheduleItem> & {
   key?: string;
   start_offset_days?: number;
   duration_days?: number;
+  /** Predecessors by template key: `[{ key, type: "FS" | "SS" | "FF" | "SF", lag_days }]`. */
+  depends_on?: unknown;
 };
+
+const templateItemKey = (item: ScheduleTemplateSnapshotItem) =>
+  item.key ? selectionTaskKey(item.key) : selectionTaskKey(item.name ?? "Untitled");
 
 function addCalendarDays(isoDate: string, days: number): string {
   const date = new Date(`${isoDate}T00:00:00.000Z`);
@@ -1995,6 +2011,15 @@ export async function applyScheduleTemplateSnapshot(
       )
     : [];
   const createdItems: ScheduleItem[] = [];
+  const { supabase: writer, orgId: resolvedOrgId } = await requireOrgContext(orgId);
+  // A template task names the cost code its work is bought and advised under; one from
+  // another organisation, or deleted since, is a template defect the release refuses.
+  const costCodeIds = Array.from(new Set(templateItems.flatMap((item) => typeof item.cost_code_id === "string" && item.cost_code_id ? [item.cost_code_id] : [])));
+  if (costCodeIds.length) {
+    const { data: codes, error: codeError } = await writer.from("cost_codes").select("id").eq("org_id", resolvedOrgId).in("id", costCodeIds);
+    if (codeError) throw new Error(`Failed to read the schedule template's cost codes: ${codeError.message}`);
+    if ((codes ?? []).length !== costCodeIds.length) throw new Error("A schedule template task names a cost code this organization does not have");
+  }
   // A release builds each template item once. Item n carries the key
   // `schedule:n`, unique per home, so replaying the step (after a crash, a
   // cancel or a lost lease) finds the items already there and builds only the
@@ -2002,10 +2027,9 @@ export async function applyScheduleTemplateSnapshot(
   const placed = new Map<string, ScheduleItem>();
   if (releaseKeyed) {
     if (!releaseVersionId) throw new Error("A release schedule is built from a plan version");
-    const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId);
     const existing = await readAllRows(
       (from, to) =>
-        supabase
+        writer
           .from("schedule_items")
           .select(RELEASE_SCHEDULE_ITEM_SELECT)
           .eq("org_id", resolvedOrgId)
@@ -2065,9 +2089,10 @@ export async function applyScheduleTemplateSnapshot(
           constraint_type: "asap",
           is_critical_path: false,
           float_days: 0,
+          cost_code_id: typeof item.cost_code_id === "string" && item.cost_code_id ? item.cost_code_id : undefined,
           metadata: {
             ...(item.metadata ?? {}),
-            template_item_key: item.key ? selectionTaskKey(item.key) : selectionTaskKey(item.name ?? "Untitled"),
+            template_item_key: templateItemKey(item),
             template_start_offset_days: offset,
             template_duration_days: duration,
             ...(releaseKeyed ? { release_key: releaseKey, release_version: releaseVersionId } : {}),
@@ -2078,6 +2103,30 @@ export async function applyScheduleTemplateSnapshot(
       authorizationPermission,
     );
     createdItems.push(created);
+  }
+
+  // The template's task logic, written once the items exist. The pair is unique, so a
+  // replayed release (after a crash or a lost lease) adds only the links it is missing.
+  const links = resolveTemplateDependencies(templateItems.map((item, index) => ({
+    key: templateItemKey(item), itemId: createdItems[index].id, dependsOn: item.depends_on,
+  })));
+  if (links.length) {
+    // Count the tasks back before linking them: a task that vanished after it was
+    // written is an incomplete schedule, not a link to refuse.
+    const { data: present, error: presentError } = await writer
+      .from("schedule_items")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .in("id", createdItems.map((item) => item.id));
+    if (presentError) throw new Error(`Failed to count the schedule's tasks: ${presentError.message}`);
+    if ((present ?? []).length !== createdItems.length) {
+      throw new Error(`Schedule receipt is incomplete: ${(present ?? []).length} of ${createdItems.length} built`);
+    }
+    const { error: linkError } = await writer.from("schedule_dependencies").upsert(
+      links.map((link) => ({ org_id: resolvedOrgId, project_id: projectId, ...link })),
+      { onConflict: "item_id,depends_on_item_id", ignoreDuplicates: true },
+    );
+    if (linkError) throw new Error(`Failed to link the schedule's tasks: ${linkError.message}`);
   }
 
   return createdItems;

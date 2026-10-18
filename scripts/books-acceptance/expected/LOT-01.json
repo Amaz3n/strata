@@ -3,6 +3,12 @@
   "reviewedFrom": "EP14-01 (docs/enterprise-production/completion-checklist.json), docs/production-org-playbook.md (who advances each step), docs/books-revenue-recognition.md (home closing) and the HOME-01 expectations for the books half.",
   "subcases": {
     "land-takedown": {
+      "checklist": [
+        "EP04-03",
+        "EP04-05",
+        "EP10-02",
+        "EP14-01"
+      ],
       "derivation": "Ten lots of the first tranche cost $72,000 each, $720,000, paid from the operating account. Books records the purchase first: with Books as the ledger the takedown refuses to close on its expected price. Closing the takedown makes its ten lots owned and the land manager develops them, so ten lots are developed and the ten in later phases stay controlled; the two lots given a second, unpurchased tranche stay controlled. All $720,000 sits in land inventory (1120) and none has been spent on a house.",
       "inputs": {
         "lots": 20,
@@ -23,6 +29,12 @@
       }
     },
     "reservation-and-deposit": {
+      "checklist": [
+        "EP05-01",
+        "EP05-02",
+        "EP04-06",
+        "EP14-01"
+      ],
       "derivation": "Lot 1 is held for the buyer by the sales consultant and reserved with a $20,000 earnest deposit, which creates the buyer's home (a production-posture project) and invoices the deposit. The buyer's check is received against that invoice, so $20,000 sits in customer deposits (2300) on that home. The lot is assigned. A land manager does not hold lots (sales.manage), and a second buyer cannot take the lot: its home is already the first buyer's.",
       "inputs": {
         "depositCents": 2000000
@@ -42,6 +54,13 @@
       }
     },
     "agreement-priced-and-signed": {
+      "checklist": [
+        "EP03-07",
+        "EP03-08",
+        "EP05-03",
+        "EP05-08",
+        "EP14-01"
+      ],
       "derivation": "The Mangrove sells for $385,000 in this community; lot 1 carries a $15,000 premium; the buyer takes the extended garage ($18,500, structural) and three design choices ($4,800 + $7,200 + $2,600 = $14,600). Total $385,000 + $15,000 + $18,500 + $14,600 = $433,100. The agreement is saved as a draft, then executes: the contract is active at the quoted total, the reservation converts, the lead is won and a projected closing exists for the home. A second buyer's agreement on a stale quote hash is refused.",
       "inputs": {
         "basePriceCents": 38500000,
@@ -71,6 +90,11 @@
       }
     },
     "selections-by-cutoff": {
+      "checklist": [
+        "EP06-02",
+        "EP06-03",
+        "EP14-01"
+      ],
       "derivation": "The buyer confirms kitchen, flooring and lighting at the catalog prices of the day: $4,800 + $7,200 + $2,600 = $14,600 price against $2,900 + $4,300 + $1,500 = $8,700 cost. The design coordinator moves the group's cutoff to yesterday; the group is locked, and a late change to a locked group is refused (it needs a change order).",
       "inputs": {
         "choices": [
@@ -104,6 +128,13 @@
       }
     },
     "start-gates-and-roles": {
+      "checklist": [
+        "EP06-06",
+        "EP06-08",
+        "EP07-01",
+        "EP07-03",
+        "EP14-01"
+      ],
       "derivation": "A package opened for lot 1 has the plan-pinned gate passed (the agreement pinned it), the selections gate passed (the buyer's design group is already locked) financing pending (the sold home's financed agreement holds the lender's loan approval, and nothing is attached yet) and entitlements passed (the community has no open condition); the release produces the budget and PO set, so those two wait. The starts coordinator records the county's approval of the home's building permit (its plot plan attached, the submission snapshotting the lot's plan, the issued permit and approved plans on file), so the permit and plot-plan gates clear on their own; the closing coordinator records the loan application and the loan approval with its document on the home, so the financing gate clears on its own; the price book resolves in a dry run, and the coordinator gives final approval: the package is ready. A superintendent and a sales consultant cannot release (start.release).",
       "inputs": {},
       "expected": {
@@ -139,6 +170,13 @@
       }
     },
     "release-creates-the-house": {
+      "checklist": [
+        "EP07-04",
+        "EP07-17",
+        "EP08-06",
+        "EP08-07",
+        "EP14-01"
+      ],
       "derivation": "The plan's trades at the price-book rates: sitework $34,000, foundation $58,000, framing 1,650 sf at $44 = $72,600, plumbing $41,000, electrical $46,000 = $251,600. The extended garage the agreement sold is bought at its $11,000 cost from the foundation trade, and the three confirmed design choices at cost from theirs: $2,900 + $4,300 to framing, $1,500 to electrical. By trade: sitework $34,000; foundation $58,000 + $11,000 = $69,000; framing $72,600 + $7,200 = $79,800; plumbing $41,000; electrical $46,000 + $1,500 = $47,500. Total $271,300; the budget is the same $271,300. Five trades, five orders, no open exceptions, and running the release worker again issues nothing more. The lot is started, the eight-step schedule is on the house, and the $72,000 of land has moved from land inventory to the house (1160).",
       "inputs": {
         "trades": 5
@@ -165,6 +203,11 @@
       }
     },
     "built-and-billed": {
+      "checklist": [
+        "EP08-11",
+        "EP10-02",
+        "EP14-01"
+      ],
       "derivation": "Each of the five orders is approved and its trade bills it in full, $271,300 in all. The bills are approved, so accounts payable (2000) holds $271,300, unpaid. The house holds the $72,000 land plus the $271,300 of cost in inventory under construction (1160): $343,300.",
       "inputs": {},
       "expected": {
@@ -176,6 +219,14 @@
       }
     },
     "completion-and-closing": {
+      "checklist": [
+        "EP05-08",
+        "EP05-09",
+        "EP09-05",
+        "EP10-02",
+        "EP10-04",
+        "EP14-01"
+      ],
       "derivation": "Completion moves the house's $343,300 (land $72,000 + construction $271,300) to completed homes (1170) and provides a $6,500 warranty reserve. The closing is settled at the contract price of $433,100; the buyer's $20,000 deposit is applied, leaving $413,100 due by wire. The sale relieves 1170 exactly by the cost it came from, one line per component: land and development $72,000 and construction $271,300, cost of sales $343,300; inventory and land are left at zero. Revenue is $433,100, gross margin $433,100 - $343,300 = $89,800. No deposit is left held. The four home controls tie to the ledger.",
       "inputs": {
         "priceCents": 43310000,
@@ -221,6 +272,12 @@
       }
     },
     "warranty-enrolled": {
+      "checklist": [
+        "EP05-10",
+        "EP11-01",
+        "EP11-07",
+        "EP14-01"
+      ],
       "derivation": "Closing queues the home's warranty enrollment: one coverage record from the closing, effective on the closing date, carrying the program's three terms. The $6,500 reserve provided at completion is on the books (2260) and its control ties.",
       "inputs": {
         "warrantyReserveCents": 650000
@@ -284,14 +341,42 @@
       }
     },
     "agreement-signs-through-an-envelope": {
-      "status": "NOT_IMPLEMENTED",
       "requires": "storage",
-      "reason": "The signing packet is a PDF in file storage and the invitation is an email; the stack has storage only under --storage-env. Execution runs through the same service the envelope-completion handler calls."
-    },
-    "release-copies-the-plan-set": {
-      "status": "NOT_IMPLEMENTED",
-      "requires": "storage",
-      "reason": "The release's drawings step copies the plan version's plan-set PDF onto the house, which needs file storage. Without it that one step is settled directly and every other step of the release runs for real."
+      "checklist": [
+        "EP05-03",
+        "EP14-01"
+      ],
+      "derivation": "EP05-03 on real storage (it replaces the step the core chain settles through executePurchaseAgreementFromEnvelopeExecution). Lot 1 is reserved and quoted at $433,100 as in agreement-priced-and-signed; saving the agreement renders the signing packet into the acceptance bucket and prepares one envelope: the buyer signs at sequence 1 and the builder at sequence 2, and the contract stays a draft. The builder's link is refused until the buyer has signed; after the buyer signs the contract is still a draft. When the builder signs, the envelope's execution job (process_esign_execution_side_effects, run by the outbox route) executes the agreement once: it is active at $433,100 with the executed file bound to it, the reservation converts and one projected closing exists, with one purchase_agreement_executed event. Delivering the builder's signature again returns its receipt and executes nothing more. (The release-copies-the-plan-set step this list used to hold open is release-end-to-end-copies-the-real-plan-set, which runs the release's drawings step on real storage.)",
+      "inputs": {
+        "signers": [
+          "buyer",
+          "builder"
+        ],
+        "totalCents": 43310000
+      },
+      "expected": {
+        "prepared": {
+          "documentPrepared": true,
+          "signers": [
+            "1:buyer",
+            "2:builder"
+          ],
+          "contract": "draft"
+        },
+        "builderBeforeBuyer": "refused: buyer signs first",
+        "afterBuyerSigns": "draft",
+        "executed": {
+          "status": "active",
+          "totalCents": 43310000,
+          "executedFileBound": true
+        },
+        "reservation": "converted",
+        "closings": [
+          "projected"
+        ],
+        "executedEvents": 1,
+        "secondDelivery": "quiet"
+      }
     },
     "open-wip-rejects-bad-files-before-any-home": {
       "derivation": "EP12-01 #1. Open-WIP cutover is restricted to the platform onboarding workbench, so the org owner staging it is refused. A budget file that repeats a house and cost code carries a duplicate_natural_key error on both rows (the third row is clean) and a batch with errors cannot commit. The same house/cost code in two budget files for one as-of date makes the house file fail at staging with a duplicate companion row, leaving the house batch 'failed'. A house file dated 2026-10-05 against a budget snapshot dated 2026-10-04 finds no snapshot (missing_budget_file) and cannot commit; a house file without the onboarding run of the budget snapshot likewise finds none, while the same file inside the run stages with 0 errors. Five house rows each break one required fact: missing plan code (required), unreadable stage date (invalid_date), community that does not exist (unresolved_community, which also leaves the house's budget unmatched so its total does not foot), unknown plan (unresolved_plan) and a declared total of 999 dollars against 100 dollars of budget (budget_total_mismatch): 5 error rows, commit refused. Nothing from any of these files created a project or assigned a lot.",

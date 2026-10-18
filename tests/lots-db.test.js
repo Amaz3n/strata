@@ -9,7 +9,7 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
 
-const { asRole, createDatabase, insert, rpc, seedMember } = require("./support/pglite")
+const { asRole, createDatabase, insert, rpc, seedMember, seedRole } = require("./support/pglite")
 
 async function land(t) {
   const db = await createDatabase(t)
@@ -109,7 +109,11 @@ test("a signed-in member cannot forge delivery: the date is the database's, deve
   const as = (userId, sql) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, [row.id]))
 
   await assert.rejects(as(landManager, "update lots set delivered_at = now() where id = $1"), /marking the lot developed/)
-  await assert.rejects(as(salesAgent, "update lots set status = 'developed' where id = $1"), /takes lot.write/)
+  // A sales agent holds no lot key: the member write fence leaves them no row to change.
+  assert.equal((await as(salesAgent, "update lots set status = 'developed' where id = $1")).affectedRows, 0)
+  // A community steward passes the fence and meets the guard: developed is lot.write's.
+  const { userId: steward } = await seedMember(db, { orgId, role: await seedRole(db, { permissions: ["community.write"] }) })
+  await assert.rejects(as(steward, "update lots set status = 'developed' where id = $1"), /takes lot.write/)
   await as(landManager, "update lots set status = 'developed' where id = $1")
   assert.notEqual(await deliveredAt(db, row.id), null)
 })
@@ -243,9 +247,15 @@ test("a started or closed lot moves back only for a member holding community.wri
   const closed = await lot({ status: "closed", project_id: await home() })
 
   for (const row of [started, closed]) {
-    await assert.rejects(as(field, "update lots set status = 'owned' where id = $1", [row.id]), /is a reversal/)
+    // A field member holds no lot key: the member write fence leaves them no row to move.
+    assert.equal((await as(field, "update lots set status = 'owned' where id = $1", [row.id])).affectedRows, 0)
   }
-  await assert.rejects(as(field, "update lots set project_id = null, status = 'assigned' where id = $1", [started.id]), /is a reversal/)
+  assert.equal((await as(field, "update lots set project_id = null, status = 'assigned' where id = $1", [started.id])).affectedRows, 0)
+  // A starts coordinator holds lot.write, passes the fence, and meets the reversal guard.
+  const { userId: starts } = await seedMember(db, { orgId, role: "org_starts_coordinator" })
+  for (const row of [started, closed]) {
+    await assert.rejects(as(starts, "update lots set status = 'owned' where id = $1", [row.id]), /is a reversal/)
+  }
   assert.equal((await db.query("select status from lots where id = $1", [started.id])).rows[0].status, "started")
 
   await as(ownerId, "update lots set status = 'owned' where id = $1", [started.id])
@@ -342,8 +352,14 @@ test("a home goes on or comes off a lot only for a lot.write holder, so nobody r
   const bare = await lot({ status: "owned" })
 
   // The reviewer's sequence starts by detaching the home so its premium thaws.
-  await assert.rejects(as(field, "update lots set project_id = null where id = $1", [spec.id]), /takes lot.write/)
-  await assert.rejects(as(field, "update lots set project_id = $2 where id = $1", [bare.id, await home()]), /takes lot.write/)
+  // Updates by a member without a lot key reach no row (the member write fence); an insert
+  // meets the lot guard first.
+  assert.equal((await as(field, "update lots set project_id = null where id = $1", [spec.id])).affectedRows, 0)
+  assert.equal((await as(field, "update lots set project_id = $2 where id = $1", [bare.id, await home()])).affectedRows, 0)
+  // A community steward passes the fence and meets the guard: attaching and detaching are lot.write's.
+  const { userId: steward } = await seedMember(db, { orgId, role: await seedRole(db, { permissions: ["community.write"] }) })
+  await assert.rejects(as(steward, "update lots set project_id = null where id = $1", [spec.id]), /takes lot.write/)
+  await assert.rejects(as(steward, "update lots set project_id = $2 where id = $1", [bare.id, await home()]), /takes lot.write/)
   await assert.rejects(
     as(field, "insert into lots (org_id, community_id, lot_number, status, project_id) values ($1, $2, '99', 'owned', $3)", [orgId, community.id, await home()]),
     /takes lot.write/,
@@ -357,15 +373,19 @@ test("a home goes on or comes off a lot only for a lot.write holder, so nobody r
 
 test("a member closes a lot only once its home's closing is recorded", async (t) => {
   const { db, orgId, lot, home } = await sales(t)
-  const { userId: field } = await seedMember(db, { orgId, role: "field" })
+  // closing.manage alone is no lot key: closing completion closes the lot as the service.
+  const { userId: office } = await seedMember(db, { orgId, role: "org_bookkeeper" })
+  // A starts coordinator holds lot.write without community.write, so the closing guard decides.
+  const { userId: starts } = await seedMember(db, { orgId, role: "org_starts_coordinator" })
   const homeId = await home()
   const row = await lot({ status: "started", project_id: homeId })
-  const close = () => asRole(db, { role: "authenticated", userId: field }, (tx) => tx.query("update lots set status = 'closed' where id = $1", [row.id]))
+  const close = (userId) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query("update lots set status = 'closed' where id = $1", [row.id]))
 
-  await assert.rejects(close(), /closes when its home's closing is recorded/)
+  assert.equal((await close(office)).affectedRows, 0)
+  await assert.rejects(close(starts), /closes when its home's closing is recorded/)
   await db.query("set session_replication_role = replica")
   await insert(db, "closings", { org_id: orgId, project_id: homeId, lot_id: row.id, status: "closed", scheduled_date: "2026-10-01", actual_date: "2026-10-01" })
   await db.query("set session_replication_role = origin")
-  await close()
+  await close(starts)
   assert.equal((await db.query("select status from lots where id = $1", [row.id])).rows[0].status, "closed")
 })
