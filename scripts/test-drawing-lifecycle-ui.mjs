@@ -10,8 +10,8 @@ const overrides = {
   cancelDrawingUploadAction:`async id=>{const op=window.fixtureOperations[id];op.status='cancelled';return {success:true,data:op}}`,
   createDrawingSetFromUpload:`async input=>{window.fixtureFinalizeCount=(window.fixtureFinalizeCount??0)+1;window.fixtureOperations[input.operationId].status='registered';if(window.fixtureLoseFinalize){window.fixtureLoseFinalize=false;return {success:false,error:'Lost registration response'}}return {success:true,data:{set:{id:'set'},draftRevisionId:'revision'}}}`,
 
-  getDraftRevisionStatusAction:`async()=>location.search.includes('progressive')?({...${JSON.stringify(revision)},status:'processing',updated_at:window.fixtureReady?'ready':'rendering'}):(${JSON.stringify(revision)})`,
-  getRevisionDiffAction:`async()=>{window.fixtureDiffCalls=(window.fixtureDiffCalls??0)+1;return location.search.includes('progressive')?{revision:{...${JSON.stringify(revision)},status:'processing',updated_at:window.fixtureReady?'ready':'rendering',manifest_complete:!!window.fixtureReady},updated:[],unchanged:[],added:[{sheet_id:'sheet',sheet_number:window.fixtureReady?'AI changed':'A101',sheet_title:'Plan',discipline:'A',change:'added',is_new_sheet:true,rendered:true,verificationStatus:'pending',draft:{version_id:'version'}}]}:(${JSON.stringify({revision,added:[],updated:[],unchanged:[]})})}`,
+  getDraftRevisionStatusAction:`async()=>location.search.includes('progressive')?({...${JSON.stringify(revision)},status:window.fixtureReady?'draft':'processing',updated_at:window.fixtureReady?'ready':'rendering'}):(${JSON.stringify(revision)})`,
+  getRevisionDiffAction:`async()=>{window.fixtureDiffCalls=(window.fixtureDiffCalls??0)+1;return location.search.includes('progressive')?{revision:{...${JSON.stringify(revision)},status:window.fixtureReady?'draft':'processing',updated_at:window.fixtureReady?'ready':'rendering',manifest_complete:!!window.fixtureReady},updated:[],unchanged:[],added:[{sheet_id:'sheet',sheet_number:window.fixtureReady?'AI changed':'A101',sheet_title:'Plan',discipline:'A',change:'added',is_new_sheet:true,rendered:true,verificationStatus:'pending',verification_pending:!window.fixtureReady,needs_number_review:false,draft:{version_id:'version'}}]}:(${JSON.stringify({revision,added:[],updated:[],unchanged:[]})})}`,
   listRecentlyDeletedSheetNumbersAction:'async()=>({success:true,data:[]})',
   publishRevisionAction:'async input=>{window.fixturePublishInput=input;return {success:true,data:null}}',
 
@@ -55,23 +55,23 @@ try {
   assert.deepEqual(blocked,[])
   console.info('Real revision review and deletion acknowledgement passed; zero backend requests.')
   await page.goto(origin+'/?progressive')
-  await page.getByPlaceholder('Sheet #').waitFor()
+  // Typing the number of an unverified page is the reviewer's confirmation of its identity.
+  const sheetNumber=page.getByLabel('Sheet number',{exact:true})
+  await sheetNumber.waitFor()
   const publish=page.getByRole('button',{name:'Publish 1 sheet',exact:true})
-  assert.equal(await publish.isDisabled(),true)
-  await page.getByPlaceholder('Sheet #').fill('HUMAN101')
-  const confirm=page.getByRole('checkbox',{name:'I checked this page and confirm its sheet identity'})
-  await confirm.focus();await page.keyboard.press('Space')
-  assert.equal(await publish.isDisabled(),true,'Incomplete manifest must block publication despite confirmation')
+  await sheetNumber.focus();await page.keyboard.press('ControlOrMeta+A');await page.keyboard.type('HUMAN101')
+  assert.equal(await publish.count(),0,'A package still processing must not offer publication despite confirmation')
+  await page.getByRole('button',{name:'Continue in background',exact:true}).waitFor()
   await page.evaluate(()=>{window.fixtureReady=true})
   await page.waitForFunction(()=>window.fixtureDiffCalls>=2)
-  assert.equal(await page.getByPlaceholder('Sheet #').inputValue(),'HUMAN101','Polling must preserve human edits against late AI')
+  assert.equal(await sheetNumber.inputValue(),'HUMAN101','Polling must preserve human edits against late AI')
   assert.equal(await publish.isEnabled(),true,'Human confirmation must allow publication despite pending AI')
   await publish.click()
   await page.getByText('Publication acknowledged',{exact:true}).waitFor()
   const published=await page.evaluate(()=>window.fixturePublishInput)
   assert.equal(published.sheetEdits.sheet.version_id,'version');assert.equal(published.sheetEdits.sheet.identity_reviewed,true)
   assert.equal(published.sheetEdits.sheet.sheet_number,'HUMAN101')
-  console.info('Progressive review, keyboard identity confirmation, manifest gate and preservation of edits across late AI refresh passed.')
+  console.info('Progressive review, typed identity confirmation, processing gate and preservation of edits across late AI refresh passed.')
   await page.unroute('**/*')
   const puts=[],controls=[]
   let holdPut = true, completed = false
