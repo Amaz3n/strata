@@ -36,6 +36,8 @@ function fixture(productTier = "residential") {
   return { content, calls, resolveList }
 }
 
+const workspace = page => [page.props.children].flat().find(child => child?.props?.importer)
+
 test("selected import batch starts while its list read is still pending", async () => {
   const { content, calls, resolveList } = fixture()
   const pending = content("contacts", { batch: "batch-one" })
@@ -44,15 +46,15 @@ test("selected import batch starts while its list read is still pending", async 
   assert.deepEqual(calls.find(call => call[0] === "detail"), ["detail", "batch-one", { limit: 500, page: 1, status: "all" }, { expectedImporter: "contacts" }])
   resolveList({ batches: [] })
   const result = await pending
-  assert.equal(result.props.children.props.orgId, "org-one", "organization changes reset the client import session")
-  assert.equal(result.props.children.props.detail.batch.id, "batch-one")
+  assert.equal(workspace(result).props.orgId, "org-one", "organization changes reset the client import session")
+  assert.equal(workspace(result).props.detail.batch.id, "batch-one")
 })
 test("the upload route avoids a batch detail query", async () => {
   const { content, calls, resolveList } = fixture()
   const pending = content("contacts")
   resolveList({ batches: [] })
   const result = await pending
-  assert.equal(result.props.children.props.detail, null)
+  assert.equal(workspace(result).props.detail, null)
   assert.equal(calls.some(call => call[0] === "detail"), false)
 })
 test("unknown and platform-only importers cannot start import queries", async () => {
@@ -67,7 +69,7 @@ for (const tier of ["residential", "commercial", "production"]) test(`${tier} de
   const h = fixture(tier), pending = h.content("plan_library")
   h.resolveList({ batches: [] })
   const result = await pending
-  assert.equal(result.props.children.props.importer, "plan_library")
+  assert.equal(workspace(result).props.importer, "plan_library")
   assert.ok(h.calls.some(call => call[0] === "list" && call[1].importer === "plan_library"))
 })
 
@@ -78,5 +80,5 @@ test('selected row status and both independent page numbers reach canonical serv
   assert.deepEqual(h.calls.find(call => call[0] === 'list'), ['list', { importer: 'contacts', limit: 25, page: 3 }])
   h.resolveList({ batches: [], total: 60, page: 3, limit: 25 })
   const result = await pending
-  assert.equal(result.props.children.props.batchPagination.page, 3)
+  assert.equal(workspace(result).props.batchPagination.page, 3)
 })

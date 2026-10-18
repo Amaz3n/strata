@@ -16,6 +16,7 @@ function load(path, modules) {
     if (Object.hasOwn(modules, name)) return modules[name]
     if (name === 'server-only') return {}
     if (name === '@/lib/land/paging') return require('../lib/land/paging')
+    if (['@/lib/land/lot-dimensions', '@/lib/sales/plan-offering', '@/lib/payments/concurrency'].includes(name)) return require(name.replace('@/', '../'))
     if (name === '@/lib/supabase/query-error') return { preserveQueryError: error => ({ data: null, error }) }
     if (name === '@/lib/validation/import-navigation') return require('../lib/validation/import-navigation')
     if (name === '@/components/layout/queue-pagination') return { QueuePagination: 'QueuePagination' }
@@ -24,6 +25,7 @@ function load(path, modules) {
   })
   return exports
 }
+const unreached = async () => { throw Error('Importer outside this suite was reached') }
 function harness(roleKeys = ['platform.support.read']) {
   const db = createFakeSupabase({
     permissions: ['platform.support.read', 'platform.support.write'].map(key => ({ key })),
@@ -49,12 +51,12 @@ function harness(roleKeys = ['platform.support.read']) {
     return query
   }
   stubModule('@/lib/supabase/server', { createServiceSupabaseClient: () => db })
-  stubModule('@/lib/auth/platform', { isPlatformAdminId: () => false })
+  delete require.cache[require.resolve('../lib/auth/platform')]
   delete require.cache[require.resolve('../lib/services/authorization')]
-  const authorization = require('../lib/services/authorization'), calls = []
+  const authorization = require('../lib/services/authorization'), platform = require('../lib/auth/platform'), calls = []
   const access = load('lib/services/platform-access.ts', {
     '@/lib/auth/context': { requireAuth: async () => ({ user: { id: ACTOR }, orgId: PACKAGE }) },
-    '@/lib/auth/platform': { isPlatformAdminId: () => false },
+    '@/lib/auth/platform': platform,
     '@/lib/supabase/server': { createServiceSupabaseClient: () => db },
     '@/lib/services/permissions': {
       requireAnyPermission: async (permissions, ctx) => {
@@ -76,6 +78,13 @@ function harness(roleKeys = ['platform.support.read']) {
     '@/lib/services/context': { requireOrgContext: async orgId => { calls.push(['tenantContext', orgId]); return { supabase: db, orgId: orgId ?? ORG, userId: ACTOR, productTier: 'production' } } },
     '@/lib/services/permissions': { requirePermission: async (permission, ctx) => calls.push(['tenantGate', permission, ctx.orgId]), requireAnyPermission: async (permissions, ctx) => calls.push(['tenantAny', permissions, ctx.orgId]) },
     '@/lib/services/team': { createOrgMemberInvite: async () => { calls.push('invite'); throw Error('Invite reached') } },
+    '@/lib/services/authorization': authorization,
+    '@/lib/auth/platform': platform,
+    '@/lib/services/auth-rate-limit': { enforceMutationRateLimit: async () => undefined },
+    '@/lib/services/outbox': { completeOutboxJob: async () => undefined },
+    '@/lib/services/warranty-installed-base': { commitInstalledHomes: unreached, reconcileInstalledWarrantyHomes: unreached, validateInstalledHomeRows: unreached },
+    '@/lib/services/cutover/importers': { commitCutoverRows: unreached, validateCutoverRows: unreached, isCutoverImporter: () => false, NARROW_IMPORTER_PERMISSIONS: { warranty_homes: 'warranty.manage', agreements: 'closing.manage', selections: 'design_studio.manage', inspection_history: 'inspection.write' } },
+    '@/lib/services/lot-fit': { checkLotFits: async () => { throw Error('Lot fit reached') } },
     '@/lib/services/import-definitions': definitions,
     '@/lib/services/import-parsers': parsers,
   }
@@ -170,7 +179,7 @@ test('sample reset server action denies read-only role before onboarding read, d
 test('tenant imports still require import.manage and importer capability in their own org, including platform-only WIP denial', async () => {
   const h = harness([])
   await h.imports.listImportBatches({ importer: 'price_book' }, { orgId: ORG })
-  assert.deepEqual(h.calls.filter(Array.isArray), [['tenantContext', ORG], ['tenantGate', 'import.manage', ORG], ['tenantAny', ['price_book.write', 'commitment.write'], ORG]])
+  assert.deepEqual(h.calls.filter(Array.isArray), [['tenantContext', ORG], ['tenantGate', 'import.manage', ORG], ['tenantGate', 'price_book.write', ORG]])
   await assert.rejects(h.imports.listImportBatches({ importer: 'open_wip' }, { orgId: ORG }), /restricted to the platform/)
   assert.ok(!h.calls.some(call => Array.isArray(call) && call[0] === 'platformGate'))
 })

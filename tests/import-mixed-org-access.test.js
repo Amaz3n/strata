@@ -31,7 +31,7 @@ function service(tier, permissions) {
 }
 const destinations = [
   ['plan_library', 'plan.write'], ['option_catalog', 'selections.catalog.manage'],
-  ['price_book', 'price_book.write'], ['price_book', 'commitment.write'],
+  ['price_book', 'price_book.write'],
   ['communities_lots', 'community.write'], ['communities_lots', 'lot.write'], ['team', 'members.manage'],
 ]
 for (const tier of ['residential', 'commercial', 'production']) for (const [importer, permission] of destinations) test(`${tier} org can read ${importer} imports with ${permission}`, async () => {
@@ -43,6 +43,11 @@ for (const tier of ['residential', 'commercial', 'production']) for (const [impo
 for (const [importer] of destinations) test(`import.manage alone cannot read ${importer} destination data`, async () => {
   const h = service('production', ['import.manage'])
   await assert.rejects(h.listImportBatches({ importer }), /Forbidden/)
+  assert.ok(!h.calls.some(call => call.table))
+})
+test('commitment.write does not open price_book imports; the service requires price_book.write', async () => {
+  const h = service('production', ['import.manage', 'commitment.write'])
+  await assert.rejects(h.listImportBatches({ importer: 'price_book' }), /Forbidden price_book.write/)
   assert.ok(!h.calls.some(call => call.table))
 })
 test('destination permission alone does not replace import.manage', async () => {
