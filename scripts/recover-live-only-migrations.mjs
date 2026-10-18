@@ -24,6 +24,8 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 
+import { LEDGER_ONLY_MIGRATIONS } from "./migration-ledger.mjs"
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const migrationsDir = join(root, "supabase", "migrations")
 const write = process.argv.includes("--write")
@@ -59,10 +61,12 @@ if (error) {
 }
 
 const known = repoNames()
+// Rows whose effect deliberately lives outside supabase/migrations/ are never recovered.
+const elsewhere = new Set(LEDGER_ONLY_MIGRATIONS.map((m) => `${m.version} ${m.name}`))
 const liveOnly = (data ?? []).filter((row) => {
   // Some ledger rows store the full repo filename as the name.
   const name = String(row.name ?? "").replace(/^\d{14}_/, "")
-  return name && !known.has(name)
+  return name && !known.has(name) && !elsewhere.has(`${row.version} ${name}`)
 })
 
 if (liveOnly.length === 0) {

@@ -14,7 +14,10 @@
  *    ambiguous no matter what the database says.
  * 2. **Exact production parity**, when a database is reachable: every
  *    repository version exists in the ledger, every ledger version has a
- *    repository file, and neither side contains duplicate names or versions.
+ *    repository file, and neither side contains duplicate names or versions
+ *    (`ledgerParity()` in migration-ledger.mjs). The few production rows that
+ *    deliberately have no migration file are listed, with where their effect
+ *    lives, in `LEDGER_ONLY_MIGRATIONS` there.
  *
  * Without credentials it runs the repository-only half and says so. Credentials
  * come only from NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the
@@ -38,11 +41,14 @@ import { appendFileSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { ledgerParity } from "./migration-ledger.mjs"
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const migrationsDir = join(root, "supabase", "migrations")
 
 const problems = []
 
+const migrations = []
 const byName = new Map()
 const byVersion = new Map()
 for (const file of readdirSync(migrationsDir)) {
@@ -53,6 +59,7 @@ for (const file of readdirSync(migrationsDir)) {
     continue
   }
   const [, version, name] = match
+  migrations.push({ version, name, file })
   byName.set(name, [...(byName.get(name) ?? []), file])
   byVersion.set(version, [...(byVersion.get(version) ?? []), file])
 }
@@ -86,34 +93,9 @@ if (url && key && !url.includes("placeholder")) {
     problems.push(`Unable to read the production migration ledger (${response.status}): ${detail}`)
     problems.push("Run the reviewed supabase/scripts/repair-migration-ledger.sql to install list_migration_ledger().")
   } else {
-    const data = await response.json()
-    const ledgerNames = new Map()
-    const ledgerVersions = new Map()
-    for (const row of data ?? []) {
-      const name = String(row.name ?? "").replace(/^\d{14}_/, "")
-      const version = String(row.version ?? "")
-      ledgerNames.set(name, [...(ledgerNames.get(name) ?? []), version])
-      ledgerVersions.set(version, [...(ledgerVersions.get(version) ?? []), name])
-    }
-    for (const [name, versions] of ledgerNames) {
-      if (versions.length > 1) problems.push(`Migration "${name}" is recorded ${versions.length} times: ${versions.join(", ")}`)
-      if (!byName.has(name)) problems.push(`Migration "${name}" (${versions[0]}) is applied but has no repository file — run scripts/recover-live-only-migrations.mjs`)
-    }
-    for (const [version, names] of ledgerVersions) {
-      if (names.length > 1) problems.push(`Ledger version "${version}" is recorded ${names.length} times: ${names.join(", ")}`)
-      if (!byVersion.has(version)) problems.push(`Ledger version "${version}" (${names[0]}) has no repository file`)
-      else {
-        const repoName = /^\d{14}_(.+)\.sql$/.exec(byVersion.get(version)[0])?.[1]
-        if (repoName && repoName !== names[0]) {
-          problems.push(`Ledger version "${version}" is "${names[0]}" but the repository records "${repoName}"`)
-        }
-      }
-    }
-    for (const [version, files] of byVersion) {
-      if (ledgerVersions.has(version)) continue
-      if (allowPending) pending.push(files[0])
-      else problems.push(`Repository migration "${files[0]}" is not recorded in production`)
-    }
+    const parity = ledgerParity({ migrations, ledger: await response.json() ?? [], allowPending })
+    problems.push(...parity.problems)
+    pending.push(...parity.pending)
   }
 } else if (requireProduction) {
   const notice = "Production migration ledger NOT CHECKED: no ledger credentials in this run (LEDGER_SUPABASE_URL / LEDGER_SUPABASE_SERVICE_ROLE_KEY in the production-ledger environment)."

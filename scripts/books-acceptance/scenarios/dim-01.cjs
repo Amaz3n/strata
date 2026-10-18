@@ -15,7 +15,7 @@ async function taggedJob(kit, name, input) {
   kit.sql(`begin;
 insert into public.divisions(id,org_id,name) values(${q(org.divisionId)},${q(org.orgId)},'South division');
 insert into public.communities(id,org_id,name) values(${q(org.communityId)},${q(org.orgId)},'Cedar Ridge');
-insert into public.lots(id,org_id,community_id,lot_number,project_id) values(${q(org.lotId)},${q(org.orgId)},${q(org.communityId)},'14',${q(org.projectId)});
+insert into public.lots(id,org_id,community_id,lot_number,status,project_id) values(${q(org.lotId)},${q(org.orgId)},${q(org.communityId)},'14','started',${q(org.projectId)});
 update public.projects set division_id=${q(org.divisionId)} where id=${q(org.projectId)};
 insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date)
   values(${q(org.contractId)},${q(org.orgId)},${q(org.projectId)},'Fixed-price construction contract','active',${input.contractCents},'usd','fixed',0,'2026-07-01');
@@ -75,7 +75,7 @@ async function oneLotPerProject(kit, expected, check) {
   const input = expected.inputs
   const org = await taggedJob(kit, "DIM-01 one lot", input)
   let refusal = "accepted"
-  try { kit.sql(`insert into public.lots(org_id,community_id,lot_number,project_id) values(${kit.q(org.orgId)},${kit.q(org.communityId)},'15',${kit.q(org.projectId)})`) }
+  try { kit.sql(`insert into public.lots(org_id,community_id,lot_number,status,project_id) values(${kit.q(org.orgId)},${kit.q(org.communityId)},'15','started',${kit.q(org.projectId)})`) }
   catch (error) { refusal = /lots_project_unique/.test(error.message) ? "refused: lots_project_unique" : `refused: ${error.message.slice(0, 120)}` }
   check.equal("a second lot for the project is refused", expected.expected, { secondLot: refusal })
   return { orgId: org.orgId }

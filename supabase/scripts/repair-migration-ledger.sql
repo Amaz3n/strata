@@ -10,13 +10,21 @@
 -- repository. This script records every known-applied repository migration under
 -- its canonical version and removes only the superseded MCP-stamped rows.
 --
--- The ten genuinely pending migrations are deliberately absent from the map.
--- Recording one of those here would lie about production state. The map holds
--- 349 known-applied repository migrations and was refreshed on 2026-09-05
--- against the live ledger: every row is either already named in
--- `supabase_migrations.schema_migrations` or was object-verified in production
--- that day. Regenerate it rather than editing it by hand — a stale map is how an
+-- Genuinely pending migrations are deliberately absent from the map: recording
+-- one here would lie about production state. The map holds 377 known-applied
+-- repository migrations. Rows up to 2026-09-05 were refreshed that day against
+-- the live ledger: every row was either already named in
+-- `supabase_migrations.schema_migrations` or object-verified in production. The
+-- 28 rows after it were added on 2026-10-18 from a read-only export of the live
+-- ledger (395 rows): each is recorded there by name under an MCP-stamped version
+-- with no repository file, and is re-keyed here to its repository version. A
+-- re-keyed row keeps the statements its superseded row recorded.
+-- Regenerate the map rather than editing it by hand — a stale map is how an
 -- applied migration gets recorded as pending, or worse.
+--
+-- Two live rows deliberately keep a version with no file in
+-- `supabase/migrations/`; `LEDGER_ONLY_MIGRATIONS` in
+-- `scripts/migration-ledger.mjs` names them and where their effect lives.
 --
 -- ONE statement on purpose. It was `begin; ... commit;` around a temp table
 -- declared `on commit drop`, which is correct under psql and ambiguous under any
@@ -27,7 +35,8 @@
 -- Idempotent: exact-version rows survive, the insert is ON CONFLICT, and
 -- superseded rows are selected by normalized migration name. Raises notices with
 -- before/after counts and aborts the whole block if any expected applied version
--- or any duplicated name remains.
+-- or any duplicated name remains, or if any migration the ledger recorded before
+-- the repair is no longer recorded under some version afterwards.
 
 do $repair$
 declare
@@ -38,6 +47,7 @@ declare
   v_inserted integer;
   v_deleted integer;
   v_expected integer;
+  v_lost integer;
 begin
   drop table if exists migration_ledger_expected;
   create temporary table migration_ledger_expected (
@@ -395,7 +405,35 @@ begin
   ('20260905004943', 'invoice_budget_mapping'),
   ('20260905005511', 'prime_sov_budget_links'),
   ('20260905005700', 'prime_sov_budget_link_policy_commands'),
-  ('20260905005800', 'prime_sov_budget_link_fk_indexes');
+  ('20260905005800', 'prime_sov_budget_link_fk_indexes'),
+  ('20260906014604', 'fix_greenfield_launch_atomic'),
+  ('20260907213516', 'project_directory_read_model'),
+  ('20260908010000', 'accounting_delivery_leases'),
+  ('20260908010036', 'books_bank_integrity'),
+  ('20260908011000', 'accounting_batch_sealing'),
+  ('20260908011323', 'books_recurring_occurrences'),
+  ('20260908011851', 'books_fiscal_overhead'),
+  ('20260908012000', 'accounting_route_identity_guard'),
+  ('20260908012745', 'books_funding_accounts'),
+  ('20260908013149', 'accounting_d2_acceptance'),
+  ('20260908013633', 'books_settlement_reporting'),
+  ('20260908015013', 'books_clearing_support'),
+  ('20260908015416', 'books_bank_cost_posting'),
+  ('20260908015826', 'books_payroll_settlements'),
+  ('20260908020000', 'accounting_import_recovery'),
+  ('20260908020733', 'books_owned_inventory'),
+  ('20260908021851', 'books_land_inventory'),
+  ('20260908023052', 'books_warranty_accounting'),
+  ('20260908024655', 'books_opening_continuity'),
+  ('20260908030000', 'accounting_d2_routine_consumers'),
+  ('20260908031539', 'books_manual_payment_funding'),
+  ('20260908050000', 'accounting_d2_drop_gate'),
+  ('20260908051000', 'accounting_d2_coding_finalizer'),
+  ('20260908115801', 'books_asset_capacity_execute_hardening'),
+  ('20260910121322', 'accounting_d2_seven_day_acceptance'),
+  ('20260919213434', 'bank_rules_learn_vendor'),
+  ('20260929113927', 'drawing_revision_sheet_number_conflicts'),
+  ('20261011250000', 'drawing_sheets_list_mv_private');
 
   select count(*) into v_expected from migration_ledger_expected;
   select count(*) into v_rows from supabase_migrations.schema_migrations;
@@ -410,12 +448,25 @@ begin
     group by regexp_replace(coalesce(name, ''), '^[0-9]{14}_', '')
     having count(*) > 1
   ) duplicates;
+  drop table if exists migration_ledger_before;
+  create temporary table migration_ledger_before as
+  select distinct regexp_replace(coalesce(name, ''), '^[0-9]{14}_', '') as name
+  from supabase_migrations.schema_migrations;
+
   raise notice 'BEFORE: % ledger rows, %/% canonical versions, % duplicated names',
     v_rows, v_exact, v_expected, v_duplicate_names;
 
   insert into supabase_migrations.schema_migrations (version, name, statements)
-  select expected.version, expected.name, array[]::text[]
+  select expected.version, expected.name, coalesce(superseded.statements, array[]::text[])
   from migration_ledger_expected expected
+  left join lateral (
+    select live.statements
+    from supabase_migrations.schema_migrations live
+    where regexp_replace(coalesce(live.name, ''), '^[0-9]{14}_', '') = expected.name
+      and live.version <> expected.version
+    order by live.version
+    limit 1
+  ) superseded on true
   on conflict (version) do nothing;
   get diagnostics v_inserted = row_count;
 
@@ -449,17 +500,29 @@ begin
     having count(*) > 1
   ) duplicates;
 
+  select count(*) into v_lost
+  from migration_ledger_before prior
+  where prior.name <> 'arc_books_accounting_foundation'
+    and not exists (
+      select 1 from supabase_migrations.schema_migrations live
+      where regexp_replace(coalesce(live.name, ''), '^[0-9]{14}_', '') = prior.name
+    );
+
   raise notice 'AFTER: % ledger rows, %/% canonical versions, % duplicated names (+% inserted, -% superseded)',
     v_rows, v_exact, v_expected, v_duplicate_names, v_inserted, v_deleted;
 
   if v_missing <> 0 then
     raise exception 'Migration ledger repair left % known-applied repository versions missing', v_missing;
   end if;
+  if v_lost <> 0 then
+    raise exception 'Migration ledger repair dropped % recorded migrations', v_lost;
+  end if;
   if v_duplicate_names <> 0 then
     raise exception 'Migration ledger repair left % duplicated normalized names', v_duplicate_names;
   end if;
 
   drop table migration_ledger_expected;
+  drop table migration_ledger_before;
 end
 $repair$;
 
@@ -480,7 +543,7 @@ revoke all on function public.list_migration_ledger() from public, anon, authent
 grant execute on function public.list_migration_ledger() to service_role;
 
 -- After this runs:
---   1. Apply only the ten pending migrations listed in the reconciliation doc,
---      using the Supabase CLI so their repository versions are preserved.
+--   1. Apply only the pending migrations `pnpm db:pending` lists (and the owner
+--      approved), using the Supabase CLI so their repository versions are preserved.
 --   2. Run pnpm db:ledger:check with production credentials.
 --   3. Run supabase migration list and confirm nothing is local-only or remote-only.
