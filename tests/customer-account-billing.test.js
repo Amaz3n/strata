@@ -1,5 +1,5 @@
-require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),Module=require('node:module')
+const test=require('node:test'),assert=require('node:assert/strict')
+const {stubModule,freshRequire}=require('./support/modules')
 
 test('customer account combines project and general billing without treating credits as cash',async()=>{
   const invoices=[
@@ -17,10 +17,9 @@ test('customer account combines project and general billing without treating cre
     '@/lib/services/invoices':{listInvoicePage:async options=>({hasMore:false,invoices:options.projectId?invoices.filter(i=>i.project_id===options.projectId):invoices.filter(i=>!i.project_id&&options.generalCustomerIds.includes(i.metadata.customer_id))})},
     '@/lib/supabase/server':{createServiceSupabaseClient:()=>db},
   }
-  const original=Module._load
-  Module._load=function(request,...args){return stubs[request]??original.call(this,request,...args)}
-  try{
-    const {getFinancialPartyReceivables}=require('../lib/services/financial-parties')
+  for(const [request,exports] of Object.entries(stubs)) stubModule(request,exports)
+  {
+    const {getFinancialPartyReceivables}=freshRequire('lib/services/financial-parties.ts')
     const summary=await getFinancialPartyReceivables({partyType:'contact',partyId:'client'})
     assert.equal(summary.invoiced_cents,15000)
     assert.equal(summary.collected_cents,9000)
@@ -40,7 +39,7 @@ test('customer account combines project and general billing without treating cre
     assert.equal(withDeposit.collected_cents,14000,'applying a deposit does not collect the cash twice')
     assert.equal(withDeposit.available_deposit_cents,3000)
     assert.equal(withDeposit.invoice_count,2)
-    assert.equal(withDeposit.open_invoices.reduce((sum,i)=>sum+i.balance_cents,0),3000)
+    assert.equal(withDeposit.outstanding_cents,3000,'a deposit request is not a receivable')
     assert.equal(withDeposit.activity.find(row=>row.id==='invoice:advance').kind,'deposit_request')
-  }finally{Module._load=original}
+  }
 })

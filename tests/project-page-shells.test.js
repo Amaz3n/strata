@@ -25,7 +25,7 @@ function loadPage(file, exportName = "default") {
       ? async id => ({ id, name: "Fixture project" }) : leaf,
   })
   new Function("exports", "require", code)(loaded, id =>
-    id === "react" || id === "react/jsx-runtime" ? require(id) : dependencies,
+    id === "react" || id === "react/jsx-runtime" || id === "zod" ? require(id) : dependencies,
   )
   return loaded[exportName]
 }
