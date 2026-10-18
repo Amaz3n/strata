@@ -52,7 +52,11 @@ const db = { from(table) {
   return q
 } }
 const stubs = {
-  "@/lib/services/prospect-write-access": { assertProspectWriteAccess: async () => {}, assertProspectOwner: async () => {} },
+  "@/lib/services/prospect-write-access": {
+    assertCanWriteDeals: async () => { if (!permitted) throw Error("Forbidden") },
+    assertProspectWriteAccess: async () => {},
+    assertProspectOwner: async () => {},
+  },
   "@/lib/services/context": { requireOrgContext: async () => ({ supabase: db, orgId, userId, productTier }) },
   "@/lib/services/permissions": { requirePermission: async () => { if (!permitted) throw Error("Forbidden") }, requireAnyPermission: async () => { if (!permitted) throw Error("Forbidden") } },
   "@/lib/services/audit": { recordAudit: async () => {} },
@@ -98,6 +102,7 @@ test("capture and qualification both allow optional detail, while permissions st
   assert.equal(row.status, "qualified")
   reset(); permitted = false
   await assert.rejects(update({ status: "qualified" }), /Forbidden/)
+  await assert.rejects(createProspect({ input: { name: "No deal-write key" } }), /Forbidden/)
   assert.equal(writes.length, 0)
 })
 

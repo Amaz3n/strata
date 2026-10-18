@@ -28,7 +28,10 @@ const db = { from(table) {
 const original = Module._load;
 Module._load = function(name,...args) {
   if (name === "@/lib/services/context") return { requireOrgContext: async () => ({ supabase: db, orgId, userId: "actor" }) };
-  if (name === "@/lib/services/permissions") return { requirePermission: async () => { if (unauthorized) throw new Error("Forbidden"); }, requireAnyPermission: async () => {} };
+  if (name === "@/lib/services/permissions") {
+    const gate = async () => { if (unauthorized) throw new Error("Forbidden"); };
+    return { requirePermission: gate, requireAnyPermission: gate };
+  }
   if (name === "@/lib/supabase/server") return { createServiceSupabaseClient: () => db };
   if (name === "@/lib/services/outbox") return { enqueueOutboxJob: async job => { if (failQueue && job.payload.to === "second@example.test") return { enqueued: false, reason: "error" }; jobs.push(job); return { enqueued: true, id: jobs.length }; } };
   if (name === "@/lib/services/portal-credentials") return { hashBidToken: value => `hashed-${value}` };
@@ -62,7 +65,7 @@ test("failed recipient lookup does not claim there were no bidders", async () =>
   assert.equal(result.queued.length, 0);
   assert.equal(jobs.length, 0);
 });
-test("notification retries require project management permission", async () => {
+test("notification retries require project management or bid write permission", async () => {
   reset(); unauthorized = true;
   await assert.rejects(retryBidAddendumNotifications({ addendumId: noticeId }), /Forbidden/);
   assert.equal(writes.length, 0);
