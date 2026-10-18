@@ -32,7 +32,7 @@ begin
    if is_new then
     insert into public.drawing_sheets(org_id,project_id,drawing_set_id,sheet_number,sheet_title,discipline,current_revision_id,sort_order,share_with_clients,share_with_subs)
     values(p_org_id,r.project_id,r.drawing_set_id,number,p->'metadata'->'proposed'->>'sheet_title',p->'metadata'->'proposed'->>'discipline',null,v_page_index,false,false)
-    on conflict(project_id,sheet_number) do nothing returning * into s;
+    on conflict(project_id,sheet_number) where sheet_number is not null do nothing returning * into s;
     if not found then
      select * into s from public.drawing_sheets where org_id=p_org_id and project_id=r.project_id and sheet_number=number for update;
      if not found then raise exception 'Drawing sheet collision'; end if;
@@ -48,7 +48,7 @@ begin
     if is_new then
      insert into public.drawing_sheets(org_id,project_id,drawing_set_id,sheet_number,sheet_title,discipline,current_revision_id,sort_order,share_with_clients,share_with_subs)
      values(p_org_id,r.project_id,r.drawing_set_id,fallback,p->'metadata'->'proposed'->>'sheet_title',p->'metadata'->'proposed'->>'discipline',null,v_page_index,false,false)
-     on conflict(project_id,sheet_number) do nothing returning * into s;
+     on conflict(project_id,sheet_number) where sheet_number is not null do nothing returning * into s;
      if not found then select * into s from public.drawing_sheets where org_id=p_org_id and project_id=r.project_id and sheet_number=fallback for update; is_new:=false; end if;
     end if;
    end if;
