@@ -34866,11 +34866,10 @@
         "EP14-08",
         "EP07-17"
       ],
-      "status": "implemented",
-      "implementationNotes": "docs/reference/production-activation.md lists the pending migrations EP07 to EP14 in order with lock and index risk, the flags, worker drain, monitoring and rollback. It was rehearsed on the acceptance stack with the golden scenarios. Applying anything to production needs the human's approval.",
+      "status": "verified",
+      "implementationNotes": "docs/reference/production-activation.md lists the pending migrations EP07 to EP14 in order with lock and index risk, the flags, worker drain, monitoring and rollback. It was rehearsed on the acceptance stack with the golden scenarios. Applying anything to production needs the human's approval. (2026-10-18) The owner approved the exact list: 208 files (Books and Production together) from a read-only export of the production ledger, pinned by content hash in the window kit. Rehearsed on a stack rebuilt from the production schema dump: the reviewed ledger repair (395 to 414 rows, none lost) and the real window script applied all 208 in 12.3 s with no errors or lock waits, verify.sql and the release-key check passed, the upgraded schema and grants match a fresh replay of all 620 migrations apart from objects production already had, ledger parity is exact with 0 pending, and the production golden scenarios pass on the upgraded database. Evidence: ~/.arc-acceptance/ev/rehearsal-2026-10-18/.",
       "remainingWork": [
-        "Human approval of the migrations and activation.",
-        "Rehearse the activation in the QA org."
+        "In the window: the QA-org release and PO approval after resume (production-activation.md, The window, step 6)."
       ],
       "sources": [
         "docs/books-operations.md",
@@ -35119,11 +35118,9 @@
         "owner_review"
       ],
       "dependencies": [],
-      "status": "partial",
-      "implementationNotes": "docs/reference/production-approval-package.md holds the first-builder sizing, the operating assumptions and an integration inventory form for the launch owner. The national loadTargets are unchanged.",
-      "remainingWork": [
-        "The named launch owner approves or amends the package through scope control."
-      ],
+      "status": "verified",
+      "implementationNotes": "docs/reference/production-approval-package.md holds the first-builder sizing, the operating assumptions and an integration inventory form for the launch owner. The national loadTargets are unchanged. (2026-10-18) The owner approved docs/reference/production-approval-package.md as written: the first-builder sizing, operating assumptions and integration inventory; the provisional engineering targets are accepted, national load targets stay deferred.",
+      "remainingWork": [],
       "sources": [
         "docs/reference/production-approval-package.md"
       ],

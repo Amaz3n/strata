@@ -249,16 +249,16 @@ Every row has full observable criteria, dependencies, source/test links, evidenc
 | EP14-06 | Complete role and money concurrency matrix | verified | Apply 20261021200000_production_member_write_fences and 20261021210000_member_write_fence_narrowing (pending approval). |
 | EP14-07 | Desktop and mobile visual acceptance | implemented | Split fill and text tokens to close 12 known contrast items (dark primary and destructive, light warning and chart tints). |
 | EP14-08 | Full schema and deployment parity | implemented | Create the production-ledger environment and its secrets on GitHub (confirm branch and reviewer rules). |
-| EP14-09 | Migration and activation approval | implemented | Human approval of the migrations and activation. |
+| EP14-09 | Migration and activation approval | verified | Owner approved the 208-file list (2026-10-18); rehearsed on the production schema. In the window: QA-org release and PO approval. |
 | EP14-10 | Independent security review | partial | Engage an independent reviewer (owner). |
-| EP14-11 | Operating requirements and integrations | partial | The named launch owner approves or amends the package through scope control. |
+| EP14-11 | Operating requirements and integrations | verified | Owner approved the package as written (2026-10-18). |
 | EP14-12 | Operational release sign-off | pending | Complete dependencies; owner records release decision and residual backlog. |
 
 ## Scope and acceptance limits
 
 252 pages are inventoried, each assessed for production exposure and mapped to checklist IDs; excluded pages carry file:line evidence. Mobile is one deferred entry.
 
-Sizing and operating assumptions are frozen engineering targets awaiting launch-owner approval under EP14-11. QA access, chosen-system sandbox credentials, migration/activation approval, independent security review and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.
+Sizing and operating assumptions were approved by the owner on 2026-10-18 (EP14-11), as was the 208-file migration list (EP14-09). QA access, chosen-system sandbox credentials, the migration window itself, the independent security review (running alongside the first customer) and operational sign-off remain explicit external gates. No customer database, storage or email mutations were performed.
 
 This side conversation cannot access the persistent main-thread goal, and exposed goal tools support status updates only, not editing an active objective. Do not mark the old goal complete or create a replacement to bypass this limitation; use this user-approved checklist as its governing DoD.
 
